@@ -1,0 +1,938 @@
+// Servicio de ingreso de mercadería
+// Orquestracion: parse CSV -> match -> validate -> update stock/prices -> crear purchase.order
+
+const pool = require('../config/database');
+const papa = require('papaparse');
+const odooService = require('./odooService');
+
+// =============================================
+// 1. PARSEO CSV
+// =============================================
+
+/**
+ * Normaliza un header de CSV: minúsculas, sin acentos, sin caracteres especiales.
+ * "Código" → "codigo", "Precio ($)" → "precio", "Importe ($)" → "importe"
+ */
+function normalizeHeader(h) {
+    return h.trim()
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, '')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+/**
+ * Parsea un número en formato español: "7.854,00" → 7854.00
+ */
+function parsePrecio(val) {
+    if (val === null || val === undefined || val === '') return 0;
+    const s = String(val).trim()
+        .replace(/\./g, '')
+        .replace(',', '.');
+    return parseFloat(s) || 0;
+}
+
+async function parseCSV(fileBuffer) {
+    return new Promise((resolve) => {
+        const csvString = fileBuffer.toString('utf-8');
+
+        papa.parse(csvString, {
+            header: true,
+            dynamicTyping: false,
+            skipEmptyLines: true,
+            transformHeader: normalizeHeader,
+            complete: (results) => {
+                const data   = [];
+                const errors = [];
+
+                results.data.forEach((row, idx) => {
+                    try {
+                        const codigo = (row.codigo || row.code || '').trim();
+                        const descripcion = (row.descripcion || row.description || row.desc || '').trim();
+                        const cantidadRaw = row.cantidad || row.quantity || row.cant || '';
+                        const cantidad = parseInt(String(cantidadRaw).trim(), 10);
+                        const precioRaw = row.precio || row['precio unitario'] || row.unit_price || row.price || '';
+                        const precioUnitario = parsePrecio(precioRaw);
+                        const subtotalRaw = row.subtotal || row.importe || row.total || row.monto || '';
+                        const subtotal = parsePrecio(subtotalRaw);
+
+                        if (!codigo && !descripcion) {
+                            errors.push({ row: idx + 1, error: 'Fila sin código ni descripción', data: row });
+                            return;
+                        }
+
+                        if (isNaN(cantidad) || cantidad <= 0) {
+                            errors.push({ row: idx + 1, error: `Cantidad inválida: "${cantidadRaw}"`, data: row });
+                            return;
+                        }
+
+                        if (precioUnitario <= 0) {
+                            errors.push({ row: idx + 1, error: `Precio inválido: "${precioRaw}"`, data: row });
+                            return;
+                        }
+
+                        data.push({
+                            codigo,
+                            descripcion,
+                            cantidad,
+                            precio_unitario: precioUnitario,
+                            subtotal: subtotal || Math.round(cantidad * precioUnitario * 100) / 100
+                        });
+                    } catch (err) {
+                        errors.push({ row: idx + 1, error: err.message, data: row });
+                    }
+                });
+
+                // Deduplicar: si el mismo artículo aparece varias veces (mismo código
+                // o misma descripción si no hay código), sumar cantidades y subtotales.
+                const seenKeys = new Map();
+                const deduped  = [];
+                for (const item of data) {
+                    const key = (item.codigo || item.descripcion).toLowerCase().trim();
+                    if (seenKeys.has(key)) {
+                        const prev    = seenKeys.get(key);
+                        prev.cantidad += item.cantidad;
+                        prev.subtotal  = Math.round((prev.subtotal + item.subtotal) * 100) / 100;
+                    } else {
+                        seenKeys.set(key, item);
+                        deduped.push(item);
+                    }
+                }
+
+                resolve({
+                    success: deduped.length > 0,
+                    data: deduped,
+                    errors,
+                    total_monto: deduped.reduce((sum, item) => sum + item.subtotal, 0)
+                });
+            },
+            error: (err) => {
+                resolve({
+                    success: false,
+                    data: [],
+                    errors: [{ error: `Parse CSV error: ${err.message}` }],
+                    total_monto: 0
+                });
+            }
+        });
+    });
+}
+
+// =============================================
+// 2. MATCHING: CSV items -> Odoo products (neggo)
+// =============================================
+
+/**
+ * Normaliza string para comparación: minúsculas, sin acentos, solo alfanuméricos.
+ */
+function normalize(str) {
+    return String(str || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Similitud de Levenshtein entre dos strings [0..1].
+ */
+function similarity(a, b) {
+    const la = a.length, lb = b.length;
+    if (la === 0) return lb === 0 ? 1 : 0;
+    if (lb === 0) return 0;
+    let prev = Array.from({ length: lb + 1 }, (_, i) => i);
+    let curr = new Array(lb + 1);
+    for (let i = 1; i <= la; i++) {
+        curr[0] = i;
+        for (let j = 1; j <= lb; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+        }
+        [prev, curr] = [curr, prev];
+    }
+    return 1 - prev[lb] / Math.max(la, lb);
+}
+
+/**
+ * Para cada item CSV, intenta matchear con un producto Odoo (empresa neggo).
+ * Niveles en orden:
+ *   1. supplierId → supplier_products (por SKU/codigo) → product_mappings → odoo_products_cache neggo
+ *   2. internal_ref exacto (codigo === internal_ref)
+ *   3. internal_ref sin prefijo (internal_ref termina en codigo)
+ *   4. barcode exacto
+ *   5. fuzzy por nombre (umbral 0.72)
+ *
+ * @param {Array} items — items parseados
+ * @param {number|null} supplierId
+ * @returns {Promise<Array>} items enriquecidos
+ */
+async function matchItems(items, supplierId = null) {
+    // Solo se carga el cache de Neggo. El matching es exclusivo contra Neggo.
+    // La relación con Preventas se resuelve en preventa-odoo-match (pestaña Preventa).
+    const { rows: odooCache } = await pool.query(
+        `SELECT odoo_id, name, internal_ref, barcode, standard_price, list_price, active, description_purchase
+         FROM odoo_products_cache WHERE company = 'neggo'`
+    );
+
+    // Índices Neggo
+    const byRef          = new Map(); // internal_ref exacto (con guiones)
+    const byRefNorm      = new Map(); // internal_ref normalizado (sin guiones/espacios)
+    const byBcode        = new Map();
+    const byDescPurchase = new Map();
+    for (const p of odooCache) {
+        if (p.internal_ref) {
+            byRef.set(p.internal_ref.toUpperCase(), p);
+            const normKey = p.internal_ref.replace(/[-\s]/g, '').toUpperCase();
+            if (!byRefNorm.has(normKey)) byRefNorm.set(normKey, p);
+        }
+        if (p.barcode)              byBcode.set(p.barcode, p);
+        if (p.description_purchase) byDescPurchase.set(normalize(p.description_purchase), p);
+    }
+
+    // Si hay supplierId, obtener el prefijo del proveedor
+    let supplierPrefix = null;
+    if (supplierId) {
+        const { rows } = await pool.query(
+            `SELECT prefix FROM suppliers WHERE id = $1 AND active = true LIMIT 1`,
+            [supplierId]
+        );
+        if (rows.length > 0) supplierPrefix = rows[0].prefix;
+    }
+
+    const enriched = [];
+
+    for (const item of items) {
+        let matched    = null;
+        let confidence = 0;
+        let matchLevel = null;
+        let errorMsg   = null;
+
+        try {
+            // ---- Nivel 1: supplier_products → product_mappings → cache ----
+            if (supplierId && item.codigo) {
+                const { rows: spRows } = await pool.query(
+                    `SELECT sp.id FROM supplier_products sp
+                     WHERE sp.supplier_id = $1
+                       AND (UPPER(sp.sku) = UPPER($2) OR UPPER(sp.sku) LIKE UPPER($3))
+                     LIMIT 1`,
+                    [supplierId, item.codigo, `%${item.codigo}%`]
+                );
+
+                if (spRows.length > 0) {
+                    const spId = spRows[0].id;
+                    const { rows: pmRows } = await pool.query(
+                        `SELECT pm.odoo_product_id
+                         FROM product_mappings pm
+                         WHERE pm.supplier_product_id = $1
+                           AND pm.odoo_company = 'neggo'
+                           AND pm.active = true
+                         LIMIT 1`,
+                        [spId]
+                    );
+
+                    if (pmRows.length > 0) {
+                        const odooId = pmRows[0].odoo_product_id;
+                        matched = odooCache.find(p => p.odoo_id === odooId) || null;
+                        if (matched) { confidence = 1.0; matchLevel = 'supplier_mapping'; }
+                    }
+                }
+            }
+
+            // ---- Nivel 2: invoice_code_mappings (vinculación manual persistente) ----
+            // Códigos vacíos, guiones o "S/COD" no se buscan — evita falsos positivos globales
+            const codigoValido = item.codigo && item.codigo.trim() !== '' &&
+                !['', '-', '--', 'n/a', 'na', 's/cod', 'sin codigo'].includes(item.codigo.trim().toLowerCase());
+            if (!matched && supplierId && codigoValido) {
+                const { rows: icmRows } = await pool.query(
+                    `SELECT odoo_product_id, odoo_product_name
+                     FROM invoice_code_mappings
+                     WHERE supplier_id = $1 AND UPPER(raw_code) = UPPER($2)
+                     LIMIT 1`,
+                    [supplierId, item.codigo]
+                );
+
+                if (icmRows.length > 0) {
+                    const icm = icmRows[0];
+                    // Solo usar el mapping si el producto sigue activo en Odoo.
+                    // Si fue archivado, el mapping quedó obsoleto — ignorarlo y
+                    // continuar a los niveles siguientes para encontrar el producto correcto.
+                    matched = odooCache.find(p => p.odoo_id === icm.odoo_product_id) || null;
+                    if (matched) {
+                        confidence = 0.98;
+                        matchLevel = 'invoice_mapping';
+                    }
+                }
+            }
+
+            // ---- Nivel 3: internal_ref — código normalizado con y sin prefijo ----
+            // Cubre todos los casos:
+            //   codigo="P113238"   + prefix="IT" → busca "ITP113238" (= "IT-P113238" normalizado) ✓
+            //   codigo="ITP113238" + prefix="IT" → código ya tiene prefijo, no lo duplica ✓
+            //   codigo="IT-P113238"+ prefix="IT" → normaliza a "ITP113238" ✓
+            if (!matched && codigoValido) {
+                const normCodigo  = item.codigo.replace(/[-\s]/g, '').toUpperCase();
+                const normPrefix  = supplierPrefix ? supplierPrefix.replace(/[-\s]/g, '').toUpperCase() : '';
+
+                // Si el código ya incluye el prefijo al inicio, no lo duplicamos
+                const codigoConPref = normPrefix && !normCodigo.startsWith(normPrefix)
+                    ? normPrefix + normCodigo
+                    : normCodigo;
+
+                matched =
+                    byRefNorm.get(codigoConPref) ||   // prefijo + codigo normalizado
+                    byRefNorm.get(normCodigo)    ||   // codigo solo normalizado
+                    byRef.get(item.codigo.toUpperCase()) || // exacto original (sin normalizar)
+                    null;
+
+                if (matched) { confidence = 0.95; matchLevel = 'ref_prefix'; }
+            }
+
+            // ---- Nivel 5: barcode ----
+            if (!matched && item.codigo) {
+                matched = byBcode.get(item.codigo) || null;
+                if (matched) { confidence = 0.9; matchLevel = 'barcode'; }
+            }
+
+            // ---- Nivel 6: description_purchase (descripción de compra en Odoo) ----
+            if (!matched && item.descripcion) {
+                const normDesc = normalize(item.descripcion);
+                matched = byDescPurchase.get(normDesc) || null;
+                if (matched) { confidence = 0.85; matchLevel = 'desc_purchase'; }
+            }
+
+            // ---- Nivel 7: fuzzy por nombre (Neggo) ----
+            if (!matched && item.descripcion) {
+                const normDesc = normalize(item.descripcion);
+                let bestSim = 0;
+                let bestProduct = null;
+
+                for (const p of odooCache) {
+                    const sim = similarity(normDesc, normalize(p.name));
+                    if (sim > bestSim) { bestSim = sim; bestProduct = p; }
+                }
+
+                if (bestSim >= 0.72) {
+                    matched   = bestProduct;
+                    confidence = Math.round(bestSim * 1000) / 1000;
+                    matchLevel = 'fuzzy_name';
+                }
+            }
+
+            // Niveles 8 y 9 (fallback Preventas) eliminados intencionalmente.
+            // El ingreso de mercadería solo clasifica ítems respecto a Odoo Neggo.
+            // La relación con Preventas es exclusiva de la pestaña Preventa
+            // (calculada en tiempo real por preventa-odoo-match, no aquí).
+            // Un ítem que no existe en Neggo es "nuevo" — no se matchea a Preventas.
+
+            if (!matched) {
+                errorMsg = item.codigo
+                    ? `Sin coincidencia para código: ${item.codigo}`
+                    : `Sin coincidencia por nombre: ${item.descripcion}`;
+            }
+        } catch (err) {
+            errorMsg = `Error matching: ${err.message}`;
+            console.error('❌ Error en matching:', err);
+        }
+
+        enriched.push({
+            ...item,
+            odoo_product_id:   matched ? matched.odoo_id : null,
+            odoo_product_name: matched ? matched.name    : null,
+            odoo_active:       matched ? (matched.active !== false) : null,
+            odoo_company:      'neggo',
+            confidence_match:  confidence,
+            match_level:       matchLevel,
+            error_match:       errorMsg,
+            estado_item:       matched ? 'matched' : 'pending',
+            precio_odoo_anterior: matched ? parseFloat(matched.standard_price || 0) : null,
+            precio_odoo_lista:    matched ? parseFloat(matched.list_price    || 0) : null,
+            supplier_product_id:   null,
+            supplier_match_level:  'none',
+            supplier_confidence:   0,
+        });
+    }
+
+    // =============================================
+    // TRIANGULACIÓN CON PRODUCTOS SCRAPEADOS DEL PROVEEDOR
+    // Niveles: código exacto → código con prefijo → fuzzy nombre ≥80% + precio ±20%
+    // =============================================
+    if (supplierId) {
+        const { rows: spRows } = await pool.query(
+            `SELECT id, sku, name, raw_price, image_url
+             FROM supplier_products
+             WHERE supplier_id = $1 AND available = true`,
+            [supplierId]
+        );
+
+        // Prefijos que los scrapers agregan al SKU (no son el código del proveedor)
+        const SCRAPER_PREFIXES = ['imptk-', 'elrey-', 'mali-', 'cast-'];
+
+        // Extrae el código base de un SKU quitando el prefijo del scraper y los guiones internos
+        // "imptk-INF-1093" → "INF1093" | "elrey-360" → "360" | "CT0160018" → "CT0160018"
+        function extractBaseCode(sku) {
+            const lower = sku.toLowerCase();
+            for (const prefix of SCRAPER_PREFIXES) {
+                if (lower.startsWith(prefix)) {
+                    return sku.slice(prefix.length).replace(/-/g, '').toUpperCase();
+                }
+            }
+            return sku.replace(/-/g, '').toUpperCase();
+        }
+
+        // Índice por SKU — tres variantes:
+        // 1. SKU tal cual (uppercase)
+        // 2. Sin el prefijo del proveedor (IMP-, CAST-, etc.)
+        // 3. Código base normalizado (sin prefijo scraper, sin guiones) ← NUEVO
+        const bySpSku      = new Map();
+        const bySpBaseCode = new Map();
+
+        for (const sp of spRows) {
+            if (!sp.sku) continue;
+            const skuUpper  = sp.sku.toUpperCase();
+            const baseCode  = extractBaseCode(sp.sku);
+
+            bySpSku.set(skuUpper, sp);
+            if (baseCode.length >= 2) bySpBaseCode.set(baseCode, sp);
+
+            if (supplierPrefix) {
+                const p = supplierPrefix.toUpperCase();
+                if (skuUpper.startsWith(p + '-')) bySpSku.set(skuUpper.slice(p.length + 1), sp);
+                if (skuUpper.startsWith(p))       bySpSku.set(skuUpper.slice(p.length), sp);
+            }
+        }
+
+        for (let i = 0; i < enriched.length; i++) {
+            const item = enriched[i];
+            let spMatch = null;
+            let spLevel = 'none';
+            let spConf  = 0;
+
+            // Nivel A: código exacto en todas sus variantes
+            // Primero exacto, luego con prefijo proveedor, luego normalizado (sin guiones)
+            if (item.codigo) {
+                const code     = item.codigo.toUpperCase();
+                const normCode = code.replace(/-/g, ''); // también normalizar el código de la boleta
+                const p        = supplierPrefix?.toUpperCase() || '';
+
+                spMatch = bySpSku.get(code)
+                    || bySpSku.get(`${p}-${code}`)
+                    || bySpSku.get(`${p}${code}`)
+                    || bySpBaseCode.get(normCode)   // ← código factura vs código base del SKU
+                    || bySpBaseCode.get(code)        // ← sin normalizar por si el código tiene letras+nums
+                    || null;
+
+                if (spMatch) { spLevel = 'exact_code'; spConf = 1.0; }
+            }
+
+            // Nivel B: fuzzy nombre ≥80% + precio dentro de ±20%
+            if (!spMatch && item.descripcion && spRows.length > 0) {
+                const normDesc = normalize(item.descripcion);
+                let bestSim = 0;
+                let bestSp  = null;
+                for (const sp of spRows) {
+                    const sim = similarity(normDesc, normalize(sp.name));
+                    if (sim > bestSim) { bestSim = sim; bestSp = sp; }
+                }
+                if (bestSim >= 0.80 && bestSp) {
+                    const priceOk = !bestSp.raw_price || !item.precio_unitario
+                        || Math.abs(bestSp.raw_price - item.precio_unitario) / item.precio_unitario <= 0.20;
+                    if (priceOk || bestSim >= 0.92) {
+                        spMatch = bestSp;
+                        spLevel = 'fuzzy';
+                        spConf  = Math.round(bestSim * 1000) / 1000;
+                    }
+                }
+            }
+
+            enriched[i] = {
+                ...item,
+                supplier_product_id:  spMatch ? spMatch.id  : null,
+                supplier_match_level: spLevel,
+                supplier_confidence:  spConf,
+            };
+        }
+    }
+
+    return enriched;
+}
+
+// =============================================
+// 3. VALIDACIÓN: Verificar consistencia con Odoo
+// =============================================
+
+/**
+ * Valida items matched: verifica existencia en cache, marca alerta de precio.
+ */
+async function validateItems(items) {
+    const validated = [];
+
+    for (const item of items) {
+        const v = { ...item };
+
+        if (!item.odoo_product_id || item.estado_item !== 'matched') {
+            validated.push(v);
+            continue;
+        }
+
+        // Precio viene de matchItems ya. Verificar alerta de diferencia.
+        if (v.precio_odoo_anterior !== null && v.precio_odoo_anterior > 0) {
+            const pctDiff = Math.abs(v.precio_unitario - v.precio_odoo_anterior) / v.precio_odoo_anterior;
+            v.alerta_precio_diferente = pctDiff > 0.01;
+        }
+
+        // Calcular precio_odoo_nuevo (costo que viene de la factura)
+        v.precio_odoo_nuevo = v.precio_unitario;
+
+        validated.push(v);
+    }
+
+    return validated;
+}
+
+// =============================================
+// 4. CREAR INGRESO PREVIEW (sin confirmar)
+// =============================================
+
+async function createIngresoPreview(items, supplierId, comprobanteTipo, comprobantNumero, userId) {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const totalMonto = items.reduce((sum, i) => sum + (i.subtotal || 0), 0);
+        const ingresoResult = await client.query(
+            `INSERT INTO ingreso_mercaderia
+             (comprobante_numero, comprobante_tipo, supplier_id, estado, items_count, total_monto, created_by_user_id)
+             VALUES ($1, $2, $3, 'pending', $4, $5, $6)
+             RETURNING id`,
+            [comprobantNumero || null, comprobanteTipo, supplierId || null, items.length, totalMonto, userId]
+        );
+
+        const ingresoId = ingresoResult.rows[0].id;
+
+        for (const item of items) {
+            await client.query(
+                `INSERT INTO ingreso_items
+                 (ingreso_id, codigo, descripcion, cantidad, precio_unitario, subtotal,
+                  odoo_product_id, odoo_product_name, confidence_match, error_match,
+                  estado_item, odoo_active, odoo_company,
+                  cantidad_odoo_anterior, precio_odoo_anterior, precio_odoo_nuevo, precio_odoo_lista,
+                  alerta_precio_diferente,
+                  supplier_product_id, supplier_match_level, supplier_confidence,
+                  match_level)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+                [
+                    ingresoId,
+                    item.codigo            || null,
+                    item.descripcion,
+                    item.cantidad,
+                    item.precio_unitario,
+                    item.subtotal,
+                    item.odoo_product_id   || null,
+                    item.odoo_product_name || null,
+                    item.confidence_match  || 0,
+                    item.error_match       || null,
+                    item.estado_item       || 'pending',
+                    item.odoo_active !== undefined ? item.odoo_active : null,
+                    item.odoo_company      || 'neggo',
+                    item.cantidad_odoo_anterior  || null,
+                    item.precio_odoo_anterior    || null,
+                    item.precio_odoo_nuevo       || null,
+                    item.precio_odoo_lista       || null,
+                    item.alerta_precio_diferente || false,
+                    item.supplier_product_id     || null,
+                    item.supplier_match_level    || 'none',
+                    item.supplier_confidence     || 0,
+                    item.match_level             || null,
+                ]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        return {
+            success: true,
+            ingresoId,
+            preview: {
+                ingresoId,
+                comprobante_numero: comprobantNumero,
+                comprobante_tipo:   comprobanteTipo,
+                total_monto:        totalMonto,
+                items_count:        items.length,
+                summary: {
+                    matched:  items.filter(i => i.estado_item === 'matched').length,
+                    pending:  items.filter(i => i.estado_item === 'pending').length,
+                    rejected: items.filter(i => i.estado_item === 'rejected').length,
+                    activos:  items.filter(i => i.estado_item === 'matched' && i.odoo_active !== false).length,
+                    inactivos: items.filter(i => i.estado_item === 'matched' && i.odoo_active === false).length,
+                    nuevos:    items.filter(i => i.estado_item === 'pending').length
+                }
+            }
+        };
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('❌ Error creating ingreso preview:', err);
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+// =============================================
+// 5. CONFIRMAR INGRESO (aplicar cambios + purchase.order)
+// =============================================
+
+/**
+ * Confirma el ingreso:
+ * - Actualiza costos/precios en Odoo según flags apply_cost / apply_price por item
+ * - Reactiva productos inactivos usando product.template (no product.product)
+ * - Crea purchase.order en Odoo con todos los items matched
+ *
+ * @param {number} ingresoId
+ * @param {number} userId
+ * @param {number|null} odooPartnerId — partner Odoo del proveedor (para purchase.order)
+ * @returns {Promise<object>}
+ */
+
+/**
+ * Dado el codigo de la boleta y el prefijo del proveedor, devuelve el odoo_id
+ * del producto equivalente en la empresa Preventas.
+ * Usa la misma clave que preventa-odoo-match: PRE + prefijo + baseCode(codigo).
+ * Esto aprovecha la relación existente en lugar de ir por el internal_ref de Neggo.
+ */
+async function findPreventasProductId(codigo, supplierPrefix, client) {
+    const db = client || pool;
+    if (!codigo) return null;
+
+    const norm = s => (s || '').replace(/[-\s]/g, '').toUpperCase();
+    const base = norm(codigo);
+    const pref = norm(supplierPrefix);
+
+    const candidates = [
+        `PRE${pref}${base}`,
+        `PRE${base}`,
+    ].filter((v, i, a) => v.length > 3 && a.indexOf(v) === i);
+
+    // Busca en: internal_ref, ext_id_clean (ir.model.data), y código {braces} del nombre + prefijo.
+    // El mismo matching multi-fuente que usa preventa-odoo-match.
+    const { rows } = await db.query(
+        `SELECT odoo_id FROM odoo_products_cache
+         WHERE company = 'preventas' AND active = true
+           AND (
+               REPLACE(REPLACE(UPPER(COALESCE(internal_ref, '')), '-', ''), ' ', '') = ANY($1)
+               OR ext_id_clean = ANY($1)
+               OR 'PRE' || $2 || UPPER(REGEXP_REPLACE(
+                   COALESCE(SUBSTRING(name FROM '[{]([^}]+)[}]'), ''),
+                   '[^A-Z0-9]', '', 'g'
+               )) = ANY($1)
+           )
+         LIMIT 1`,
+        [candidates, pref]
+    );
+    return rows[0]?.odoo_id || null;
+}
+
+async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const ingresoResult = await client.query(
+            `SELECT im.*, s.name as supplier_name, s.default_discount, s.prefix as supplier_prefix,
+                    COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0)     AS markup_neggo,
+                    COALESCE(NULLIF(s.markup_preventas, 0), s.default_markup, 0) AS markup_preventas
+             FROM ingreso_mercaderia im
+             LEFT JOIN suppliers s ON s.id = im.supplier_id
+             WHERE im.id = $1`,
+            [ingresoId]
+        );
+
+        if (ingresoResult.rows.length === 0) {
+            throw new Error(`Ingreso ${ingresoId} no encontrado`);
+        }
+
+        const ingreso = ingresoResult.rows[0];
+        const supplierMarkup   = parseFloat(ingreso.markup_neggo || 0);
+        const supplierDiscount = parseFloat(ingreso.default_discount || 0);
+        const costoEnvio       = parseFloat(ingreso.costo_envio      || 0);
+        const supplierPrefix   = ingreso.supplier_prefix || '';
+
+        const itemsResult = await client.query(
+            `SELECT * FROM ingreso_items WHERE ingreso_id = $1`,
+            [ingresoId]
+        );
+
+        const items = itemsResult.rows;
+
+        // Divisor para prorratear el envío: total de la factura completa,
+        // no solo los ítems matcheados — cada ítem paga su parte proporcional
+        // sin importar si va a Neggo, Preventas, etc.
+        const totalFactura = parseFloat(ingreso.total_monto || 0);
+
+        let updatedProductsCount = 0;
+        const priceChanges       = [];
+        const purchaseLinesNeggo      = []; // ítems con unidades para Neggo
+        const purchaseLinesPreventas  = []; // ítems con unidades confirmadas para preventa
+
+        for (const item of items) {
+            const isPendingConPreventa = item.estado_item === 'pending'
+                && (item.preventa_qty_confirmed > 0 || item.preventas_product_id);
+
+            // Procesar: ítems matcheados a Neggo, O ítems pending con plan de preventa
+            if (!isPendingConPreventa && (item.estado_item !== 'matched' || !item.odoo_product_id)) continue;
+
+            // Ítems pending que solo van a Preventas (no existen en Neggo)
+            if (isPendingConPreventa && item.estado_item === 'pending') {
+                const prevQtyP  = parseInt(item.preventa_qty_confirmed || 0, 10);
+                if (prevQtyP > 0) {
+                    const packSizeP     = Math.max(1, parseInt(item.pack_size || 1, 10));
+                    const rawCost       = parseFloat(item.precio_unitario || 0) / packSizeP;
+                    const discount      = item.discount_override !== null
+                        ? parseFloat(item.discount_override) : supplierDiscount;
+                    const newCostBase   = discount > 0
+                        ? Math.round(rawCost * (1 - discount / 100) * 100) / 100
+                        : rawCost;
+                    const participacionP = (totalFactura > 0 && parseFloat(item.subtotal) > 0)
+                        ? parseFloat(item.subtotal) / totalFactura
+                        : 0;
+                    const envioUnitarioP = (costoEnvio > 0 && parseInt(item.cantidad) > 0)
+                        ? Math.round(costoEnvio * participacionP / (parseInt(item.cantidad) * packSizeP) * 100) / 100
+                        : 0;
+                    const newCost       = Math.round((newCostBase + envioUnitarioP) * 100) / 100;
+                    const prevLinksP = Array.isArray(item.preventa_links) && item.preventa_links.length > 0
+                        ? item.preventa_links
+                        : item.preventas_product_id
+                            ? [{ preventas_product_id: item.preventas_product_id, preventas_product_name: item.preventas_product_name, qty: prevQtyP }]
+                            : [{ preventas_product_id: null, preventas_product_name: null, qty: prevQtyP }];
+                    for (const link of prevLinksP) {
+                        const productId = link.preventas_product_id
+                            || await findPreventasProductId(item.codigo, supplierPrefix, client);
+                        if (productId) {
+                            purchaseLinesPreventas.push({
+                                product_id: productId,
+                                name:       link.preventas_product_name || item.preventas_product_name || item.odoo_product_name || item.descripcion,
+                                quantity:   (link.qty || prevQtyP) * packSizeP,
+                                unit_price: newCost,
+                            });
+                            updatedProductsCount++;
+                        } else {
+                            console.log(`⚠️ Sin producto Preventas para "${item.descripcion}" (pending) — se omite de la OC`);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            const itemCompany = item.odoo_company || 'neggo';
+            const prevQty  = parseInt(item.preventa_qty_confirmed || 0, 10);
+            const totalQty = parseInt(item.cantidad, 10);
+            const neggoQty = Math.max(0, totalQty - prevQty);
+
+            // Calcular costos (sin try/catch — falla rápido si los datos son inválidos)
+            const packSize = Math.max(1, parseInt(item.pack_size || 1, 10));
+            const rawCost = parseFloat(item.precio_unitario) / packSize;
+
+            const discount = item.discount_override !== null
+                ? parseFloat(item.discount_override)
+                : supplierDiscount;
+
+            const newCostBase = discount > 0
+                ? Math.round(rawCost * (1 - discount / 100) * 100) / 100
+                : rawCost;
+
+            const participacion = (totalFactura > 0 && item.subtotal > 0)
+                ? parseFloat(item.subtotal) / totalFactura
+                : 0;
+            const envioUnitario = (costoEnvio > 0 && parseInt(item.cantidad) > 0)
+                ? Math.round(costoEnvio * participacion / (parseInt(item.cantidad) * packSize) * 100) / 100
+                : 0;
+            const newCost = Math.round((newCostBase + envioUnitario) * 100) / 100;
+
+            const markup = item.markup_override !== null
+                ? parseFloat(item.markup_override)
+                : supplierMarkup;
+
+            const newListPrice = markup > 0
+                ? Math.ceil(newCost * (1 + markup / 100))
+                : null;
+
+            // PASO 1 — Agregar a OC SIEMPRE, independiente de si la actualización de precios falla.
+            // Los productos inactivos también van a la OC (Odoo acepta PO en borrador con inactivos).
+            if (itemCompany === 'preventas') {
+                purchaseLinesPreventas.push({
+                    product_id: item.odoo_product_id,
+                    name:       item.odoo_product_name || item.descripcion,
+                    quantity:   totalQty * packSize,
+                    unit_price: newCost
+                });
+            } else {
+                if (neggoQty > 0) {
+                    purchaseLinesNeggo.push({
+                        product_id: item.odoo_product_id,
+                        name:       item.odoo_product_name || item.descripcion,
+                        quantity:   neggoQty * packSize,
+                        unit_price: newCost
+                    });
+                }
+                if (prevQty > 0) {
+                    const prevLinks = Array.isArray(item.preventa_links) && item.preventa_links.length > 0
+                        ? item.preventa_links
+                        : item.preventas_product_id
+                            ? [{ preventas_product_id: item.preventas_product_id, preventas_product_name: item.preventas_product_name, qty: prevQty }]
+                            : [{ preventas_product_id: null, preventas_product_name: null, qty: prevQty }];
+                    for (const link of prevLinks) {
+                        const productId = link.preventas_product_id
+                            || await findPreventasProductId(item.codigo, supplierPrefix, client);
+                        if (productId) {
+                            purchaseLinesPreventas.push({
+                                product_id: productId,
+                                name:       link.preventas_product_name || item.preventas_product_name || item.odoo_product_name || item.descripcion,
+                                quantity:   (link.qty || prevQty) * packSize,
+                                unit_price: newCost,
+                            });
+                        } else {
+                            console.log(`⚠️ Sin producto Preventas para "${item.descripcion}" (codigo: ${item.codigo}) — se omite de la OC Preventas`);
+                        }
+                    }
+                }
+            }
+
+            // PASO 2 — Actualizar precios en Odoo (puede fallar para inactivos — no bloquea la OC).
+            try {
+                let appliedCost = null;
+                let appliedPrice = null;
+                const company = itemCompany === 'preventas' ? 'preventas' : 'neggo';
+
+                if (item.apply_cost && newCost > 0) {
+                    const priceToApply = item.apply_price && newListPrice !== null
+                        ? newListPrice
+                        : parseFloat(item.precio_odoo_lista || newCost);
+                    await odooService.updateProductPrices(item.odoo_product_id, newCost, priceToApply, company);
+                    appliedCost  = newCost;
+                    appliedPrice = priceToApply;
+                    priceChanges.push({
+                        product_id:   item.odoo_product_id,
+                        product_name: item.odoo_product_name,
+                        old_cost:     item.precio_odoo_anterior,
+                        new_cost:     newCost,
+                        new_price:    newListPrice,
+                        company
+                    });
+                } else if (item.apply_price && newListPrice !== null) {
+                    const costoParaOdoo = parseFloat(item.precio_odoo_anterior) || newCost;
+                    if (costoParaOdoo > 0) {
+                        await odooService.updateProductPrices(item.odoo_product_id, costoParaOdoo, newListPrice, company);
+                        appliedCost  = costoParaOdoo;
+                        appliedPrice = newListPrice;
+                    }
+                    priceChanges.push({
+                        product_id:   item.odoo_product_id,
+                        product_name: item.odoo_product_name,
+                        old_price:    item.precio_odoo_lista,
+                        new_price:    newListPrice,
+                        company
+                    });
+                }
+
+                // Actualizar cache local y el item para que el reload muestre valores correctos
+                if (appliedCost !== null) {
+                    await client.query(
+                        `UPDATE odoo_products_cache SET standard_price = $1, list_price = $2 WHERE odoo_id = $3 AND company = $4`,
+                        [appliedCost, appliedPrice, item.odoo_product_id, company]
+                    );
+                    await client.query(
+                        `UPDATE ingreso_items SET precio_odoo_anterior = $1, precio_odoo_lista = $2 WHERE id = $3`,
+                        [appliedCost, appliedPrice, item.id]
+                    );
+                }
+            } catch (priceErr) {
+                console.error(`⚠️ No se pudo actualizar precio del item ${item.id} (${item.odoo_product_name}): ${priceErr.message}`);
+            }
+
+            updatedProductsCount++;
+        }
+
+        // Crear OC Neggo
+        let odooPurchaseOrderId = null;
+        if (odooPartnerId && purchaseLinesNeggo.length > 0) {
+            try {
+                odooPurchaseOrderId = await odooService.createPurchaseOrder(
+                    odooPartnerId, purchaseLinesNeggo, 'neggo'
+                );
+                console.log(`✅ OC Neggo creada: ${odooPurchaseOrderId} (${purchaseLinesNeggo.length} líneas)`);
+            } catch (err) {
+                console.error(`⚠️ No se pudo crear OC Neggo: ${err.message}`);
+            }
+        }
+
+        // Crear OC Preventas
+        let odooPurchaseOrderIdPreventas = null;
+        if (odooPartnerId && purchaseLinesPreventas.length > 0) {
+            try {
+                odooPurchaseOrderIdPreventas = await odooService.createPurchaseOrder(
+                    odooPartnerId, purchaseLinesPreventas, 'preventas'
+                );
+                console.log(`✅ OC Preventas creada: ${odooPurchaseOrderIdPreventas} (${purchaseLinesPreventas.length} líneas)`);
+            } catch (err) {
+                console.error(`⚠️ No se pudo crear OC Preventas: ${err.message}`);
+            }
+        }
+
+        // Actualizar estado del ingreso
+        await client.query(
+            `UPDATE ingreso_mercaderia
+             SET estado = 'confirmado',
+                 confirmed_by_user_id = $1,
+                 confirmed_at = NOW(),
+                 odoo_purchase_order_id = $2,
+                 odoo_purchase_order_id_preventas = $3,
+                 odoo_partner_id = $4
+             WHERE id = $5`,
+            [userId, odooPurchaseOrderId, odooPurchaseOrderIdPreventas, odooPartnerId, ingresoId]
+        );
+
+        // Activity log
+        await client.query(
+            `INSERT INTO activity_log (user_id, module, action, entity_type, entity_id, metadata)
+             VALUES ($1, 'ingreso_mercaderia', 'CONFIRM', 'ingreso_mercaderia', $2, $3)`,
+            [userId, ingresoId, JSON.stringify({
+                updated_products:              updatedProductsCount,
+                price_changes:                 priceChanges.length,
+                odoo_purchase_order_id:        odooPurchaseOrderId,
+                odoo_purchase_order_id_preventas: odooPurchaseOrderIdPreventas
+            })]
+        );
+
+        await client.query('COMMIT');
+
+        return {
+            success: true,
+            updated_products_count:           updatedProductsCount,
+            price_changes:                    priceChanges,
+            odoo_purchase_order_id:           odooPurchaseOrderId,
+            odoo_purchase_order_id_preventas: odooPurchaseOrderIdPreventas
+        };
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('❌ Error confirming ingreso:', err);
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+// =============================================
+// EXPORTS
+// =============================================
+
+module.exports = {
+    parseCSV,
+    matchItems,
+    validateItems,
+    createIngresoPreview,
+    confirmIngreso,
+    findPreventasProductId
+};

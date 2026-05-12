@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Neggo — App interna</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* refined palette — toned down from raw #003366/#FF6600 */
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --surface-2: #f5f3ee;
+    --border: #e8e3d8;
+    --border-strong: #d8d2c2;
+    --text: #1c1c1a;
+    --text-muted: #6b6a64;
+    --text-faint: #9a988f;
+
+    --primary: #1f3a68;       /* navy refinado */
+    --primary-hover: #162a4d;
+    --primary-soft: #eaf0f9;
+    --accent: #e25a1c;        /* naranja menos saturado */
+    --accent-soft: #fdeee3;
+    --success: #2f7a47;
+    --success-soft: #e6f1e9;
+    --warn: #b8740d;
+    --warn-soft: #fbf0d9;
+    --danger: #b53a2a;
+    --danger-soft: #fbe5e1;
+
+    --radius: 8px;
+    --radius-sm: 5px;
+    --radius-lg: 14px;
+
+    --shadow-card: 0 1px 0 rgba(28,28,26,0.04);
+    --shadow-pop: 0 12px 32px -12px rgba(28,28,26,0.18), 0 2px 6px rgba(28,28,26,0.06);
+
+    --pad-x: 28px;
+    --pad-y: 22px;
+    --row-h: 44px;
+    --font-base: 14px;
+    --font-sm: 13px;
+    --font-xs: 12px;
+  }
+
+  [data-theme="dark"] {
+    --bg: #131311;
+    --surface: #1c1c1a;
+    --surface-2: #232321;
+    --border: #2e2e2b;
+    --border-strong: #3a3a36;
+    --text: #f0eee6;
+    --text-muted: #a4a299;
+    --text-faint: #6a6962;
+    --primary: #6ea0e8;
+    --primary-hover: #8ab2ee;
+    --primary-soft: #1b2638;
+    --accent: #ff8147;
+    --accent-soft: #2a1a10;
+    --success-soft: #142a1b;
+    --warn-soft: #2a1f0c;
+    --danger-soft: #2a140f;
+    --shadow-card: 0 1px 0 rgba(0,0,0,0.4);
+    --shadow-pop: 0 16px 40px -12px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  [data-density="dense"] {
+    --pad-x: 20px;
+    --pad-y: 14px;
+    --row-h: 36px;
+    --font-base: 13px;
+    --font-sm: 12px;
+    --font-xs: 11px;
+  }
+
+  [data-density="airy"] {
+    --pad-x: 36px;
+    --pad-y: 30px;
+    --row-h: 52px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--font-base);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'cv11','ss01';
+  }
+  button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  button { cursor: pointer; border: none; background: none; padding: 0; }
+  ::selection { background: var(--primary-soft); color: var(--primary); }
+
+  /* number tabular */
+  .num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* scrollbars */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+  /* root app */
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="src/data.jsx"></script>
+  <script type="text/babel" src="src/icons.jsx"></script>
+  <script type="text/babel" src="src/ui.jsx"></script>
+  <script type="text/babel" src="src/Layout.jsx"></script>
+  <script type="text/babel" src="src/Login.jsx"></script>
+  <script type="text/babel" src="src/Dashboard.jsx"></script>
+  <script type="text/babel" src="src/Products.jsx"></script>
+  <script type="text/babel" src="src/Alerts.jsx"></script>
+  <script type="text/babel" src="src/Preventas.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="src/App.jsx"></script>
+</body>
+</html>

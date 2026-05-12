@@ -1,0 +1,4 @@
+-- Neggo App — Seeds
+-- Los datos que requieren bcrypt se crean desde backend/initDatabase.js
+-- Este archivo se ejecuta por PostgreSQL al crear la DB (docker-entrypoint-initdb.d)
+-- Dejamos vacío: initDatabase.js maneja la inicialización al arrancar el backend

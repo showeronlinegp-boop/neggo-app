@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./volumes/storage:/var/www/storage:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgres://neggo:${POSTGRES_PASSWORD:-neggo_pass}@postgres:5432/neggo_app
+      - JWT_SECRET=${JWT_SECRET:-cambiar_en_produccion_abc123}
+      - ODOO_URL=${ODOO_URL:-https://neggo.odoo.com}
+      - ODOO_DB=${ODOO_DB:-neggo}
+      - ODOO_USER_ID=${ODOO_USER_ID:-2}
+      - ODOO_API_KEY=${ODOO_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - CHROME_WS_ENDPOINT=ws://chrome:3000
+      - STORAGE_PATH=/app/storage
+    volumes:
+      - ./volumes/storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=neggo
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-neggo_pass}
+      - POSTGRES_DB=neggo_app
+    volumes:
+      - ./volumes/pg_data:/var/lib/postgresql/data
+      - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./backend/sql/seeds.sql:/docker-entrypoint-initdb.d/02-seeds.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neggo -d neggo_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
+  chrome:
+    image: browserless/chrome:latest
+    environment:
+      - MAX_CONCURRENT_SESSIONS=2
+      - CONNECTION_TIMEOUT=600000
+      - DEFAULT_LAUNCH_ARGS=["--no-sandbox","--disable-setuid-sandbox"]
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
+networks:
+  neggo-net:
+    driver: bridge

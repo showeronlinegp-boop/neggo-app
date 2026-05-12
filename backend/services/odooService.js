@@ -1,0 +1,879 @@
+// Servicio de integración con Odoo 19
+// Cubre productos, partners, órdenes de compra y cotizaciones de venta
+
+const { callOdoo, getCompanyIds } = require('../config/odoo');
+
+// =============================================
+// Helpers internos
+// =============================================
+
+/**
+ * Resuelve companyKey ('neggo' | 'preventas') al ID numérico de Odoo.
+ * Lanza error claro si la clave no existe en el cache.
+ *
+ * @param {string} companyKey
+ * @returns {Promise<number>}
+ */
+async function resolveCompanyId(companyKey) {
+    const ids = await getCompanyIds();
+    const id = ids[companyKey];
+    if (!id) {
+        throw new Error(`Company key inválida o no encontrada en Odoo: "${companyKey}"`);
+    }
+    return id;
+}
+
+/**
+ * Construye el kwargs con context multi-empresa para Odoo.
+ *
+ * @param {number} companyId
+ * @param {object} [extraKwargs={}]
+ * @returns {object}
+ */
+function withCompany(companyId, extraKwargs = {}) {
+    return {
+        ...extraKwargs,
+        context: {
+            ...(extraKwargs.context || {}),
+            allowed_company_ids: [companyId]
+        }
+    };
+}
+
+// =============================================
+// PRODUCTOS
+// =============================================
+
+/**
+ * Trae productos de Odoo paginados, filtrados por empresa.
+ * Soporta búsqueda por nombre/referencia interna y por categoría.
+ *
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @param {object} opts
+ * @param {number} [opts.offset=0]
+ * @param {number} [opts.limit=100]
+ * @param {string} [opts.search=''] — filtra por name o default_code
+ * @param {number|null} [opts.category=null] — ID de categ_id
+ * @returns {Promise<Array>}
+ */
+async function getProducts(companyKey, { offset = 0, limit = 100, search = '', category = null } = {}) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const domain = [['company_id', '=', companyId], ['active', '=', true]];
+
+    if (search) {
+        domain.push('|');
+        domain.push(['name', 'ilike', search]);
+        domain.push(['default_code', 'ilike', search]);
+    }
+
+    if (category !== null) {
+        domain.push(['categ_id', '=', category]);
+    }
+
+    const fields = [
+        'id', 'name', 'default_code', 'barcode',
+        'list_price', 'standard_price', 'categ_id',
+        'qty_available', 'active', 'company_id'
+    ];
+
+    return callOdoo(
+        'product.product',
+        'search_read',
+        [domain],
+        withCompany(companyId, { fields, offset, limit })
+    );
+}
+
+/**
+ * Trae un producto completo por ID.
+ *
+ * @param {number} productId
+ * @param {string} companyKey
+ * @returns {Promise<object|null>}
+ */
+async function getProductById(productId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const fields = [
+        'id', 'name', 'default_code', 'barcode',
+        'list_price', 'standard_price', 'categ_id',
+        'qty_available', 'active', 'company_id',
+        'description', 'type', 'uom_id'
+    ];
+
+    const results = await callOdoo(
+        'product.product',
+        'search_read',
+        [[['id', '=', productId], ['company_id', '=', companyId]]],
+        withCompany(companyId, { fields, limit: 1 })
+    );
+
+    return results.length > 0 ? results[0] : null;
+}
+
+/**
+ * Actualiza standard_price (costo) y list_price (precio de venta) de un producto.
+ * Si se provee categId, también actualiza categ_id en Odoo.
+ *
+ * @param {number} productId
+ * @param {number} cost — standard_price
+ * @param {number} salePrice — list_price
+ * @param {string} companyKey
+ * @param {number|null} [categId=null] — categ_id de Odoo (opcional)
+ * @returns {Promise<boolean>} true si Odoo confirmó la escritura
+ */
+async function updateProductPrices(productId, cost, salePrice, companyKey, categId = null) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const vals = { standard_price: cost, list_price: salePrice };
+    if (categId) vals.categ_id = categId;
+
+    const result = await callOdoo(
+        'product.product',
+        'write',
+        [[productId], vals],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Precios actualizados en Odoo — producto ${productId} [${companyKey}]: costo=${cost}, venta=${salePrice}${categId ? `, categ=${categId}` : ''}`);
+    return result;
+}
+
+/**
+ * Trae el árbol de categorías de productos de Odoo para una empresa.
+ * Usa el campo complete_name que incluye la ruta completa (ej: "All / Electrónica / Audio").
+ *
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @returns {Promise<Array<{id, name, complete_name}>>}
+ */
+async function getProductCategories(companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    return callOdoo(
+        'product.category',
+        'search_read',
+        [[]],
+        withCompany(companyId, {
+            fields: ['id', 'name', 'complete_name'],
+            limit: 500,
+            order: 'complete_name asc'
+        })
+    );
+}
+
+/**
+ * Actualiza la cantidad (stock) de un producto en Odoo
+ * Se suma la cantidad delta al stock actual
+ *
+ * @param {number} productId
+ * @param {number} quantityDelta — cantidad a sumar (puede ser negativa)
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @returns {Promise<{success, new_qty, old_qty}>}
+ */
+async function updateProductQty(productId, quantityDelta, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    // Traer cantidad actual en Odoo
+    const currentProduct = await callOdoo(
+        'product.product',
+        'read',
+        [[productId], ['qty_available']],
+        withCompany(companyId)
+    );
+
+    if (!currentProduct || currentProduct.length === 0) {
+        throw new Error(`Producto ${productId} no encontrado en Odoo`);
+    }
+
+    const oldQty = currentProduct[0].qty_available || 0;
+    const newQty = oldQty + quantityDelta;
+
+    // Escribir nueva cantidad
+    await callOdoo(
+        'product.product',
+        'write',
+        [[productId], { qty_available: newQty }],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Stock actualizado en Odoo — producto ${productId} [${companyKey}]: ${oldQty} → ${newQty}`);
+
+    return {
+        success: true,
+        old_qty: oldQty,
+        new_qty: newQty
+    };
+}
+
+/**
+ * Crea un producto en Odoo.
+ * Usa product.template (no product.product) para soportar detailed_type en Odoo 17+/19.
+ * En Odoo 17+, type='product' fue eliminado; la forma correcta es detailed_type='product'
+ * sobre product.template. Retorna el ID del product.product (variante) recién creado.
+ *
+ * @param {object} values — campos del producto (name, default_code, detailed_type, etc.)
+ * @param {string} companyKey
+ * @returns {Promise<number>} ID del product.product creado
+ */
+async function createProduct(values, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const { standard_price, ...templateValues } = values;
+    const productData = { ...templateValues, company_id: companyId };
+
+    // 1. Crear product.template
+    const tmplId = await callOdoo(
+        'product.template',
+        'create',
+        [productData],
+        withCompany(companyId)
+    );
+
+    if (!tmplId) throw new Error('No se pudo crear el template del producto');
+
+    // 2. Obtener el product.product via búsqueda por product_tmpl_id (más robusto que leer product_variant_ids)
+    const variants = await callOdoo(
+        'product.product',
+        'search_read',
+        [[['product_tmpl_id', '=', tmplId]]],
+        withCompany(companyId, { fields: ['id'], limit: 1 })
+    );
+
+    const newId = variants?.[0]?.id;
+    if (!newId) throw new Error(`Template ${tmplId} creado pero sin variante product.product`);
+
+    // 3. Escribir standard_price explícitamente en la variante — en Odoo a veces no se propaga desde el template
+    if (standard_price !== undefined) {
+        try {
+            await callOdoo(
+                'product.product',
+                'write',
+                [[newId], { standard_price }],
+                withCompany(companyId)
+            );
+        } catch (e) {
+            console.warn(`⚠️ No se pudo setear standard_price en variante ${newId}:`, e.message);
+        }
+    }
+
+    console.log(`✅ Producto creado en Odoo [${companyKey}] — template: ${tmplId}, variante: ${newId}`);
+    return newId;
+}
+
+// =============================================
+// PARTNERS
+// =============================================
+
+/**
+ * Busca clientes en Odoo dentro de una empresa específica.
+ * No filtra por customer_rank porque en muchas instalaciones no está seteado.
+ *
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @param {object} opts
+ * @param {string} [opts.search='']
+ * @param {number} [opts.limit=30]
+ * @returns {Promise<Array>}
+ */
+async function getCustomers(companyKey, { search = '', limit = 30 } = {}) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    // No filtramos por company_id en el domain — dejamos que allowed_company_ids
+    // del contexto maneje la visibilidad multi-empresa. Filtrar por company_id
+    // excluía clientes creados bajo otra empresa del grupo (ej: Neggo).
+    const domain = [['active', '=', true]];
+    if (search) domain.push(['name', 'ilike', search.trim()]);
+
+    const fields = ['id', 'name', 'email', 'phone', 'vat', 'city', 'customer_rank'];
+
+    return callOdoo(
+        'res.partner',
+        'search_read',
+        [domain],
+        withCompany(companyId, { fields, limit, order: 'customer_rank desc, name asc' })
+    );
+}
+
+/**
+ * Crea una orden de venta (sale.order) en Odoo con sus líneas.
+ * Retorna { id, name } donde name es el número de orden (ej: "S00042").
+ *
+ * @param {number} partnerId — ID del cliente en Odoo
+ * @param {Array<{ product_id: number|false, name: string, quantity: number, unit_price: number }>} lines
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @returns {Promise<{ id: number, name: string }>}
+ */
+async function createSaleOrder(partnerId, lines, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const orderLines = lines.map(line => [0, 0, {
+        product_id:       line.product_id || false,
+        name:             line.name,
+        product_uom_qty:  line.quantity,
+        price_unit:       line.unit_price,
+    }]);
+
+    const orderId = await callOdoo(
+        'sale.order',
+        'create',
+        [{
+            partner_id: partnerId,
+            order_line: orderLines,
+            // company_id lo determina Odoo por el contexto (allowed_company_ids)
+        }],
+        withCompany(companyId)
+    );
+
+    if (!orderId) throw new Error('Odoo no retornó un ID de orden de venta');
+
+    const [orderData] = await callOdoo(
+        'sale.order',
+        'read',
+        [[orderId], ['name']],
+        withCompany(companyId)
+    );
+
+    const name = orderData?.name || `S${String(orderId).padStart(5, '0')}`;
+
+    console.log(`✅ Sale order creada en Odoo [${companyKey}] — ID: ${orderId}, nombre: ${name}, partner: ${partnerId}, líneas: ${lines.length}`);
+    return { id: orderId, name };
+}
+
+/**
+ * Crea un nuevo cliente (res.partner) en Odoo como partner global (sin company_id)
+ * para que sea accesible desde todas las empresas.
+ *
+ * @param {{ name: string, phone?: string, mobile?: string, email?: string }} data
+ * @param {string} companyKey
+ * @returns {Promise<{ id: number, name: string }>}
+ */
+async function createCustomer(data, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const partnerId = await callOdoo(
+        'res.partner',
+        'create',
+        [{
+            name:          data.name,
+            phone:         data.phone || false,
+            email:         data.email || false,
+            company_id:    false,
+            customer_rank: 1,
+        }],
+        withCompany(companyId)
+    );
+
+    if (!partnerId) throw new Error('Odoo no retornó un ID para el nuevo cliente');
+    console.log(`✅ Cliente creado en Odoo [global] — ID: ${partnerId}, nombre: ${data.name}`);
+    return { id: partnerId, name: data.name };
+}
+
+/**
+ * Trae un partner por ID con sus campos de contacto.
+ * Útil para refrescar datos de cliente desde Odoo.
+ *
+ * @param {number} partnerId
+ * @param {string} companyKey
+ * @returns {Promise<object|null>}
+ */
+async function getCustomerById(partnerId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const results = await callOdoo(
+        'res.partner',
+        'read',
+        [[partnerId], ['id', 'name', 'phone', 'email', 'city', 'vat', 'company_id']],
+        withCompany(companyId)
+    );
+    return results?.[0] ?? null;
+}
+
+/**
+ * Garantiza que un partner sea accesible en la empresa indicada.
+ * Primero intenta leer por ID. Si no es visible, busca por nombre exacto.
+ * Si tampoco existe, lo crea como partner global.
+ *
+ * @param {number} partnerId
+ * @param {string} partnerName
+ * @param {string} companyKey — 'neggo' | 'preventas'
+ * @returns {Promise<number>} ID del partner (puede ser el original u otro)
+ */
+async function ensurePartner(partnerId, partnerName, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    // Leer el partner e inspeccionar su company_id
+    try {
+        const [p] = await callOdoo(
+            'res.partner',
+            'read',
+            [[partnerId], ['id', 'name', 'company_id']],
+            withCompany(companyId)
+        ) || [];
+        if (p) {
+            const pCompany = Array.isArray(p.company_id) ? p.company_id[0] : p.company_id;
+
+            // Global o misma empresa → compatible, usar tal cual
+            if (!pCompany || pCompany === companyId) return partnerId;
+
+            // Pertenece a otra empresa → intentar hacerlo global usando
+            // el contexto de su empresa original (que es donde tenemos acceso)
+            console.log(`⚠️ Partner ${partnerId} "${partnerName}" pertenece a empresa ${pCompany}, haciéndolo global`);
+            try {
+                await callOdoo(
+                    'res.partner',
+                    'write',
+                    [[partnerId], { company_id: false }],
+                    { context: { allowed_company_ids: [pCompany] } }
+                );
+                console.log(`✅ Partner ${partnerId} "${partnerName}" ahora es global`);
+                return partnerId;
+            } catch (writeErr) {
+                console.log(`⚠️ No se pudo hacer global (${writeErr.message}), creando partner nuevo`);
+            }
+        }
+    } catch {}
+
+    // Buscar partner compatible (global o de la empresa destino) por nombre exacto
+    const found = await callOdoo(
+        'res.partner',
+        'search_read',
+        [[
+            ['name', '=', partnerName],
+            ['active', '=', true],
+            '|',
+            ['company_id', '=', false],
+            ['company_id', '=', companyId],
+        ]],
+        withCompany(companyId, { fields: ['id', 'name'], limit: 1 })
+    );
+    if (found?.length) {
+        console.log(`📦 Partner "${partnerName}" compatible en [${companyKey}]: ID ${found[0].id}`);
+        return found[0].id;
+    }
+
+    // Última opción: crear globalmente con los datos del partner original
+    let createData = { name: partnerName };
+    try {
+        const [orig] = await callOdoo(
+            'res.partner',
+            'read',
+            [[partnerId], ['name', 'phone', 'email', 'city', 'vat']],
+            withCompany(companyId)
+        ) || [];
+        if (orig) createData = { name: orig.name, phone: orig.phone || undefined, email: orig.email || undefined };
+    } catch {}
+
+    const created = await createCustomer(createData, companyKey);
+    console.log(`✅ Partner "${partnerName}" creado globalmente para [${companyKey}]: ID ${created.id}`);
+    return created.id;
+}
+
+/**
+ * Reemplaza todas las líneas de un sale.order existente.
+ * Usa (5,0,0) para borrar las existentes y (0,0,{...}) para agregar las nuevas.
+ * Solo válido mientras la orden está en estado draft (cotización).
+ *
+ * @param {number} odooOrderId
+ * @param {Array<{ product_id: number|false, name: string, quantity: number, unit_price: number }>} lines
+ * @param {string} companyKey
+ */
+async function updateSaleOrderLines(odooOrderId, lines, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const orderLines = [
+        [5, 0, 0],
+        ...lines.map(l => [0, 0, {
+            product_id:      l.product_id || false,
+            name:            l.name,
+            product_uom_qty: l.quantity,
+            price_unit:      l.unit_price,
+        }])
+    ];
+    await callOdoo(
+        'sale.order',
+        'write',
+        [[odooOrderId], { order_line: orderLines }],
+        withCompany(companyId)
+    );
+    console.log(`✅ Líneas actualizadas [${companyKey}] orden ${odooOrderId}: ${lines.length} ítems`);
+}
+
+/**
+ * Confirma una orden de venta (draft → sale).
+ *
+ * @param {number} odooOrderId
+ * @param {string} companyKey
+ */
+/**
+ * Archiva o desarchiva un producto en Odoo (active = false/true).
+ * Opera sobre product.product (variante) y también sobre product.template.
+ *
+ * @param {number} odooProductId — ID de product.product
+ * @param {string} companyKey    — 'neggo' | 'preventas'
+ * @param {boolean} archived     — true = archivar, false = restaurar
+ */
+async function setProductArchived(odooProductId, companyKey, archived = true) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    // Obtener el template_id de la variante
+    const variants = await callOdoo(
+        'product.product',
+        'search_read',
+        [[['id', '=', odooProductId]]],
+        withCompany(companyId, { fields: ['product_tmpl_id'], limit: 1 })
+    );
+    const tmplId = variants?.[0]?.product_tmpl_id?.[0];
+
+    if (tmplId) {
+        // Usar action_archive/action_unarchive en el template — método canónico de Odoo.
+        // Afecta el template y todas sus variantes.
+        const method = archived ? 'action_archive' : 'action_unarchive';
+        await callOdoo('product.template', method, [[tmplId]], withCompany(companyId));
+    } else {
+        // Fallback: write directo en la variante si no se encontró el template
+        await callOdoo(
+            'product.product',
+            'write',
+            [[odooProductId], { active: !archived }],
+            withCompany(companyId)
+        );
+    }
+
+    console.log(`✅ Producto odoo_id=${odooProductId} (tmpl=${tmplId}) ${archived ? 'archivado' : 'restaurado'} en Odoo [${companyKey}]`);
+}
+
+async function confirmSaleOrder(odooOrderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    await callOdoo(
+        'sale.order',
+        'action_confirm',
+        [[odooOrderId]],
+        withCompany(companyId)
+    );
+    console.log(`✅ Sale order ${odooOrderId} confirmada en Odoo [${companyKey}]`);
+}
+
+/**
+ * Cancela una orden de venta en Odoo.
+ * Si la orden está confirmada ('sale'), intenta cancelarla con action_cancel.
+ *
+ * @param {number} odooOrderId
+ * @param {string} companyKey
+ * @returns {Promise<boolean>}
+ */
+async function cancelSaleOrder(odooOrderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    await callOdoo(
+        'sale.order',
+        'action_cancel',
+        [[odooOrderId]],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Sale order ${odooOrderId} cancelada en Odoo [${companyKey}]`);
+    return true;
+}
+
+/**
+ * Trae partners de Odoo filtrados por tipo.
+ *
+ * @param {object} opts
+ * @param {'customer'|'supplier'} [opts.type='customer']
+ * @param {string} [opts.search=''] — filtra por nombre o email
+ * @returns {Promise<Array>}
+ */
+async function getPartners({ type = 'customer', search = '' } = {}) {
+    // Buscar por nombre — no filtramos por supplier_rank/customer_rank porque
+    // en muchas instalaciones de Odoo esos flags no están seteados correctamente.
+    const domain = search
+        ? [['name', 'ilike', search]]
+        : [];
+
+    const fields = [
+        'id', 'name', 'email', 'phone',
+        'supplier_rank', 'customer_rank', 'company_id',
+        'street', 'city', 'vat'
+    ];
+
+    return callOdoo(
+        'res.partner',
+        'search_read',
+        [domain],
+        { fields, limit: 50, order: 'name asc' }
+    );
+}
+
+/**
+ * Trae un partner por ID con todos sus campos relevantes.
+ *
+ * @param {number} partnerId
+ * @returns {Promise<object|null>}
+ */
+async function getPartnerById(partnerId) {
+    const fields = [
+        'id', 'name', 'email', 'phone',
+        'supplier_rank', 'customer_rank', 'company_id',
+        'street', 'city', 'country_id', 'vat',
+        'comment', 'active'
+    ];
+
+    const results = await callOdoo(
+        'res.partner',
+        'search_read',
+        [[['id', '=', partnerId]]],
+        { fields, limit: 1 }
+    );
+
+    return results.length > 0 ? results[0] : null;
+}
+
+// =============================================
+// ÓRDENES DE COMPRA
+// =============================================
+
+/**
+ * Crea una orden de compra (purchase.order) con sus líneas.
+ *
+ * @param {number} partnerId — ID del proveedor en Odoo
+ * @param {Array<{ product_id: number, name: string, quantity: number, unit_price: number }>} lines
+ * @param {string} companyKey
+ * @returns {Promise<number>} ID de la orden creada
+ */
+async function createPurchaseOrder(partnerId, lines, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    // Construir líneas en formato Odoo (comando 0 = create)
+    const orderLines = lines.map(line => [0, 0, {
+        product_id: line.product_id,
+        name: line.name,
+        product_qty: line.quantity,
+        price_unit: line.unit_price
+    }]);
+
+    const orderId = await callOdoo(
+        'purchase.order',
+        'create',
+        [{
+            partner_id: partnerId,
+            order_line: orderLines,
+            company_id: companyId
+        }],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Orden de compra creada en Odoo [${companyKey}] — ID: ${orderId}, partner: ${partnerId}, líneas: ${lines.length}`);
+    return orderId;
+}
+
+/**
+ * Agrega líneas a una orden de compra existente (que esté en estado borrador).
+ *
+ * @param {number} orderId
+ * @param {Array<{ product_id: number, name: string, quantity: number, unit_price: number }>} lines
+ * @param {string} companyKey
+ * @returns {Promise<boolean>}
+ */
+async function addLinesToPurchaseOrder(orderId, lines, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const orderLines = lines.map(line => [0, 0, {
+        product_id: line.product_id,
+        name: line.name,
+        product_qty: line.quantity,
+        price_unit: line.unit_price
+    }]);
+
+    await callOdoo(
+        'purchase.order',
+        'write',
+        [[orderId], { order_line: orderLines }],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Agregadas ${lines.length} líneas a OC ${orderId} en Odoo [${companyKey}]`);
+    return true;
+}
+
+/**
+ * Confirma una orden de compra (botón Confirmar en Odoo).
+ *
+ * @param {number} orderId
+ * @param {string} companyKey
+ * @returns {Promise<boolean>}
+ */
+async function confirmPurchaseOrder(orderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+
+    const result = await callOdoo(
+        'purchase.order',
+        'button_confirm',
+        [[orderId]],
+        withCompany(companyId)
+    );
+
+    console.log(`✅ Orden de compra ${orderId} confirmada en Odoo [${companyKey}]`);
+    return result;
+}
+
+// =============================================
+// COTIZACIONES DE VENTA
+// =============================================
+
+/**
+ * Trae órdenes de venta de Odoo para un partner, con filtros opcionales.
+ *
+ * @param {number} partnerId
+ * @param {object} opts
+ * @param {string|null} [opts.status=null] — estado Odoo ('draft', 'sale', 'done', 'cancel')
+ * @param {string|null} [opts.from=null] — fecha ISO desde
+ * @param {string|null} [opts.to=null] — fecha ISO hasta
+ * @returns {Promise<Array>}
+ */
+async function getSaleOrders(partnerId, { status = null, from = null, to = null } = {}) {
+    const domain = [['partner_id', '=', partnerId]];
+
+    if (status) {
+        domain.push(['state', '=', status]);
+    }
+
+    if (from) {
+        domain.push(['date_order', '>=', from]);
+    }
+
+    if (to) {
+        domain.push(['date_order', '<=', to]);
+    }
+
+    const fields = [
+        'id', 'name', 'partner_id', 'state',
+        'date_order', 'amount_total', 'amount_untaxed',
+        'order_line', 'company_id'
+    ];
+
+    return callOdoo(
+        'sale.order',
+        'search_read',
+        [domain],
+        { fields, order: 'date_order desc', limit: 100 }
+    );
+}
+
+/**
+ * Trae todas las cotizaciones de venta (draft + sent) de la empresa Preventas,
+ * con sus líneas de productos incluidas en una sola respuesta.
+ *
+ * @returns {Promise<Array>}
+ */
+async function getPreventasQuotations() {
+    const companyId = await resolveCompanyId('preventas');
+
+    const orders = await callOdoo(
+        'sale.order',
+        'search_read',
+        [[['state', 'in', ['draft', 'sent']], ['company_id', '=', companyId]]],
+        {
+            fields: ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'],
+            order:  'date_order desc',
+            limit:  200,
+            context: { allowed_company_ids: [companyId] }
+        }
+    );
+
+    if (orders.length === 0) return [];
+
+    // Traer todas las líneas en una sola llamada
+    const allLineIds = orders.flatMap(o => o.order_line || []);
+
+    const lines = allLineIds.length > 0 ? await callOdoo(
+        'sale.order.line',
+        'search_read',
+        [[['id', 'in', allLineIds]]],
+        {
+            fields: ['id', 'order_id', 'product_id', 'product_uom_qty',
+                     'price_unit', 'price_subtotal', 'name'],
+            context: { allowed_company_ids: [companyId] }
+        }
+    ) : [];
+
+    // Traer default_code (referencia interna) y nombre de los productos para el match
+    const productIds = [...new Set(lines.map(l => Array.isArray(l.product_id) ? l.product_id[0] : null).filter(Boolean))];
+    const defaultCodes = {};
+    const artCodeRe = /\bArt\.\s+(\S+)\s*$/i;
+    if (productIds.length > 0) {
+        const products = await callOdoo(
+            'product.product',
+            'search_read',
+            [[['id', 'in', productIds]]],
+            { fields: ['id', 'default_code', 'name'], context: { allowed_company_ids: [companyId] } }
+        );
+        for (const p of products) {
+            if (p.default_code) {
+                defaultCodes[p.id] = p.default_code;
+            } else if (p.name) {
+                // Fallback: extraer "Art. XXXXX" del nombre y anteponer PRE
+                // Ej: "PLANCHA Art. ITP113238" → external_id = "PREITP113238"
+                const m = p.name.match(artCodeRe);
+                if (m) defaultCodes[p.id] = `PRE${m[1]}`;
+            }
+        }
+        const conRef = Object.keys(defaultCodes).length;
+        console.log(`📦 Referencias cargadas: ${conRef}/${productIds.length} productos (default_code o Art. del nombre)`);
+    }
+
+    // Agrupar líneas por orden
+    const linesByOrder = {};
+    for (const line of lines) {
+        const orderId   = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+        const productId = Array.isArray(line.product_id) ? line.product_id[0] : null;
+        if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
+        linesByOrder[orderId].push({
+            id:           line.id,
+            product_id:   productId,
+            product_name: Array.isArray(line.product_id) ? line.product_id[1] : line.name,
+            external_id:  productId ? (defaultCodes[productId] || null) : null,
+            quantity:     line.product_uom_qty,
+            unit_price:   line.price_unit,
+            subtotal:     line.price_subtotal,
+        });
+    }
+
+    return orders.map(o => ({
+        id:         o.id,
+        name:       o.name,
+        client:     Array.isArray(o.partner_id) ? o.partner_id[1] : null,
+        partner_id: Array.isArray(o.partner_id) ? o.partner_id[0] : null,
+        date:       o.date_order,
+        total:      o.amount_total,
+        subtotal:   o.amount_untaxed,
+        state:      o.state,
+        lines:      linesByOrder[o.id] || [],
+    }));
+}
+
+module.exports = {
+    // Productos
+    getProducts,
+    getProductById,
+    updateProductPrices,
+    updateProductQty,
+    createProduct,
+    getProductCategories,
+    setProductArchived,
+    // Partners
+    getPartners,
+    getPartnerById,
+    getCustomers,
+    getCustomerById,
+    createCustomer,
+    ensurePartner,
+    // Órdenes de compra
+    updateSaleOrderLines,
+    confirmSaleOrder,
+    createPurchaseOrder,
+    addLinesToPurchaseOrder,
+    confirmPurchaseOrder,
+    // Órdenes de venta
+    createSaleOrder,
+    cancelSaleOrder,
+    getSaleOrders,
+    getPreventasQuotations,
+};
+
