@@ -30,7 +30,8 @@ function leerStdin() {
         let data = '';
         process.stdin.setEncoding('utf8');
         process.stdin.on('data', c => { data += c; });
-        process.stdin.on('end', () => resolve(data));
+        // Sin BOM: PowerShell lo antepone al hacer pipe
+        process.stdin.on('end', () => resolve(data.replace(/^﻿/, '')));
     });
 }
 
