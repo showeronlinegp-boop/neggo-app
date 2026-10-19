@@ -6,6 +6,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const { getProductCategories, getPartners, getPartnerById } = require('../services/odooService');
 const { getAvailableKeys } = require('../scrapers/registry');
+const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 
 // Columnas que devuelve la API de proveedores
 const SUPPLIER_COLS = `
@@ -402,6 +403,34 @@ router.delete('/:id/products', authenticate, requireRole('admin'), async (req, r
     } catch (error) {
         console.error('❌ Error al eliminar productos del proveedor:', error.message);
         return fail(res, 'Error al eliminar productos del proveedor', 500);
+    }
+});
+
+// =============================================
+// GET /:id/delete-preview — Qué pasaría al eliminar el proveedor (solo admin)
+// Cuenta sus productos en Odoo Neggo y dice si está bloqueado (se usa en Preventas)
+// =============================================
+router.get('/:id/delete-preview', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await getDeletePreview(req.params.id));
+    } catch (error) {
+        console.error('❌ Error al preparar eliminación de proveedor:', error.message);
+        return fail(res, error.status ? error.message : 'Error al consultar el proveedor', error.status || 500);
+    }
+});
+
+// =============================================
+// POST /:id/delete — Elimina el proveedor definitivamente (solo admin)
+// Body: { replacement_supplier_id } — obligatorio si tiene productos en Odoo Neggo.
+// En Odoo Neggo esos productos pasan al proveedor de reemplazo; Preventas no se toca.
+// =============================================
+router.post('/:id/delete', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { replacement_supplier_id } = req.body || {};
+        return ok(res, await deleteSupplier(req.params.id, replacement_supplier_id));
+    } catch (error) {
+        console.error('❌ Error al eliminar proveedor:', error.message);
+        return fail(res, error.status ? error.message : `Error al eliminar proveedor: ${error.message}`, error.status || 500);
     }
 });
 
