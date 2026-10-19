@@ -313,6 +313,8 @@ CREATE TABLE IF NOT EXISTS catalogs (
     file_path VARCHAR(500),
     product_count INTEGER,
     generated_by INTEGER REFERENCES users(id),
+    downloaded_at TIMESTAMP,
+    downloaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
 

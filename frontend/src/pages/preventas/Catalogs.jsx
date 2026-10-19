@@ -65,6 +65,10 @@ export default function Catalogs() {
             a.href = url; a.download = `catalogo-${row.category || row.type}-${id}.pdf`;
             document.body.appendChild(a); a.click();
             document.body.removeChild(a); URL.revokeObjectURL(url);
+            // El backend ya lo marcó como descargado: se refleja sin recargar la lista
+            setCatalogs(prev => prev.map(c => c.id === id
+                ? { ...c, downloaded_at: new Date().toISOString(), downloaded_by_username: c.downloaded_by_username || 'vos' }
+                : c));
         } catch { showToast('Error al descargar el catálogo', 'error'); }
     }
 
@@ -100,6 +104,17 @@ export default function Catalogs() {
         { key: 'category', label: 'Categoría', render: v => v || '—' },
         { key: 'product_count', label: 'Productos', render: v => <span style={t.numericStyle}>{v}</span> },
         { key: 'created_at', label: 'Fecha', render: v => new Date(v).toLocaleDateString('es-AR') },
+        {
+            key: 'downloaded_at',
+            label: 'Enviado',
+            render: (v, row) => v
+                ? (
+                    <span title={row.downloaded_by_username ? `Descargado por ${row.downloaded_by_username}` : undefined}>
+                        <Badge tone="warn" dot>Descargado {new Date(v).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' })}</Badge>
+                    </span>
+                )
+                : <span style={{ color: t.color.textFaint }}>—</span>,
+        },
         {
             key: 'id',
             label: '',
@@ -165,6 +180,9 @@ export default function Catalogs() {
                 columns={cols}
                 data={catalogs}
                 loading={loading}
+                rowStyle={row => row.downloaded_at
+                    ? { background: t.color.warnSoft, boxShadow: `inset 3px 0 0 ${t.color.warn}` }
+                    : undefined}
                 pagination={{ page, pageSize: 20, total }}
                 onPageChange={setPage}
             />
