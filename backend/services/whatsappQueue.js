@@ -73,8 +73,11 @@ async function saveSettings(pool, { groupJid, groupSubject, intervalSeconds }) {
     return rows[0];
 }
 
+// input.products: productos ya elegidos (sorteo). Si no viene, se buscan con los filtros.
+// input.sendNow: arranca ya, sin fecha. input.offsetSeconds: corre la hora de inicio
+// para encadenar varias tandas sin que se pisen.
 async function createBatch(pool, input) {
-    const products = await findPublishable(pool, {
+    const products = input.products || await findPublishable(pool, {
         company: input.company,
         category: input.category || null,
         destCategory: input.destCategory || null,
@@ -85,7 +88,8 @@ async function createBatch(pool, input) {
     }
     const groupJid = assertGroupJid(input.groupJid);
     const interval = clampInterval(input.intervalSeconds, 90);
-    const schedule = assertSchedule(input.scheduledAt);
+    const schedule = input.sendNow ? null : assertSchedule(input.scheduledAt);
+    const offset = Math.max(0, Math.floor(Number(input.offsetSeconds) || 0));
     const maxAttempts = clampAttempts(input.maxAttempts);
     const client = await pool.connect();
     try {
@@ -96,7 +100,8 @@ async function createBatch(pool, input) {
                 group_jid, group_subject, interval_seconds, scheduled_at, created_by
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
-                ($8::timestamp AT TIME ZONE '${ART}'),
+                COALESCE($8::timestamp AT TIME ZONE '${ART}', NOW())
+                    + ($10::int * INTERVAL '1 second'),
                 $9
             )
             RETURNING *
@@ -110,6 +115,7 @@ async function createBatch(pool, input) {
             interval,
             schedule,
             input.createdBy || null,
+            offset,
         ]);
         const batch = batchRes.rows[0];
         for (let i = 0; i < products.length; i++) {
@@ -188,6 +194,23 @@ async function getBatch(pool, id) {
         LIMIT 40
     `, [id]);
     return { ...rows[0], messages: messages.rows, logs: logs.rows };
+}
+
+// Mensajes que todavía no salieron, en el orden en que van a salir.
+async function listQueue(pool) {
+    const { rows } = await pool.query(`
+        SELECT m.id, m.batch_id, m.position, m.odoo_id, m.company, m.product_name,
+               m.price_label, m.image_template_id, m.status, m.attempts, m.last_error,
+               m.scheduled_at, b.status AS batch_status, b.category,
+               COALESCE(b.group_subject, b.group_jid) AS group_name
+        FROM whatsapp_messages m
+        JOIN whatsapp_batches b ON b.id = m.batch_id
+        WHERE m.status IN ('pendiente', 'enviando')
+          AND b.status IN ('programada', 'en_curso', 'pausada')
+        ORDER BY (b.status = 'pausada'), m.scheduled_at, m.position
+        LIMIT 300
+    `);
+    return rows;
 }
 
 async function setBatchStatus(pool, id, from, to, logMessage) {
@@ -397,6 +420,7 @@ module.exports = {
     saveSettings,
     createBatch,
     listBatches,
+    listQueue,
     getBatch,
     pauseBatch,
     resumeBatch,
