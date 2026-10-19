@@ -57,6 +57,7 @@ export default function SupplierList() {
     const [modalOpen, setModalOpen] = useState(false);
     const [editingSupplier, setEditingSupplier] = useState(null);
     const [confirmDeactivate, setConfirmDeactivate] = useState(null);
+    const [deletingSupplier, setDeletingSupplier] = useState(null);
     const [unmappedBySupplier, setUnmappedBySupplier] = useState({});
 
     const loadSuppliers = useCallback(async () => {
@@ -112,6 +113,15 @@ export default function SupplierList() {
         } else {
             showToast(res.error || 'Error al desactivar', 'error');
         }
+    }
+
+    function handleDeleted(result) {
+        setDeletingSupplier(null);
+        setSuppliers(prev => prev.filter(s => s.id !== result.id));
+        const odoo = result.replacement
+            ? ` — ${result.odoo_reassigned + result.odoo_removed_duplicates} productos de Odoo pasaron a "${result.replacement.name}"`
+            : '';
+        showToast(`Proveedor "${result.name}" eliminado${odoo}`, 'success');
     }
 
     const staleSuppliers = suppliers.filter(s => s.is_stale);
@@ -234,6 +244,9 @@ export default function SupplierList() {
                                     Desactivar
                                 </Button>
                             )}
+                            <Button size="sm" variant="danger" onClick={e => { e.stopPropagation(); setDeletingSupplier(row); }}>
+                                Eliminar
+                            </Button>
                         </>
                     )}
                 </div>
@@ -304,6 +317,134 @@ export default function SupplierList() {
                 confirmLabel="Desactivar"
                 danger
             />
+
+            {/* Eliminar con reasignación en Odoo Neggo */}
+            <Modal
+                isOpen={!!deletingSupplier}
+                onClose={() => setDeletingSupplier(null)}
+                title="Eliminar proveedor"
+                width={560}
+            >
+                {deletingSupplier && (
+                    <DeleteSupplierForm
+                        supplier={deletingSupplier}
+                        suppliers={suppliers}
+                        tokens={t}
+                        onClose={() => setDeletingSupplier(null)}
+                        onDeleted={handleDeleted}
+                    />
+                )}
+            </Modal>
+        </div>
+    );
+}
+
+// ─── Eliminar proveedor ──────────────────────────────────────────────────────────
+function DeleteSupplierForm({ supplier, suppliers, tokens: t, onClose, onDeleted }) {
+    const [preview, setPreview] = useState(null);
+    const [error, setError] = useState(null);
+    const [replacementId, setReplacementId] = useState('');
+    const [deleting, setDeleting] = useState(false);
+
+    useEffect(() => {
+        api.get(`/suppliers/${supplier.id}/delete-preview`).then(res => {
+            if (res.success) setPreview(res.data);
+            else setError(res.error || 'No se pudo consultar el proveedor');
+        });
+    }, [supplier.id]);
+
+    const options = suppliers
+        .filter(s => s.id !== supplier.id)
+        .map(s => ({ value: String(s.id), label: s.name }));
+
+    const blocked = preview?.blocked_reasons?.length > 0;
+    const needsReplacement = preview?.odoo_neggo_products > 0;
+    const canDelete = preview && !blocked && (!needsReplacement || replacementId);
+    const replacementName = options.find(o => o.value === replacementId)?.label;
+
+    async function handleDelete() {
+        setDeleting(true);
+        const res = await api.post(`/suppliers/${supplier.id}/delete`, {
+            replacement_supplier_id: replacementId ? Number(replacementId) : null,
+        });
+        setDeleting(false);
+        if (res.success) onDeleted(res.data);
+        else setError(res.error || 'No se pudo eliminar el proveedor');
+    }
+
+    const text = { fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.5 };
+    const box = (tone) => ({
+        ...text,
+        background: tone === 'danger' ? t.color.dangerSoft : t.color.warnSoft,
+        color: tone === 'danger' ? t.color.danger : t.color.warn,
+        border: `1px solid ${tone === 'danger' ? t.color.danger : t.color.warn}33`,
+        padding: '10px 14px', borderRadius: t.radius.sm,
+    });
+    const num = { ...t.numericStyle, fontWeight: t.font.weight.semibold };
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[5] }}>
+            {error && <div style={box('danger')}>{error}</div>}
+
+            {!preview && !error && (
+                <div style={{ ...text, color: t.color.textMuted }}>Consultando a Odoo…</div>
+            )}
+
+            {preview && blocked && (
+                <div style={box('danger')}>
+                    <div style={{ fontWeight: t.font.weight.semibold, marginBottom: 4 }}>
+                        No se puede eliminar "{supplier.name}":
+                    </div>
+                    {preview.blocked_reasons.map(r => <div key={r}>· {r}</div>)}
+                </div>
+            )}
+
+            {preview && !blocked && (
+                <>
+                    <div style={text}>
+                        Vas a eliminar a <b>{supplier.name}</b> de la app, con sus reglas y
+                        sus <span style={num}>{preview.scraped_products}</span> productos scrapeados.
+                        El historial de scraping y los ingresos se conservan, sin proveedor.
+                    </div>
+
+                    {needsReplacement ? (
+                        <>
+                            <div style={text}>
+                                En Odoo Neggo hay <span style={num}>{preview.odoo_neggo_products}</span> productos
+                                con este proveedor. Elegí a quién pasarlos (Precompras no se toca):
+                            </div>
+                            <Select
+                                value={replacementId}
+                                onChange={setReplacementId}
+                                options={options}
+                                placeholder="Elegí el proveedor de reemplazo..."
+                            />
+                        </>
+                    ) : (
+                        <div style={{ ...text, color: t.color.textMuted }}>
+                            {preview.odoo_partner
+                                ? 'No tiene productos en Odoo Neggo: no hace falta reasignar nada.'
+                                : 'No figura como contacto en Odoo: no hay productos para reasignar.'}
+                        </div>
+                    )}
+
+                    {canDelete && (
+                        <div style={box('warn')}>
+                            Esto no se puede deshacer.
+                            {needsReplacement && ` Se escribe en Odoo: los productos pasan a "${replacementName}".`}
+                        </div>
+                    )}
+                </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: t.space[3] }}>
+                <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+                {!blocked && (
+                    <Button variant="danger" disabled={!canDelete || deleting} onClick={handleDelete}>
+                        {deleting ? 'Eliminando…' : 'Eliminar'}
+                    </Button>
+                )}
+            </div>
         </div>
     );
 }
