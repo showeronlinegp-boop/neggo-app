@@ -328,6 +328,31 @@ async function initDatabase() {
         // Limpieza de proveedores (migración 025, nota #20): columnas y tabla sin uso.
         // Va después de los bloques de arriba, que en una base vieja copian los markups antes de borrar.
         // El estado de un proveedor es solo active + scrape_enabled; las pendientes se calculan en vivo.
+        // Antes de borrar los markups viejos se rescata cualquier valor que no se haya copiado
+        // (markup nuevo vacío o en 0 y viejo con valor), así no se pierde nada en ningún camino.
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'suppliers' AND column_name = 'default_markup'
+                ) THEN
+                    UPDATE suppliers SET markup_neggo = default_markup
+                     WHERE COALESCE(markup_neggo, 0) = 0 AND COALESCE(default_markup, 0) <> 0;
+                    UPDATE suppliers SET markup_preventas = default_markup
+                     WHERE COALESCE(markup_preventas, 0) = 0 AND COALESCE(default_markup, 0) <> 0;
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'supplier_category_rules' AND column_name = 'markup_override'
+                ) THEN
+                    UPDATE supplier_category_rules SET markup_neggo_override = markup_override
+                     WHERE markup_neggo_override IS NULL AND markup_override IS NOT NULL;
+                    UPDATE supplier_category_rules SET markup_preventas_override = markup_override
+                     WHERE markup_preventas_override IS NULL AND markup_override IS NOT NULL;
+                END IF;
+            END $$;
+        `);
         await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS status`);
         await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS is_published`);
         await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS default_markup`);
