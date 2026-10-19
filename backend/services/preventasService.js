@@ -39,7 +39,7 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
         `SELECT sp.id, sp.name, sp.sku, sp.raw_price, sp.image_url,
                 sp.source_category, sp.supplier_id,
                 s.id as supplier_id, s.name as supplier_name,
-                s.default_discount, s.default_markup, s.markup_preventas
+                s.default_discount, s.markup_preventas
          FROM supplier_products sp
          JOIN suppliers s ON s.id = sp.supplier_id
          WHERE sp.id = $1 AND sp.available = true`,
@@ -63,7 +63,6 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
         const categoryRule = await getCategoryRule(pool, product.supplier_id, product.source_category, 'preventas');
         const supplier = {
             default_discount: product.default_discount,
-            default_markup:   product.default_markup,
             markup_preventas: product.markup_preventas
         };
         const prices = calculatePrices(product, supplier, categoryRule, 'preventas');
@@ -73,7 +72,6 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
         const categoryRule = await getCategoryRule(pool, product.supplier_id, product.source_category, 'preventas');
         const supplier = {
             default_discount: product.default_discount,
-            default_markup:   product.default_markup,
             markup_preventas: product.markup_preventas
         };
         const prices = calculatePrices(product, supplier, categoryRule, 'preventas');

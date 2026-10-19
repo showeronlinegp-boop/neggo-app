@@ -17,11 +17,9 @@ function priceRow(overrides = {}) {
         rule_id: 1,
         ignored: false,
         default_discount: 0,
-        default_markup: 0,
         markup_neggo: 20,
         markup_preventas: 50,
         discount_override: null,
-        markup_override: null,
         markup_neggo_override: null,
         markup_preventas_override: null,
         ...overrides,
@@ -36,7 +34,7 @@ function testPrice() {
 
     const expected = calculatePrices(
         { raw_price: 1000 },
-        { default_discount: 0, default_markup: 0, markup_neggo: 20, markup_preventas: 50 },
+        { default_discount: 0, markup_neggo: 20, markup_preventas: 50 },
         {},
         'preventas'
     ).sale_price;
@@ -88,7 +86,7 @@ async function recreateDb() {
         );
         CREATE TABLE suppliers (
             id SERIAL PRIMARY KEY, name VARCHAR(200), active BOOLEAN DEFAULT true,
-            default_discount NUMERIC, default_markup NUMERIC,
+            default_discount NUMERIC,
             markup_neggo NUMERIC, markup_preventas NUMERIC
         );
         CREATE TABLE supplier_products (
@@ -98,7 +96,7 @@ async function recreateDb() {
         CREATE TABLE supplier_category_rules (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, source_category VARCHAR(200),
             active BOOLEAN DEFAULT true, ignored BOOLEAN DEFAULT false,
-            discount_override NUMERIC, markup_override NUMERIC,
+            discount_override NUMERIC,
             markup_neggo_override NUMERIC, markup_preventas_override NUMERIC,
             dest_category_neggo VARCHAR(200), dest_category_preventas VARCHAR(200)
         );
@@ -121,12 +119,12 @@ async function recreateDb() {
 
 async function seed(pool) {
     const sup = await pool.query(`
-        INSERT INTO suppliers (name, default_discount, default_markup, markup_neggo, markup_preventas)
-        VALUES ('Cast', 0, 0, 20, 50) RETURNING id
+        INSERT INTO suppliers (name, default_discount, markup_neggo, markup_preventas)
+        VALUES ('Cast', 0, 20, 50) RETURNING id
     `);
     const other = await pool.query(`
-        INSERT INTO suppliers (name, default_discount, default_markup, markup_neggo, markup_preventas)
-        VALUES ('Otro', 0, 0, 10, 10) RETURNING id
+        INSERT INTO suppliers (name, default_discount, markup_neggo, markup_preventas)
+        VALUES ('Otro', 0, 10, 10) RETURNING id
     `);
     const sid = sup.rows[0].id;
     const sp = await pool.query(`

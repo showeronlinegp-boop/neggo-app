@@ -385,74 +385,6 @@ class BaseScraper {
     }
 
     // =============================================
-    // Detección de categorías pendientes de mapeo
-    // =============================================
-
-    /**
-     * Al finalizar el scraping, detecta categorías que no tienen regla activa
-     * en supplier_category_rules y las registra en pending_category_mappings.
-     * Esto alimenta el badge naranja del sidebar y el panel de resolución.
-     */
-    async detectPendingCategories() {
-        if (this.dryRun) return;
-
-        try {
-            // Todas las categorías únicas que se scrapearon
-            const { rows: scraped } = await this.pool.query(`
-                SELECT DISTINCT source_category
-                FROM supplier_products
-                WHERE supplier_id = $1 AND source_category IS NOT NULL
-            `, [this.supplier.id]);
-
-            if (scraped.length === 0) return;
-
-            // Categorías que ya tienen regla (activa O ignorada — cualquiera cuenta)
-            const { rows: mapped } = await this.pool.query(`
-                SELECT source_category FROM supplier_category_rules
-                WHERE supplier_id = $1
-            `, [this.supplier.id]);
-
-            const mappedSet = new Set(mapped.map(r => r.source_category));
-            let pendingDetected = 0;
-
-            for (const { source_category } of scraped) {
-                if (mappedSet.has(source_category)) continue;
-
-                // Hasta 5 productos de muestra para dar contexto al admin
-                const { rows: samples } = await this.pool.query(`
-                    SELECT name FROM supplier_products
-                    WHERE supplier_id = $1 AND source_category = $2
-                    LIMIT 5
-                `, [this.supplier.id, source_category]);
-
-                await this.pool.query(`
-                    INSERT INTO pending_category_mappings
-                        (supplier_id, source_category, sample_products, status)
-                    VALUES ($1, $2, $3, 'pending')
-                    ON CONFLICT (supplier_id, source_category)
-                    DO UPDATE SET
-                        sample_products = EXCLUDED.sample_products
-                    WHERE pending_category_mappings.status = 'pending'
-                `, [
-                    this.supplier.id,
-                    source_category,
-                    JSON.stringify(samples.map(s => s.name))
-                ]);
-
-                pendingDetected++;
-                console.log(`⚠️ Categoría sin mapeo detectada: "${source_category}"`);
-            }
-
-            if (pendingDetected > 0) {
-                console.log(`⚠️ ${pendingDetected} categorías nuevas sin mapeo para proveedor "${this.supplier.name}"`);
-            }
-        } catch (err) {
-            console.error('⚠️ Error en detectPendingCategories:', err.message);
-            // No propagar — no debe interrumpir el scraping
-        }
-    }
-
-    // =============================================
     // Orquestador principal
     // =============================================
 
@@ -571,8 +503,6 @@ class BaseScraper {
             // Colapsar duplicados por nombre (misma producto, distintas secciones de catálogo)
             await this.cleanupDuplicates();
 
-            // Detectar categorías nuevas sin mapeo (alimenta el badge del sidebar)
-            await this.detectPendingCategories();
 
             return {
                 runId: this.runId,

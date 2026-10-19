@@ -764,8 +764,8 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
 
         const ingresoResult = await client.query(
             `SELECT im.*, s.name as supplier_name, s.default_discount, s.prefix as supplier_prefix,
-                    COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0)     AS markup_neggo,
-                    COALESCE(NULLIF(s.markup_preventas, 0), s.default_markup, 0) AS markup_preventas
+                    COALESCE(s.markup_neggo, 0)     AS markup_neggo,
+                    COALESCE(s.markup_preventas, 0) AS markup_preventas
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,

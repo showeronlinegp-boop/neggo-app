@@ -60,7 +60,7 @@ export default function ProductMappings() {
     const CMP_PAGE_SIZE = 50;
 
     useEffect(() => {
-        api.get('/suppliers', { status: 'active' }).then(r => r.success && setSuppliers(r.data || []));
+        api.get('/suppliers', { active: 'true' }).then(r => r.success && setSuppliers(r.data || []));
     }, []);
 
     useEffect(() => {

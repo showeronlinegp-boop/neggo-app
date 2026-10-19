@@ -14,10 +14,10 @@ import * as Icon from '../../components/common/icons';
 
 function statusTone(s) {
     if (!s) return 'muted';
-    if (s === 'completed' || s === 'active') return 'success';
+    if (s === 'completed') return 'success';
     if (s === 'failed') return 'danger';
     if (s === 'running' || s === 'queued' || s === 'in_progress' || s === 'starting') return 'primary';
-    if (s === 'paused' || s === 'staging' || s === 'warning') return 'warn';
+    if (s === 'paused' || s === 'warning') return 'warn';
     return 'muted';
 }
 
@@ -140,18 +140,6 @@ export default function ScrapingPanel() {
         setPreviewOpen(false);
     }
 
-    async function handlePromote(supplier) {
-        const r = await api.post(`/suppliers/${supplier.id}/promote`);
-        if (r.success) { showToast(`${supplier.name} activado`, 'success'); fetchSuppliers(); }
-        else showToast(r.error || 'Error', 'error');
-    }
-
-    async function handleStage(supplier) {
-        const r = await api.post(`/suppliers/${supplier.id}/stage`);
-        if (r.success) { showToast(`${supplier.name} movido a staging`, 'success'); fetchSuppliers(); }
-        else showToast(r.error || 'Error', 'error');
-    }
-
     async function handleCancelAll() {
         const r = await cancelAllRuns();
         if (r?.success) { showToast(`${r.data?.cancelledRuns ?? 0} scrapers cancelados`, 'warning'); fetchRuns(); }
@@ -160,7 +148,9 @@ export default function ScrapingPanel() {
     }
 
     const anyRunning = Object.keys(activeRuns).length > 0;
-    const activeSuppliers = suppliers.filter(s => s.status === 'active');
+    // Solo los que se pueden scrapear: activos, con scraping prendido y con scraper para su fuente.
+    // Los pausados se manejan desde Proveedores.
+    const activeSuppliers = suppliers.filter(s => s.active && s.scrape_enabled && s.scraper_available);
     const batchPct = batchProgress.total > 0
         ? Math.round((batchProgress.current / batchProgress.total) * 100)
         : 0;
@@ -219,12 +209,15 @@ export default function ScrapingPanel() {
                     <span style={{ fontSize: 15, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>
                         Proveedores
                     </span>
+                    <span style={{ marginLeft: t.space[3], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                        Solo los que tienen el scraping activo. Los pausados se activan desde Proveedores.
+                    </span>
                 </div>
                 <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: t.font.size.sm }}>
                         <thead>
                             <tr style={{ background: t.color.surface2 }}>
-                                {['Nombre', 'Prefijo', 'Estado', 'Último scraping', 'Acciones'].map(h => (
+                                {['Nombre', 'Prefijo', 'Fuente', 'Último scraping', 'Acciones'].map(h => (
                                     <th key={h} style={{
                                         padding: '10px 16px', textAlign: 'left',
                                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
@@ -238,7 +231,14 @@ export default function ScrapingPanel() {
                             </tr>
                         </thead>
                         <tbody>
-                            {suppliers.map(sup => {
+                            {activeSuppliers.length === 0 && (
+                                <tr>
+                                    <td colSpan={5} style={{ padding: '20px 16px', textAlign: 'center', color: t.color.textMuted, fontFamily: t.font.family }}>
+                                        No hay proveedores con scraping activo. Activalo desde Proveedores.
+                                    </td>
+                                </tr>
+                            )}
+                            {activeSuppliers.map(sup => {
                                 const rid = activeRuns[sup.id];
                                 const isRunning = !!rid;
                                 const isPaused = !!pausedRuns[sup.id];
@@ -253,7 +253,9 @@ export default function ScrapingPanel() {
                                             </span>
                                         </td>
                                         <td style={{ padding: '12px 16px' }}>
-                                            <Badge tone={statusTone(sup.status)} dot>{sup.status || '—'}</Badge>
+                                            {sup.scraper_key === 'neggo_scraper'
+                                                ? <Badge tone="primary">Interno (Neggo)</Badge>
+                                                : <Badge tone="accent">Web · {sup.scraper_key}</Badge>}
                                         </td>
                                         <td style={{ padding: '12px 16px', fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
                                             {sup.last_scraped_at ? new Date(sup.last_scraped_at).toLocaleString('es-AR') : '—'}
@@ -290,16 +292,6 @@ export default function ScrapingPanel() {
                                                 {!isRunning && (
                                                     <Button size="sm" variant="ghost" leftIcon={<Icon.Search size={13} />} onClick={() => handlePreview(sup)}>
                                                         Preview
-                                                    </Button>
-                                                )}
-                                                {sup.status === 'staging' && (
-                                                    <Button size="sm" variant="success" leftIcon={<Icon.Check size={13} />} onClick={() => handlePromote(sup)}>
-                                                        Activar
-                                                    </Button>
-                                                )}
-                                                {sup.status === 'active' && (
-                                                    <Button size="sm" variant="ghost" onClick={() => handleStage(sup)}>
-                                                        Staging
                                                     </Button>
                                                 )}
                                             </div>

@@ -22,12 +22,7 @@ async function initDatabase() {
         // =============================================
         // Migraciones en caliente (idempotentes)
         // =============================================
-        await pool.query(`ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'staging'`);
-        await pool.query(`ALTER TABLE suppliers ADD CONSTRAINT IF NOT EXISTS suppliers_status_check CHECK (status IN ('staging','active','inactive'))`).catch(() => {});
         await pool.query(`ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS scrape_config JSONB DEFAULT '{}'`);
-
-        // Crear índice de status si no existe
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_suppliers_status ON suppliers(status)`).catch(() => {});
 
         // El constraint de scraping_runs.status se define más abajo (migración 022, incluye 'queued').
         // Los runs 'running' NO se tocan acá: los ejecuta el scraper-worker, que sigue vivo aunque
@@ -124,12 +119,12 @@ async function initDatabase() {
         if (parseInt(suppliers[0].count, 10) === 0) {
             await pool.query(`
                 INSERT INTO suppliers
-                    (name, prefix, website_url, scraper_key, price_format, status, scrape_enabled)
+                    (name, prefix, website_url, scraper_key, price_format, scrape_enabled)
                 VALUES
-                    ('CastMayorista', 'CT', 'https://www.castmayorista.com.ar', 'cast',      'ar', 'active', true),
-                    ('Mali',          'ML', 'https://www.mali.com.ar',          'mali',      'ar', 'active', true),
-                    ('El Rey',        'ER', 'https://catalog.smarty.com.ar',    'elrey',     'ar', 'active', true),
-                    ('Impotekno',     'IT', 'https://impotekno.com',            'impotekno', 'ar', 'active', true)
+                    ('CastMayorista', 'CT', 'https://www.castmayorista.com.ar', 'cast',      'ar', true),
+                    ('Mali',          'ML', 'https://www.mali.com.ar',          'mali',      'ar', true),
+                    ('El Rey',        'ER', 'https://catalog.smarty.com.ar',    'elrey',     'ar', true),
+                    ('Impotekno',     'IT', 'https://impotekno.com',            'impotekno', 'ar', true)
             `);
             console.log('✅ Proveedores iniciales creados (Cast, Mali, El Rey, Impotekno)');
         }
@@ -226,22 +221,7 @@ async function initDatabase() {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_opc_external_id  ON odoo_products_cache(external_id)  WHERE external_id  IS NOT NULL`).catch(() => {});
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_opc_ext_id_clean ON odoo_products_cache(ext_id_clean) WHERE ext_id_clean IS NOT NULL`).catch(() => {});
 
-        // Tablas de alertas de precio y categorías pendientes (pueden no existir si pg_data ya estaba creado)
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS pending_category_mappings (
-                id SERIAL PRIMARY KEY,
-                supplier_id INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
-                source_category VARCHAR(200) NOT NULL,
-                sample_products JSONB DEFAULT '[]',
-                status VARCHAR(20) DEFAULT 'pending',
-                resolved_at TIMESTAMP,
-                resolved_by INTEGER REFERENCES users(id),
-                created_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(supplier_id, source_category)
-            )
-        `).catch(() => {});
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_pcm_supplier ON pending_category_mappings(supplier_id)`).catch(() => {});
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_pcm_status ON pending_category_mappings(status)`).catch(() => {});
+        // Tabla de alertas de precio (puede no existir si pg_data ya estaba creado)
 
         await pool.query(`
             CREATE TABLE IF NOT EXISTS price_alerts (
@@ -344,6 +324,17 @@ async function initDatabase() {
                 END IF;
             END $$;
         `);
+
+        // Limpieza de proveedores (migración 024, nota #20): columnas y tabla sin uso.
+        // Va después de los bloques de arriba, que en una base vieja copian los markups antes de borrar.
+        // El estado de un proveedor es solo active + scrape_enabled; las pendientes se calculan en vivo.
+        await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS status`);
+        await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS is_published`);
+        await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS default_markup`);
+        await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS scrape_schedule`);
+        await pool.query(`ALTER TABLE supplier_category_rules DROP COLUMN IF EXISTS markup_override`);
+        await pool.query(`DROP TABLE IF EXISTS pending_category_mappings`);
+
         await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS template_id INTEGER`);
         await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS has_image BOOLEAN NOT NULL DEFAULT FALSE`);
         await pool.query(`

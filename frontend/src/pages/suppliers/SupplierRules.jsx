@@ -26,7 +26,7 @@ const EMPTY_FORM = {
 
 const PRICE_FORMAT_OPTS = [
     { value: 'ar', label: 'Argentino — 1.234,56' },
-    { value: 'us', label: 'Americano — 1,234.56' },
+    { value: 'inv', label: 'Inverso — 1,234.56' },
 ];
 
 export default function SupplierRules() {
@@ -57,7 +57,6 @@ export default function SupplierRules() {
     const [cfgDiscount, setCfgDiscount] = useState('');
     const [cfgMarkupNeggo, setCfgMarkupNeggo] = useState('');
     const [cfgMarkupPreventas, setCfgMarkupPreventas] = useState('');
-    const [cfgPublished, setCfgPublished] = useState(true);
 
     useEffect(() => {
         api.get(`/suppliers/${id}`).then(r => {
@@ -68,7 +67,6 @@ export default function SupplierRules() {
                 setCfgDiscount(r.data.default_discount !== null ? String(r.data.default_discount) : '0');
                 setCfgMarkupNeggo(r.data.markup_neggo !== null ? String(r.data.markup_neggo) : '0');
                 setCfgMarkupPreventas(r.data.markup_preventas !== null ? String(r.data.markup_preventas) : '0');
-                setCfgPublished(r.data.is_published !== false);
             }
         });
         fetchRules(); fetchUnmapped(); fetchScrapingCategories(); fetchOdooCategories();
@@ -158,7 +156,6 @@ export default function SupplierRules() {
             default_discount: parseFloat(cfgDiscount) || 0,
             markup_neggo: parseFloat(cfgMarkupNeggo) || 0,
             markup_preventas: parseFloat(cfgMarkupPreventas) || 0,
-            is_published: cfgPublished,
         });
         setSavingConfig(false);
         if (res.success) { showToast('Configuración actualizada', 'success'); setSupplier(res.data); setEditingConfig(false); }
@@ -235,11 +232,10 @@ export default function SupplierRules() {
                         <div style={{ display: 'flex', gap: t.space[8], flexWrap: 'wrap' }}>
                             {[
                                 ['Prefijo', supplier.prefix || '—'],
-                                ['Formato precio', supplier.price_format === 'ar' ? 'Argentino' : 'Americano'],
+                                ['Formato precio', supplier.price_format === 'ar' ? 'Argentino' : 'Inverso'],
                                 ['Descuento', `${defDiscount}%`],
                                 ['Markup Neggo', `${defMarkupN}%`],
                                 ['Markup Prev.', `${defMarkupP}%`],
-                                ['Publicado', supplier.is_published ? 'Sí' : 'No'],
                                 ['Scraper', supplier.scraper_key || '—'],
                             ].map(([k, v]) => (
                                 <div key={k}>
@@ -335,13 +331,6 @@ export default function SupplierRules() {
                     <div>
                         <label style={labelStyle}>Markup Preventas (%)</label>
                         <Input type="number" value={cfgMarkupPreventas} onChange={e => setCfgMarkupPreventas(e.target.value)} min="0" placeholder="0" />
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], paddingTop: t.space[8] }}>
-                        <Toggle checked={cfgPublished} onChange={setCfgPublished} />
-                        <div>
-                            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>Publicado</div>
-                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>Incluir en catálogos PDF</div>
-                        </div>
                     </div>
                 </div>
             </Modal>

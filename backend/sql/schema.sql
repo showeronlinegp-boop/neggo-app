@@ -44,17 +44,13 @@ CREATE TABLE IF NOT EXISTS suppliers (
     website_url VARCHAR(500),
     scraper_key VARCHAR(50),
     price_format VARCHAR(20) DEFAULT 'ar',
-    is_published BOOLEAN DEFAULT true,
     default_discount NUMERIC(5,2) DEFAULT 0,
-    default_markup NUMERIC(5,2) DEFAULT 0,
     markup_neggo NUMERIC(5,2) DEFAULT 0,
     markup_preventas NUMERIC(5,2) DEFAULT 0,
-    scrape_schedule VARCHAR(50),
     scrape_config JSONB DEFAULT '{}',
     last_scraped_at TIMESTAMP,
     active BOOLEAN DEFAULT true,
-    status VARCHAR(20) NOT NULL DEFAULT 'staging'
-        CHECK (status IN ('staging', 'active', 'inactive')),
+    scrape_enabled BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -71,7 +67,6 @@ CREATE TABLE IF NOT EXISTS supplier_category_rules (
     ignored BOOLEAN DEFAULT false,
         -- true = se descarta completamente, no genera productos ni alertas
     discount_override NUMERIC(5,2),
-    markup_override NUMERIC(5,2),
     markup_neggo_override NUMERIC(5,2),
     markup_preventas_override NUMERIC(5,2),
     active BOOLEAN DEFAULT true,
@@ -79,29 +74,7 @@ CREATE TABLE IF NOT EXISTS supplier_category_rules (
     UNIQUE(supplier_id, source_category)
 );
 
-CREATE INDEX IF NOT EXISTS idx_suppliers_status ON suppliers(status);
 CREATE INDEX IF NOT EXISTS idx_cat_rules_supplier ON supplier_category_rules(supplier_id);
-
--- =============================================
--- CATEGORÍAS PENDIENTES DE MAPEO
--- =============================================
-
-CREATE TABLE IF NOT EXISTS pending_category_mappings (
-    id SERIAL PRIMARY KEY,
-    supplier_id INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
-    source_category VARCHAR(200) NOT NULL,
-    sample_products JSONB DEFAULT '[]',
-        -- hasta 5 nombres de productos de esa categoría (para contexto)
-    status VARCHAR(20) DEFAULT 'pending',
-        -- 'pending', 'mapped', 'ignored'
-    resolved_at TIMESTAMP,
-    resolved_by INTEGER REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(supplier_id, source_category)
-);
-
-CREATE INDEX IF NOT EXISTS idx_pcm_supplier ON pending_category_mappings(supplier_id);
-CREATE INDEX IF NOT EXISTS idx_pcm_status ON pending_category_mappings(status);
 
 -- =============================================
 -- PRODUCTOS SCRAPEADOS

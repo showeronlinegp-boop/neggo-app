@@ -139,7 +139,7 @@ async function start() {
             console.log(`📦 Entorno: ${process.env.NODE_ENV || 'development'}`);
         });
 
-        // El scheduler (scraping programado, sync Odoo, alertas) corre en el scraper-worker.
+        // El scheduler (sync Odoo, alertas) corre en el scraper-worker.
         // Acá solo arranca la cola de WhatsApp.
         const { startWhatsappWorker, stopWhatsappWorker } = require('./jobs/whatsappWorker');
         startWhatsappWorker(pool);

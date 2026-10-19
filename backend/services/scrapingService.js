@@ -40,7 +40,7 @@ function parseConfig(supplier) {
  */
 async function getScrapeableSupplier(db, supplierId) {
     const { rows } = await db.query(
-        `SELECT * FROM suppliers WHERE id = $1 AND active = true AND status != 'inactive'`,
+        `SELECT * FROM suppliers WHERE id = $1 AND active = true`,
         [supplierId]
     );
     if (rows.length === 0) {
