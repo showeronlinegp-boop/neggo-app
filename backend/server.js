@@ -84,6 +84,9 @@ app.use('/api/ingreso', require('./routes/ingreso'));
 // Listas de precios especiales para clientes
 app.use('/api/pricelists', require('./routes/pricelists'));
 
+// Publicación en grupos de WhatsApp (Evolution API)
+app.use('/api/whatsapp', require('./routes/whatsapp'));
+
 // Notas de prueba (marcar en pantalla + Claude Code). Sin la flag la ruta no existe → 404,
 // y el frontend esconde la herramienta.
 if (process.env.TEST_NOTES_ENABLED === '1') {
@@ -136,7 +139,12 @@ async function start() {
             console.log(`📦 Entorno: ${process.env.NODE_ENV || 'development'}`);
         });
 
-        // El scheduler (scraping programado, sync Odoo, alertas) corre en el scraper-worker
+        // El scheduler (scraping programado, sync Odoo, alertas) corre en el scraper-worker.
+        // Acá solo arranca la cola de WhatsApp.
+        const { startWhatsappWorker, stopWhatsappWorker } = require('./jobs/whatsappWorker');
+        startWhatsappWorker(pool);
+        process.on('SIGTERM', stopWhatsappWorker);
+        process.on('SIGINT', stopWhatsappWorker);
     } catch (error) {
         console.error('❌ Error al iniciar el servidor:', error.message);
         process.exit(1);

@@ -31,6 +31,7 @@ const Users             = lazy(() => import('./pages/admin/Users'));
 const ActivityLog       = lazy(() => import('./pages/admin/ActivityLog'));
 const AdminPanel        = lazy(() => import('./pages/admin/AdminPanel'));
 const OdooProducts      = lazy(() => import('./pages/admin/OdooProducts'));
+const WhatsAppPublish   = lazy(() => import('./pages/admin/WhatsAppPublish'));
 
 // ─── Fallback de carga ────────────────────────────────────────────────────────
 function PageLoader() {
@@ -83,6 +84,7 @@ export default function App() {
                         <Route path="/ingreso/:ingresoId"      element={<IngresoPreview />} />
                         <Route path="/admin"                    element={<AdminPanel />} />
                         <Route path="/admin/odoo-products"     element={<OdooProducts />} />
+                        <Route path="/admin/whatsapp"          element={<WhatsAppPublish />} />
                         <Route path="/usuarios"                element={<Users />} />
                         <Route path="/actividad"               element={<ActivityLog />} />
 
