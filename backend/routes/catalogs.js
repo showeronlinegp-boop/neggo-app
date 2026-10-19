@@ -1,30 +1,20 @@
 // Rutas de catálogos PDF
-// Generación por categoría destino, listado y descarga
+// Generación por categoría de Odoo, listado y descarga
 
 const path = require('path');
 const router = require('express').Router();
 const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
-const { generateCatalog, generateAllCatalogs } = require('../services/catalogService');
+const { generateCatalog, generateAllCatalogs, getCatalogCategories } = require('../services/catalogService');
 
-// GET /api/catalogs/categories — categorías destino disponibles para generar
-// Query: ?type=preventas|neggo (default: preventas)
+// GET /api/catalogs/categories — categorías de Odoo con productos para catálogo
+// Query: ?type=preventas|neggo (default: preventas). Devuelve [{ name, count }]
 router.get('/categories', authenticate, async (req, res) => {
     const type = req.query.type === 'neggo' ? 'neggo' : 'preventas';
-    const destCol = type === 'neggo' ? 'dest_category_neggo' : 'dest_category_preventas';
 
     try {
-        const { rows } = await pool.query(`
-            SELECT DISTINCT scr.${destCol} AS dest_category
-            FROM supplier_category_rules scr
-            JOIN suppliers s ON s.id = scr.supplier_id AND s.active = true
-            WHERE scr.active = true
-              AND COALESCE(scr.ignored, false) = false
-              AND scr.${destCol} IS NOT NULL
-            ORDER BY 1 ASC
-        `);
-        ok(res, rows.map(r => r.dest_category));
+        ok(res, await getCatalogCategories(type));
     } catch (err) {
         console.error('❌ Error al obtener categorías:', err.message);
         fail(res, err.message, 500);
