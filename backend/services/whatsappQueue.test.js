@@ -186,12 +186,15 @@ async function testSelection(pool, ids) {
     console.log('seleccion ok');
 }
 
+// Cabecera JPEG + relleno: pasa la validación de foto sin depender de Odoo.
+const FAKE_JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400)]).toString('base64');
+
 function senderOk() {
-    return { loadImage: async () => ({ base64: 'aG9sYQ==', mimetype: 'image/jpeg' }), sendImage: async () => 'evo-1' };
+    return { loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }), sendImage: async () => 'evo-1' };
 }
 
 function senderFail() {
-    return { loadImage: async () => ({ base64: 'aG9sYQ==' }), sendImage: async () => { throw new Error('grupo cerrado'); } };
+    return { loadImage: async () => ({ base64: FAKE_JPEG }), sendImage: async () => { throw new Error('grupo cerrado'); } };
 }
 
 async function stateOf(pool, batchId) {

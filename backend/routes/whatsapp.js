@@ -111,6 +111,7 @@ function pickView(p) {
         categ_name: p.categ_name,
         template_id: p.template_id,
         price_label: p.price_label,
+        url: p.url || null,
     };
 }
 

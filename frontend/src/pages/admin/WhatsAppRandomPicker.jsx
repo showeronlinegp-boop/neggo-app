@@ -216,6 +216,13 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
                                     <div style={{ fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.3, minHeight: 34 }}>{p.name}</div>
                                     <div style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{p.odoo_id}</div>
                                     <div style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text, ...t.numericStyle }}>{p.price_label}</div>
+                                    {p.url ? (
+                                        <a href={p.url} target="_blank" rel="noreferrer" style={{ fontSize: t.font.size.xs, color: t.color.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.url}>
+                                            Ver en la web
+                                        </a>
+                                    ) : (
+                                        <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Sin link en la web</span>
+                                    )}
                                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                         <Button size="sm" variant="ghost" onClick={() => sendNow(c.category, p)} disabled={working} title="Mandar esta foto ahora">
                                             Enviar ya

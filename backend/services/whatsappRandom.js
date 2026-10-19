@@ -2,6 +2,7 @@
 // (el mismo precio del catálogo PDF). No depende de los mapeos con proveedores.
 
 const { formatMoneyAR, buildCaption, COMPANIES } = require('./whatsappPrice');
+const { productLink, withLink } = require('./whatsappMessage');
 
 const MAX_PICK = 50;
 // Días en que un producto ya publicado no vuelve a salir en un sorteo.
@@ -54,6 +55,35 @@ function toProduct(row) {
     };
 }
 
+// Odoo de solo lectura: website_url de cada plantilla (/shop/<slug>-<id>).
+async function odooWebsiteUrls(company, templateIds) {
+    const { callOdoo, getCompanyIds } = require('../config/odoo');
+    const ids = await getCompanyIds();
+    const companyId = ids[company];
+    if (!companyId) throw new Error(`No encuentro la empresa ${company} en Odoo`);
+    const rows = await callOdoo('product.template', 'read', [templateIds], {
+        fields: ['website_url'],
+        context: { allowed_company_ids: [companyId] },
+    });
+    return new Map((rows || []).map((r) => [r.id, r.website_url || null]));
+}
+
+// Agrega el link de la web al texto. Si Odoo no responde se corta: no sale nada sin link.
+async function attachLinks(products, company, loadUrls = odooWebsiteUrls) {
+    if (!products.length) return products;
+    const templateIds = [...new Set(products.map((p) => p.template_id))];
+    let urls;
+    try {
+        urls = await loadUrls(company, templateIds);
+    } catch (err) {
+        throw new Error(`No pude leer los links de Odoo: ${err.message}`);
+    }
+    return products.map((p) => {
+        const url = productLink(urls.get(p.template_id));
+        return { ...p, url, caption: withLink(p.caption, url) };
+    });
+}
+
 async function listCategories(pool, company) {
     assertCompany(company);
     const { rows } = await pool.query(`
@@ -85,7 +115,7 @@ async function pickRandom(pool, { company, category, count = 20, excludeIds = []
         ORDER BY random()
         LIMIT $5
     `, [company, RECENT_DAYS, String(category), exclude, n]);
-    return rows.map(toProduct).filter(Boolean);
+    return attachLinks(rows.map(toProduct).filter(Boolean), company);
 }
 
 // Revalida lo elegido en pantalla: precio y foto se leen acá, no se confía en el cliente.
@@ -101,7 +131,8 @@ async function findByIds(pool, company, odooIds) {
           AND opc.odoo_id = ANY($2::int[])
     `, [company, ids]);
     const byId = new Map(rows.map(toProduct).filter(Boolean).map((p) => [p.odoo_id, p]));
-    return ids.map((id) => byId.get(id)).filter(Boolean);
+    const found = ids.map((id) => byId.get(id)).filter(Boolean);
+    return attachLinks(found, company);
 }
 
-module.exports = { listCategories, pickRandom, findByIds, MAX_PICK, RECENT_DAYS };
+module.exports = { listCategories, pickRandom, findByIds, attachLinks, toProduct, MAX_PICK, RECENT_DAYS };

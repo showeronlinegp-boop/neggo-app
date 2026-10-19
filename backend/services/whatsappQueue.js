@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { findPublishable } = require('./whatsappProducts');
+const { assertSendable } = require('./whatsappMessage');
 
 const ART = 'America/Argentina/Buenos_Aires';
 const LOCK_KEY = 842190;
@@ -85,6 +86,10 @@ async function createBatch(pool, input) {
     });
     if (products.length === 0) {
         throw new Error('No hay productos con foto y precio de catálogo para ese filtro');
+    }
+    const empty = products.find((p) => !/[\p{L}\p{N}]/u.test(String(p.caption || '')) || !p.template_id);
+    if (empty) {
+        throw new Error(`"${empty.name || empty.odoo_id}" no tiene texto o foto: no se puede programar`);
     }
     const groupJid = assertGroupJid(input.groupJid);
     const interval = clampInterval(input.intervalSeconds, 90);
@@ -392,13 +397,14 @@ async function tick(pool, deps, now = new Date()) {
         if (!message) return { action: 'idle' };
         try {
             const media = await deps.loadImage(message);
-            if (!media?.base64) throw new Error('Sin foto en Odoo');
+            // Nunca sale un mensaje sin texto o sin foto.
+            const ready = assertSendable({ caption: message.caption, base64: media?.base64 });
             const evolutionId = await deps.sendImage({
                 number: message.group_jid,
-                caption: message.caption,
-                base64: media.base64,
-                mimetype: media.mimetype || 'image/jpeg',
-                fileName: `producto-${message.odoo_id}.jpg`,
+                caption: ready.caption,
+                base64: ready.base64,
+                mimetype: ready.mimetype,
+                fileName: `producto-${message.odoo_id}.${ready.mimetype.split('/')[1]}`,
             });
             await markSent(pool, message, evolutionId, now);
             return { action: 'enviado', id: message.id };
