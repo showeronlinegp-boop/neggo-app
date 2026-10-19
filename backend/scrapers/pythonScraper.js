@@ -9,6 +9,10 @@ const PYTHON_DIR = path.join(__dirname, 'python');
 // Registry de procesos Python activos: runId → ChildProcess
 const _activeProcesses = new Map();
 
+// Runs cortados a propósito (pausa, reinicio del worker). Aunque el script Python atrape
+// SIGTERM y salga con código 0, el run tiene que quedar 'paused' y no borrar productos.
+const _stoppedRuns = new Set();
+
 /**
  * Mata el proceso Python de un run activo.
  * @param {number} runId
@@ -17,6 +21,7 @@ const _activeProcesses = new Map();
 function killProcess(runId) {
     const proc = _activeProcesses.get(runId);
     if (!proc) return false;
+    _stoppedRuns.add(runId);
     proc.kill('SIGTERM');
     _activeProcesses.delete(runId);
     return true;
@@ -29,6 +34,7 @@ function killProcess(runId) {
 function killAllProcesses() {
     let killed = 0;
     for (const [runId, proc] of _activeProcesses.entries()) {
+        _stoppedRuns.add(runId);
         proc.kill('SIGTERM');
         _activeProcesses.delete(runId);
         killed++;
@@ -256,12 +262,15 @@ class PythonScraper extends BaseScraper {
 
             proc.on('close', (code, sig) => {
                 _activeProcesses.delete(this.runId);
-                signal = sig; // 'SIGTERM' si fue pausado, null si terminó normalmente
+                // Cortado a propósito: lo marcó killProcess, murió por señal, o el script
+                // atrapó SIGTERM y salió con 143 (128 + 15)
+                const cortado = _stoppedRuns.delete(this.runId) || !!sig || code === 143;
+                signal = cortado ? (sig || 'SIGTERM') : null;
 
                 // Esperar a que se drene la cola de upserts antes de resolver
                 upsertQueue.then(() => {
                     rl.close();
-                    if (code !== 0 && code !== null) {
+                    if (!cortado && code !== 0 && code !== null) {
                         // code !== null: terminó con error (no es kill)
                         return reject(new Error(
                             `Script Python terminó con código ${code}:\n${stderrBuf.slice(-800)}`

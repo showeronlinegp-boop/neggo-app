@@ -251,7 +251,7 @@ if __name__ == '__main__':
                 driver.quit()
             except Exception:
                 pass
-        sys.exit(0)
+        sys.exit(143)  # 128 + SIGTERM: el backend lo toma como pausa
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

@@ -148,8 +148,8 @@ def scrape():
 
 
 if __name__ == '__main__':
-    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
-    signal.signal(signal.SIGINT, lambda signum, frame: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))  # 128 + SIGTERM: el backend lo toma como pausa
+    signal.signal(signal.SIGINT, lambda signum, frame: sys.exit(143))  # corte a propósito: el backend lo toma como pausa
 
     try:
         scrape()

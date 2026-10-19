@@ -1,5 +1,9 @@
 const puppeteer = require('puppeteer-core');
 const { processPriceChange } = require('../services/priceAlertService');
+const scrapingLogs = require('../services/scrapingLogs');
+
+// Proporción mínima de productos vistos en un run para eliminar los que no aparecieron
+const MIN_VISTOS_PARA_BORRAR = 0.5;
 
 /**
  * BaseScraper — clase base para todos los scrapers de proveedores.
@@ -331,6 +335,24 @@ class BaseScraper {
      */
     async markUnavailableSince(runStartedAt) {
         if (this.dryRun) return 0;
+
+        // Defensa: si este run vio menos de la mitad de lo que había, lo más probable es que
+        // se haya cortado a mitad de camino (reinicio, web caída). No se borra nada.
+        const { rows: [conteo] } = await this.pool.query(
+            `SELECT COUNT(*) FILTER (WHERE last_scraped_at >= $2)::INTEGER AS vistos,
+                    COUNT(*)::INTEGER AS total
+             FROM supplier_products
+             WHERE supplier_id = $1`,
+            [this.supplier.id, runStartedAt]
+        );
+        if (conteo.total > 0 && conteo.vistos < conteo.total * MIN_VISTOS_PARA_BORRAR) {
+            const msg = `⚠️ El run vio ${conteo.vistos} de ${conteo.total} productos ` +
+                `(menos del ${MIN_VISTOS_PARA_BORRAR * 100}%): no se elimina ninguno`;
+            console.warn(msg);
+            if (this.runId) scrapingLogs.appendLog(this.runId, msg);
+            return 0;
+        }
+
         const { rowCount } = await this.pool.query(
             `DELETE FROM supplier_products
              WHERE supplier_id = $1
