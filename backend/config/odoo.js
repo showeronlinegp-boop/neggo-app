@@ -171,14 +171,15 @@ async function getCompanyIds() {
         { fields: ['id', 'name'] }
     );
 
+    // La empresa de preventas en Odoo se llama "Precompras" (antes "Preventas")
+    const esPreventas = c => /preventa|precompra/i.test(c.name);
+    const idPorEnv = v => (parseInt(v, 10) || null);
+
     _companyIds = {
-        neggo: companies.find(
-            c => c.name.toLowerCase().includes('neggo')
-                && !c.name.toLowerCase().includes('preventa')
+        neggo: idPorEnv(process.env.ODOO_NEGGO_COMPANY_ID) ?? companies.find(
+            c => c.name.toLowerCase().includes('neggo') && !esPreventas(c)
         )?.id ?? null,
-        preventas: companies.find(
-            c => c.name.toLowerCase().includes('preventa')
-        )?.id ?? null
+        preventas: idPorEnv(process.env.ODOO_PREVENTAS_COMPANY_ID) ?? companies.find(esPreventas)?.id ?? null
     };
 
     console.log('📦 Company IDs cargados:', _companyIds);
