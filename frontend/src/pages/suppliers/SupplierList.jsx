@@ -700,13 +700,13 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
             <div style={sectionTitle}>Precios</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: t.space[4] }}>
                 <FormField label="Descuento (%)" error={errors.default_discount} tokens={t}>
-                    <Input type="number" size={6} min="0" max="100" step="0.01" placeholder="0" {...field('default_discount')} style={{ ...t.numericStyle, ...(errors.default_discount ? { borderColor: t.color.danger } : {}) }} />
+                    <Input type="number" min="0" max="100" step="0.01" placeholder="0" {...field('default_discount')} style={{ ...t.numericStyle, ...(errors.default_discount ? { borderColor: t.color.danger } : {}) }} />
                 </FormField>
                 <FormField label="Markup Neggo (%)" error={errors.markup_neggo} tokens={t}>
-                    <Input type="number" size={6} min="0" step="0.01" placeholder="0" {...field('markup_neggo')} style={{ ...t.numericStyle, ...(errors.markup_neggo ? { borderColor: t.color.danger } : {}) }} />
+                    <Input type="number" min="0" step="0.01" placeholder="0" {...field('markup_neggo')} style={{ ...t.numericStyle, ...(errors.markup_neggo ? { borderColor: t.color.danger } : {}) }} />
                 </FormField>
                 <FormField label="Markup Prev. (%)" error={errors.markup_preventas} tokens={t}>
-                    <Input type="number" size={6} min="0" step="0.01" placeholder="0" {...field('markup_preventas')} style={{ ...t.numericStyle, ...(errors.markup_preventas ? { borderColor: t.color.danger } : {}) }} />
+                    <Input type="number" min="0" step="0.01" placeholder="0" {...field('markup_preventas')} style={{ ...t.numericStyle, ...(errors.markup_preventas ? { borderColor: t.color.danger } : {}) }} />
                 </FormField>
             </div>
             {type === 'interno' && (
