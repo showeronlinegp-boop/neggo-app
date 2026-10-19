@@ -273,6 +273,74 @@ async function initDatabase() {
         await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS web_categ_id INTEGER`).catch(() => {});
         await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS web_categ_name VARCHAR(200)`).catch(() => {});
 
+        // Columnas que leen catálogos, sync de Odoo, preventas e ingreso.
+        // En una base ya creada, schema.sql no se vuelve a correr: estos ALTER
+        // son idempotentes. El markup se copia de default_markup / markup_override
+        // solo la primera vez que la columna no existe, para no pisar valores.
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'suppliers' AND column_name = 'markup_neggo'
+                ) THEN
+                    ALTER TABLE suppliers ADD COLUMN markup_neggo NUMERIC(5,2) DEFAULT 0;
+                    UPDATE suppliers SET markup_neggo = COALESCE(default_markup, 0);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'suppliers' AND column_name = 'markup_preventas'
+                ) THEN
+                    ALTER TABLE suppliers ADD COLUMN markup_preventas NUMERIC(5,2) DEFAULT 0;
+                    UPDATE suppliers SET markup_preventas = COALESCE(default_markup, 0);
+                END IF;
+            END $$;
+        `);
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'supplier_category_rules'
+                      AND column_name = 'markup_neggo_override'
+                ) THEN
+                    ALTER TABLE supplier_category_rules ADD COLUMN markup_neggo_override NUMERIC(5,2);
+                    UPDATE supplier_category_rules
+                       SET markup_neggo_override = markup_override
+                     WHERE markup_override IS NOT NULL;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'supplier_category_rules'
+                      AND column_name = 'markup_preventas_override'
+                ) THEN
+                    ALTER TABLE supplier_category_rules ADD COLUMN markup_preventas_override NUMERIC(5,2);
+                    UPDATE supplier_category_rules
+                       SET markup_preventas_override = markup_override
+                     WHERE markup_override IS NOT NULL;
+                END IF;
+            END $$;
+        `);
+        await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS template_id INTEGER`);
+        await pool.query(`ALTER TABLE odoo_products_cache ADD COLUMN IF NOT EXISTS has_image BOOLEAN NOT NULL DEFAULT FALSE`);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS client_pricelists (
+                id                SERIAL PRIMARY KEY,
+                name              VARCHAR(200) NOT NULL,
+                description       TEXT,
+                default_descuento NUMERIC(6,2) NOT NULL DEFAULT 0,
+                active            BOOLEAN DEFAULT true,
+                created_by        INTEGER REFERENCES users(id),
+                created_at        TIMESTAMP DEFAULT NOW(),
+                updated_at        TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        await pool.query(`ALTER TABLE preventa_client_orders ADD COLUMN IF NOT EXISTS pricelist_id INTEGER REFERENCES client_pricelists(id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_pco_pricelist ON preventa_client_orders(pricelist_id)`);
+        await pool.query(`ALTER TABLE ingreso_items ADD COLUMN IF NOT EXISTS preventa_qty_confirmed INTEGER NOT NULL DEFAULT 0`);
+        await pool.query(`ALTER TABLE ingreso_items ADD COLUMN IF NOT EXISTS match_level VARCHAR(30)`);
+        await pool.query(`ALTER TABLE ingreso_mercaderia ADD COLUMN IF NOT EXISTS odoo_purchase_order_id_preventas INTEGER`);
+
         console.log('✅ Base de datos inicializada correctamente');
     } catch (error) {
         console.error('❌ Error inicializando base de datos:', error.message);
