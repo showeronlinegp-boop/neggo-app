@@ -93,6 +93,8 @@ export default function OdooSupplierBreakdown() {
 
     const totalProducts = filtered.reduce((s, r) => s + r.total_products, 0);
     const totalQty      = filtered.reduce((s, r) => s + r.total_qty, 0);
+    // Monto a costo: lo que se le paga a los proveedores
+    const totalCost     = filtered.reduce((s, r) => s + (r.total_cost || 0), 0);
 
     const thStyle = {
         padding: '8px 12px', textAlign: 'left',
@@ -128,6 +130,7 @@ export default function OdooSupplierBreakdown() {
                     <Card><Stat label="Proveedores" value={filtered.length} icon={<Icon.Truck size={14} color={t.color.textMuted} />} /></Card>
                     <Card><Stat label="Productos únicos" value={totalProducts} icon={<Icon.Package size={14} color={t.color.textMuted} />} /></Card>
                     <Card><Stat label="Unidades totales" value={totalQty.toLocaleString('es-AR')} icon={<Icon.Activity size={14} color={t.color.textMuted} />} /></Card>
+                    <Card><Stat label="Monto total (costo)" value={fmtAR(totalCost)} icon={<Icon.ShoppingCart size={14} color={t.color.textMuted} />} /></Card>
                 </div>
             )}
 
