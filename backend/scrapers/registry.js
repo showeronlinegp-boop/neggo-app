@@ -2,6 +2,7 @@ const CastScraper = require('./cast');
 const MaliScraper = require('./mali');
 const ImpoteknóScraper = require('./impotekno');
 const ElReyScraper = require('./elrey');
+const NurcellScraper = require('./nurcell');
 const NeggoScraper = require('./neggoScraper');
 
 /**
@@ -13,6 +14,7 @@ const SCRAPER_REGISTRY = {
     'mali': MaliScraper,
     'impotekno': ImpoteknóScraper,
     'elrey': ElReyScraper,
+    'nurcell': NurcellScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
 };

@@ -76,6 +76,13 @@ class BaseScraper {
 ### Impotekno (Catálogo público)
 - **Tipo**: Sitio con categorías y paginación estándar
 
+### Nurcell (Catálogo público, proveedor "Babu" en DB/Odoo, prefijo BB)
+- **Tipo**: Misma plataforma PHP que Impotekno, pero el HTML llega completo desde el servidor (sin JS)
+- **URL**: `catalogo2022x3.php?rub=99999` trae todo el catálogo en una sola página
+- **Scraper**: `nurcell_scraper.py` con urllib + BeautifulSoup (no usa Chromium)
+- **Selectores**: `div.caja_producto`, `#descrip h1` (nombre relleno con `___`), `#texto` (Codigo/Rubro), `strong.caja_precio_noimptk`
+- **SKU**: código normalizado → `PREBB{codigo}` coincide con el external_id de Precompras
+
 ### Neggo-Odoo (Self-scraping)
 - **Tipo**: Scrapeo del propio shop de Odoo (neggo.odoo.com/shop)
 - **Selectores Odoo**: `div.o_wsale_product_grid_wrapper`, `.o_wsale_products_item_title a`, `.oe_currency_value`
