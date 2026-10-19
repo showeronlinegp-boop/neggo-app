@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
     is_published BOOLEAN DEFAULT true,
     default_discount NUMERIC(5,2) DEFAULT 0,
     default_markup NUMERIC(5,2) DEFAULT 0,
+    markup_neggo NUMERIC(5,2) DEFAULT 0,
+    markup_preventas NUMERIC(5,2) DEFAULT 0,
     scrape_schedule VARCHAR(50),
     scrape_config JSONB DEFAULT '{}',
     last_scraped_at TIMESTAMP,
@@ -70,6 +72,8 @@ CREATE TABLE IF NOT EXISTS supplier_category_rules (
         -- true = se descarta completamente, no genera productos ni alertas
     discount_override NUMERIC(5,2),
     markup_override NUMERIC(5,2),
+    markup_neggo_override NUMERIC(5,2),
+    markup_preventas_override NUMERIC(5,2),
     active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(supplier_id, source_category)
@@ -215,6 +219,8 @@ CREATE TABLE IF NOT EXISTS odoo_products_cache (
     ext_id_clean VARCHAR(200),
     description_purchase TEXT,
     vendor_name VARCHAR(200),
+    template_id INTEGER,
+    has_image BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE(odoo_id, company)
 );
 
@@ -368,6 +374,7 @@ CREATE TABLE IF NOT EXISTS ingreso_mercaderia (
     items_count              INTEGER DEFAULT 0,
     total_monto              NUMERIC(14,2) DEFAULT 0,
     odoo_purchase_order_id   INTEGER DEFAULT NULL,
+    odoo_purchase_order_id_preventas INTEGER DEFAULT NULL,
     odoo_partner_id          INTEGER DEFAULT NULL,
     costo_envio              NUMERIC(14,2) DEFAULT 0,
     created_by_user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -405,6 +412,8 @@ CREATE TABLE IF NOT EXISTS ingreso_items (
         -- tildado durante el control físico de la mercadería
     checked_at              TIMESTAMP,
     checked_by              INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    preventa_qty_confirmed  INTEGER NOT NULL DEFAULT 0,
+    match_level             VARCHAR(30),
     created_at              TIMESTAMP DEFAULT NOW()
 );
 
@@ -693,6 +702,11 @@ CREATE TABLE IF NOT EXISTS client_pricelist_rules (
     created_at    TIMESTAMP DEFAULT NOW(),
     UNIQUE(pricelist_id, supplier_id)
 );
+
+-- La lista se crea después que el pedido: la columna va acá, no en el CREATE,
+-- para que el índice de abajo no falle en una base vacía.
+ALTER TABLE preventa_client_orders
+    ADD COLUMN IF NOT EXISTS pricelist_id INTEGER REFERENCES client_pricelists(id);
 
 CREATE INDEX IF NOT EXISTS idx_pl_active ON client_pricelists(active);
 CREATE INDEX IF NOT EXISTS idx_plr_pricelist ON client_pricelist_rules(pricelist_id);
