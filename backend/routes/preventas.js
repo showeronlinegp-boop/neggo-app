@@ -761,11 +761,12 @@ router.get('/ingreso-commitments', authenticate, async (req, res) => {
     }
 });
 
-// GET /api/preventas/odoo-quotations — cotizaciones de Preventas en Odoo
+// GET /api/preventas/odoo-quotations — cotizaciones enviadas de Preventas en Odoo
+// (los borradores no se muestran en la pantalla de Cotizaciones)
 router.get('/odoo-quotations', authenticate, async (req, res) => {
     try {
         const odooService = require('../services/odooService');
-        const quotations  = await odooService.getPreventasQuotations();
+        const quotations  = await odooService.getPreventasQuotations(['sent']);
         console.log(`📋 ${quotations.length} cotizaciones traídas de Odoo Preventas`);
         ok(res, quotations);
     } catch (err) {

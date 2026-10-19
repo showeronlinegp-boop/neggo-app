@@ -818,19 +818,20 @@ function normalizeQuotationLine(line, defaultCodes) {
 }
 
 /**
- * Trae todas las cotizaciones de venta (draft + sent) de la empresa Preventas,
+ * Trae las cotizaciones de venta de la empresa Preventas (por defecto draft + sent),
  * con sus líneas de productos. Pagina de a 200 hasta agotarlas.
  *
+ * @param {string[]} [states] - estados de sale.order a traer
  * @returns {Promise<Array>}
  */
-async function getPreventasQuotations() {
+async function getPreventasQuotations(states = ['draft', 'sent']) {
     const companyId = await resolveCompanyId('preventas');
     const context = { allowed_company_ids: [companyId] };
 
     const orders = await readAllPages((offset, limit) => callOdoo(
         'sale.order',
         'search_read',
-        [[['state', 'in', ['draft', 'sent']], ['company_id', '=', companyId]]],
+        [[['state', 'in', states], ['company_id', '=', companyId]]],
         {
             fields: ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'],
             order:  'id asc',
