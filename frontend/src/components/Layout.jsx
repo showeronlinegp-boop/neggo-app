@@ -5,6 +5,7 @@ import { useScrapingContext } from '../context/ScrapingContext';
 import { useTheme } from '../theme/ThemeContext';
 import * as Icon from './common/icons';
 import api from '../api/client';
+import TestNotes from './testNotes/TestNotes';
 
 // ─── Mapa de rutas a títulos ────────────────────────────────────────────────────
 const routeTitles = {
@@ -378,7 +379,8 @@ export default function Layout() {
                     title={pageTitle}
                     onMenuClick={isMobile ? toggleSidebar : undefined}
                 />
-                <main style={{
+                {/* data-app-main: contenedor que scrollea (lo usan los pines de las notas de prueba) */}
+                <main data-app-main="" style={{
                     flex: 1,
                     padding: t.layout.cardPadY,
                     overflowY: 'auto',
@@ -390,6 +392,9 @@ export default function Layout() {
 
             {/* Terminal de scraping — siempre visible sobre todo */}
             <ScrapingTerminal />
+
+            {/* Notas de prueba: solo admins; se oculta sola si el backend no las habilita */}
+            {user?.role === 'admin' && <TestNotes pantalla={pageTitle} />}
         </div>
     );
 }

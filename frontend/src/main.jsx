@@ -6,6 +6,10 @@ import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { ScrapingProvider } from './context/ScrapingContext';
 import App from './App';
+import { installCapture } from './components/testNotes/testNotesCapture';
+
+// Captura de errores para las notas de prueba (antes del render para no perder los primeros)
+installCapture({ ignore: url => url.includes('/api/test-notes') });
 
 // Registrar Service Worker
 if ('serviceWorker' in navigator) {

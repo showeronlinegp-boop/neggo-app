@@ -88,6 +88,34 @@ async function initDatabase() {
             ON CONFLICT (key) DO NOTHING
         `);
 
+        // Notas de prueba (migración 021). La tabla existe siempre; las rutas solo con TEST_NOTES_ENABLED=1
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS test_notes (
+                id           SERIAL PRIMARY KEY,
+                tipo         VARCHAR(20) NOT NULL DEFAULT 'error'
+                             CHECK (tipo IN ('error', 'mejora', 'duda')),
+                estado       VARCHAR(20) NOT NULL DEFAULT 'abierta'
+                             CHECK (estado IN ('abierta', 'en_curso', 'consulta', 'para_revisar', 'corregida', 'descartada')),
+                texto        TEXT NOT NULL,
+                respuesta    TEXT,
+                modo         TEXT[] NOT NULL DEFAULT '{}',
+                ruta         VARCHAR(500),
+                pantalla     VARCHAR(200),
+                selector     VARCHAR(2000),
+                elemento     VARCHAR(300),
+                pos_x        NUMERIC(8,4),
+                pos_y        NUMERIC(10,2),
+                contexto     JSONB NOT NULL DEFAULT '{}',
+                user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                resuelta_at  TIMESTAMP,
+                created_at   TIMESTAMP DEFAULT NOW(),
+                updated_at   TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_test_notes_estado ON test_notes(estado)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_test_notes_ruta ON test_notes(ruta)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_test_notes_user ON test_notes(user_id)`);
+
         // Proveedores iniciales (solo en una base vacía). Las credenciales van en .env, no acá.
         const { rows: suppliers } = await pool.query('SELECT COUNT(*) FROM suppliers');
         if (parseInt(suppliers[0].count, 10) === 0) {

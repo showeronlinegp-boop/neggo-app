@@ -30,6 +30,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - MALI_USERNAME=${MALI_USERNAME:-}
       - MALI_PASSWORD=${MALI_PASSWORD:-}
+      # Notas de prueba (marcar en pantalla + Claude Code). 1 = habilitadas para admins
+      - TEST_NOTES_ENABLED=${TEST_NOTES_ENABLED:-0}
       - CHROME_WS_ENDPOINT=ws://chrome:3000
       - STORAGE_PATH=/app/storage
     volumes:
