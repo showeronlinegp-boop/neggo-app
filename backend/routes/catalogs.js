@@ -77,9 +77,10 @@ router.get('/', authenticate, async (req, res) => {
 
         params.push(parseInt(limit), parseInt(offset));
         const { rows } = await pool.query(
-            `SELECT c.*, u.username as created_by_username
+            `SELECT c.*, u.username as created_by_username, du.username as downloaded_by_username
              FROM catalogs c
              LEFT JOIN users u ON u.id = c.generated_by
+             LEFT JOIN users du ON du.id = c.downloaded_by
              ${where}
              ORDER BY c.created_at DESC
              LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -105,10 +106,20 @@ router.get('/:id/download', authenticate, async (req, res) => {
         const catalog = rows[0];
         const filePath = path.resolve(catalog.file_path);
 
-        res.download(filePath, `catalogo-${catalog.category || catalog.type}-${catalog.id}.pdf`, (err) => {
+        res.download(filePath, `catalogo-${catalog.category || catalog.type}-${catalog.id}.pdf`, async (err) => {
             if (err) {
                 console.error('❌ Error al descargar catálogo:', err.message);
                 if (!res.headersSent) fail(res, 'Error al descargar el archivo', 500);
+                return;
+            }
+            // Marca el catálogo como descargado (la UI lo pinta dorado: ya se mandó)
+            try {
+                await pool.query(
+                    'UPDATE catalogs SET downloaded_at = NOW(), downloaded_by = $2 WHERE id = $1',
+                    [catalog.id, req.user.id]
+                );
+            } catch (e) {
+                console.error('⚠️ No se pudo marcar el catálogo como descargado:', e.message);
             }
         });
     } catch (err) {

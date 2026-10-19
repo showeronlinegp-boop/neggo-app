@@ -36,6 +36,7 @@ export default function DataTable({
   onRowClick,
   pagination,
   onPageChange,
+  rowStyle,
 }) {
   const { tokens: t } = useTheme();
   useEffect(() => { injectSkeletonKeyframes(); }, []);
@@ -101,6 +102,7 @@ export default function DataTable({
                   row={row}
                   columns={columns}
                   clickable={rowClickable}
+                  extraStyle={rowStyle ? rowStyle(row) : undefined}
                   onClick={rowClickable ? () => onRowClick(row) : undefined}
                   tokens={t}
                 />
@@ -147,16 +149,19 @@ export default function DataTable({
   );
 }
 
-function DataRow({ row, columns, clickable, onClick, tokens: t }) {
+// extraStyle: estilo por fila que pasa la página (p. ej. resaltar filas); el hover vuelve a su fondo
+function DataRow({ row, columns, clickable, onClick, extraStyle, tokens: t }) {
+  const baseBg = extraStyle?.background ?? 'transparent';
   return (
     <tr
       onClick={onClick}
       onMouseEnter={clickable ? (e) => { e.currentTarget.style.background = t.color.surface2; } : undefined}
-      onMouseLeave={clickable ? (e) => { e.currentTarget.style.background = 'transparent'; } : undefined}
+      onMouseLeave={clickable ? (e) => { e.currentTarget.style.background = baseBg; } : undefined}
       style={{
         borderTop: `1px solid ${t.color.border}`,
         cursor: clickable ? 'pointer' : 'default',
         transition: 'background 100ms',
+        ...extraStyle,
       }}
     >
       {columns.map((col) => (
