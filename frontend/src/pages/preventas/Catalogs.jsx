@@ -34,7 +34,7 @@ export default function Catalogs() {
 
     useEffect(() => { fetchCatalogs(); }, [page]);
 
-    // Preventas y Neggo no comparten categorías: hay que volver a pedirlas
+    // Las categorías salen de Odoo y cada empresa tiene las suyas: hay que volver a pedirlas
     // al cambiar el tipo, y soltar una categoría que no exista en el otro.
     useEffect(() => {
         let cancelled = false;
@@ -42,7 +42,7 @@ export default function Catalogs() {
             if (cancelled || !r.success) return;
             const list = r.data || [];
             setCategories(list);
-            setDestCategory(prev => (list.includes(prev) ? prev : ''));
+            setDestCategory(prev => (list.some(c => c.name === prev) ? prev : ''));
         });
         return () => { cancelled = true; };
     }, [type]);
@@ -92,7 +92,7 @@ export default function Catalogs() {
 
     const categoryOptions = [
         { value: '', label: 'Seleccioná…' },
-        ...categories.map(c => ({ value: c, label: c })),
+        ...categories.map(c => ({ value: c.name, label: `${c.name} (${c.count})` })),
     ];
 
     const cols = [
@@ -171,7 +171,7 @@ export default function Catalogs() {
                 </div>
                 {categories.length === 0 && (
                     <div style={{ marginTop: t.space[4], fontSize: t.font.size.sm, color: t.color.warn, fontFamily: t.font.family }}>
-                        Sin categorías configuradas. Configurá las reglas de categoría en cada proveedor primero.
+                        No hay productos de Odoo publicados y con precio para esta empresa. Revisá que el sync de Odoo esté al día.
                     </div>
                 )}
             </Card>

@@ -1,4 +1,6 @@
-// Servicio de generación de catálogos PDF por categoría destino
+// Servicio de generación de catálogos PDF por categoría de Odoo
+// Productos, precios y categorías salen de odoo_products_cache (sync de Odoo) y las
+// imágenes de product.template, siempre de la empresa elegida (Neggo o Preventas).
 // Diseño idéntico al script 2-generador_catalogos.py:
 //   - Header limpio: logo + categoría + línea gris (sin barra de color)
 //   - Grid 2×2, 9cm×11.5cm por celda
@@ -7,8 +9,9 @@
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const sharp = require('sharp');
 const pool = require('../config/database');
-const { calculatePrices } = require('./rulesEngine');
+const { callOdoo, getCompanyIds } = require('../config/odoo');
 
 // ── Medidas (1cm = 28.3465pt) ──────────────────────────────────────────────────
 const CM = 28.3465;
@@ -57,42 +60,60 @@ function formatPrice(amount) {
     return `${sign}$${grouped}`;
 }
 
-// ── Descarga de imagen ─────────────────────────────────────────────────────────
-async function fetchImage(url) {
-    if (!url) return null;
+// ── Imágenes desde Odoo ────────────────────────────────────────────────────────
+// Se piden en lotes por product.template: image_512 alcanza para impresión sin traer
+// el original. Las variantes comparten la imagen de su template.
+const IMG_BATCH = 40;
+
+// PDFKit solo acepta JPEG y PNG, y Odoo guarda muchas imágenes en WEBP.
+// Todas se pasan a JPEG liviano con fondo blanco (el fondo del catálogo) para que el
+// PDF se pueda compartir: la foto ocupa ~7cm, así que 400px alcanzan para pantalla e impresión.
+const IMG_MAX_PX = 400;
+const IMG_QUALITY = 70;
+
+async function toPdfImage(buf) {
     try {
-        const ctrl = new AbortController();
-        const tid  = setTimeout(() => ctrl.abort(), 12000);
-        const res  = await fetch(url, {
-            signal: ctrl.signal,
-            headers: { 'User-Agent': 'NeggoApp/1.0' }
-        });
-        clearTimeout(tid);
-        if (!res.ok) return null;
-        const ct = res.headers.get('content-type') || '';
-        if (!ct.startsWith('image/')) return null;
-        return Buffer.from(await res.arrayBuffer());
-    } catch (err) {
-        console.warn(`⚠️ fetchImage falló para ${url}: ${err.message}`);
+        return await sharp(buf)
+            .resize(IMG_MAX_PX, IMG_MAX_PX, { fit: 'inside', withoutEnlargement: true })
+            .flatten({ background: '#FFFFFF' })
+            .jpeg({ quality: IMG_QUALITY, mozjpeg: true })
+            .toBuffer();
+    } catch {
         return null;
     }
 }
 
-// Descarga imágenes con concurrencia limitada para evitar timeouts por saturación
-async function fetchImagesConcurrent(items, concurrency = 4) {
-    const results = new Array(items.length).fill(null);
-    let cursor = 0;
+async function fetchOdooImages(templateIds, company, concurrency = 3) {
+    const map = {};
+    const unique = [...new Set(templateIds.filter(Boolean))];
+    if (unique.length === 0) return map;
 
+    const ids = await getCompanyIds();
+    const context = ids[company] ? { allowed_company_ids: [ids[company]] } : {};
+
+    const batches = [];
+    for (let i = 0; i < unique.length; i += IMG_BATCH) batches.push(unique.slice(i, i + IMG_BATCH));
+
+    let cursor = 0;
     async function worker() {
-        while (cursor < items.length) {
-            const i = cursor++;
-            results[i] = await fetchImage(items[i].image_url);
+        while (cursor < batches.length) {
+            const batch = batches[cursor++];
+            try {
+                const rows = await callOdoo('product.template', 'read', [batch], { fields: ['image_512'], context });
+                for (const r of rows || []) {
+                    if (!r.image_512) continue;
+                    const img = await toPdfImage(Buffer.from(r.image_512, 'base64'));
+                    if (img) map[r.id] = img;
+                    else console.warn(`⚠️ Imagen de Odoo con formato no soportado (template ${r.id})`);
+                }
+            } catch (err) {
+                console.warn(`⚠️ No se pudieron traer imágenes de Odoo (lote de ${batch.length}): ${err.message}`);
+            }
         }
     }
 
-    const pool = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-    await Promise.all(pool);
-    return results;
+    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
+    return map;
 }
 
 // ── Header (logo + categoría + línea) ─────────────────────────────────────────
@@ -219,40 +240,41 @@ async function drawCard(doc, product, col, row) {
        });
 }
 
-// ── Obtener productos por categoría destino ────────────────────────────────────
-async function getProductsByDestCategory(destCategory, type = 'preventas') {
-    // La columna de destino depende de la empresa objetivo del catálogo
-    const destCol = type === 'neggo' ? 'dest_category_neggo' : 'dest_category_preventas';
+// ── Productos de Odoo por categoría ───────────────────────────────────────────
+// Entran los activos, publicados, con precio de venta y no archivados localmente
+const PRODUCT_FILTER = `
+    company = $1
+    AND active = true
+    AND locally_archived = false
+    AND is_published = true
+    AND list_price > 0
+    AND NULLIF(TRIM(categ_name), '') IS NOT NULL
+`;
 
+async function getProductsByCategory(category, company) {
     const { rows } = await pool.query(`
-        SELECT
-            sp.id, sp.name, sp.sku, sp.raw_price, sp.image_url, sp.source_category,
-            s.id          AS supplier_id,
-            s.name        AS supplier_name,
-            s.default_discount,
-            s.default_markup,
-            s.markup_neggo,
-            s.markup_preventas,
-            scr.discount_override,
-            scr.markup_override,
-            scr.markup_neggo_override,
-            scr.markup_preventas_override
-        FROM supplier_products sp
-        JOIN suppliers s
-            ON s.id = sp.supplier_id
-            AND s.active = true
-            AND s.is_published = true
-        JOIN supplier_category_rules scr
-            ON scr.supplier_id = sp.supplier_id
-            AND scr.source_category = sp.source_category
-            AND scr.active = true
-            AND COALESCE(scr.ignored, false) = false
-            AND scr.${destCol} = $1
-        WHERE sp.available = true
-            AND sp.raw_price IS NOT NULL
-            AND sp.raw_price > 0
-        ORDER BY s.name ASC, sp.name ASC
-    `, [destCategory]);
+        SELECT odoo_id, template_id, name, internal_ref, list_price, has_image
+        FROM odoo_products_cache
+        WHERE ${PRODUCT_FILTER}
+          AND categ_name = $2
+        ORDER BY name ASC
+    `, [company, category]);
+    return rows;
+}
+
+/**
+ * Categorías de Odoo que tienen productos para catálogo, con su cantidad.
+ * @param {'preventas'|'neggo'} company
+ * @returns {Promise<Array<{ name: string, count: number }>>}
+ */
+async function getCatalogCategories(company) {
+    const { rows } = await pool.query(`
+        SELECT categ_name AS name, COUNT(*)::int AS count
+        FROM odoo_products_cache
+        WHERE ${PRODUCT_FILTER}
+        GROUP BY categ_name
+        ORDER BY categ_name ASC
+    `, [company]);
     return rows;
 }
 
@@ -272,38 +294,21 @@ async function generateCatalog({ destCategory, type = 'preventas', createdBy }) 
         throw new Error(`Tipo inválido: "${type}". Usar 'preventas' o 'neggo'`);
     }
 
-    const products = await getProductsByDestCategory(destCategory, type);
+    const products = await getProductsByCategory(destCategory, type);
     if (products.length === 0) {
-        throw new Error(`No hay productos disponibles para la categoría "${destCategory}"`);
+        throw new Error(`No hay productos de Odoo publicados y con precio en la categoría "${destCategory}"`);
     }
 
     console.log(`📦 Generando catálogo "${destCategory}" (${type}): ${products.length} productos`);
 
-    // Calcular precios (síncrono, liviano)
-    const priced = products.map(p => {
-        const supplier = {
-            default_discount: p.default_discount,
-            default_markup:   p.default_markup,
-            markup_neggo:     p.markup_neggo,
-            markup_preventas: p.markup_preventas,
-        };
-        const rule = {
-            discount_override:         p.discount_override,
-            markup_override:           p.markup_override,
-            markup_neggo_override:     p.markup_neggo_override,
-            markup_preventas_override: p.markup_preventas_override,
-        };
-        return { ...p, salePrice: calculatePrices(p, supplier, rule, type).sale_price };
-    });
+    // Precio de venta tal cual está en Odoo; imágenes desde product.template
+    const images = await fetchOdooImages(products.filter(p => p.has_image).map(p => p.template_id), type);
 
-    // Descargar imágenes con concurrencia limitada (12 a la vez) — balance entre velocidad y no saturar
-    const imageBuffers = await fetchImagesConcurrent(priced, 12);
-
-    const enriched = priced.map((p, i) => ({
+    const enriched = products.map(p => ({
         name: p.name,
-        sku:  p.sku,
-        salePrice: p.salePrice,
-        imageBuffer: imageBuffers[i],
+        sku:  p.internal_ref,
+        salePrice: Number(p.list_price),
+        imageBuffer: (p.template_id && images[p.template_id]) || null,
     }));
 
     const withImages = enriched.filter(p => p.imageBuffer).length;
@@ -393,20 +398,8 @@ async function generateCatalog({ destCategory, type = 'preventas', createdBy }) 
 
 // ── Generar todos los catálogos ────────────────────────────────────────────────
 async function generateAllCatalogs({ type = 'preventas', createdBy }) {
-    const destCol = type === 'neggo' ? 'dest_category_neggo' : 'dest_category_preventas';
-
-    const { rows } = await pool.query(`
-        SELECT DISTINCT scr.${destCol} AS dest_category
-        FROM supplier_category_rules scr
-        JOIN suppliers s ON s.id = scr.supplier_id AND s.active = true AND s.is_published = true
-        WHERE scr.active = true
-          AND COALESCE(scr.ignored, false) = false
-          AND scr.${destCol} IS NOT NULL
-        ORDER BY 1 ASC
-    `);
-
-    const categories = rows.map(r => r.dest_category);
-    if (categories.length === 0) throw new Error('No hay categorías destino configuradas');
+    const categories = (await getCatalogCategories(type)).map(c => c.name);
+    if (categories.length === 0) throw new Error('No hay categorías de Odoo con productos publicados');
 
     console.log(`📦 Generando ${categories.length} catálogos en batch (${type})...`);
 
@@ -426,4 +419,4 @@ async function generateAllCatalogs({ type = 'preventas', createdBy }) {
     return results;
 }
 
-module.exports = { generateCatalog, generateAllCatalogs };
+module.exports = { generateCatalog, generateAllCatalogs, getCatalogCategories };
