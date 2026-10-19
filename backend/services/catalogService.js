@@ -65,16 +65,19 @@ function formatPrice(amount) {
 // el original. Las variantes comparten la imagen de su template.
 const IMG_BATCH = 40;
 
-// PDFKit solo acepta JPEG y PNG; Odoo guarda muchas imágenes en WEBP.
-// Lo que no sea JPEG/PNG se convierte a JPEG con fondo blanco (el fondo del catálogo).
-function isJpegOrPng(buf) {
-    return (buf[0] === 0xFF && buf[1] === 0xD8) || (buf[0] === 0x89 && buf[1] === 0x50);
-}
+// PDFKit solo acepta JPEG y PNG, y Odoo guarda muchas imágenes en WEBP.
+// Todas se pasan a JPEG liviano con fondo blanco (el fondo del catálogo) para que el
+// PDF se pueda compartir: la foto ocupa ~7cm, así que 400px alcanzan para pantalla e impresión.
+const IMG_MAX_PX = 400;
+const IMG_QUALITY = 70;
 
 async function toPdfImage(buf) {
-    if (isJpegOrPng(buf)) return buf;
     try {
-        return await sharp(buf).flatten({ background: '#FFFFFF' }).jpeg({ quality: 85 }).toBuffer();
+        return await sharp(buf)
+            .resize(IMG_MAX_PX, IMG_MAX_PX, { fit: 'inside', withoutEnlargement: true })
+            .flatten({ background: '#FFFFFF' })
+            .jpeg({ quality: IMG_QUALITY, mozjpeg: true })
+            .toBuffer();
     } catch {
         return null;
     }
