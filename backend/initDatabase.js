@@ -75,40 +75,32 @@ async function initDatabase() {
             END $$;
         `).catch(() => {});
 
-        // Verificar proveedores iniciales
+        // Fuentes de scraping (migración 019): web vs Neggo interno + habilitación por proveedor
+        await pool.query(`ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS scrape_enabled BOOLEAN NOT NULL DEFAULT false`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_suppliers_scrape_enabled ON suppliers(scrape_enabled)`);
+        await pool.query(`ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS source VARCHAR(10) NOT NULL DEFAULT 'web'`);
+        await pool.query(`ALTER TABLE supplier_products ADD CONSTRAINT supplier_products_source_check CHECK (source IN ('web', 'neggo'))`).catch(() => {});
+        await pool.query(`ALTER TABLE supplier_products ADD COLUMN IF NOT EXISTS neggo_odoo_id INTEGER`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_sp_neggo_odoo ON supplier_products(neggo_odoo_id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_sp_source ON supplier_products(source)`);
+        await pool.query(`
+            INSERT INTO app_config (key, value) VALUES ('preventas_inactivar_max_dias', '7')
+            ON CONFLICT (key) DO NOTHING
+        `);
+
+        // Proveedores iniciales (solo en una base vacía). Las credenciales van en .env, no acá.
         const { rows: suppliers } = await pool.query('SELECT COUNT(*) FROM suppliers');
         if (parseInt(suppliers[0].count, 10) === 0) {
             await pool.query(`
                 INSERT INTO suppliers
-                    (name, prefix, website_url, scraper_key, price_format, default_discount, default_markup, status, scrape_config)
+                    (name, prefix, website_url, scraper_key, price_format, status, scrape_enabled)
                 VALUES
-                    ('CastMayorista', 'CAST', 'https://www.castmayorista.com.ar', 'cast',       'ar', 0, 0, 'active', '{}'),
-                    ('Mali',          'MALI', 'https://www.mali.com.ar',          'mali',       'ar', 0, 0, 'active', '{"username":"tahocesm@yahoo.com.ar","password":"mariano"}'),
-                    ('El Rey',        'REY',  'https://catalog.smarty.com.ar',    'elrey',      'ar', 0, 0, 'active', '{"token":"574abb0c8c154b8d46e3cd9e8d99c5b8ab5f00ad","category_ids":[9732,9728,7335,9730,9727]}'),
-                    ('Impotekno',     'IMP',  'https://impotekno.com',            'impotekno',  'ar', 0, 0, 'active', '{}'),
-                    ('Neggo Odoo',    'NEG',  'https://neggo.odoo.com',           'neggo-odoo', 'ar', 0, 0, 'active', '{}')
+                    ('CastMayorista', 'CT', 'https://www.castmayorista.com.ar', 'cast',      'ar', 'active', true),
+                    ('Mali',          'ML', 'https://www.mali.com.ar',          'mali',      'ar', 'active', true),
+                    ('El Rey',        'ER', 'https://catalog.smarty.com.ar',    'elrey',     'ar', 'active', true),
+                    ('Impotekno',     'IT', 'https://impotekno.com',            'impotekno', 'ar', 'active', true)
             `);
-            console.log('✅ Proveedores iniciales creados (Cast, Mali, El Rey, Impotekno, Neggo Odoo)');
-        } else {
-            // Si ya existen, asegurar que tengan scrape_config y status correcto
-            await pool.query(`
-                UPDATE suppliers SET
-                    scrape_config = '{"username":"tahocesm@yahoo.com.ar","password":"mariano"}',
-                    status = 'active'
-                WHERE scraper_key = 'mali' AND (scrape_config IS NULL OR scrape_config = '{}')
-            `);
-            await pool.query(`
-                UPDATE suppliers SET
-                    scrape_config = '{"token":"574abb0c8c154b8d46e3cd9e8d99c5b8ab5f00ad","category_ids":[9732,9728,7335,9730,9727]}',
-                    website_url = 'https://catalog.smarty.com.ar',
-                    status = 'active'
-                WHERE scraper_key = 'elrey' AND (scrape_config IS NULL OR scrape_config = '{}')
-            `);
-            await pool.query(`
-                UPDATE suppliers SET status = 'active'
-                WHERE scraper_key IN ('cast', 'impotekno', 'neggo-odoo') AND status = 'staging'
-            `);
-            console.log('✅ Configuración de proveedores verificada/actualizada');
+            console.log('✅ Proveedores iniciales creados (Cast, Mali, El Rey, Impotekno)');
         }
 
         // Verificar config inicial

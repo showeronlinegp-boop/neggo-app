@@ -28,6 +28,8 @@ services:
       - ODOO_USER_ID=${ODOO_USER_ID:-2}
       - ODOO_API_KEY=${ODOO_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MALI_USERNAME=${MALI_USERNAME:-}
+      - MALI_PASSWORD=${MALI_PASSWORD:-}
       - CHROME_WS_ENDPOINT=ws://chrome:3000
       - STORAGE_PATH=/app/storage
     volumes:
