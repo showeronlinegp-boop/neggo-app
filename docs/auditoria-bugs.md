@@ -1,390 +1,588 @@
 # Auditoría de bugs — Neggo App
 
-Lectura estática de `master` (código en `af61429`, 19 de octubre de 2026). No se modificó lógica de la aplicación. No se levantó Docker ni se llamó a Odoo: cada ítem sale de leer el archivo y seguir el flujo.
+Lectura estática de `master` (`af61429`, 19 de octubre de 2026). No se cambió código de la aplicación y no se llamó a Odoo. Cada ítem trae importancia, consecuencia de negocio y arreglo mínimo.
 
-Severidad:
+Dentro de cada módulo van primero los críticos, después altos, medios y bajos. Si un PR abierto ya lo cubre, está marcado. Esos PR todavía no están en `master`.
 
-| Nivel | Cuándo |
+| PR | Qué cierra |
 |---|---|
-| Crítico | Pierde datos, escribe mal en Odoo, o permite entrar como admin |
-| Alto | El flujo principal da un resultado equivocado o no se puede reintentar |
-| Medio | Falla en un caso concreto, o el operador no ve el error |
-| Bajo | Deuda, log o borde poco frecuente |
-
-## Qué ya cubren los PRs abiertos
-
-No hace falta reabrir estos temas. El detalle de los cuatro flujos está en `docs/plan-arreglos-criticos.md`.
-
-| PR | Rama | Qué cierra en `master` |
-|---|---|---|
-| [#2](https://github.com/showeronlinegp-boop/neggo-app/pull/2) | `cursor/schema-columnas-criticas-f7f3` | `schema.sql:700` crea `idx_pco_pricelist` sobre `preventa_client_orders(pricelist_id)` y el `CREATE TABLE` (líneas 231-246) no tiene esa columna: un Postgres vacío aborta el entrypoint. El mismo PR agrega en `schema.sql` y en `initDatabase.js` las columnas que el código ya lee y las migraciones `003`, `004`, `005`, `011`, `016` y `018` declaran: `markup_neggo` / `markup_preventas`, overrides de markup, `template_id` y `has_image`, `preventa_qty_confirmed`, `match_level`, `odoo_purchase_order_id_preventas`, `pricelist_id`. |
-| [#3](https://github.com/showeronlinegp-boop/neggo-app/pull/3) | `cursor/catalogos-pdf-f7f3` (encima del #2) | Precio del PDF con `toLocaleString('es-AR')` en Alpine (`catalogService.js:49-51`). Logo buscado en `../../volumes/storage` en vez de `STORAGE_PATH` (`catalogService.js:44`). `Catalogs.jsx:33-36` pide categorías una sola vez, sin `type`. El `JOIN` del catálogo no excluye `ignored = true` (`catalogService.js:239-243`, `catalogs.js:18-24`). |
-| [#4](https://github.com/showeronlinegp-boop/neggo-app/pull/4) | `cursor/preventas-pedidos-proveedor-f7f3` (encima del #2) | `getPreventasQuotations` corta en 200 (`odooService.js:775`) y las líneas pueden volver truncadas. Nginx deja `/api/preventas/odoo-quotations` y `/api/ingreso/` en 30 s (`nginx.conf:91-102`). Líneas de sección sin `product_id` entran a la compra (`odooService.js:821-835`). El agrupado usa `vendor_name` y no `product_mappings` (`preventas.js:771-821`). El PDF de ese pedido formatea con `Intl` `es-AR` (`preventas.js:899-901` y `1005`) y, si Chrome no conecta, la pantalla traga el error (`OdooSupplierBreakdown.jsx`). El servicio `backend` no espera a `chrome` (`docker-compose.yml:35-38`). |
-| [#5](https://github.com/showeronlinegp-boop/neggo-app/pull/5) | `cursor/whatsapp-evolution-f7f3` (encima del #2) | Feature nueva (Evolution API). No corrige bugs de `master`. `docs/plan-arreglos-criticos.md` dice que WhatsApp no está en el repo: eso sigue siendo cierto en `master`; el código vive solo en ese PR. |
-
-Los PR #3, #4 y #5 no entran a `master` hasta que el #2 esté mergeado y se les cambie la base.
-
-## Ya escrito en el plan, todavía sin PR de código
-
-`docs/plan-arreglos-criticos.md` los describe y ningún PR #2-#5 los toca. Se listan acá para no abrir un tercer documento con el mismo arreglo.
-
-| Sev. | Dónde | Qué pasa | Arreglo mínimo |
-|---|---|---|---|
-| Alto | `ingresoService.js:218-220` | El match de factura hace `UPPER(sp.sku) LIKE '%' \|\| codigo \|\| '%'`. El código `100` matchea el SKU que contiene `1001` y queda `matched` con confianza 1. | Igualdad sobre el SKU normalizado (el nivel de las líneas 274-289). Sacar el `LIKE`. |
-| Alto | `ingresoService.js:316-320`, `IngresoPreview.jsx:448` | Un fuzzy de nombre ≥ 0,72 se guarda como `matched`. La pantalla lo trata como identificado. | Dejar `fuzzy_name` en `pending` y mostrar el candidato para que alguien lo acepte. |
-| Alto | `ingreso.js:2018-2032`, `IngresoPreview.jsx:2063` | Dos renglones de la misma factura con el mismo código se muestran sumados, pero la cantidad de Preventas se guarda solo en el primer `id`. El otro renglón entra entero a Neggo. | Repartir `preventa_qty_confirmed` en todos los ítems de ese código, o fusionar antes de confirmar (`merge-duplicate-items` ya existe en `ingreso.js:2199`). |
-| Alto | `ingreso.js:2142-2147` | La pestaña Preventa propone una cotización por parecido de nombre (0,72), no solo por código. | Proponer por código. El timeout de esa lectura lo cubre el PR #4. |
-| Alto | `preventasService.js:248-264` | `generateSupplierOrders` exige `supplier_product_id`. Un pedido armado desde el cache de Odoo responde "no tienen ítems". El PR #4 no toca Órdenes a proveedores: arregla Pedidos x Proveedor. | Si el ítem es de Odoo, resolver el proveedor por `product_mappings`. Solo hace falta si la compra sale de esa pantalla. |
+| [#2](https://github.com/showeronlinegp-boop/neggo-app/pull/2) | Columnas que el código lee y el schema no crea, y el índice `idx_pco_pricelist` que aborta una base vacía. |
+| [#3](https://github.com/showeronlinegp-boop/neggo-app/pull/3) | PDF de catálogos: miles, logo, categorías al cambiar de tipo, reglas ignoradas. Depende del #2. |
+| [#4](https://github.com/showeronlinegp-boop/neggo-app/pull/4) | Pedidos x Proveedor: paginado de cotizaciones, timeouts, líneas sin producto, agrupado, PDF y Chrome. Depende del #2. No toca Órdenes a proveedores. |
+| [#5](https://github.com/showeronlinegp-boop/neggo-app/pull/5) | WhatsApp nuevo. No corrige bugs de `master`. |
 
 ## 1. Auth y usuarios
 
-### Crítico — JWT por defecto y el token no se revalida
+### Crítico — El token de admin se puede firmar, y desactivar un usuario no corta la sesión
 
-`docker-compose.yml:25` publica `JWT_SECRET=${JWT_SECRET:-cambiar_en_produccion_abc123}`. `middleware/auth.js:4` usa `process.env.JWT_SECRET || 'dev_secret'` si la variable no llega. Con ese secreto cualquiera firma un token `{ role: 'admin' }` válido 24 h (`auth.js:46-51`).
+`docker-compose.yml:25`, `middleware/auth.js:4`, `auth.js:16-22`, `users.js:137-140`.
 
-`authenticate` (`auth.js:16-22`) copia `id` y `role` del token y no lee `users`. Desactivar un usuario (`users.js:137-140`) o bajarle el rol no corta la sesión: el login sí mira `active` (`routes/auth.js:29-31`), el resto de la API no.
+**Importancia.** Crítica: es la puerta de toda la app. Con el secreto por defecto (`cambiar_en_produccion_abc123`, o `dev_secret` si la variable no llega) cualquiera arma un JWT con `role: admin` válido 24 horas. Aunque el secreto esté bien puesto, `authenticate` no vuelve a leer `users`: bajar de rol o desactivar deja la sesión viva hasta que vence el token.
 
-**Reproducción.** Dejar el compose sin `JWT_SECRET` en el `.env`. Firmar un JWT con el default, header `Authorization: Bearer …`, y llamar `GET /api/users`. Responde 200. Desactivar a ese usuario en la base y repetir la llamada: sigue 200 hasta que vence el token.
+**Consecuencias.** Quien firme ese token cambia precios, confirma ingresos, crea órdenes de compra en Odoo y da de alta usuarios. Un empleado que ya no debería entrar sigue operando un día entero.
 
-**Arreglo.** Exigir `JWT_SECRET` al arrancar (salir si falta o si es el default). En `authenticate`, leer `active` y `role` de `users` (o un `token_version` que se incremente al desactivar o cambiar el rol).
+**Cómo arreglarlo.** Si `JWT_SECRET` falta o es uno de los dos defaults, no arrancar. En `authenticate`, leer `active` y `role` de `users` en cada request (o un `token_version` que suba al desactivar o cambiar el rol).
 
-### Alto — contraseña incorrecta se muestra como sesión vencida
+### Alto — Una clave mal escrita se ve como "sesión expirada"
 
-`routes/auth.js:35-36` responde 401 si la clave no coincide. `frontend/src/api/client.js:35-38` trata todo 401 igual: borra el token, pone `window.location.href = '/login'` y devuelve `'Sesión expirada'` sin leer el cuerpo. `Login.jsx:33-34` nunca llega a mostrar "Usuario o contraseña incorrectos" porque la página se recarga.
+`routes/auth.js:35-36`, `frontend/src/api/client.js:35-38`, `Login.jsx:33-34`.
 
-**Arreglo.** En `request()`, si la URL es `/auth/login`, parsear el JSON y devolver `error` del backend. No redirigir.
+**Importancia.** Alta para el día a día: es el primer paso de cualquier operador. El login responde 401 con el texto correcto, y el cliente trata todo 401 como sesión vencida, borra el token y recarga `/login`.
 
-### Alto — cualquier sesión llega a pantallas de admin
+**Consecuencias.** La persona no sabe si escribió mal la clave, si el usuario está desactivado o si el servidor falló. Reintenta a ciegas o pide que le reseteen la clave. No pierde pedidos, pero bloquea el turno hasta que alguien mire el log.
 
-`ProtectedRoute.jsx:16` solo pregunta si hay usuario. El menú filtra por rol (`Layout.jsx:298`), las rutas de `App.jsx:77-87` no. Un vendedor abre `/usuarios`, `/admin` o `/ingreso` por URL. Varias de esas APIs además no exigen rol (ver ingreso y productos).
+**Cómo arreglarlo.** Si la URL es `/auth/login`, leer el JSON y mostrar `error` del backend. No redirigir.
 
-**Arreglo.** Un wrapper que reciba `roles` y redirija, alineado con `requireRole` de cada ruta.
+### Alto — El menú esconde pantallas que la URL no esconde
 
-### Medio — admin inicial `admin123`
+`ProtectedRoute.jsx:16`, `App.jsx:77-87`, `Layout.jsx:298`.
 
-`initDatabase.js:12-19` crea `admin` / `admin123` si no existe y lo imprime en el log. No lo rota en arranques siguientes.
+**Importancia.** Alta porque el rol es lo único que separa a un vendedor de confirmar mercadería o administrar usuarios. El menú filtra; el router solo pregunta si hay sesión.
 
-**Arreglo.** Crear el usuario solo si no hay ninguno, con clave tomada de `ADMIN_PASSWORD`, y no loguearla. Forzar cambio en el primer login.
+**Consecuencias.** Un vendedor abre `/ingreso` o `/usuarios` y llega a pantallas de admin. Combinado con rutas que no exigen rol (el `PATCH` de ítems de ingreso, el archivo de productos), puede cambiar un precio de lista en Odoo o ver datos que no le corresponden.
 
-### Bajo — sin límite de intentos de login
+**Cómo arreglarlo.** Un guard de ruta que reciba los mismos roles que `requireRole` y redirija al inicio.
 
-`routes/auth.js:9-54` no cuenta fallos. Con el admin por defecto, un barrido corto entra.
+### Medio — El admin de fábrica es `admin123` y se imprime en el log
 
-**Arreglo.** Ventana corta por IP + usuario (por ejemplo 5 intentos / 15 min) antes de hashear.
+`initDatabase.js:12-19`.
+
+**Importancia.** Media en una red de la oficina, alta si el puerto 80 o el 3000 se ven desde afuera. Solo se crea si el usuario `admin` no existe; no se rota después.
+
+**Consecuencias.** Con esa clave se entra como admin: precios, órdenes y usuarios. La clave queda en los logs del contenedor.
+
+**Cómo arreglarlo.** Crearlo solo si no hay ningún usuario, con `ADMIN_PASSWORD` del entorno, sin loguearla, y obligar a cambiarla en el primer login.
+
+### Bajo — No hay límite de intentos de login
+
+`routes/auth.js:9-54`.
+
+**Importancia.** Baja mientras la clave del admin no sea la de fábrica. Sube junto con el ítem anterior.
+
+**Consecuencias.** Un barrido corto prueba `admin123` y variantes. Si entra, el daño es el del ítem crítico de esta sección.
+
+**Cómo arreglarlo.** Cortar por IP y usuario (por ejemplo 5 intentos en 15 minutos) antes de comparar el hash.
 
 ## 2. Activity log
 
-### Bajo — el middleware está montado en `/api` y lee `req.path` como si fuera la URL completa
+### Bajo — El log no guarda a qué registro se le pegó
 
-`server.js:49` hace `app.use('/api', activityLog)`. Dentro del middleware, `req.path` es `/users/5`, no `/api/users/5`.
+`server.js:49`, `middleware/activityLog.js:4-24` y `31`.
 
-- `activityLog.js:31` compara con `'/api/health'` y nunca excluye el health (igual no se guarda, porque no hay `req.user`).
-- `extractEntity` (`activityLog.js:20-24`) hace `path.replace('/api/', '')`. Con `/users/5` el split deja `['', 'users', '5']`. `parts[1]` no es numérico, así que `entity_type` queda `''` y `entity_id` null. El log no apunta al registro tocado.
-- El mapa (`activityLog.js:4-14`) no nombra ingreso, pricelists ni preventas-sync: caen en `general`. Ya está anotado en `docs/estado-implementacion.md`.
+**Importancia.** Baja para vender. Importa el día que hay que reconstruir quién cambió un precio o confirmó un ingreso.
 
-**Arreglo.** Usar `req.originalUrl` (sin query) para módulo y entidad.
+**Consecuencias.** El middleware está montado en `/api`, así que `req.path` es `/users/5` y no `/api/users/5`. `extractEntity` no saca el id: `entity_type` queda vacío. Ingreso, listas de precios y preventas-sync caen en el módulo `general`. No se puede filtrar "qué pasó con el ingreso 40".
 
-## 3. rulesEngine, proveedores y listas de precios
+**Cómo arreglarlo.** Usar `req.originalUrl` sin query para módulo y entidad, y sumar `ingreso`, `pricelists` y `preventas-sync` al mapa.
 
-### Medio — markup 0 se trata como "no configurado"
+## 3. Reglas de precio, proveedores y listas
 
-`ingreso.js:139-140` y `ingresoService.js:645-646` usan `COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0)`. Un markup de Neggo puesto en 0 a propósito vuelve a `default_markup`. El precio de venta del ingreso no es el que se configuró. El PR #2 agrega la columna; no cambia este `NULLIF`.
+### Medio — Un markup de 0% en el ingreso se reemplaza por el default
 
-`rulesEngine.js:24-34` sí respeta el 0 (`??`), así que catálogo y alertas no coinciden con el ingreso.
+`ingreso.js:139-140`, `ingresoService.js:645-646`. El PR #2 crea las columnas `markup_neggo` y `markup_preventas`; no toca este `NULLIF`.
 
-**Arreglo.** Sacar el `NULLIF(..., 0)`. Usar la columna si no es `NULL`.
+**Importancia.** Media, y alta si algún proveedor se vende al costo. `COALESCE(NULLIF(markup_neggo, 0), default_markup, 0)` trata el 0 como "no configurado". `rulesEngine.js:24-34` sí respeta el 0, así que catálogo y alertas no coinciden con el ingreso.
 
-### Medio — la lista especial no usa la misma fórmula que el catálogo
+**Consecuencias.** Precio de venta mal en Odoo al confirmar la mercadería: se aplica el markup default (por ejemplo 35%) a productos que tenían que salir sin recargo. El catálogo PDF, en cambio, muestra el 0%. El cliente ve un precio y la factura de Odoo otro.
 
-`pricelistService.js:42-45`: `raw_price × (1 - descuento/100)`, sin flete 1,5% ni markup. `addItemToOrder` (`preventasService.js:57-60`) usa ese precio cuando el pedido tiene lista. El catálogo usa `lista × 1,015 × (1 + markup)` (`rulesEngine.js:37-39`). El mismo producto sale con dos precios según la pantalla.
+**Cómo arreglarlo.** Usar la columna cuando no es `NULL`. Reservar `NULL` para "heredar el default".
 
-**Arreglo.** Definir una sola fórmula (la de `rulesEngine` o la de la lista) y usarla en los dos caminos. Es decisión de negocio; el bug es que hoy conviven sin decirlo en la UI.
+### Medio — La lista especial y el catálogo no calculan el mismo precio
 
-### Bajo — el scheduler no se entera de un cron nuevo
+`pricelistService.js:42-45`, `preventasService.js:57-60`, `rulesEngine.js:37-39`.
 
-`jobs/scheduler.js:21-27` lee `scrape_schedule` solo al boot. `PUT /api/suppliers/:id` puede guardar otra expresión y no llama a `initScheduler`. Hasta reiniciar el backend, corre el horario viejo. `stopScheduler` (`scheduler.js:133-141`) no guarda el cron de Odoo ni el de las 9:00, así que un segundo `initScheduler` duplicaría esos dos.
+**Importancia.** Media para los clientes con lista propia. El resto no la usa.
 
-**Arreglo.** Re-registrar la tarea de ese proveedor al guardar el schedule. Guardar los crons globales y destruirlos en `stopScheduler`.
+**Consecuencias.** La lista hace `raw_price × (1 - descuento/100)`, sin flete del 1,5% ni markup. El catálogo hace `lista × 1,015 × (1 + markup)`. El mismo artículo se cotiza a un número en el PDF y a otro en el pedido del cliente. Se cobra de menos o de más según desde qué pantalla se cargó.
+
+**Cómo arreglarlo.** Una sola fórmula. Si la lista es un descuento sobre el precio de catálogo, aplicarla después de `rulesEngine`, y mostrarlo en la pantalla.
+
+### Bajo — Cambiar el horario de scraping no corre hasta reiniciar
+
+`jobs/scheduler.js:21-27` y `133-141`.
+
+**Importancia.** Baja: el scrape manual desde la pantalla sigue funcionando.
+
+**Consecuencias.** El cron nuevo no dispara. Los precios de ese proveedor quedan viejos hasta el próximo reinicio del backend, y las alertas no saltan. `stopScheduler` tampoco frena el cron horario de Odoo: un segundo `initScheduler` lo duplicaría.
+
+**Cómo arreglarlo.** Al guardar `scrape_schedule`, destruir y volver a registrar solo esa tarea. Guardar los crons globales para poder pararlos.
 
 ## 4. Sync de Odoo
 
-El fallo por columnas `template_id` / `has_image` lo cierra el PR #2. Esto queda afuera de ese PR.
+### Crítico — El sync completo no puede guardar el producto, porque faltan columnas
 
-### Alto — la página no tiene `order`, y lo que no volvió se borra
+`jobs/odooSync.js:295-312`. **Cubierto por el PR #2** (`template_id`, `has_image`, y el resto de columnas de ese PR).
 
-`odooSync.js:50-77` pagina `search_read` de a 200 sin `order`. En Odoo, offset sin orden estable saltea filas o las repite entre páginas. Al terminar, `cleanupMissing` (`odooSync.js:352-357`) hace `DELETE` de todo `odoo_id` de esa empresa que no esté en la lista, y después borra `invoice_code_mappings` de esos ids (`odooSync.js:363-366`). Un producto que el paginado se saltó desaparece del cache y pierde el código de factura aprendido. El comentario de la línea 453 dice "marcados inactivos"; el SQL los elimina.
+**Importancia.** Crítica para comprar y para el ingreso. El `INSERT` manda las 21 columnas juntas. Si `template_id` o `has_image` no existen, falla todo el lote: no se actualizan nombre, costo, `vendor_name` ni foto.
 
-No hay tope de páginas. Si Odoo devolviera siempre 200 filas, el `while` no corta.
+**Consecuencias.** Pedidos x Proveedor agrupa con el cache viejo o vacío (todo cae en "Sin proveedor"). El costo de la compra no es el de Odoo. La foto del producto no se arma. Un volumen que ya corrió las migraciones a mano no lo ve; una base nueva, o una que solo pasó por `initDatabase.js`, sí.
 
-El PR #4 pagina las cotizaciones de venta. No toca este sync.
+**Cómo arreglarlo.** El del PR #2: `ADD COLUMN IF NOT EXISTS` al arrancar y las mismas columnas en `schema.sql`.
 
-**Reproducción.** Catálogo más grande que 200. Correr dos sync seguidos y comparar `COUNT(*)` de `odoo_products_cache` contra `search_count` de `product.product` en Odoo. Los ids que faltan en el cache y siguen en Odoo son los salteados.
+### Alto — La página del sync no tiene orden, y lo que no volvió se borra
 
-**Arreglo.** `order: 'id asc'` en el `search_read`. Cortar también si el offset no avanza (ids ya vistos). Borrar solo si el conteo recibido está a menos de un umbral del `search_count`. Si no, abortar el cleanup como ya se hace cuando `products.length === 0` (`odooSync.js:422-424`).
+`odooSync.js:50-77` y `352-366`. El PR #4 pagina cotizaciones de venta, no este sync.
 
-### Medio — dos sync a la vez
+**Importancia.** Alta en cuanto el catálogo de Odoo pasa de 200 productos, que es el tamaño de página. `search_read` con `offset` y sin `order` saltea filas o las repite. `cleanupMissing` borra de `odoo_products_cache` todo id que no esté en la lista, y después borra `invoice_code_mappings` de esos ids. El comentario de la línea 453 dice "marcados inactivos"; el SQL los elimina.
 
-`scheduler.js:118-125` dispara un sync al arrancar y `scheduler.js:77` otro cada hora. No hay lock. Si el primero sigue corriendo, el cleanup de uno puede borrar filas que el otro acaba de considerar vigentes, o al revés.
+**Consecuencias.** Productos que siguen en Odoo desaparecen de la app. El próximo ingreso de esa factura no reconoce el código y el ítem queda sin match. Pedidos y catálogos dejan de ofrecerlos. No es stock mal calculado: es el vínculo local destruido. Si Odoo devolviera siempre 200 filas, el `while` no corta y el sync no termina.
 
-**Arreglo.** `pg_advisory_lock` alrededor de `syncOdooProducts`, el mismo patrón que `preventasMatchService` (`LOCK_KEY`).
+**Cómo arreglarlo.** `order: 'id asc'`. Cortar si un id ya se vio. No borrar si el conteo recibido no cierra con un `search_count` de Odoo; abortar el cleanup como ya se hace cuando la lista viene vacía (`odooSync.js:422-424`).
 
-### Medio — `locally_archived` no lo agrega el arranque
+### Medio — Dos sync pueden correr juntos
 
-`schema.sql:212` crea la columna en una base nueva. `initDatabase.js` no hace el `ADD COLUMN` de `migrations/017_locally_archived.sql`. Una base vieja, anterior a esa columna, rompe `GET /api/products/odoo` (`products.js:100`) y el archivo (`products.js:200`). El `ON CONFLICT` del sync no pisa `locally_archived` (bien) pero sí pisa `active` (`odooSync.js:306`), así que archivar en Odoo y "desarchivar" allá en el próximo sync revive `active` aunque el flag local siga.
+`scheduler.js:77` y `118-125`.
 
-**Arreglo.** `ADD COLUMN IF NOT EXISTS locally_archived` en `initDatabase.js`. No actualizar `active` cuando `locally_archived = true`.
+**Importancia.** Media. Pasa si el sync de las 200 páginas tarda más de una hora, o si el del arranque sigue cuando dispara el cron.
 
-### Bajo — id de depuración fijo
+**Consecuencias.** El cleanup de uno borra filas que el otro acaba de dar por vigentes. Mismo efecto que el ítem anterior: productos y códigos de factura que se pierden del cache, matches de ingreso que fallan.
 
-`odooSync.js:48` y `66-83` loguean el producto `54537` en cada página. Ruido, no cambia datos.
+**Cómo arreglarlo.** `pg_advisory_lock` alrededor de `syncOdooProducts`, el mismo patrón que `preventasMatchService`.
 
-**Arreglo.** Sacarlo.
+### Medio — Archivar en la app no sobrevive en una base vieja, y el sync revive `active`
 
-## 5. Cliente Odoo (`config/odoo.js`, `odooService.js`)
+`products.js:100` y `200`, `odooSync.js:306`, `migrations/017_locally_archived.sql`. `schema.sql:212` ya tiene la columna; `initDatabase.js` no la agrega.
 
-### Alto — un create que se reintenta duplica la orden
+**Importancia.** Media. Solo duele en un volumen creado antes de esa columna.
 
-`jsonRpc` (`odoo.js:35-78`) reintenta hasta 4 veces todo error que no diga `AccessError`, `ValidationError`, `UserError` o `MissingError`. Un corte de red después de que Odoo ya commiteó `purchase.order.create` o `sale.order.create` se vuelve a ejecutar. `createPurchaseOrder` (`odooService.js:651`) y `createSaleOrder` pasan por ahí.
+**Consecuencias.** La pantalla de productos Odoo responde 500 y no se puede archivar. En una base nueva el flag se guarda, pero el sync pisa `active` con el valor de Odoo: si alguien lo reactiva allá, vuelve a verse como activo en la app aunque `locally_archived` siga en true. Se vuelve a ofrecer en pedidos un producto que el local había escondido.
 
-**Arreglo.** No reintentar `create`, `write`, `button_confirm` ni `unlink`. Reintentar solo `search_read` / `read`, o mandar un `client_order_ref` idempotente y buscar la orden antes de crear otra.
+**Cómo arreglarlo.** `ADD COLUMN IF NOT EXISTS locally_archived` en `initDatabase.js`. En el `UPDATE` del sync, no tocar `active` cuando `locally_archived = true`.
 
-### Alto — reemplazar líneas borra la orden de venta
+### Bajo — Cada página del sync loguea el producto 54537
 
-`updateSaleOrderLines` (`odooService.js:478-486`) manda `[5, 0, 0]` (borrar todas las líneas) y después las nuevas, en un solo `write`. `syncLinesToOdoo` (`preventas.js:35-41`) lo llama así:
+`odooSync.js:48` y `66-83`.
 
-- Ítems con `odoo_company === 'neggo'` van a la orden Neggo. Si esa orden existe y el filtro da `[]` (el pedido solo tiene ítems de proveedor, que no guardan `odoo_company`: `preventasService.js:102-106`), el `write` deja la orden de Odoo sin líneas.
-- El resto, incluido `odoo_company` null, va a la orden de Preventas (`preventas.js:40`). Un ítem cargado desde el catálogo del proveedor se escribe en Preventas con `product_id: false`.
+**Importancia.** Ninguna para el negocio. Es un resto de depuración.
 
-Se dispara al agregar, editar o borrar un ítem si el pedido está en `cotizacion` (`preventas.js:254-255`), y el `.catch` solo loguea.
+**Consecuencias.** Logs más largos. No cambia precios ni stock.
 
-**Reproducción.** Pedido ya enviado a Odoo (tiene `neggo_sale_order_id`). Agregar un producto de proveedor (no de Odoo). La orden Neggo en Odoo queda vacía.
+**Cómo arreglarlo.** Sacar el `DEBUG_ID`.
 
-**Arreglo.** No llamar a `updateSaleOrderLines` con una lista vacía. No usar el comando `5` si el write no es atómico desde el punto de vista del operador: armar el diff (unlink de las que sobran, write de las que siguen, create de las nuevas). Los ítems sin `odoo_product_id` no entran a ninguna orden hasta tener producto.
+## 5. Cliente Odoo
 
-### Medio — `qty_available` no se puede escribir, y confirmar un ingreso no mueve stock
+### Alto — Reintentar un `create` duplica la orden en Odoo
 
-`updateProductQty` (`odooService.js:173-197`) hace `write` de `qty_available`. En Odoo ese campo es calculado; el write falla o se ignora. Nadie llama a la función. `confirmIngreso` crea la OC en borrador y no llama a `button_confirm`. El stock no cambia hasta que alguien confirme y valide el remito en Odoo. Si la pantalla da a entender que "confirmar" ingresa la mercadería, el depósito no se entera.
+`config/odoo.js:35-78`, `odooService.js:651`.
 
-**Arreglo.** Documentar en la UI que la OC queda en borrador. Si hay que sumar stock, usar `stock.quant` o validar el picking, no `qty_available`.
+**Importancia.** Alta en cada confirmación de ingreso y en cada pedido que se manda a Odoo. El cliente reintenta hasta 4 veces cualquier error que no sea `AccessError`, `ValidationError`, `UserError` o `MissingError`. Si Odoo ya commiteó y se cortó la respuesta, el mismo `purchase.order.create` o `sale.order.create` sale de nuevo.
 
-### Medio — categorías de producto cortadas en 500
+**Consecuencias.** Dos (o cuatro) órdenes de compra por la misma factura: el proveedor puede preparar el doble. O dos cotizaciones de venta para el mismo cliente. El stock no se mueve solo (la OC queda en borrador), pero la compra queda duplicada en Odoo.
 
-`getProductCategories` (`odooService.js:158`) pide `limit: 500` sin paginar. Un árbol más largo no llega al selector de reglas.
+**Cómo arreglarlo.** No reintentar `create`, `write`, `button_confirm` ni `unlink`. Reintentar solo lecturas. Antes de crear, buscar por una referencia propia (`origin` / `client_order_ref` = id del ingreso o del pedido).
 
-**Arreglo.** El mismo paginado con `order: 'id asc'` que hace falta en el sync.
+### Alto — Sincronizar líneas borra la orden de venta
+
+`odooService.js:478-486`, `preventas.js:35-41` y `254-255`, `preventasService.js:102-106`.
+
+**Importancia.** Alta desde el momento en que el pedido ya tiene orden en Odoo (`status = cotizacion`). Cada alta, edición o baja de ítem llama a `updateSaleOrderLines`, que manda el comando `[5, 0, 0]` (borrar todas las líneas) y después escribe las nuevas.
+
+**Consecuencias.** Pedidos perdidos en Odoo. Si se agrega un producto de proveedor, ese ítem no tiene `odoo_company` (`preventasService.js:102-106`). El filtro de Neggo da vacío y la orden Neggo queda sin líneas. Esos ítems, más cualquiera sin empresa, se escriben en la orden de Preventas con `product_id` vacío: la cotización del cliente pierde lo que ya tenía y gana renglones que no son productos. El `.catch` solo lo deja en el log; la pantalla puede mostrar éxito.
+
+**Cómo arreglarlo.** No llamar al sync con una lista vacía. No incluir ítems sin `odoo_product_id`. Reemplazar el comando `5` por un diff: borrar las que sobran, actualizar las que siguen, crear las nuevas.
+
+### Medio — Confirmar mercadería no mueve el stock
+
+`odooService.js:173-197`. Nadie llama a `updateProductQty`. `confirmIngreso` crea la OC en borrador y no llama a `button_confirm`.
+
+**Importancia.** Media si el depósito sabe que la OC hay que confirmarla en Odoo. Alta si la pantalla se lee como "ya ingresó".
+
+**Consecuencias.** Stock mal en Odoo: la cantidad sigue en cero (o en el valor anterior) después de confirmar el ingreso. Se vende algo que "ya llegó" y no figura, o se vuelve a comprar. Escribir `qty_available` no serviría: en Odoo es un campo calculado.
+
+**Cómo arreglarlo.** Decir en la UI que la OC queda en borrador. Si el negocio quiere stock al confirmar, validar el picking o ajustar `stock.quant`, no `qty_available`.
+
+### Medio — El árbol de categorías corta en 500
+
+`odooService.js:158`.
+
+**Importancia.** Media, y solo si Odoo tiene más de 500 categorías.
+
+**Consecuencias.** Una categoría que existe en Odoo no aparece en las reglas. Esos productos no entran al catálogo ni al sync de Preventas con la categoría correcta, y se publican en otra o no se publican.
+
+**Cómo arreglarlo.** Paginar con `order: 'id asc'` hasta agotar.
 
 ## 6. Ingreso de mercadería
 
-Columnas faltantes, `LIKE`, fuzzy y renglones duplicados: PR #2 y la tabla de arriba. Lo que sigue no está en esos PRs.
+### Crítico — Sin las columnas nuevas no se guarda el reparto ni la OC de Preventas
 
-### Alto — confirmar deja el ingreso cerrado aunque la OC no exista
+`ingresoService.js:524` (`match_level`), `ingreso.js:590` y `ingresoService.js:730` (`preventa_qty_confirmed`), `ingresoService.js:891` (`odoo_purchase_order_id_preventas`). **Cubierto por el PR #2.**
 
-`confirmIngreso` (`ingresoService.js:859-895`) traga el error de `createPurchaseOrder` y después hace `UPDATE … estado = 'confirmado'`. El `catch` de la ruta (`ingreso.js:1911-1913`) solo rechaza si el estado ya no es `pending`, así que no hay segundo intento. La UI ya muestra el síntoma: "Sin OC en Odoo" (`IngresoPreview.jsx:2343-2345`).
+**Importancia.** Crítica: sin esto el ingreso no se puede clasificar ni cerrar en una base que no haya corrido las migraciones a mano.
 
-El PR #2 evita el caso en que el `UPDATE` revienta porque falta `odoo_purchase_order_id_preventas` (ahí la transacción hace rollback y la OC de Odoo queda huérfana, y reintentar duplica). Con la columna presente, el otro caso sigue: Odoo falla, el ingreso igual pasa a confirmado, y no se puede repetir.
+**Consecuencias.** No se guarda el preview, o no se guarda cuánto va a Preventas (toda la cantidad sigue a Neggo: stock y compra de la empresa equivocada). El caso peor es el confirm: Odoo ya creó la OC de Preventas, el `UPDATE` falla porque la columna no existe, Postgres hace rollback y el ingreso sigue pendiente. Reintentar crea otra OC. Compra duplicada al proveedor.
 
-Además el `SELECT` del ingreso (`ingresoService.js:643-650`) no usa `FOR UPDATE`. Dos clicks en Confirmar pasan los dos el chequeo de `pending` (`ingreso.js:1911`) y crean dos OC antes de que alguno commitee.
+**Cómo arreglarlo.** El del PR #2. Además, el arreglo del ítem siguiente, porque la columna sola no evita la OC duplicada si Odoo falla por otro motivo.
 
-Las llamadas a Odoo corren dentro del `BEGIN`. Si el `COMMIT` falla después, Odoo ya tiene precios y OC, y Postgres vuelve atrás.
+### Alto — Confirmar cierra el ingreso aunque la OC no exista, y dos clicks crean dos
 
-**Arreglo.** `SELECT … FOR UPDATE` al leer el ingreso. Si `createPurchaseOrder` tira, hacer `ROLLBACK` y dejar `pending` (o guardar el id de la OC que sí se creó y no crear otra). Crear la OC después de reservar el estado (`confirmando`) y commitear el id enseguida, fuera del mismo timeout que el write de precios.
+`ingresoService.js:643-650` y `859-895`, `ingreso.js:1911-1913`, `IngresoPreview.jsx:2343-2345`. El PR #2 cubre la columna que falta. No cubre este flujo.
 
-### Alto — tildar "aplicar costo" también pisa el precio de lista, y no hace falta ser admin
+**Importancia.** Alta cada vez que se confirma una factura. El error de `createPurchaseOrder` se traga y el estado pasa a `confirmado`. El `SELECT` no usa `FOR UPDATE`. Las llamadas a Odoo ocurren dentro del `BEGIN`: si el `COMMIT` falla después, Odoo ya tiene precios y OC, y la base vuelve atrás.
 
-`PATCH /:ingresoId/items/:itemId` (`ingreso.js:391`) solo pide `authenticate`. Un operador, o un vendedor con token, llega. Al poner `apply_cost` o `apply_price` en true, las líneas 661-668 escriben en Odoo Neggo:
+**Consecuencias.** Compra que no existe ("Sin OC en Odoo") y no se puede reintentar porque el ingreso ya no está pendiente: la mercadería no se le pide al proveedor. O dos OC por la misma factura si se hace doble click o si el commit falla y se confirma de nuevo. Precios ya escritos en Odoo que la base no registra.
 
-```text
-priceForOdoo = apply_price ? newListPrice : (precio_odoo_lista || newListPrice)
-```
+**Cómo arreglarlo.** `SELECT … FOR UPDATE`. Pasar a un estado `confirmando` y commitear el id de cada OC en cuanto Odoo lo devuelve. Si el `create` falla, dejar `pending`. No reintentar un `create` si ese id ya está guardado.
 
-Si `apply_price` es false y `precio_odoo_lista` viene null, se manda `newListPrice` igual. El costo nuevo y un precio de lista calculado pisan el de Odoo antes de que un admin confirme.
+### Alto — El código `100` se vincula al producto `1001`
 
-**Reproducción.** Ítem matcheado, `precio_odoo_lista` vacío, tildar solo "aplicar costo". En Odoo cambian `standard_price` y `list_price`.
+`ingresoService.js:218-220`. Está en `docs/plan-arreglos-criticos.md`. Ningún PR #2-#5 lo toca.
 
-**Arreglo.** Exigir `requireRole('admin')` para escribir precios (el confirm ya lo exige, `ingreso.js:1893`). Si `apply_price` es false, mandar el `list_price` actual y no el calculado.
+**Importancia.** Alta en cada factura. El match es `UPPER(sp.sku) LIKE '%' || codigo || '%'` y, si pega, la confianza queda en 1.
 
-### Medio — la OC usa la cantidad de la factura, no la recibida
+**Consecuencias.** El costo y el precio de lista se escriben en el producto equivocado de Odoo. La OC le compra al proveedor un artículo que no vino. El que sí vino no actualiza stock ni precio. El operador lo ve como "identificado" y puede confirmarlo sin mirar.
 
-`received_qty` se edita en el control físico (`IngresoPreview.jsx:148-213`) y no entra a `confirmIngreso`. La cantidad de la OC es `item.cantidad` (`ingresoService.js:731-776`). Recibir 3 de 10 carga 10 en la orden.
+**Cómo arreglarlo.** Igualdad contra el SKU normalizado (el nivel que ya está en `ingresoService.js:274-289`). Sacar el `LIKE`.
 
-**Arreglo.** Usar `received_qty` cuando es mayor a 0, o bloquear el confirm si el control no cierra.
+### Alto — Un parecido de nombre de 0,72 se acepta solo
 
-### Medio — el proxy de la foto no pide login
+`ingresoService.js:316-320`, `IngresoPreview.jsx:448`. En el plan, sin PR.
 
-`GET /api/ingreso/odoo-image/:odooId` (`ingreso.js:93`) y `GET /api/products/odoo-image/:company/:templateId` (`products.js:476`) no usan `authenticate`. Cualquiera que llegue al puerto 80 o al 3000 (el compose publica los dos, `docker-compose.yml:7` y `21`) baja `image_128` de Odoo usando la API key del servidor. Sirve para enumerar ids.
+**Importancia.** Alta porque el umbral es bajo y el estado resultante es `matched`, el mismo que un código exacto.
 
-**Arreglo.** `authenticate` en las dos rutas. El `<img>` puede ir con el token en query de un solo uso, o las fotos ya cacheadas bajo `/storage/` con la sesión de nginx.
+**Consecuencias.** Igual que el ítem anterior: precio y OC sobre otro producto. Dos artículos de nombre parecido (distinto talle, distinto color) se mezclan. El stock del que no llegó sube en la OC y el que llegó no se carga.
+
+**Cómo arreglarlo.** Dejar `fuzzy_name` en `pending`, con el candidato a la vista, hasta que una persona lo acepte.
+
+### Alto — La cantidad de Preventas de un código repetido cae en un solo renglón
+
+`ingreso.js:2018-2032`, `IngresoPreview.jsx:2063`. En el plan, sin PR. `merge-duplicate-items` existe (`ingreso.js:2199`) y es manual.
+
+**Importancia.** Alta en facturas con el mismo código en más de una línea (bonificación, segundo remito, color distinto con el mismo código).
+
+**Consecuencias.** La pantalla suma las cantidades, pero `preventa_qty_confirmed` se guarda en el primer id. El otro renglón entra entero a la OC de Neggo. Preventas queda corta (pedido de cliente sin mercadería) y Neggo compra de más. El reparto que el operador vio no es el que se manda a Odoo.
+
+**Cómo arreglarlo.** Al guardar la cantidad de Preventas, repartirla en todos los `ingreso_items` de ese código en el mismo ingreso, o fusionar los duplicados antes de confirmar.
+
+### Alto — La pestaña Preventa propone un pedido de otro cliente por el nombre
+
+`ingreso.js:2142-2147`. En el plan, sin PR. El timeout de esa lectura lo cubre el PR #4.
+
+**Importancia.** Alta al separar la mercadería contra cotizaciones abiertas. El parecido de nombre (0,72) alcanza para proponer el vínculo.
+
+**Consecuencias.** Se reserva cantidad para el pedido de otro cliente. Ese cliente recibe algo que no pidió; el que sí pidió queda sin asignar. La OC de Preventas sale con el producto de Odoo equivocado.
+
+**Cómo arreglarlo.** Proponer solo por código. El nombre queda como pista, sin seleccionar solo.
+
+### Alto — Tildar "aplicar costo" también cambia el precio de lista, sin ser admin
+
+`ingreso.js:391` y `661-668`.
+
+**Importancia.** Alta porque escribe en Odoo Neggo antes de que un admin confirme, y la ruta solo pide estar logueado.
+
+**Consecuencias.** Precio de venta mal en la lista de Odoo. Si `apply_price` es false y `precio_odoo_lista` viene vacío, igual se manda el precio calculado: cambian `standard_price` y `list_price`. Un operador (o un vendedor con la URL) pisa el precio que ven los clientes. El confirm de más tarde vuelve a calcular encima.
+
+**Cómo arreglarlo.** `requireRole('admin')` para escribir precios, igual que el confirm (`ingreso.js:1893`). Si `apply_price` es false, reenviar el `list_price` actual y no el calculado.
+
+### Medio — La OC usa la cantidad facturada, no la recibida
+
+`IngresoPreview.jsx:148-213`, `ingresoService.js:731-776`.
+
+**Importancia.** Media si el control físico es solo un checklist. Alta si esa cantidad es la que "entró".
+
+**Consecuencias.** Llegaron 3 de 10 y la OC carga 10. Stock de más cuando alguien valide el remito en Odoo, y se le paga al proveedor (o se le da entrada) por lo que no vino. `received_qty` se edita en pantalla y no entra al cálculo.
+
+**Cómo arreglarlo.** Usar `received_qty` cuando es mayor que 0, o no dejar confirmar si el control no cierra contra la factura.
+
+### Medio — La foto del producto se baja sin login
+
+`ingreso.js:93`, `products.js:476`.
+
+**Importancia.** Media en la LAN. Alta si el puerto 80 o el 3000 se publican.
+
+**Consecuencias.** No cambia precios ni stock. Cualquiera que adivine el id baja la foto chica de Odoo usando la API key del servidor, y puede enumerar el catálogo.
+
+**Cómo arreglarlo.** `authenticate` en las dos rutas. Para el `<img>`, un token de un solo uso o servir la foto ya guardada bajo un path con sesión.
+
+### Alto — La clasificación contra cotizaciones abiertas corta a los 30 segundos
+
+`nginx.conf:102`, `ingreso.js:2036`. **Cubierto por el PR #4** (timeout de `/api/ingreso/` a 300 s).
+
+**Importancia.** Alta cuando hay muchas cotizaciones abiertas en Preventas. Esa pestaña vuelve a bajarlas todas.
+
+**Consecuencias.** La pantalla de separar falla por tiempo. El operador reparte sin ver los pedidos de los clientes, o no puede guardar el vínculo. La mercadería de preventa entra a Neggo.
+
+**Cómo arreglarlo.** El del PR #4. Sigue dependiendo de que `getPreventasQuotations` pagine (el mismo PR).
 
 ## 7. Preventas — pedidos y órdenes
 
-Paginado, agrupado, PDF de cotizaciones y Chrome: PR #4. `generateSupplierOrders` y los ítems de Odoo: tabla de arriba. El wipe de líneas de Odoo está en la sección 5.
+### Crítico — Agregar un producto de proveedor guarda la fila y responde 500
 
-### Crítico — agregar un producto de proveedor tira después de guardarlo
+`preventasService.js:57-82` y `115-118`, `preventas.js:258-261` y `93`.
 
-`addItemToOrder` (`preventasService.js:57-82`) declara `const prices` dentro del `if` y del `else`. El `return` de la línea 115-118 usa `prices` fuera de esos bloques. En JavaScript eso es `ReferenceError` en todo alta que llega al final.
+**Importancia.** Crítica en Pedidos, cada vez que el ítem sale del catálogo del proveedor y no del cache de Odoo. `const prices` vive dentro del `if` y del `else`. El `return` lo usa afuera: `ReferenceError` en todo alta que llega al final. El `INSERT` ya commiteó; no hay transacción.
 
-El `INSERT`/`UPDATE` y el recálculo del total (`preventasService.js:91-111`) ya commitearon: no hay transacción. La ruta (`preventas.js:258-261`) responde 500. Si el operador reintenta, el `UPSERT` suma la cantidad otra vez (`preventasService.js:93`).
+**Consecuencias.** El operador ve error y el renglón está en el pedido. Si reintenta, el upsert suma la cantidad: se le vende el doble al cliente y la compra al proveedor sale duplicada. El total del pedido ya se recalculó con la primera cantidad; la pantalla no lo muestra porque la respuesta falló.
 
-**Reproducción.** `POST /api/preventas/client-orders/:id/items` con un `supplier_product_id` válido. La fila existe en `preventa_client_order_items` y la respuesta es 500 `prices is not defined`. Un segundo POST duplica `quantity`.
+**Cómo arreglarlo.** `let prices` antes del `if`, asignarlo en las dos ramas. Envolver insert y recálculo del total en una transacción.
 
-**Arreglo.** `let prices` antes del `if`, asignar en las dos ramas, y devolverlo. Envolver insert + total en una transacción para que un throw no deje el ítem a medias.
+### Alto — "Generar órdenes" tira los ítems cargados desde Odoo
 
-### Medio — el PDF de "Órdenes a proveedores" sigue con `Intl` `es-AR`
+`preventasService.js:248-264`. En el plan, sin PR. El PR #4 arregla Pedidos x Proveedor y no esta pantalla.
 
-`preventas.js:679` formatea la orden al proveedor con `Intl.NumberFormat('es-AR')`. El PR #4 cambia el otro PDF (cotizaciones, ~899) y no este. En `node:20-alpine` el monto sale con coma de miles (`$1,234.00`).
+**Importancia.** Alta si la compra se arma en Órdenes a proveedores a partir de Pedidos. Baja si la compra sale solo de las cotizaciones de Odoo (eso lo cubre el #4).
 
-**Arreglo.** El mismo formateo manual del PR #3 (`$` + punto de miles).
+**Consecuencias.** El botón responde que los pedidos no tienen ítems. No se genera la orden al proveedor: el pedido del cliente no se compra. Los ítems siguen en la app y no hay OC.
 
-### Medio — leer un archivo del disco desde el PDF de cotizaciones
+**Cómo arreglarlo.** Si el ítem es de Odoo (`supplier_product_id` null), resolver el proveedor por `product_mappings` y no descartarlo.
 
-`preventas.js:934-940` arma la imagen así: si `image_url` empieza con `/storage`, hace `path.join(STORAGE, imageUrl.replace('/storage', ''))`. El body lo manda el cliente (`preventas.js:888`). `/storage/../../etc/passwd` queda, después del `join` con un segmento absoluto, en `/etc/passwd`, y el contenido se embebe en el PDF. Cualquier usuario logueado (la ruta solo tiene `authenticate`) puede leer archivos que el proceso del backend pueda abrir.
+### Alto — Pedidos x Proveedor se corta en 200 cotizaciones y a los 30 segundos
 
-El PR #4 reescribe ese PDF y deja el mismo `path.join` (en esa rama, alrededor de la línea 927). No lo da por cerrado.
+`odooService.js:765-835`, `nginx.conf:102`, `preventas.js:771-821`, `OdooSupplierBreakdown.jsx`. **Cubierto por el PR #4**, que también saltea líneas sin producto, agrupa por el proveedor local y muestra el error si Chrome no está. El sync que llena `vendor_name` depende del PR #2.
 
-**Arreglo.** `path.resolve` y rechazar si el resultado no empieza por `STORAGE` real. No aceptar `image_url` arbitrario: resolver la foto por id de producto en el servidor.
+**Importancia.** Crítica para la compra del día si hay más de 200 cotizaciones abiertas o muchas líneas.
+
+**Consecuencias.** Pedidos de clientes que no entran a la lista de compra: no se le pide al proveedor y el cliente se queda sin la mercadería. Líneas de sección ("Notas") aparecen como productos. Si Odoo no tiene `vendor_name`, todo cae en "Sin proveedor" y se le manda el PDF al contacto equivocado, o no se le manda. El costo es el `standard_price` viejo del cache. El botón de PDF no avisa si Chrome no responde: el operador cree que el pedido se generó.
+
+**Cómo arreglarlo.** El del PR #4, después del #2.
+
+### Alto — El PDF de cotizaciones puede leer un archivo del servidor
+
+`preventas.js:888` y `934-940`. El PR #4 reescribe ese PDF y deja el mismo `path.join` (en esa rama, cerca de la línea 927).
+
+**Importancia.** Alta para cualquiera con sesión (no hace falta ser admin). `image_url` viene del body. `/storage/../../…` más `path.join` con un tramo absoluto sale de la carpeta de storage.
+
+**Consecuencias.** No cambia precios por sí solo. El PDF resultante puede incluir `.env` o la clave de Odoo y de Postgres. Con eso, el daño pasa a ser el de un admin: precios, OC y pedidos.
+
+**Cómo arreglarlo.** `path.resolve` y rechazar si el archivo no queda debajo de `STORAGE`. No aceptar una URL armada por el cliente: buscar la foto por id de producto en el servidor.
+
+### Medio — El PDF de Órdenes a proveedores muestra mal los miles
+
+`preventas.js:679`. El PR #4 formatea el otro PDF (cotizaciones, línea ~899), no este.
+
+**Importancia.** Media. El número es el correcto; el separador no. En Alpine, `Intl` con `es-AR` no tiene el locale y usa coma.
+
+**Consecuencias.** El proveedor lee `$1,234.50` donde el local espera `$1.234,50`. Un pedido de 12.500 unidades puede leerse como 12 unidades y media, o al revés, según quién mire. Riesgo de que entregue otra cantidad.
+
+**Cómo arreglarlo.** El mismo formateo a mano del PR #3: `$` y punto de miles, sin `Intl`.
+
+### Crítico — Crear un pedido con lista de precios revienta en una base nueva
+
+`preventas.js:101`, `schema.sql:231-246` y `700`. **Cubierto por el PR #2.**
+
+**Importancia.** Crítica en una base vacía: el entrypoint de Postgres corta en el índice, la base no termina de crearse y la app no arranca. En una base vieja sin la columna, el `INSERT` del pedido falla aunque la lista vaya en null.
+
+**Consecuencias.** No se carga el pedido del cliente. No hay compra asociada. En el caso del índice, no hay app.
+
+**Cómo arreglarlo.** El del PR #2: crear `pricelist_id` antes del índice, en `schema.sql` y al arrancar.
 
 ## 8. Catálogos
 
-Los cuatro fallos del flujo (miles, logo, categorías al cambiar de tipo, reglas ignoradas) los cierra el PR #3. No hay un quinto bug de generación en `master` fuera de ese PR.
+Los cuatro los cierra el PR #3, que a su vez necesita las columnas de markup del PR #2. Un PDF ya guardado no se regenera solo: hay que volver a generarlo después de mergear.
 
-El PDF viejo ya guardado en `catalogs.file_path` no se regenera solo. Después de mergear el #3 hay que volver a generar los que se van a enviar.
+### Alto — El precio del PDF usa coma de miles
 
-## 9. Mappings y alertas de precio
+`catalogService.js:49-51`, `backend/Dockerfile:1`. **Cubierto por el PR #3.**
 
-### Alto — aprobar una alerta la cierra aunque Odoo no haya tomado el precio
+**Importancia.** Alta: ese PDF es el que se le manda al cliente.
 
-`approveAlert` (`priceAlertService.js:171-205`) mete el error de cada mapping en `odooUpdates` y igual hace `UPDATE … status = 'approved'`. La pantalla la saca de pendientes. El precio en Odoo puede haber quedado en el valor viejo. No hay forma de reintentar sin tocar la base.
+**Consecuencias.** `$14.210` sale como `$14,210`. En una lectura rápida son catorce pesos con centavos, o catorce mil doscientos diez según la convención de quien lee. Se cotiza mal y el pedido entra con otro precio.
 
-**Arreglo.** Si algún mapping devolvió error, dejar `pending` y responder el detalle. Pasar a `approved` solo cuando todos los `write` salieron bien.
+**Cómo arreglarlo.** Entero con punto de miles, armado a mano. Es lo que hace el PR #3.
 
-### Alto — precio anterior 0 revienta el cálculo
+### Alto — Pasar de Preventas a Neggo manda la categoría de la otra empresa
 
-`processPriceChange` (`priceAlertService.js:30`) hace `(newPrice - oldPrice) / oldPrice * 100`. Con `oldPrice === 0` el resultado es `Infinity`. El `INSERT` en `NUMERIC(6,2)` falla y Preventas puede haber escrito el precio en Odoo una línea antes (`priceAlertService.js:73-76`), sin fila de alerta.
+`Catalogs.jsx:33-36`, `catalogs.js:14`. **Cubierto por el PR #3.**
 
-**Arreglo.** Si `oldPrice` no es finito o es 0, no dividir: tratarlo como alta de precio y guardar `pct_change` null.
+**Importancia.** Alta si se generan los dos tipos. El desplegable pide categorías una sola vez, sin `type`. El backend defaultea a Preventas.
 
-### Medio — Preventas escribe el precio nuevo en el acto, sin tope
+**Consecuencias.** Se genera un PDF vacío, o el de la otra empresa, y se le manda al cliente una lista con precios de Neggo (markup distinto) o sin los productos de Preventas.
 
-El mismo `processPriceChange` (`priceAlertService.js:64-76`) llama a `updateProductPrices` para cada mapping de Preventas, sin umbral. Neggo espera 2% (`priceAlertService.js:15` y `103`). Un scrape que lee mal un precio (ver Mali, sección 10) pisa `standard_price` y `list_price` en Odoo antes de que alguien lo vea.
+**Cómo arreglarlo.** Volver a pedir `/catalogs/categories?type=` al cambiar el tipo y limpiar la categoría elegida.
 
-**Arreglo.** Mismo umbral, o un tope (por ejemplo no auto-aplicar si `|pct| > 30`) que deje la alerta en `pending` para las dos empresas.
+### Alto — Una categoría marcada como ignorada entra al PDF
+
+`catalogService.js:239-243`, `catalogs.js:18-24`. **Cubierto por el PR #3.** `rulesEngine` sí descarta `ignored`; la query del catálogo no.
+
+**Importancia.** Alta si se usa "ignorar" para no publicar (productos de prueba, categorías que no se venden).
+
+**Consecuencias.** Esos productos salen en el PDF con precio. El cliente los pide. Hay que decir que no está, o comprar algo que no se quería vender.
+
+**Cómo arreglarlo.** `scr.ignored = false` en el listado de categorías y en la query del PDF.
+
+### Medio — El logo no está donde el contenedor lo busca
+
+`catalogService.js:44` y `112-116`. **Cubierto por el PR #3.**
+
+**Importancia.** Media. El PDF igual se genera.
+
+**Consecuencias.** El cliente recibe un catálogo con el texto "neggo" en vez del logo. No cambia el precio. Sí cambia la confianza en que ese PDF es el de la empresa.
+
+**Cómo arreglarlo.** Leer `STORAGE_PATH/neggo_logo.png` (`/app/storage` en Docker) y dejar el texto como respaldo.
+
+### Crítico — Sin `markup_neggo` / `markup_preventas` el catálogo no se arma
+
+`catalogService.js:228-233`. **Cubierto por el PR #2.**
+
+**Importancia.** Crítica en una base que no tenga esas columnas: la query falla entera.
+
+**Consecuencias.** No hay PDF para enviar. No es un precio mal: es ningún catálogo.
+
+**Cómo arreglarlo.** El del PR #2.
+
+## 9. Vínculos y alertas de precio
+
+### Alto — Aprobar una alerta la cierra aunque Odoo no haya tomado el precio
+
+`priceAlertService.js:171-205`.
+
+**Importancia.** Alta: es el único control humano antes de cambiar el precio de Neggo.
+
+**Consecuencias.** La pantalla la saca de pendientes. En Odoo el costo y el precio de venta siguen en el valor viejo. Se sigue vendiendo al precio anterior, con el margen mal, y no hay botón de reintento: hay que tocar la base o esperar otro cambio del proveedor.
+
+**Cómo arreglarlo.** Si algún mapping devolvió error, dejar `pending` y mostrar el detalle. Pasar a `approved` solo cuando todos los `write` salieron bien.
+
+### Alto — Un precio anterior en 0 rompe el cálculo, después de haber escrito Odoo
+
+`priceAlertService.js:30` y `73-76`.
+
+**Importancia.** Alta la primera vez que un producto pasa de 0 a un precio real, o cuando el scrape anterior guardó 0.
+
+**Consecuencias.** `(nuevo - 0) / 0` es infinito. El `INSERT` en `NUMERIC(6,2)` falla. En Preventas el `updateProductPrices` ya corrió: el precio de venta en Odoo cambió y no queda alerta para revisar. En Neggo no se crea la alerta y nadie ve el salto.
+
+**Cómo arreglarlo.** Si `oldPrice` no es un número finito o es 0, no dividir. Guardar `pct_change` null y tratarlo como alta, en `pending` para las dos empresas.
+
+### Medio — Preventas aplica el precio nuevo solo, sin tope
+
+`priceAlertService.js:64-76`. Neggo espera un 2% (`priceAlertService.js:15` y `103`).
+
+**Importancia.** Media en un scrape sano. Alta combinada con el parser de Mali (sección 10): un precio leído mal se publica solo.
+
+**Consecuencias.** `standard_price` y `list_price` de Preventas cambian en Odoo antes de que alguien lo vea. Un salto de 10× por un separador de miles mal leído se cobra en la próxima venta. No hay fila útil si además explotó el porcentaje.
+
+**Cómo arreglarlo.** El mismo umbral mínimo que Neggo, y un techo (por ejemplo no auto-aplicar si la variación pasa del 30%): esa alerta queda `pending`.
 
 ## 10. Scraping de proveedores
 
-### Crítico — pausar, o terminar en cero, borra el catálogo del proveedor
+### Crítico — Pausar, o terminar en cero, borra el catálogo del proveedor
 
-`PythonScraper.run` (`pythonScraper.js:84-112`) guarda `runStartedAt` antes del script y, si el proceso sale con código 0, llama a `markUnavailableSince`. Esa función (`baseScraper.js:316-322`) hace:
+`pythonScraper.js:84-112` y `20`, `117-118`, `261-267`, `baseScraper.js:316-322` y `530-532`, `mali_scraper.py:52-54`.
 
-```sql
-DELETE FROM supplier_products
-WHERE supplier_id = $1 AND last_scraped_at < $2
-```
+**Importancia.** Crítica. Es el origen de los precios de catálogo, de las alertas y de los vínculos con Odoo. `markUnavailableSince` hace `DELETE` de todo producto del proveedor con `last_scraped_at` anterior al run. La cascada se lleva historial, `product_mappings` y `preventas_sync_state`.
 
-`ON DELETE CASCADE` se lleva `price_history`, `product_mappings` y `preventas_sync_state`.
+El delete corre aunque el proceso haya sido pausado con `SIGTERM`. También corre si Python sale con código 0 y 0 productos (el login de Mali trata `NoSuchElementException` como "sesión ya activa" y la wishlist viene vacía). En el camino Puppeteer también borra cuando el estado es `partial`: una categoría caída elimina los productos de esa categoría.
 
-El delete corre antes de mirar si el proceso fue pausado (`pythonScraper.js:112` vs `117-118`). Pausar manda `SIGTERM` (`pythonScraper.js:20`). El `close` con señal resuelve la promesa (`pythonScraper.js:261-267`) y recién ahí borra todo lo que este run todavía no upsertió. El checkpoint de página (`pythonScraper.js:224-230`) queda apuntando a productos que ya no existen.
+**Consecuencias.** Se pierde el catálogo de Cast, Mali, El Rey o Impotekno. Desaparecen los vínculos: el ingreso deja de matchear por código de proveedor, el sync de Preventas no tiene contra qué comparar, y las alertas de precio no vuelven a disparar hasta re-scrapear y re-vincular a mano. Los pedidos armados contra esos `supplier_product_id` quedan apuntando a filas que ya no existen. No es un precio desactualizado: es la base de precios del proveedor vaciada.
 
-Lo mismo si el script sale 0 sin productos: login de Mali que se da por bueno (`mali_scraper.py:52-54`, `NoSuchElementException` → "sesión ya activa") y wishlist vacía. El run "termina bien" y vacía la tabla.
+**Cómo arreglarlo.** No borrar en `paused`, `failed` ni `partial`. En `completed`, no borrar si `found` es 0 o cayó por debajo de la mitad del catálogo anterior. Marcar `available = false` en lugar de `DELETE`, para no cortar mappings. El delete, si hace falta, como acción aparte.
 
-`BaseScraper.run` (`baseScraper.js:530-532`) borra también cuando el estado final es `partial` (alguna categoría falló y otras no). Los productos de la categoría caída tienen `last_scraped_at` viejo y se van.
+### Alto — Sin SKU, todos esos productos pisan la misma fila
 
-**Reproducción.** Proveedor con productos cargados. Pausar a mitad de categorías. `SELECT COUNT(*) FROM supplier_products WHERE supplier_id = …` baja a lo scrapeado en esa tanda. Los mappings de esos ids desaparecen.
+`baseScraper.js:145-146` y `223-261`.
 
-**Arreglo.** No borrar en `paused`, `failed` ni `partial`. En un `completed`, exigir un mínimo (por ejemplo no borrar si `found` es 0 o es menor al 50% del catálogo anterior) y marcar `available = false` en lugar de `DELETE`, para no cortar mappings. El delete, si hace falta, que sea un paso explícito.
+**Importancia.** Alta en cualquier página del scraper que no traiga código.
 
-### Alto — SKU vacío colapsa todos esos productos en una fila
+**Consecuencias.** Todos quedan con SKU `PRE` + prefijo. El segundo pisa nombre y precio del primero: un solo precio para muchos artículos, el resto se pierde. Después el delete del ítem anterior borra lo que no se "vio". El catálogo queda con un producto y un precio que no corresponden a ninguno.
 
-`baseScraper.js:145-146` arma `PRE${prefix}${cleanCode}`. Si `sku` viene vacío, `cleanCode` es `''` y todos comparten `PRE` + prefijo. El segundo pisa nombre y precio del primero (`baseScraper.js:223-261`). Al final, `markUnavailableSince` borra el resto del catálogo porque no se "vieron".
+**Cómo arreglarlo.** Si no hay código, no insertar: loguear el error del run. No usar esa fila en el delete.
 
-**Arreglo.** Si no hay código, no insertar (log + error del run) o usar una clave que incluya el nombre y la URL, y no participar del delete.
+### Medio — Mali lee un precio argentino como un decimal chico
 
-### Medio — Mali interpreta un precio argentino como decimal chico
+`mali_scraper.py:59-66`. Cast y El Rey sí separan miles y decimales (`cast_scraper.py:76`, `elrey_scraper.py:60`).
 
-`mali_scraper.py:59-66` saca `$` y comas, y hace `float`. El comentario asume `$310.00` o `$1,234.56` (formato US). Un texto `$1.234,56` queda `1.23456`. Cast y El Rey sí pasan el punto de miles a formato con punto decimal (`cast_scraper.py:76`, `elrey_scraper.py:60`). Ese precio, si el producto ya estaba mapeado a Preventas, lo escribe Odoo solo (sección 9).
+**Importancia.** Media si el sitio de Mali manda `$310.00` (formato US, como dice el comentario del parser). Alta si manda `$1.234,56`.
 
-**Arreglo.** Usar el mismo parser que Cast: si hay coma y punto, el último separador es el decimal.
+**Consecuencias.** `$1.234,56` queda `1.23456`. Ese costo entra al catálogo y, si el producto está vinculado a Preventas, se escribe solo en Odoo (sección 9). Se vende a pesos en lugar de a miles. El margen desaparece.
 
-### Medio — el semáforo deja pasar más de dos scrapers
+**Cómo arreglarlo.** El parser de Cast: si hay punto y coma, el último separador es el decimal.
 
-`scrapingService.js:28-71` lee `runningCount` y recién lo incrementa después de un `await pool.query`. Dos requests simultáneos ven `0` y los dos entran. El tope `MAX_CONCURRENT = 2` no se cumple. En un solo proceso de Node es una carrera corta; alcanza para lanzar un tercer Chromium.
+### Medio — Pueden correr más de dos scrapers a la vez
 
-**Arreglo.** Incrementar el contador en el mismo turno, antes del primer `await`, y bajarlo en el `finally` si el chequeo de proveedor falla.
+`scrapingService.js:28-71`.
 
-### Bajo — categorías pendientes no se recalculan en el camino Python
+**Importancia.** Media. El tope existe para no tumbar Chrome ni el proveedor.
 
-`detectPendingCategories` solo lo llama `BaseScraper.run` (`baseScraper.js:554`). Los cuatro scrapers reales extienden `PythonScraper` y no lo llaman. Ya está en `docs/estado-implementacion.md`: la pantalla de reglas usa `unmapped-categories` y por eso igual lista el faltante. No es un agujero de datos.
+**Consecuencias.** El contador se incrementa después de un `await`. Dos clicks, o el cron más un click, pasan los dos. Un tercer Chromium compite, el sitio del proveedor puede bloquear la IP, y el run termina a medias. Combinado con el delete del ítem crítico, un run a medias borra el resto del catálogo.
+
+**Cómo arreglarlo.** Subir `runningCount` antes del primer `await`. Bajarlo en el `finally` si el proveedor no se puede scrapear.
+
+### Bajo — El camino Python no marca categorías pendientes al terminar
+
+`baseScraper.js:554`. Los cuatro scrapers reales extienden `PythonScraper`.
+
+**Importancia.** Baja. La pantalla de reglas igual lista el faltante con `GET /api/suppliers/:id/unmapped-categories`. Ya está anotado en `docs/estado-implementacion.md`.
+
+**Consecuencias.** El badge de "categorías sin mapear" puede no enterarse por este camino. Esas categorías no entran al catálogo hasta que alguien cree la regla. No se pierden productos ya cargados.
+
+**Cómo arreglarlo.** Llamar a `detectPendingCategories()` al final de `PythonScraper.run` cuando el estado es `completed`.
 
 ## 11. Frontend
 
-### Alto — el login (sección 1) y las rutas sin rol
+El login y las rutas sin rol están en la sección 1 (`client.js`, `ProtectedRoute.jsx`, `App.jsx`). Acá queda lo que solo se ve en una pantalla.
 
-Ver auth. El cliente HTTP es el que convierte el 401.
+### Medio — En el buscador de cotizaciones, todas las filas sin id quedan elegidas
 
-### Medio — la fila elegida en el buscador de cotizaciones no usa el segundo comparador
+`IngresoPreview.jsx:1396`. El build ya avisa por la precedencia. Está en `docs/estado-implementacion.md`.
 
-`IngresoPreview.jsx:1396`:
+**Importancia.** Media, en el modal que vincula un renglón de la factura con una línea de cotización.
 
-```jsx
-const isSel = selected?.line_id === l.line_id ?? selected?.id === l.id;
-```
+**Consecuencias.** `??` pierde contra `===`, así que el segundo comparador (`selected.id`) no corre. Si las líneas no traen `line_id`, `undefined === undefined` es verdadero y todas se marcan. Se confirma la cantidad contra la cotización equivocada: la mercadería se asigna a otro pedido de cliente.
 
-`??` tiene menos precedencia que `===`, así que es `(selected?.line_id === l.line_id) ?? …`. El lado izquierdo es siempre `true` o `false`, nunca null. El `id` no se usa. Si las dos líneas no traen `line_id`, `undefined === undefined` es verdadero y todas quedan marcadas. Ya lo señala `docs/estado-implementacion.md` (el build avisa). El efecto en la pantalla es este.
-
-**Arreglo.** Paréntesis: `(selected?.line_id != null && selected.line_id === l.line_id) || (selected?.id != null && selected.id === l.id)`.
-
-### Bajo — `toLocaleString('es-AR')` en el browser
-
-Las pantallas (Dashboard, ingreso, pedidos, alertas) formatean en el cliente. Ahí el locale es el del navegador, no el de Alpine. No es el bug del PDF. El PDF del backend sí: secciones 7 y 8, este último cubierto por el PR #3.
+**Cómo arreglarlo.** `(selected?.line_id != null && selected.line_id === l.line_id) || (selected?.id != null && selected.id === l.id)`.
 
 ## 12. Docker, Nginx e initDatabase
 
-### Crítico — secretos de proveedores escritos al arrancar
+### Crítico — La clave de Mali y el token de El Rey están en el arranque
 
-`initDatabase.js:86-106` inserta en `scrape_config` el usuario y la clave de Mali, y el token de El Rey, cuando la tabla está vacía. Si la config quedó `{}`, el `UPDATE` de las líneas 94-106 los vuelve a escribir. Están en el repo, en texto plano, y terminan en `suppliers.scrape_config`. Cualquiera con lectura de la base o del git entra a esas cuentas.
+`initDatabase.js:86-106`. Ya lo marca `docs/estado-implementacion.md`. Ningún PR #2-#5 lo saca.
 
-`docs/estado-implementacion.md` (riesgo 2) ya lo marca. Ningún PR #2-#5 lo saca.
+**Importancia.** Crítica: están en el git y se copian a `suppliers.scrape_config`. Si la config quedó `{}`, el `UPDATE` las vuelve a escribir en cada arranque.
 
-**Arreglo.** Borrar esas cadenas del archivo. Leer `MALI_USER`, `MALI_PASSWORD` y `ELREY_TOKEN` del entorno, y no actualizar la fila si la variable no está. Rotar la clave y el token en los sitios de los proveedores: hay que asumir que ya salieron del repo.
+**Consecuencias.** Quien lea el repo o la base entra a la cuenta de Mali y al catálogo de El Rey. Desde ahí ve los costos reales del proveedor. Esos costos son la base del precio de venta. Hay que asumir que ya salieron y rotarlos en los sitios, no solo borrarlos del archivo.
 
-### Alto — el puerto 3000 publica la API al lado de Nginx
+**Cómo arreglarlo.** Sacar las cadenas del código. Leer `MALI_USER`, `MALI_PASSWORD` y `ELREY_TOKEN` del entorno, y no tocar la fila si la variable no está. Rotar clave y token en Mali y El Rey.
 
-`docker-compose.yml:21-22` mapea `3000:3000`. Nginx es el único que pone timeouts, corta el body de algunas rutas y sirve el front. El 3000 habla directo con Express: los proxies de imagen sin auth (sección 6) y el health que devuelve `error.message` (`server.js:36-40`) quedan en la red local sin el filtro de Nginx. CORS está abierto (`server.js:15`, `cors()` sin origen).
+### Crítico — Una base vacía no termina de crearse
 
-**Arreglo.** No publicar 3000 fuera de la red de Compose. En el health de producción, no devolver `details`.
+`schema.sql:700` contra el `CREATE TABLE` de `preventa_client_orders` (líneas 231-246). **Cubierto por el PR #2.** El detalle de columnas está en las secciones 4, 6, 7 y 8.
 
-### Medio — el schema de arranque y las migraciones siguen siendo tres listas
+**Importancia.** Crítica para un `docker compose` desde cero. El entrypoint de Postgres corre `schema.sql` con `ON_ERROR_STOP`. El índice referencia `pricelist_id` y la columna no existe: el script corta.
 
-Lo cierra en lo crítico el PR #2 (la tabla de columnas de `docs/estado-implementacion.md`). Sigue siendo cierto que `docker-compose.yml` solo monta `schema.sql` + `seeds.sql`, que `seeds.sql` está vacío, y que `migrations/001`–`018` no corren solas. `initDatabase.js` parcha otra lista y traga errores con `.catch(() => {})` (por ejemplo líneas 26, 35, 39). Un `ALTER` que falle por un motivo distinto a "ya existe" se pierde y el log dice "inicializada correctamente" (`initDatabase.js:276`).
+**Consecuencias.** No hay base. No hay login, ni precios, ni pedidos, ni ingreso. Un volumen que ya fue migrado a mano no lo ve.
 
-**Arreglo.** Después del PR #2, loguear el error del `catch` en lugar de vaciarlo. A mediano plazo, una sola lista de migraciones aplicadas en una tabla.
+**Cómo arreglarlo.** El del PR #2: la columna antes del índice, y el mismo `ALTER` al arrancar para las bases que ya existen.
 
-### Medio — `/storage/` se sirve sin sesión
+### Alto — El puerto 3000 publica la API al lado de Nginx
 
-`nginx.conf:106-110` alias de `/var/www/storage/` con cache de 7 días. Fotos de productos y PDFs de catálogo que hayan quedado ahí se bajan sin JWT. El volumen está montado de solo lectura, así que no es escritura.
+`docker-compose.yml:21-22`, `server.js:15` y `36-40`.
 
-**Arreglo.** Si el almacenamiento tiene que ser privado, pasar la descarga por el backend con `authenticate` (los catálogos ya lo hacen en `/api/catalogs/:id/download`).
+**Importancia.** Alta en cualquier red donde esa máquina se vea. Nginx es el que pone timeouts y sirve el front. El 3000 habla directo con Express. CORS está abierto (`cors()` sin origen).
 
-### Bajo — dos handlers de `SIGTERM`
+**Consecuencias.** Los proxies de fotos sin login (sección 6) y el health, que devuelve el mensaje crudo de Postgres, quedan fuera del filtro. No cambia precios por sí solo. Acorta el camino hasta los bugs de auth y de fotos.
 
-`server.js:138-142` y `151-155` registran los dos `SIGTERM`. Los dos llaman a `pool.end()` y `process.exit`. El primero también para el scheduler. En la práctica el proceso muere; el segundo `pool.end()` puede loguear un error de pool ya cerrado.
+**Cómo arreglarlo.** No publicar el 3000 fuera de la red de Compose. En producción, el health no debe devolver `details`.
 
-**Arreglo.** Un solo handler: parar cron, cerrar pool, salir.
+### Medio — Tres listas de schema, y un error de migración se traga
 
-## Top 10
+`docker-compose.yml` (solo monta `schema.sql` y `seeds.sql`), `initDatabase.js:26`, `35`, `39` y `276`. El hueco de columnas lo cierra el PR #2. Esto queda.
 
-Ordenado por daño si se sigue operando `master` sin estos arreglos. Los que ya tienen PR no entran.
+**Importancia.** Media el día que se agrega una columna y el `ALTER` falla por algo distinto de "ya existe".
 
-| # | Sev. | Módulo | Bug | Arreglo mínimo |
-|---|---|---|---|---|
-| 1 | Crítico | Scraping | Pausar, un run parcial o un script que sale con 0 productos hace `DELETE` del catálogo del proveedor y, en cascada, mappings e historial (`pythonScraper.js:112`, `baseScraper.js:316-322`). | No borrar salvo `completed` con un volumen razonable de productos. Marcar `available = false`. |
-| 2 | Crítico | Preventas | `addItemToOrder` referencia `prices` fuera de alcance (`preventasService.js:117`). El ítem se guarda, la API responde 500 y el reintento duplica la cantidad. | Declarar `prices` en la función, antes del `if`. |
-| 3 | Crítico | Auth / arranque | Clave de Mali y token de El Rey en `initDatabase.js:86-106`. `JWT_SECRET` con default conocido (`docker-compose.yml:25`, `auth.js:4`) y el middleware no mira si el usuario sigue activo. | Secretos solo por entorno, rotar los que ya están en git, y revalidar `active` + `role` en cada request. |
-| 4 | Alto | Odoo / pedidos | `updateSaleOrderLines` manda comando `5` (`odooService.js:481`). Un ítem de proveedor, sin `odoo_company`, vacía la orden Neggo o se escribe en Preventas (`preventas.js:35-41`). | No sincronizar listas vacías. No incluir ítems sin `odoo_product_id`. |
-| 5 | Alto | Ingreso | Confirmar traga el error de la OC y deja `confirmado` (`ingresoService.js:859-895`). Dos clicks crean dos OC. El caso "falta la columna" lo tapa el PR #2; este no. | `FOR UPDATE`, no pasar a confirmado si Odoo no devolvió id, no reintentar el `create`. |
-| 6 | Alto | Sync Odoo | Paginado sin `order` (`odooSync.js:50-60`) y `DELETE` de lo que no volvió (`odooSync.js:352-357`). El PR #4 pagina cotizaciones, no este sync. | `order: 'id asc'` y no limpiar si el conteo no cierra con Odoo. |
-| 7 | Alto | Ingreso | `PATCH` del ítem, sin rol admin, escribe precios en Odoo y, si no hay lista previa, pisa `list_price` aunque solo se haya pedido el costo (`ingreso.js:391`, `661-668`). | `requireRole('admin')`. No mandar precio de lista si `apply_price` es false. |
-| 8 | Alto | Alertas | Aprobar marca `approved` aunque el `write` haya fallado (`priceAlertService.js:201-205`). Precio viejo 0 produce `Infinity` (`priceAlertService.js:30`). Preventas aplica solo, sin tope. | Quedar en `pending` si falló Odoo. No dividir por cero. Tope de variación para el auto-apply. |
-| 9 | Alto | Ingreso | Match por `LIKE '%codigo%'` y fuzzy 0,72 que se acepta solo (`ingresoService.js:218-220` y `316-320`). Renglones duplicados de la factura: la cantidad de Preventas cae en un solo id (`ingreso.js:2018-2032`). Descripto en el plan, sin PR. | Igualdad de código, fuzzy a revisión humana, repartir la cantidad en todos los ítems del código. |
-| 10 | Alto | Frontend / auth | Clave mal escrita recarga `/login` y el mensaje es "Sesión expirada" (`client.js:35-38`). Un vendedor abre por URL rutas que el menú esconde, y varias APIs no exigen el rol. | No tratar el 401 del login como sesión vencida. Guard de rol en el router, igual que `requireRole`. |
+**Consecuencias.** El log dice "inicializada correctamente". La app arranca y la primera pantalla que usa esa columna responde 500: no se guarda un ingreso, no corre el sync, no se crea un pedido. Parece un bug de esa pantalla.
 
-Debajo del corte, y conviene no perderlo: lectura de archivos vía `image_url` en el PDF de cotizaciones (`preventas.js:934-940`, el PR #4 lo conserva), PDF de órdenes a proveedores con miles en formato Alpine (`preventas.js:679`), y markup 0 ignorado en el ingreso (`ingresoService.js:645-646`).
+**Cómo arreglarlo.** Loguear el error del `.catch`. A mediano plazo, una tabla de migraciones aplicadas y una sola lista.
+
+### Medio — `/storage/` se descarga sin sesión
+
+`nginx.conf:106-110`.
+
+**Importancia.** Media. El volumen está montado de solo lectura: no se puede escribir por ahí.
+
+**Consecuencias.** Fotos de productos y, si alguien dejó un PDF en esa carpeta, el catálogo con precios, se bajan sin JWT. Es la lista de precios pública para quien esté en la red.
+
+**Cómo arreglarlo.** Si tiene que ser privado, bajarlo por el backend con `authenticate`, como ya hace `/api/catalogs/:id/download`.
+
+### Bajo — Hay dos handlers de SIGTERM
+
+`server.js:138-142` y `151-155`.
+
+**Importancia.** Baja. El proceso igual termina.
+
+**Consecuencias.** Los dos llaman a `pool.end()`. El segundo puede loguear un pool ya cerrado. Un scrape que estaba corriendo se corta; el riesgo de fondo es el delete de la sección 10 si ese corte se interpreta como fin exitoso. Este handler en sí no borra datos.
+
+**Cómo arreglarlo.** Un solo handler: parar el cron, cerrar el pool, salir.
+
+## Cómo se reparte
+
+Sin PR, y en este orden si se va a tocar código: el delete del scraping, el `prices` de `addItemToOrder`, los secretos y el JWT, el comando `5` de las órdenes de venta, el confirm del ingreso, el paginado del sync de productos, el `PATCH` de precios, las alertas, y el match de factura (`LIKE`, fuzzy, renglones duplicados).
+
+Con PR ya abierto: #2 antes que #3 y #4. El #5 no entra en esta lista.
