@@ -756,53 +756,113 @@ async function getSaleOrders(partnerId, { status = null, from = null, to = null 
     );
 }
 
+const QUOTATION_PAGE = 200;
+const QUOTATION_PAGE_CAP = 20000;
+
+/**
+ * Lee search_read de a una página. Corta si Odoo repite la página
+ * (offset ignorado) para no entrar en un bucle.
+ */
+async function readAllPages(fetchPage, pageSize = QUOTATION_PAGE) {
+    const all = [];
+    const seen = new Set();
+    let offset = 0;
+
+    while (offset <= QUOTATION_PAGE_CAP) {
+        const rows = (await fetchPage(offset, pageSize)) || [];
+        let added = 0;
+        for (const row of rows) {
+            if (row && row.id != null) {
+                if (seen.has(row.id)) continue;
+                seen.add(row.id);
+            }
+            all.push(row);
+            added++;
+        }
+        if (rows.length < pageSize || added === 0) break;
+        offset += pageSize;
+    }
+
+    return all;
+}
+
+async function readByIds(model, ids, fields, context) {
+    const chunkSize = 80;
+    const all = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        const rows = await callOdoo(
+            model,
+            'search_read',
+            [[['id', 'in', chunk]]],
+            { fields, limit: chunk.length, context }
+        );
+        if (rows && rows.length) all.push(...rows);
+    }
+    return all;
+}
+
+// Línea de nota o de sección: Odoo manda product_id en false. No es un producto.
+function normalizeQuotationLine(line, defaultCodes) {
+    const productId = Array.isArray(line.product_id) ? line.product_id[0] : null;
+    if (!productId) return null;
+    return {
+        id:           line.id,
+        product_id:   productId,
+        product_name: Array.isArray(line.product_id) ? line.product_id[1] : line.name,
+        external_id:  defaultCodes[productId] || null,
+        quantity:     line.product_uom_qty,
+        unit_price:   line.price_unit,
+        subtotal:     line.price_subtotal,
+    };
+}
+
 /**
  * Trae todas las cotizaciones de venta (draft + sent) de la empresa Preventas,
- * con sus líneas de productos incluidas en una sola respuesta.
+ * con sus líneas de productos. Pagina de a 200 hasta agotarlas.
  *
  * @returns {Promise<Array>}
  */
 async function getPreventasQuotations() {
     const companyId = await resolveCompanyId('preventas');
+    const context = { allowed_company_ids: [companyId] };
 
-    const orders = await callOdoo(
+    const orders = await readAllPages((offset, limit) => callOdoo(
         'sale.order',
         'search_read',
         [[['state', 'in', ['draft', 'sent']], ['company_id', '=', companyId]]],
         {
             fields: ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'],
-            order:  'date_order desc',
-            limit:  200,
-            context: { allowed_company_ids: [companyId] }
+            order:  'id asc',
+            limit,
+            offset,
+            context,
         }
-    );
+    ));
 
     if (orders.length === 0) return [];
 
-    // Traer todas las líneas en una sola llamada
-    const allLineIds = orders.flatMap(o => o.order_line || []);
+    const allLineIds = [...new Set(orders.flatMap(o => o.order_line || []))];
+    const lines = allLineIds.length > 0
+        ? await readByIds(
+            'sale.order.line',
+            allLineIds,
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'price_unit', 'price_subtotal', 'name'],
+            context
+        )
+        : [];
 
-    const lines = allLineIds.length > 0 ? await callOdoo(
-        'sale.order.line',
-        'search_read',
-        [[['id', 'in', allLineIds]]],
-        {
-            fields: ['id', 'order_id', 'product_id', 'product_uom_qty',
-                     'price_unit', 'price_subtotal', 'name'],
-            context: { allowed_company_ids: [companyId] }
-        }
-    ) : [];
-
-    // Traer default_code (referencia interna) y nombre de los productos para el match
-    const productIds = [...new Set(lines.map(l => Array.isArray(l.product_id) ? l.product_id[0] : null).filter(Boolean))];
+    const productIds = [...new Set(
+        lines.map(l => (Array.isArray(l.product_id) ? l.product_id[0] : null)).filter(Boolean)
+    )];
     const defaultCodes = {};
     const artCodeRe = /\bArt\.\s+(\S+)\s*$/i;
     if (productIds.length > 0) {
-        const products = await callOdoo(
+        const products = await readByIds(
             'product.product',
-            'search_read',
-            [[['id', 'in', productIds]]],
-            { fields: ['id', 'default_code', 'name'], context: { allowed_company_ids: [companyId] } }
+            productIds,
+            ['id', 'default_code', 'name'],
+            context
         );
         for (const p of products) {
             if (p.default_code) {
@@ -818,22 +878,24 @@ async function getPreventasQuotations() {
         console.log(`📦 Referencias cargadas: ${conRef}/${productIds.length} productos (default_code o Art. del nombre)`);
     }
 
-    // Agrupar líneas por orden
     const linesByOrder = {};
+    let skipped = 0;
     for (const line of lines) {
-        const orderId   = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-        const productId = Array.isArray(line.product_id) ? line.product_id[0] : null;
+        const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
+        const normalized = normalizeQuotationLine(line, defaultCodes);
+        if (!normalized) {
+            skipped++;
+            continue;
+        }
         if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
-        linesByOrder[orderId].push({
-            id:           line.id,
-            product_id:   productId,
-            product_name: Array.isArray(line.product_id) ? line.product_id[1] : line.name,
-            external_id:  productId ? (defaultCodes[productId] || null) : null,
-            quantity:     line.product_uom_qty,
-            unit_price:   line.price_unit,
-            subtotal:     line.price_subtotal,
-        });
+        linesByOrder[orderId].push(normalized);
     }
+    if (skipped > 0) {
+        console.log(`📋 Líneas de Odoo sin producto omitidas: ${skipped}`);
+    }
+
+    orders.sort((a, b) => String(b.date_order || '').localeCompare(String(a.date_order || '')) || b.id - a.id);
+    console.log(`📋 Cotizaciones Preventas leídas: ${orders.length}`);
 
     return orders.map(o => ({
         id:         o.id,
@@ -875,5 +937,7 @@ module.exports = {
     cancelSaleOrder,
     getSaleOrders,
     getPreventasQuotations,
+    readAllPages,
+    normalizeQuotationLine,
 };
 

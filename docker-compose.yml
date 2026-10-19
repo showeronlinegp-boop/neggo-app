@@ -35,6 +35,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      chrome:
+        condition: service_started
     restart: unless-stopped
     networks:
       - neggo-net
