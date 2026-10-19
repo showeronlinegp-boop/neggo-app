@@ -325,7 +325,7 @@ async function initDatabase() {
             END $$;
         `);
 
-        // Limpieza de proveedores (migración 024, nota #20): columnas y tabla sin uso.
+        // Limpieza de proveedores (migración 025, nota #20): columnas y tabla sin uso.
         // Va después de los bloques de arriba, que en una base vieja copian los markups antes de borrar.
         // El estado de un proveedor es solo active + scrape_enabled; las pendientes se calculan en vivo.
         await pool.query(`ALTER TABLE suppliers DROP COLUMN IF EXISTS status`);
