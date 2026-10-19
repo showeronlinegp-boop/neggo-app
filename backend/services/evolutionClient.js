@@ -41,9 +41,11 @@ function normalizeGroups(payload) {
     const list = Array.isArray(payload) ? payload : (payload?.groups || payload?.data || []);
     if (!Array.isArray(list)) return [];
     return list
+        // La comunidad "madre" no acepta mensajes (WhatsApp responde 420): se publica en su grupo de avisos.
+        .filter((g) => !g.isCommunity)
         .map((g) => ({
             jid: g.id || g.jid || g.remoteJid || null,
-            subject: g.subject || g.name || g.id || 'Grupo',
+            subject: `${g.subject || g.name || g.id || 'Grupo'}${g.isCommunityAnnounce ? ' (avisos de la comunidad)' : ''}`,
             size: Number.isFinite(Number(g.size)) ? Number(g.size) : null,
         }))
         .filter((g) => typeof g.jid === 'string' && g.jid.endsWith('@g.us'));

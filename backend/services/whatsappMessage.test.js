@@ -68,6 +68,17 @@ async function testEvolutionGuard() {
     console.log('evolution no manda vacíos ok');
 }
 
+function testCommunityGroups() {
+    const groups = evolution.normalizeGroups([
+        { id: '120363218543511311@g.us', subject: 'Neggo Polirrubros', isCommunity: true, size: 2 },
+        { id: '120363218295245705@g.us', subject: 'Neggo Polirrubros', isCommunityAnnounce: true, size: 361 },
+        { id: '120363221405263046@g.us', subject: 'Chat', size: 177 },
+    ]);
+    assert.deepStrictEqual(groups.map((g) => g.jid), ['120363218295245705@g.us', '120363221405263046@g.us']);
+    assert.strictEqual(groups[0].subject, 'Neggo Polirrubros (avisos de la comunidad)');
+    console.log('comunidades ok');
+}
+
 async function testLinks() {
     assert.strictEqual(productLink('/shop/mate-12', 'https://neggo.odoo.com/'), 'https://neggo.odoo.com/shop/mate-12');
     assert.strictEqual(productLink('', 'https://neggo.odoo.com'), null);
@@ -94,6 +105,7 @@ async function testLinks() {
     testEmpty();
     testValid();
     await testEvolutionGuard();
+    testCommunityGroups();
     await testLinks();
     console.log('✅ whatsappMessage.test ok');
 })().catch((err) => {
