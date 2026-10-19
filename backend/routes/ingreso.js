@@ -1588,8 +1588,8 @@ router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), asy
 
         if (items.length === 0) return ok(res, { message: 'No hay ítems pendientes de suplementar', added: 0 });
 
-        // Cotizaciones abiertas de Preventas — misma fuente que preventa-odoo-match
-        const quotations = await odooService.getPreventasQuotations();
+        // Cotizaciones enviadas de Preventas (los borradores no cuentan) — misma fuente que preventa-odoo-match
+        const quotations = await odooService.getPreventasQuotations(['sent']);
 
         const allProductIds = [...new Set(
             quotations.flatMap(q => (q.lines || []).map(l => l.product_id).filter(Boolean))
@@ -2039,8 +2039,8 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
             }
         }
 
-        // Cotizaciones abiertas de Odoo Preventas (ya traen default_code por producto)
-        const quotations = await require('../services/odooService').getPreventasQuotations();
+        // Cotizaciones enviadas de Odoo Preventas (ya traen default_code por producto; los borradores no cuentan)
+        const quotations = await require('../services/odooService').getPreventasQuotations(['sent']);
 
         // Enriquecer líneas con datos del cache local:
         // external_id en getPreventasQuotations viene del default_code de Odoo (internal_ref sin PRE).

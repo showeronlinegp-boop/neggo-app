@@ -778,10 +778,11 @@ router.get('/odoo-quotations', authenticate, async (req, res) => {
 // GET /api/preventas/odoo-quotations/by-supplier
 // Agrupa por el proveedor local del mapping. Si no hay mapping, usa vendor_name
 // de Odoo. Lo que no resuelve queda en "Sin proveedor".
+// Solo cotizaciones enviadas, igual que /odoo-quotations.
 router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
     try {
         const odooService = require('../services/odooService');
-        const quotations  = await odooService.getPreventasQuotations();
+        const quotations  = await odooService.getPreventasQuotations(['sent']);
 
         if (quotations.length === 0) return ok(res, []);
 
