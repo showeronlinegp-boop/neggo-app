@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const sharp = require('sharp');
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 
@@ -64,6 +65,21 @@ function formatPrice(amount) {
 // el original. Las variantes comparten la imagen de su template.
 const IMG_BATCH = 40;
 
+// PDFKit solo acepta JPEG y PNG; Odoo guarda muchas imágenes en WEBP.
+// Lo que no sea JPEG/PNG se convierte a JPEG con fondo blanco (el fondo del catálogo).
+function isJpegOrPng(buf) {
+    return (buf[0] === 0xFF && buf[1] === 0xD8) || (buf[0] === 0x89 && buf[1] === 0x50);
+}
+
+async function toPdfImage(buf) {
+    if (isJpegOrPng(buf)) return buf;
+    try {
+        return await sharp(buf).flatten({ background: '#FFFFFF' }).jpeg({ quality: 85 }).toBuffer();
+    } catch {
+        return null;
+    }
+}
+
 async function fetchOdooImages(templateIds, company, concurrency = 3) {
     const map = {};
     const unique = [...new Set(templateIds.filter(Boolean))];
@@ -82,7 +98,10 @@ async function fetchOdooImages(templateIds, company, concurrency = 3) {
             try {
                 const rows = await callOdoo('product.template', 'read', [batch], { fields: ['image_512'], context });
                 for (const r of rows || []) {
-                    if (r.image_512) map[r.id] = Buffer.from(r.image_512, 'base64');
+                    if (!r.image_512) continue;
+                    const img = await toPdfImage(Buffer.from(r.image_512, 'base64'));
+                    if (img) map[r.id] = img;
+                    else console.warn(`⚠️ Imagen de Odoo con formato no soportado (template ${r.id})`);
                 }
             } catch (err) {
                 console.warn(`⚠️ No se pudieron traer imágenes de Odoo (lote de ${batch.length}): ${err.message}`);
