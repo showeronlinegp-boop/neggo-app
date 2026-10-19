@@ -98,13 +98,16 @@ los runs en curso (quedan reanudables), así que avisar al usuario si hay alguno
 8. **Esperar el OK.** El usuario confirma en la terminal o tocando "Confirmar" en la app (verificar
    con `ver <id>`: estado `corregida`). Si toca "Sigue mal" (vuelve a `abierta`), seguir iterando
    en el mismo worktree y volver al paso 6.
-9. **Con el OK:** en el checkout principal deshacer el patch (`git apply -R <patch>`), mergear y
-   publicar:
+9. **Con el OK:** publicar la rama (nunca master) y pasársela al coordinador:
    ```bash
-   git merge --no-ff nota/<id>-<tema> -m "Merge nota #<id>: <tema>"
-   git push origin master
-   git worktree remove ../neggo-app-nota-<id> && git branch -d nota/<id>-<tema>
+   git -C ../neggo-app-nota-<id> fetch -q origin && git -C ../neggo-app-nota-<id> rebase origin/master
+   git -C ../neggo-app-nota-<id> push origin nota/<id>-<tema>
    ```
-   Rebuildear de nuevo (mismo contenido, ahora commiteado) y verificar `git status`. Si la nota
-   quedó `para_revisar`, pasarla a `corregida` solo si el usuario confirmó en la terminal.
+   Avisarle a la sesión coordinadora (buscarla con `ListAgents`) por **SendMessage**: rama, nota
+   #<id>, qué cambia, archivos tocados, si tiene migraciones y si hace falta rebuild del backend,
+   del frontend o del `scraper-worker`. El patch sigue aplicado en el checkout principal hasta que
+   el coordinador mergee; cuando avise que está en `origin/master`, deshacerlo (`git apply -R
+   <patch>`), y borrar worktree y rama local (`git worktree remove ../neggo-app-nota-<id>`,
+   `git branch -d nota/<id>-<tema>`). Si la nota quedó `para_revisar`, pasarla a `corregida` solo
+   si el usuario confirmó en la terminal.
 10. Si en el camino aparece algo no obvio (gotcha, bug de fondo), guardarlo en la memoria del proyecto.
