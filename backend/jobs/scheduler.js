@@ -54,12 +54,9 @@ async function initScheduler(pool) {
             console.log(`📦 Scheduler: iniciando scraper automático para "${supplier.name}" (ID: ${supplier.id})`);
 
             try {
-                // triggeredBy = null indica que es una ejecución automática
-                const result = await scrapingService.runScraper(pool, supplier.id, null);
-                console.log(
-                    `✅ Scheduler: scraper de "${supplier.name}" completado. ` +
-                    `Status: ${result.status}, encontrados: ${result.found}`
-                );
+                // triggeredBy = null indica que es una ejecución automática; lo ejecuta el worker
+                const { runId } = await scrapingService.enqueueRun(pool, supplier.id, null);
+                console.log(`✅ Scheduler: "${supplier.name}" encolado (run ${runId})`);
             } catch (err) {
                 console.error(`❌ Scheduler: error en scraper de "${supplier.name}": ${err.message}`);
             }

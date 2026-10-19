@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth');
 const { startScraperAsync, pauseScraper, stopScraper, resumeScraper, cancelAll, getRunHistory, getRunDetail, getRunningCount, previewScraper } = require('../services/scrapingService');
-const PythonScraper = require('../scrapers/pythonScraper');
 const scrapingLogs = require('../services/scrapingLogs');
 const pool = require('../config/database');
 
@@ -262,14 +261,18 @@ router.post('/runs/:runId/stop', authenticate, requireRole('admin'), async (req,
 // Estado actual del motor de scraping (cuántos corriendo, qué runIds)
 // =============================================
 
-router.get('/status', authenticate, requireRole('admin'), (req, res) => {
-    res.json({
-        success: true,
-        data: {
-            runningCount: getRunningCount(),
-            activeRunIds: PythonScraper.getActiveRunIds(),
-        }
-    });
+router.get('/status', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        // Los scrapers corren en el scraper-worker: el estado sale de la base
+        const { running, queued, activeRunIds } = await getRunningCount(pool);
+        res.json({
+            success: true,
+            data: { runningCount: running, queuedCount: queued, activeRunIds }
+        });
+    } catch (err) {
+        console.error('❌ Error al obtener estado del scraping:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // =============================================
@@ -295,7 +298,7 @@ router.post('/cancel-all', authenticate, requireRole('admin'), async (req, res) 
 // IMPORTANTE: definir ANTES del wildcard /runs/:runId para no colisionar.
 // =============================================
 
-router.get('/runs/:runId/logs', authenticate, (req, res) => {
+router.get('/runs/:runId/logs', authenticate, async (req, res) => {
     const runId = parseInt(req.params.runId, 10);
 
     if (isNaN(runId) || runId <= 0) {
@@ -309,21 +312,29 @@ router.get('/runs/:runId/logs', authenticate, (req, res) => {
         'X-Accel-Buffering': 'no'
     });
 
-    const { lines, done } = scrapingLogs.getLogs(runId);
+    // Los logs los escribe el scraper-worker en la base; acá se leen y se transmiten
+    let logs;
+    try {
+        logs = await scrapingLogs.getLogs(runId);
+    } catch (err) {
+        console.error(`❌ Error leyendo logs del run ${runId}:`, err.message);
+        res.write(`event: done\ndata: ${JSON.stringify({ status: 'failed' })}\n\n`);
+        return res.end();
+    }
 
     // Enviar líneas ya acumuladas
-    for (const line of lines) {
+    for (const line of logs.lines) {
         res.write(`data: ${JSON.stringify({ line })}\n\n`);
     }
 
     // Si ya terminó, cerrar de inmediato
-    if (done) {
-        res.write(`event: done\ndata: {}\n\n`);
+    if (logs.done) {
+        res.write(`event: done\ndata: ${JSON.stringify({ status: logs.status })}\n\n`);
         res.end();
         return;
     }
 
-    // Suscribir a logs futuros
+    // Suscribir a logs futuros (polling a la base)
     const unsubscribe = scrapingLogs.subscribe(runId, (event) => {
         if (event.type === 'done') {
             res.write(`event: done\ndata: ${JSON.stringify({ status: event.status })}\n\n`);
@@ -331,7 +342,7 @@ router.get('/runs/:runId/logs', authenticate, (req, res) => {
         } else {
             res.write(`data: ${JSON.stringify({ line: event.line })}\n\n`);
         }
-    });
+    }, logs.lastId);
 
     // Limpiar suscripción si el cliente se desconecta
     req.on('close', unsubscribe);

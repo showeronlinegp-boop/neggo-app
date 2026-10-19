@@ -16,7 +16,7 @@ function statusTone(s) {
     if (!s) return 'muted';
     if (s === 'completed' || s === 'active') return 'success';
     if (s === 'failed') return 'danger';
-    if (s === 'running' || s === 'in_progress' || s === 'starting') return 'primary';
+    if (s === 'running' || s === 'queued' || s === 'in_progress' || s === 'starting') return 'primary';
     if (s === 'paused' || s === 'staging' || s === 'warning') return 'warn';
     return 'muted';
 }

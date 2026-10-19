@@ -4,11 +4,17 @@ const pool = require('../config/database');
 const scrapingLogs = require('./scrapingLogs');
 
 // =============================================
-// Semáforo simple para control de concurrencia
+// Arquitectura
 // =============================================
-
-let runningCount = 0;
-const MAX_CONCURRENT = 2;
+// Los scrapers corren en el contenedor scraper-worker (worker.js), no en el backend:
+// reiniciar el backend no corta ningún scraping.
+//
+//   backend → enqueueRun()                       INSERT scraping_runs (status 'queued')
+//   worker  → claimNextRun() + executeRun()      'queued' → 'running' → completed / partial / failed / paused
+//   backend → pauseScraper() / stopScraper()     UPDATE scraping_runs SET control = 'pause' | 'stop'
+//   worker  → applyControls()                    mata el proceso Python del run pedido
+//
+// El preview (dry-run por SSE) sigue corriendo en el backend: es corto y no guarda nada.
 
 /**
  * Corta si el proveedor tiene el scraping pausado (suppliers.scrape_enabled = false).
@@ -22,89 +28,305 @@ function assertScrapeEnabled(supplier) {
     }
 }
 
-// =============================================
-// Servicio de scraping
-// =============================================
+function parseConfig(supplier) {
+    if (typeof supplier.scrape_config === 'string') {
+        try { supplier.scrape_config = JSON.parse(supplier.scrape_config); } catch (_) { supplier.scrape_config = {}; }
+    }
+    return supplier;
+}
 
 /**
- * Ejecuta el scraper de un proveedor específico.
- * Controla concurrencia máxima con semáforo.
- *
- * @param {object} pool         — pg pool
- * @param {number} supplierId   — ID del proveedor
- * @param {number|null} triggeredBy — ID del usuario que disparó el run, o null si es automático
- * @returns {object} — resultado del run { runId, status, found, new, updated, priceChanges, errors }
+ * Valida el proveedor y devuelve la fila lista para scrapear.
  */
-async function runScraper(pool, supplierId, triggeredBy) {
-    // Verificar límite de concurrencia
-    if (runningCount >= MAX_CONCURRENT) {
-        const err = new Error(
-            `Demasiados scrapers corriendo simultáneamente (máx: ${MAX_CONCURRENT}). Intentá de nuevo en unos minutos.`
-        );
-        err.statusCode = 429;
-        throw err;
-    }
-
-    // Buscar el proveedor en la DB
-    // Permite correr scraper en staging y active (no en inactive)
-    const { rows } = await pool.query(
+async function getScrapeableSupplier(db, supplierId) {
+    const { rows } = await db.query(
         `SELECT * FROM suppliers WHERE id = $1 AND active = true AND status != 'inactive'`,
         [supplierId]
     );
-
     if (rows.length === 0) {
         const err = new Error(`Proveedor con ID ${supplierId} no encontrado, inactivo o deshabilitado`);
         err.statusCode = 404;
         throw err;
     }
-
-    const supplier = rows[0];
+    const supplier = parseConfig(rows[0]);
     assertScrapeEnabled(supplier);
-
-    // Parsear scrape_config si llega como string
-    if (typeof supplier.scrape_config === 'string') {
-        try {
-            supplier.scrape_config = JSON.parse(supplier.scrape_config);
-        } catch (_) {
-            supplier.scrape_config = {};
-        }
-    }
-
-    // Obtener instancia del scraper
-    const scraper = getScraperForSupplier(supplier, pool);
-    if (!scraper) {
-        const err = new Error(
-            `No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`
-        );
+    if (!supplier.scraper_key || !SCRAPER_REGISTRY[supplier.scraper_key]) {
+        const err = new Error(`No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`);
         err.statusCode = 400;
         throw err;
     }
+    return supplier;
+}
 
-    // Ejecutar scraper con control de concurrencia
-    runningCount++;
-    console.log(`📦 Iniciando scraper para "${supplier.name}" (corriendo: ${runningCount}/${MAX_CONCURRENT})`);
+// =============================================
+// Backend: encolar y controlar
+// =============================================
 
-    try {
-        const result = await scraper.run(triggeredBy);
-        console.log(`✅ Scraper de "${supplier.name}" finalizado. Status: ${result.status}`);
-        return result;
-    } catch (err) {
-        console.error(`❌ Scraper de "${supplier.name}" falló: ${err.message}`);
+/**
+ * Encola un run para que lo ejecute el scraper-worker. Responde enseguida con el runId;
+ * el cliente hace polling a GET /api/scraping/runs/:runId mientras status sea queued/running.
+ *
+ * @param {object} db
+ * @param {number} supplierId
+ * @param {number|null} triggeredBy — usuario, o null si es automático (scheduler)
+ * @param {object} [opts]
+ * @param {number} [opts.resumeFrom] — run pausado desde el que se reanuda
+ * @returns {{ runId, status: 'queued', supplierName }}
+ */
+async function enqueueRun(db, supplierId, triggeredBy, { resumeFrom = null } = {}) {
+    const supplier = await getScrapeableSupplier(db, supplierId);
+
+    const { rows: activos } = await db.query(
+        `SELECT id, status FROM scraping_runs WHERE supplier_id = $1 AND status IN ('queued', 'running') LIMIT 1`,
+        [supplierId]
+    );
+    if (activos.length > 0) {
+        const err = new Error(`"${supplier.name}" ya tiene un scraping ${activos[0].status === 'queued' ? 'en cola' : 'corriendo'} (run ${activos[0].id})`);
+        err.statusCode = 409;
         throw err;
+    }
+
+    const { rows } = await db.query(
+        `INSERT INTO scraping_runs (supplier_id, status, triggered_by, resume_from, started_at)
+         VALUES ($1, 'queued', $2, $3, NOW()) RETURNING id`,
+        [supplierId, triggeredBy || null, resumeFrom]
+    );
+    const runId = rows[0].id;
+    scrapingLogs.appendLog(runId, `📦 En cola: "${supplier.name}" — lo toma el scraper-worker en unos segundos`);
+    console.log(`📦 Run ${runId} encolado para "${supplier.name}"${resumeFrom ? ` (reanuda run ${resumeFrom})` : ''}`);
+    return { runId, status: 'queued', supplierName: supplier.name };
+}
+
+// Compatibilidad con la ruta POST /api/scraping/:supplierId/run
+async function startScraperAsync(db, supplierId, triggeredBy) {
+    return enqueueRun(db, supplierId, triggeredBy);
+}
+
+/**
+ * Reanuda el último run pausado del proveedor: encola uno nuevo que saltea las categorías
+ * ya completadas (y retoma la página del checkpoint).
+ */
+async function resumeScraper(db, supplierId, triggeredBy) {
+    const { rows: pausedRuns } = await db.query(
+        `SELECT id, completed_categories FROM scraping_runs
+         WHERE supplier_id = $1 AND status = 'paused'
+         ORDER BY started_at DESC LIMIT 1`,
+        [supplierId]
+    );
+    if (pausedRuns.length === 0) {
+        const err = new Error(`No hay ningún run pausado para el proveedor ${supplierId}`);
+        err.statusCode = 404;
+        throw err;
+    }
+    const paused = pausedRuns[0];
+    const result = await enqueueRun(db, supplierId, triggeredBy, { resumeFrom: paused.id });
+    return {
+        ...result,
+        resumedFrom: paused.id,
+        skippedCategories: (paused.completed_categories || []).length,
+    };
+}
+
+/**
+ * Pide pausar un run. Si está en cola se pausa directo; si está corriendo lo corta el worker.
+ */
+async function pauseScraper(runId) {
+    const { rowCount: enCola } = await pool.query(
+        `UPDATE scraping_runs SET status = 'paused', finished_at = NOW() WHERE id = $1 AND status = 'queued'`,
+        [runId]
+    );
+    if (enCola) {
+        scrapingLogs.appendLog(runId, '⏸ Pausado antes de empezar');
+        return { paused: true, message: `Run ${runId} pausado` };
+    }
+    const { rowCount } = await pool.query(
+        `UPDATE scraping_runs SET control = 'pause' WHERE id = $1 AND status = 'running'`, [runId]);
+    if (rowCount) {
+        scrapingLogs.appendLog(runId, '⏸ Pausa pedida — el worker corta el proceso en unos segundos');
+        return { paused: true, message: `Run ${runId} pausándose` };
+    }
+    return { paused: false, message: `Run ${runId} no estaba activo` };
+}
+
+/**
+ * Pide cancelar un run (no se puede reanudar).
+ */
+async function stopScraper(runId) {
+    const { rowCount: enCola } = await pool.query(
+        `UPDATE scraping_runs SET status = 'cancelled', finished_at = NOW() WHERE id = $1 AND status = 'queued'`,
+        [runId]
+    );
+    if (enCola) {
+        scrapingLogs.appendLog(runId, '🛑 Cancelado antes de empezar');
+        return { stopped: true, message: `Run ${runId} cancelado` };
+    }
+    const { rowCount } = await pool.query(
+        `UPDATE scraping_runs SET control = 'stop' WHERE id = $1 AND status = 'running'`, [runId]);
+    if (rowCount) {
+        scrapingLogs.appendLog(runId, '🛑 Cancelación pedida — el worker corta el proceso en unos segundos');
+        return { stopped: true, message: `Run ${runId} cancelándose` };
+    }
+    return { stopped: false, message: `Run ${runId} no estaba activo` };
+}
+
+/**
+ * Emergencia: cancela todo lo encolado/pausado y pide cortar todo lo que está corriendo.
+ */
+async function cancelAll(db) {
+    const { rows: directos } = await db.query(
+        `UPDATE scraping_runs SET status = 'cancelled', finished_at = NOW()
+         WHERE status IN ('queued', 'paused') RETURNING id`
+    );
+    const { rows: corriendo } = await db.query(
+        `UPDATE scraping_runs SET control = 'stop' WHERE status = 'running' RETURNING id`
+    );
+    for (const run of [...directos, ...corriendo]) {
+        scrapingLogs.appendLog(run.id, '🛑 Cancelado por admin (force cancel-all)');
+    }
+    console.log(`🛑 cancel-all: ${directos.length} runs cancelados, ${corriendo.length} pedidos al worker`);
+    return { killed: corriendo.length, cancelledRuns: directos.length + corriendo.length };
+}
+
+/**
+ * Cuántos runs hay corriendo y en cola (sale de la base: los ejecuta el worker).
+ */
+async function getRunningCount(db = pool) {
+    const { rows } = await db.query(
+        `SELECT status, array_agg(id ORDER BY id) AS ids FROM scraping_runs
+         WHERE status IN ('queued', 'running') GROUP BY status`
+    );
+    const running = rows.find(r => r.status === 'running');
+    const queued = rows.find(r => r.status === 'queued');
+    return {
+        running: running ? running.ids.length : 0,
+        queued: queued ? queued.ids.length : 0,
+        activeRunIds: running ? running.ids : [],
+    };
+}
+
+// =============================================
+// Worker: tomar runs de la cola y ejecutarlos
+// =============================================
+
+/**
+ * Toma el run en cola más viejo (FOR UPDATE SKIP LOCKED: seguro con más de un worker).
+ * @returns {object|null} el run, ya en status 'running'
+ */
+async function claimNextRun(db) {
+    const { rows } = await db.query(`
+        UPDATE scraping_runs SET status = 'running', started_at = NOW()
+        WHERE id = (
+            SELECT id FROM scraping_runs WHERE status = 'queued'
+            ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
+        )
+        RETURNING *`);
+    return rows[0] || null;
+}
+
+/**
+ * Ejecuta un run ya tomado por el worker. Resuelve cuando termina (cualquiera sea el resultado).
+ */
+async function executeRun(db, run) {
+    let supplier;
+    try {
+        const { rows } = await db.query('SELECT * FROM suppliers WHERE id = $1', [run.supplier_id]);
+        if (rows.length === 0) throw new Error(`Proveedor ${run.supplier_id} no existe`);
+        supplier = parseConfig(rows[0]);
+        if (!supplier.scrape_enabled) throw new Error(`El scraping de "${supplier.name}" está pausado`);
+
+        const scraper = getScraperForSupplier(supplier, db);
+        if (!scraper) throw new Error(`No hay scraper disponible para "${supplier.name}" (key: "${supplier.scraper_key}")`);
+
+        // Usar el run ya creado por enqueueRun (no crear otro)
+        scraper.createRun = async () => {
+            scraper.runId = run.id;
+            return run.id;
+        };
+
+        // Reanudación: saltear categorías completadas y retomar la página del checkpoint
+        if (run.resume_from) {
+            const { rows: prev } = await db.query(
+                'SELECT completed_categories, checkpoint FROM scraping_runs WHERE id = $1', [run.resume_from]);
+            const completed = prev[0]?.completed_categories || [];
+            const checkpoint = prev[0]?.checkpoint || null;
+            const original = scraper.pythonEnv || {};
+            Object.defineProperty(scraper, 'pythonEnv', {
+                get: () => ({
+                    ...original,
+                    SKIP_CATEGORIES: JSON.stringify(completed),
+                    ...(checkpoint ? { RESUME_CATEGORY: checkpoint.category, RESUME_PAGE: String(checkpoint.page) } : {}),
+                }),
+            });
+            // Arrastrar las categorías ya hechas para que una nueva pausa siga acumulando
+            await db.query('UPDATE scraping_runs SET completed_categories = $1 WHERE id = $2',
+                [JSON.stringify(completed), run.id]);
+            scrapingLogs.appendLog(run.id, `▶ Reanudando run ${run.resume_from}: saltea ${completed.length} categorías`
+                + (checkpoint ? `, retoma "${checkpoint.category}" desde la página ${checkpoint.page + 1}` : ''));
+        }
+
+        console.log(`📦 Worker: iniciando "${supplier.name}" (run ${run.id})`);
+        const result = await scraper.run(run.triggered_by);
+        console.log(`✅ Worker: "${supplier.name}" terminó (run ${run.id}): ${result.status}, ${result.found} productos`);
+    } catch (err) {
+        console.error(`❌ Worker: run ${run.id}${supplier ? ` de "${supplier.name}"` : ''} falló: ${err.message}`);
+        scrapingLogs.appendLog(run.id, `❌ ${err.message}`);
+        await db.query(
+            `UPDATE scraping_runs SET status = 'failed', finished_at = NOW(),
+                 errors = COALESCE(errors, '[]'::jsonb) || $2::jsonb
+             WHERE id = $1 AND status = 'running'`,
+            [run.id, JSON.stringify([{ phase: 'worker', error: err.message }])]
+        ).catch(() => {});
     } finally {
-        runningCount--;
-        console.log(`📦 Scrapers activos tras finalizar: ${runningCount}/${MAX_CONCURRENT}`);
+        // Si se pidió cancelar, el run termina como 'cancelled' (el scraper lo deja 'paused' al cortarlo)
+        const { rows } = await db.query(
+            `UPDATE scraping_runs SET status = 'cancelled', finished_at = COALESCE(finished_at, NOW())
+             WHERE id = $1 AND control = 'stop' RETURNING id`, [run.id]).catch(() => ({ rows: [] }));
+        if (rows.length) scrapingLogs.appendLog(run.id, '🛑 Scraping cancelado');
+        await db.query('UPDATE scraping_runs SET control = NULL WHERE id = $1', [run.id]).catch(() => {});
+        await scrapingLogs.markDone(run.id);
     }
 }
 
 /**
- * Retorna el historial de runs de scraping.
- *
- * @param {object} pool
- * @param {object} filters — { supplierId, status, limit }
- * @returns {Array}
+ * Corta los procesos de los runs del worker que tienen pausa o cancelación pedida.
+ * @param {number[]} runIds — runs que está ejecutando este worker
  */
-async function getRunHistory(pool, { supplierId, status, limit = 50 } = {}) {
+async function applyControls(db, runIds) {
+    if (runIds.length === 0) return;
+    const { rows } = await db.query(
+        `SELECT id, control FROM scraping_runs
+         WHERE id = ANY($1::int[]) AND status = 'running' AND control IS NOT NULL`, [runIds]);
+    for (const r of rows) {
+        if (PythonScraper.killProcess(r.id)) {
+            console.log(`${r.control === 'stop' ? '🛑' : '⏸'} Worker: corté el proceso del run ${r.id} (${r.control})`);
+        }
+    }
+}
+
+/**
+ * Al arrancar el worker: los runs que quedaron 'running' (worker anterior cortado) pasan a
+ * 'paused' para poder reanudarlos desde la última categoría completada.
+ */
+async function workerStartupCleanup(db) {
+    const { rows } = await db.query(
+        `UPDATE scraping_runs SET status = 'paused', control = NULL, finished_at = NOW()
+         WHERE status = 'running' RETURNING id`
+    );
+    for (const run of rows) {
+        scrapingLogs.appendLog(run.id, '⏸ Pausado: el scraper-worker se reinició. Se puede reanudar desde la última categoría completa.');
+    }
+    if (rows.length > 0) {
+        console.log(`⚠️ Worker: ${rows.length} run(s) cortados por un reinicio quedaron pausados: ${rows.map(r => r.id).join(', ')}`);
+    }
+    await scrapingLogs.markDone(rows[0]?.id);
+    return rows.map(r => r.id);
+}
+
+// =============================================
+// Consultas e historial
+// =============================================
+
+async function getRunHistory(db, { supplierId, status, limit = 50 } = {}) {
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -113,466 +335,95 @@ async function getRunHistory(pool, { supplierId, status, limit = 50 } = {}) {
         conditions.push(`sr.supplier_id = $${idx++}`);
         params.push(supplierId);
     }
-
     if (status) {
         conditions.push(`sr.status = $${idx++}`);
         params.push(status);
     }
-
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // Agregar limit al final como parámetro
     params.push(parseInt(limit, 10) || 50);
-    const limitClause = `LIMIT $${idx}`;
 
-    const query = `
+    const { rows } = await db.query(`
         SELECT
-            sr.id,
-            sr.supplier_id,
-            s.name AS supplier_name,
-            sr.status,
-            sr.products_found,
-            sr.products_new,
-            sr.products_updated,
-            sr.price_changes,
-            sr.triggered_by,
-            sr.started_at,
-            sr.finished_at,
+            sr.id, sr.supplier_id, s.name AS supplier_name, sr.status,
+            sr.products_found, sr.products_new, sr.products_updated, sr.price_changes,
+            sr.triggered_by, sr.started_at, sr.finished_at,
             EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at))::int AS duration_seconds
         FROM scraping_runs sr
         JOIN suppliers s ON s.id = sr.supplier_id
         ${where}
         ORDER BY sr.started_at DESC
-        ${limitClause}
-    `;
-
-    const { rows } = await pool.query(query, params);
+        LIMIT $${idx}
+    `, params);
     return rows;
 }
 
-/**
- * Retorna el detalle de un run específico, incluyendo los errores.
- *
- * @param {object} pool
- * @param {number} runId
- * @returns {object|null}
- */
-async function getRunDetail(pool, runId) {
-    const { rows } = await pool.query(
-        `SELECT
-            sr.*,
-            s.name AS supplier_name,
-            s.scraper_key,
-            EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at))::int AS duration_seconds
+async function getRunDetail(db, runId) {
+    const { rows } = await db.query(
+        `SELECT sr.*, s.name AS supplier_name, s.scraper_key,
+                EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at))::int AS duration_seconds
          FROM scraping_runs sr
          JOIN suppliers s ON s.id = sr.supplier_id
          WHERE sr.id = $1`,
         [runId]
     );
-
     if (rows.length === 0) return null;
-
     const run = rows[0];
-
-    // Parsear errores si vienen como string (JSONB puede venir pre-parseado o como string)
     if (typeof run.errors === 'string') {
-        try {
-            run.errors = JSON.parse(run.errors);
-        } catch (_) {
-            run.errors = [];
-        }
+        try { run.errors = JSON.parse(run.errors); } catch (_) { run.errors = []; }
     }
-
     return run;
 }
 
-/**
- * Expone cuántos scrapers están corriendo actualmente.
- * Útil para el endpoint de status.
- */
-function getRunningCount() {
-    return runningCount;
-}
+// =============================================
+// Preview (dry-run) — corre en el backend
+// =============================================
 
 /**
- * Corre el scraper en modo dry-run (preview).
- * Llama a onProduct(product) por cada producto encontrado — ideal para SSE.
- * No guarda nada en DB (ni run, ni productos, ni alertas).
- *
- * @param {number} supplierId
- * @param {function} onProduct — callback(product) llamado por cada producto
- * @param {number|null} triggeredBy
- * @returns {Promise<{ runId, status, found, newProducts, updated, priceChanges, products, errors }>}
+ * Corre el scraper en modo dry-run (preview) en el proceso del backend.
+ * Llama a onProduct(product) por cada producto encontrado — ideal para SSE. No guarda nada.
  */
 async function previewScraper(supplierId, onProduct, triggeredBy = null) {
-    // Buscar el proveedor (no importa su status para el preview)
     const { rows: suppliers } = await pool.query(
         'SELECT * FROM suppliers WHERE id = $1 AND active = true',
         [supplierId]
     );
-
     if (suppliers.length === 0) {
         const err = new Error(`Proveedor con ID ${supplierId} no encontrado o inactivo`);
         err.statusCode = 404;
         throw err;
     }
+    const supplier = parseConfig(suppliers[0]);
 
-    const supplier = suppliers[0];
-
-    // Parsear scrape_config si llega como string
-    if (typeof supplier.scrape_config === 'string') {
-        try {
-            supplier.scrape_config = JSON.parse(supplier.scrape_config);
-        } catch (_) {
-            supplier.scrape_config = {};
-        }
-    }
-
-    // Obtener la clase scraper sin instanciarla (necesitamos pasar options)
     if (!supplier.scraper_key || !SCRAPER_REGISTRY[supplier.scraper_key]) {
-        const err = new Error(
-            `No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`
-        );
+        const err = new Error(`No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`);
         err.statusCode = 400;
         throw err;
     }
 
     const ScraperClass = SCRAPER_REGISTRY[supplier.scraper_key];
-
-    // Instanciar con opciones de dry-run y callback de streaming
-    const scraper = new ScraperClass(supplier, pool, {
-        dryRun: true,
-        onProduct
-    });
+    const scraper = new ScraperClass(supplier, pool, { dryRun: true, onProduct });
 
     console.log(`📦 [DRY-RUN] Iniciando preview para "${supplier.name}"`);
-
     const result = await scraper.run(triggeredBy);
-
     console.log(`✅ [DRY-RUN] Preview de "${supplier.name}" finalizado: ${result.found} productos`);
     return result;
 }
 
-/**
- * Dispara el scraper de forma ASÍNCRONA: crea el run en DB de inmediato y
- * retorna { runId, status: 'running' } sin esperar que el scraper termine.
- * El cliente debe hacer polling a GET /api/scraping/runs/:runId.
- *
- * @param {object} pool
- * @param {number} supplierId
- * @param {number|null} triggeredBy
- * @returns {{ runId, status, supplierName }}
- */
-async function startScraperAsync(pool, supplierId, triggeredBy) {
-    if (runningCount >= MAX_CONCURRENT) {
-        const err = new Error(
-            `Demasiados scrapers corriendo simultáneamente (máx: ${MAX_CONCURRENT}). Intentá en unos minutos.`
-        );
-        err.statusCode = 429;
-        throw err;
-    }
-
-    const { rows } = await pool.query(
-        `SELECT * FROM suppliers WHERE id = $1 AND active = true AND status != 'inactive'`,
-        [supplierId]
-    );
-
-    if (rows.length === 0) {
-        const err = new Error(`Proveedor con ID ${supplierId} no encontrado, inactivo o deshabilitado`);
-        err.statusCode = 404;
-        throw err;
-    }
-
-    const supplier = rows[0];
-    assertScrapeEnabled(supplier);
-    if (typeof supplier.scrape_config === 'string') {
-        try { supplier.scrape_config = JSON.parse(supplier.scrape_config); } catch (_) { supplier.scrape_config = {}; }
-    }
-
-    const scraper = getScraperForSupplier(supplier, pool);
-    if (!scraper) {
-        const err = new Error(
-            `No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`
-        );
-        err.statusCode = 400;
-        throw err;
-    }
-
-    // Crear el run record AHORA para tener el ID antes de responder al cliente
-    const { rows: runRows } = await pool.query(
-        `INSERT INTO scraping_runs (supplier_id, status, triggered_by, started_at)
-         VALUES ($1, 'running', $2, NOW()) RETURNING id`,
-        [supplierId, triggeredBy || null]
-    );
-    const runId = runRows[0].id;
-
-    // Inyectar el runId pre-creado en el scraper para que no cree otro
-    scraper.createRun = async () => {
-        scraper.runId = runId;
-        return runId;
-    };
-
-    // Disparar el scraper en background — no await
-    runningCount++;
-    console.log(`📦 Scraper async iniciado para "${supplier.name}" (runId: ${runId}, activos: ${runningCount}/${MAX_CONCURRENT})`);
-
-    (async () => {
-        try {
-            await scraper.run(triggeredBy);
-            console.log(`✅ Scraper async de "${supplier.name}" finalizado (runId: ${runId})`);
-        } catch (err) {
-            console.error(`❌ Scraper async de "${supplier.name}" falló (runId: ${runId}): ${err.message}`);
-        } finally {
-            runningCount--;
-            console.log(`📦 Scrapers activos tras finalizar: ${runningCount}/${MAX_CONCURRENT}`);
-        }
-    })();
-
-    return { runId, status: 'running', supplierName: supplier.name };
-}
-
-/**
- * Pausa el proceso Python de un run activo.
- * El run queda en status 'paused' con el checkpoint de categorías completadas.
- * Se puede reanudar con resumeScraper().
- *
- * @param {number} runId
- * @returns {{ paused: boolean, message: string }}
- */
-async function pauseScraper(runId) {
-    const killed = PythonScraper.killProcess(runId);
-
-    // Marcar como pausado (el run() en background también lo hará con stats finales)
-    const { rowCount } = await pool.query(
-        `UPDATE scraping_runs SET status = 'paused', finished_at = NOW()
-         WHERE id = $1 AND status = 'running'`,
-        [runId]
-    );
-
-    if (killed || rowCount > 0) {
-        scrapingLogs.appendLog(runId, '⏸ Scraping pausado — podés reanudarlo cuando quieras');
-        scrapingLogs.markDone(runId, 'paused');
-        runningCount = Math.max(0, runningCount - (killed ? 1 : 0));
-        console.log(`⏸ Run ${runId} pausado`);
-        return { paused: true, message: `Run ${runId} pausado correctamente` };
-    }
-
-    return { paused: false, message: `Run ${runId} no estaba activo` };
-}
-
-/**
- * Detiene el proceso Python de un run activo y marca el run como 'cancelled'.
- * A diferencia de pauseScraper, no permite reanudar.
- *
- * @param {number} runId
- * @returns {{ stopped: boolean, message: string }}
- */
-async function stopScraper(runId) {
-    const killed = PythonScraper.killProcess(runId);
-
-    const { rowCount } = await pool.query(
-        `UPDATE scraping_runs SET status = 'cancelled', finished_at = NOW()
-         WHERE id = $1 AND status = 'running'`,
-        [runId]
-    );
-
-    if (killed || rowCount > 0) {
-        scrapingLogs.appendLog(runId, '🛑 Scraping cancelado');
-        scrapingLogs.markDone(runId, 'cancelled');
-        runningCount = Math.max(0, runningCount - (killed ? 1 : 0));
-        console.log(`🛑 Run ${runId} cancelado`);
-        return { stopped: true, message: `Run ${runId} cancelado correctamente` };
-    }
-
-    return { stopped: false, message: `Run ${runId} no estaba activo` };
-}
-
-/**
- * Reanuda el scraping de un proveedor desde el último punto pausado.
- * Busca el run más reciente con status 'paused' para el proveedor y
- * arranca un nuevo run pasando las categorías ya completadas como SKIP_CATEGORIES.
- *
- * @param {object} pool
- * @param {number} supplierId
- * @param {number|null} triggeredBy
- * @returns {{ runId, status, supplierName, resumedFrom, skippedCategories }}
- */
-async function resumeScraper(pool, supplierId, triggeredBy) {
-    if (runningCount >= MAX_CONCURRENT) {
-        const err = new Error(
-            `Demasiados scrapers corriendo simultáneamente (máx: ${MAX_CONCURRENT}). Intentá en unos minutos.`
-        );
-        err.statusCode = 429;
-        throw err;
-    }
-
-    // Buscar el último run pausado para este proveedor
-    const { rows: pausedRuns } = await pool.query(
-        `SELECT id, completed_categories, checkpoint
-         FROM scraping_runs
-         WHERE supplier_id = $1 AND status = 'paused'
-         ORDER BY started_at DESC
-         LIMIT 1`,
-        [supplierId]
-    );
-
-    if (pausedRuns.length === 0) {
-        const err = new Error(`No hay ningún run pausado para el proveedor ${supplierId}`);
-        err.statusCode = 404;
-        throw err;
-    }
-
-    const pausedRun = pausedRuns[0];
-    const completedCategories = pausedRun.completed_categories || [];
-    const checkpoint = pausedRun.checkpoint || null; // { category, page } o null
-
-    // Obtener el proveedor
-    const { rows } = await pool.query(
-        `SELECT * FROM suppliers WHERE id = $1 AND active = true AND status != 'inactive'`,
-        [supplierId]
-    );
-
-    if (rows.length === 0) {
-        const err = new Error(`Proveedor con ID ${supplierId} no encontrado, inactivo o deshabilitado`);
-        err.statusCode = 404;
-        throw err;
-    }
-
-    const supplier = rows[0];
-    assertScrapeEnabled(supplier);
-    if (typeof supplier.scrape_config === 'string') {
-        try { supplier.scrape_config = JSON.parse(supplier.scrape_config); } catch (_) { supplier.scrape_config = {}; }
-    }
-
-    // Obtener el scraper con las categorías ya completadas inyectadas como env var
-    const scraper = getScraperForSupplier(supplier, pool);
-    if (!scraper) {
-        const err = new Error(
-            `No hay scraper disponible para el proveedor "${supplier.name}" (key: "${supplier.scraper_key}")`
-        );
-        err.statusCode = 400;
-        throw err;
-    }
-
-    // Inyectar vars de reanudación en el pythonEnv del scraper
-    const originalPythonEnv = scraper.pythonEnv || {};
-    Object.defineProperty(scraper, 'pythonEnv', {
-        get: () => ({
-            ...originalPythonEnv,
-            SKIP_CATEGORIES: JSON.stringify(completedCategories),
-            ...(checkpoint ? {
-                RESUME_CATEGORY: checkpoint.category,
-                RESUME_PAGE:     String(checkpoint.page),
-            } : {}),
-        })
-    });
-
-    if (checkpoint) {
-        console.log(`▶ Checkpoint: categoría "${checkpoint.category}", reanudando desde página ${checkpoint.page + 1}`);
-    }
-
-    // Crear el run record AHORA para tener el ID antes de responder al cliente
-    const { rows: runRows } = await pool.query(
-        `INSERT INTO scraping_runs (supplier_id, status, triggered_by, started_at)
-         VALUES ($1, 'running', $2, NOW()) RETURNING id`,
-        [supplierId, triggeredBy || null]
-    );
-    const runId = runRows[0].id;
-
-    // Inyectar runId pre-creado
-    scraper.createRun = async () => {
-        scraper.runId = runId;
-        return runId;
-    };
-
-    // Disparar el scraper en background
-    runningCount++;
-    console.log(`▶ Reanudando scraper para "${supplier.name}" (runId: ${runId}, saltando: ${completedCategories.length} categorías)`);
-
-    (async () => {
-        try {
-            await scraper.run(triggeredBy);
-            console.log(`✅ Scraper reanudado de "${supplier.name}" finalizado (runId: ${runId})`);
-        } catch (err) {
-            console.error(`❌ Scraper reanudado de "${supplier.name}" falló (runId: ${runId}): ${err.message}`);
-        } finally {
-            runningCount--;
-        }
-    })();
-
-    return {
-        runId,
-        status: 'running',
-        supplierName: supplier.name,
-        resumedFrom: pausedRun.id,
-        skippedCategories: completedCategories.length
-    };
-}
-
-/**
- * Mata todos los procesos Python activos, resetea el contador de concurrencia
- * y marca todos los runs 'running' en DB como 'cancelled'.
- * Endpoint de emergencia para casos donde la app quedó en estado inválido.
- *
- * @param {object} pool
- * @returns {{ killed, cancelledRuns }}
- */
-async function cancelAll(pool) {
-    const killed = PythonScraper.killAllProcesses();
-
-    // Marcar todos los runs activos en DB como cancelados
-    const { rows } = await pool.query(
-        `UPDATE scraping_runs
-         SET status = 'cancelled', finished_at = NOW()
-         WHERE status IN ('running', 'paused')
-         RETURNING id`
-    );
-
-    for (const run of rows) {
-        scrapingLogs.appendLog(run.id, '🛑 Cancelado por admin (force cancel-all)');
-        scrapingLogs.markDone(run.id, 'cancelled');
-    }
-
-    runningCount = 0;
-    console.log(`🛑 cancel-all: ${killed} procesos Python terminados, ${rows.length} runs cancelados en DB`);
-
-    return { killed, cancelledRuns: rows.length };
-}
-
-/**
- * Limpieza al iniciar el servidor: si quedaron runs en 'running' de
- * una sesión anterior (crash, restart), los marca como 'cancelled'.
- * No mata procesos Python — al reiniciar el server ya no existen.
- *
- * @param {object} pool
- */
-async function startupCleanup(pool) {
-    const { rows } = await pool.query(
-        `UPDATE scraping_runs
-         SET status = 'cancelled', finished_at = NOW()
-         WHERE status = 'running'
-         RETURNING id`
-    );
-    if (rows.length > 0) {
-        console.log(`⚠️ startup: ${rows.length} runs bloqueados encontrados y marcados como cancelled`);
-        for (const run of rows) {
-            scrapingLogs.appendLog(run.id, '⚠️ Run cancelado automáticamente al reiniciar el servidor');
-            scrapingLogs.markDone(run.id, 'cancelled');
-        }
-    }
-    runningCount = 0;
-}
-
 module.exports = {
-    runScraper,
+    // Backend
+    enqueueRun,
     startScraperAsync,
+    resumeScraper,
     pauseScraper,
     stopScraper,
-    resumeScraper,
     cancelAll,
-    startupCleanup,
+    getRunningCount,
     getRunHistory,
     getRunDetail,
-    getRunningCount,
-    previewScraper
+    previewScraper,
+    // Worker
+    claimNextRun,
+    executeRun,
+    applyControls,
+    workerStartupCleanup,
 };

@@ -29,29 +29,14 @@ async function initDatabase() {
         // Crear índice de status si no existe
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_suppliers_status ON suppliers(status)`).catch(() => {});
 
-        // Actualizar constraint de scraping_runs.status (incluye 'cancelled' y 'paused')
-        await pool.query(`
-            ALTER TABLE scraping_runs DROP CONSTRAINT IF EXISTS scraping_runs_status_check
-        `).catch(() => {});
-        await pool.query(`
-            ALTER TABLE scraping_runs ADD CONSTRAINT scraping_runs_status_check
-            CHECK (status IN ('running','completed','failed','partial','cancelled','paused'))
-        `).catch(() => {});
+        // El constraint de scraping_runs.status se define más abajo (migración 022, incluye 'queued').
+        // Los runs 'running' NO se tocan acá: los ejecuta el scraper-worker, que sigue vivo aunque
+        // se reinicie el backend (la limpieza de runs huérfanos la hace el worker al arrancar).
 
         // Columna de checkpoint para pause/resume
         await pool.query(`
             ALTER TABLE scraping_runs ADD COLUMN IF NOT EXISTS completed_categories JSONB DEFAULT '[]'
         `).catch(() => {});
-
-        // Limpiar runs que quedaron en 'running' de sesiones anteriores (backend reiniciado)
-        const { rowCount: staleCount } = await pool.query(`
-            UPDATE scraping_runs
-            SET status = 'failed', finished_at = NOW()
-            WHERE status = 'running'
-        `).catch(() => ({ rowCount: 0 }));
-        if (staleCount > 0) {
-            console.log(`⚠️ ${staleCount} run(s) fantasma marcados como 'failed' (backend reiniciado)`);
-        }
 
         // Crear tabla sync_log si no existe
         await pool.query(`
@@ -87,6 +72,24 @@ async function initDatabase() {
             INSERT INTO app_config (key, value) VALUES ('preventas_inactivar_max_dias', '7')
             ON CONFLICT (key) DO NOTHING
         `);
+
+        // Scraping en contenedor aparte (migración 022): cola, control remoto y logs en la base
+        await pool.query(`ALTER TABLE scraping_runs DROP CONSTRAINT IF EXISTS scraping_runs_status_check`);
+        await pool.query(`
+            ALTER TABLE scraping_runs ADD CONSTRAINT scraping_runs_status_check
+            CHECK (status IN ('queued', 'running', 'completed', 'failed', 'partial', 'cancelled', 'paused'))
+        `).catch(() => {});
+        await pool.query(`ALTER TABLE scraping_runs ADD COLUMN IF NOT EXISTS control VARCHAR(10)`);
+        await pool.query(`ALTER TABLE scraping_runs ADD COLUMN IF NOT EXISTS resume_from INTEGER REFERENCES scraping_runs(id) ON DELETE SET NULL`);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS scraping_run_logs (
+                id          BIGSERIAL PRIMARY KEY,
+                run_id      INTEGER NOT NULL REFERENCES scraping_runs(id) ON DELETE CASCADE,
+                line        TEXT NOT NULL,
+                created_at  TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_srl_run ON scraping_run_logs(run_id, id)`);
 
         // Notas de prueba (migración 021). La tabla existe siempre; las rutas solo con TEST_NOTES_ENABLED=1
         await pool.query(`

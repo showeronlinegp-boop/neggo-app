@@ -124,9 +124,8 @@ async function start() {
         const result = await pool.query('SELECT NOW()');
         console.log('✅ PostgreSQL conectado:', result.rows[0].now);
 
-        // Limpiar runs bloqueados de sesiones anteriores (crash, restart, etc.)
-        const { startupCleanup } = require('./services/scrapingService');
-        await startupCleanup(pool);
+        // Los runs de scraping NO se tocan acá: los ejecuta el scraper-worker (worker.js),
+        // así reiniciar el backend no corta ningún scraping.
 
         // Inicializar datos (admin, proveedores, config)
         const initDatabase = require('./initDatabase');
@@ -137,17 +136,7 @@ async function start() {
             console.log(`📦 Entorno: ${process.env.NODE_ENV || 'development'}`);
         });
 
-        // Inicializar scheduler de scrapers
-        const { initScheduler, stopScheduler } = require('./jobs/scheduler');
-        await initScheduler(pool);
-
-        // Graceful shutdown del scheduler
-        process.on('SIGTERM', async () => {
-            stopScheduler();
-        });
-        process.on('SIGINT', async () => {
-            stopScheduler();
-        });
+        // El scheduler (scraping programado, sync Odoo, alertas) corre en el scraper-worker
     } catch (error) {
         console.error('❌ Error al iniciar el servidor:', error.message);
         process.exit(1);

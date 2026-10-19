@@ -135,7 +135,9 @@ class NeggoScraper extends BaseScraper {
             const runStartedAt = new Date();
             const upsertStats = await this.upsertProducts(this.products);
 
-            const finalStatus = this.errors.length > 0 ? 'partial' : 'completed';
+            // 0 productos = el partner no tiene nada asociado en Neggo o falló Odoo: no borrar nada
+            const finalStatus = this.products.length === 0 ? 'failed'
+                : this.errors.length > 0 ? 'partial' : 'completed';
 
             // Los que ya no están asociados al proveedor en Neggo se eliminan (solo con run completo)
             const unavailable = finalStatus === 'completed'

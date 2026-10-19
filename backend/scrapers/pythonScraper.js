@@ -111,7 +111,8 @@ class PythonScraper extends BaseScraper {
             let finalStatus;
             if (signal) {
                 finalStatus = 'paused';
-            } else if (this.errors.length > 0 && stats.found === 0) {
+            } else if (stats.found === 0) {
+                // 0 productos = algo falló: nunca 'completed', así no borra los productos guardados
                 finalStatus = 'failed';
             } else if (this.errors.length > 0) {
                 finalStatus = 'partial';

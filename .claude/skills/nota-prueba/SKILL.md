@@ -61,9 +61,11 @@ docker run --rm -v "C:/Users/Mariano/neggo-app/frontend:/app" -v neggo_front_nm:
 docker compose up -d --build backend
 ```
 
-**Antes de rebuildear el backend** mirar si hay scrapers corriendo
-(`SELECT id, supplier_id FROM scraping_runs WHERE status = 'running'`): el rebuild los corta. Si
-hay, avisar al usuario y esperar o pedirle permiso.
+Rebuildear el backend **no corta los scrapers**: corren en el contenedor `scraper-worker`. Si el
+cambio toca scrapers, `services/scrapingService.js`, `scrapingLogs.js`, `jobs/` o `worker.js`,
+también hay que rebuildear el worker (`docker compose up -d --build scraper-worker`); eso pausa
+los runs en curso (quedan reanudables), así que avisar al usuario si hay alguno corriendo
+(`SELECT id, supplier_id FROM scraping_runs WHERE status = 'running'`).
 
 ## Procedimiento
 

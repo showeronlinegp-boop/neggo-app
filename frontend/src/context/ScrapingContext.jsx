@@ -156,7 +156,8 @@ export function ScrapingProvider({ children }) {
     const pollRun = useCallback((supplierId, runId, onComplete) => {
         const timer = setTimeout(async () => {
             const res = await api.get(`/scraping/runs/${runId}`);
-            if (res.success && res.data?.status === 'running') {
+            // 'queued': en cola, esperando al scraper-worker
+            if (res.success && ['queued', 'running'].includes(res.data?.status)) {
                 pollRun(supplierId, runId, onComplete);
             } else {
                 clearActive(supplierId);

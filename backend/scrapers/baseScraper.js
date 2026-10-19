@@ -546,7 +546,8 @@ class BaseScraper {
             const runStartedAt = new Date();
             const upsertStats = await this.upsertProducts(this.products);
 
-            const finalStatus = this.errors.length > 0 && this.products.length === 0
+            // 0 productos = algo falló (web caída, login, selectores): nunca 'completed', así no borra nada
+            const finalStatus = this.products.length === 0
                 ? 'failed'
                 : this.errors.length > 0
                     ? 'partial'
