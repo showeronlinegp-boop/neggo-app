@@ -246,7 +246,7 @@ export default function SupplierList() {
                         Reglas
                     </Button>
                     {isAdmin && (
-                        <Button size="sm" variant="ghost" leftIcon={<Icon.Edit size={13} />} onClick={() => openEdit(row)}>
+                        <Button size="sm" variant="ghost" leftIcon={<Icon.Edit2 size={13} />} onClick={() => openEdit(row)}>
                             Editar
                         </Button>
                     )}
@@ -334,7 +334,7 @@ export default function SupplierList() {
                             </Button>
                         ))}
                         {editingSupplier && (
-                            <Button variant="ghost" size="sm" leftIcon={<Icon.Trash size={13} />} onClick={() => setDeletingSupplier(editingSupplier)}>
+                            <Button variant="ghost" size="sm" leftIcon={<Icon.Trash2 size={13} />} onClick={() => setDeletingSupplier(editingSupplier)}>
                                 Eliminar
                             </Button>
                         )}
