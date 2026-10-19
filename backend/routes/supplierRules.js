@@ -61,7 +61,7 @@ router.get('/:supplierId/rules', authenticate, async (req, res) => {
                    dest_category_neggo, dest_category_preventas,
                    odoo_categ_id_neggo, odoo_categ_id_preventas,
                    ignored, discount_override,
-                   markup_override, markup_neggo_override, markup_preventas_override,
+                   markup_neggo_override, markup_preventas_override,
                    active, created_at
             FROM supplier_category_rules
             WHERE supplier_id = $1
@@ -80,7 +80,7 @@ router.get('/:supplierId/rules', authenticate, async (req, res) => {
 // =============================================
 // POST /:supplierId/rules — Crear regla (solo admin)
 // Body: { source_category, dest_category_neggo, dest_category_preventas,
-//         discount_override, markup_override, ignored }
+//         discount_override, markup_neggo_override, markup_preventas_override, ignored }
 // =============================================
 router.post('/:supplierId/rules', authenticate, requireRole('admin'), async (req, res) => {
     try {

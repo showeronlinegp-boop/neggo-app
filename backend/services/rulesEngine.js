@@ -4,7 +4,6 @@
 /**
  * Calcula costo y precio de venta para una empresa específica.
  * Usa los campos de markup por empresa (markup_neggo / markup_preventas).
- * Mantiene compatibilidad con markup_override / default_markup como fallback.
  *
  * - costo:     lista × (1 - descuento/100 + 0.015)   [flete 1.5% sobre lista]
  * - neggo:     lista × 1.015 × (1 + markup_neggo/100)
@@ -18,20 +17,16 @@ function calculatePrices(supplierProduct, supplier, categoryRule, company) {
         ? parseFloat(categoryRule.discount_override)
         : parseFloat(supplier.default_discount ?? 0);
 
-    // Markup por empresa: nuevos campos primero, fallback a markup_override / default_markup
+    // Markup por empresa: override de la regla > markup del proveedor
     let markup;
     if (company === 'neggo') {
         markup = categoryRule?.markup_neggo_override != null
             ? parseFloat(categoryRule.markup_neggo_override)
-            : categoryRule?.markup_override != null
-                ? parseFloat(categoryRule.markup_override)
-                : parseFloat(supplier.markup_neggo ?? supplier.default_markup ?? 0);
+            : parseFloat(supplier.markup_neggo ?? 0);
     } else {
         markup = categoryRule?.markup_preventas_override != null
             ? parseFloat(categoryRule.markup_preventas_override)
-            : categoryRule?.markup_override != null
-                ? parseFloat(categoryRule.markup_override)
-                : parseFloat(supplier.markup_preventas ?? supplier.default_markup ?? 0);
+            : parseFloat(supplier.markup_preventas ?? 0);
     }
 
     const FLETE = 0.015;
@@ -75,7 +70,7 @@ async function getCategoryRule(pool, supplierId, sourceCategory, company) {
                dest_category_neggo, dest_category_preventas,
                odoo_categ_id_neggo, odoo_categ_id_preventas,
                discount_override,
-               markup_override, markup_neggo_override, markup_preventas_override,
+               markup_neggo_override, markup_preventas_override,
                ignored, active
         FROM supplier_category_rules
         WHERE supplier_id = $1
@@ -112,7 +107,7 @@ async function getCategoryRuleFull(pool, supplierId, sourceCategory) {
                dest_category_neggo, dest_category_preventas,
                odoo_categ_id_neggo, odoo_categ_id_preventas,
                discount_override,
-               markup_override, markup_neggo_override, markup_preventas_override,
+               markup_neggo_override, markup_preventas_override,
                ignored, active
         FROM supplier_category_rules
         WHERE supplier_id = $1

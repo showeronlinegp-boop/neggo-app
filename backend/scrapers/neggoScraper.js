@@ -153,7 +153,6 @@ class NeggoScraper extends BaseScraper {
             };
             await this.updateRun(finalStatus, stats);
             // Sin cleanupDuplicates(): las variantes de Neggo comparten nombre y no son duplicados
-            await this.detectPendingCategories();
 
             const activos = this.products.filter(p => p.available).length;
             this.log(`📊 [Neggo] ${stats.found} productos (${activos} activos), ${stats.newProducts} nuevos, ` +

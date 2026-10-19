@@ -29,13 +29,11 @@ function catalogSalePrice(row, company) {
 
     const supplier = {
         default_discount: row.default_discount,
-        default_markup: row.default_markup,
         markup_neggo: row.markup_neggo,
         markup_preventas: row.markup_preventas,
     };
     const rule = {
         discount_override: row.discount_override,
-        markup_override: row.markup_override,
         markup_neggo_override: row.markup_neggo_override,
         markup_preventas_override: row.markup_preventas_override,
     };

@@ -32,7 +32,7 @@ async function processPriceChange(supplierProductId, oldPrice, newPrice) {
     // Obtener datos del supplier_product y su proveedor
     const { rows: spRows } = await pool.query(`
         SELECT sp.id, sp.name, sp.source_category, sp.supplier_id,
-               s.default_discount, s.default_markup,
+               s.default_discount,
                s.markup_neggo, s.markup_preventas, s.prefix
         FROM supplier_products sp
         JOIN suppliers s ON s.id = sp.supplier_id
@@ -141,7 +141,7 @@ async function approveAlert(alertId, userId) {
                pa.status, pa.company,
                sp.id AS supplier_product_id, sp.name AS product_name,
                sp.source_category, sp.supplier_id,
-               s.default_discount, s.default_markup,
+               s.default_discount,
                s.markup_neggo, s.markup_preventas
         FROM price_alerts pa
         JOIN supplier_products sp ON pa.supplier_product_id = sp.id
@@ -175,7 +175,7 @@ async function approveAlert(alertId, userId) {
             );
             const prices = calculatePrices(
                 { raw_price: alert.new_price },
-                { default_discount: alert.default_discount, default_markup: alert.default_markup, markup_neggo: alert.markup_neggo, markup_preventas: alert.markup_preventas },
+                { default_discount: alert.default_discount, markup_neggo: alert.markup_neggo, markup_preventas: alert.markup_preventas },
                 categoryRule,
                 'neggo'
             );

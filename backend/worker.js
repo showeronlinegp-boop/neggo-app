@@ -6,7 +6,7 @@ require('dotenv').config();
 //
 //   - toma runs en cola (status 'queued') de a MAX_CONCURRENT
 //   - aplica pausas/cancelaciones pedidas desde el backend (scraping_runs.control)
-//   - corre el scheduler: scraping programado, sync con Odoo cada hora y alerta de proveedores sin scrapear
+//   - corre el scheduler: sync con Odoo cada hora y alerta de proveedores sin scrapear
 
 const pool = require('./config/database');
 const PythonScraper = require('./scrapers/pythonScraper');

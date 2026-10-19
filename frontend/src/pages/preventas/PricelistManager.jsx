@@ -48,7 +48,7 @@ export default function PricelistManager() {
     useEffect(() => {
         loadData();
         api.get('/suppliers').then(res => {
-            if (res.success) setSuppliers((res.data || []).filter(s => s.status === 'active'));
+            if (res.success) setSuppliers((res.data || []).filter(s => s.active));
         });
     }, []);
 

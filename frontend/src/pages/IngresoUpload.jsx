@@ -126,8 +126,8 @@ export default function IngresoUpload() {
                         {selectedSupplier && (
                             <div style={{ display: 'flex', gap: t.space[6], marginTop: t.space[2], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                                 <span>Descuento: <strong style={{ color: t.color.text }}>{selectedSupplier.default_discount || 0}%</strong></span>
-                                <span>Markup: <strong style={{ color: t.color.text }}>{selectedSupplier.default_markup || 0}%</strong></span>
-                                {!selectedSupplier.website_url && <span style={{ color: t.color.warn }}>Sin scraper</span>}
+                                <span>Markup: <strong style={{ color: t.color.text }}>{selectedSupplier.markup_neggo || 0}%</strong></span>
+                                {!selectedSupplier.scraper_available && <span style={{ color: t.color.warn }}>Sin scraper</span>}
                             </div>
                         )}
                     </div>

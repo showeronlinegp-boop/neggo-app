@@ -4,8 +4,34 @@ const router = express.Router();
 const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
-const { getProductCategories } = require('../services/odooService');
+const { getProductCategories, getPartners, getPartnerById } = require('../services/odooService');
 const { getAvailableKeys } = require('../scrapers/registry');
+const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
+
+// Columnas que devuelve la API de proveedores
+const SUPPLIER_COLS = `
+    id, name, prefix, website_url, scraper_key, price_format,
+    default_discount, markup_neggo, markup_preventas,
+    scrape_config, last_scraped_at, active, scrape_enabled, created_at, updated_at
+`;
+
+// Categorías del proveedor con productos disponibles y sin regla activa.
+// Se calcula en vivo: apenas se crea la regla, la categoría deja de figurar como pendiente.
+const UNMAPPED_SQL = `
+    SELECT sp.supplier_id, s.name AS supplier_name, sp.source_category,
+           COUNT(*)::INTEGER AS product_count,
+           (ARRAY_AGG(sp.name ORDER BY sp.name))[1:3] AS sample_products
+    FROM supplier_products sp
+    JOIN suppliers s ON s.id = sp.supplier_id AND s.active = true
+    WHERE sp.available = true
+      AND NULLIF(TRIM(sp.source_category), '') IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM supplier_category_rules scr
+          WHERE scr.supplier_id = sp.supplier_id
+            AND scr.source_category = sp.source_category
+            AND scr.active = true
+      )
+`;
 
 // Valida scraper_key: vacío/null = sin fuente, o una clave registrada
 function validarScraperKey(key) {
@@ -16,35 +42,35 @@ function validarScraperKey(key) {
     return null;
 }
 
+// Agrega los campos calculados que usa el frontend:
+// - scraper_available: la fuente tiene un scraper registrado (se puede ejecutar)
+// - is_stale: scrapea pero hace más de 7 días que no corre
+function withComputed(row) {
+    const scraperAvailable = !!row.scraper_key && getAvailableKeys().includes(row.scraper_key);
+    const last = row.last_scraped_at ? new Date(row.last_scraped_at).getTime() : null;
+    const isStale = row.active && row.scrape_enabled && scraperAvailable
+        && (last === null || Date.now() - last > 7 * 24 * 60 * 60 * 1000);
+    return { ...row, scraper_available: scraperAvailable, is_stale: isStale };
+}
+
 // =============================================
 // GET / — Lista todos los proveedores
 // Query param: ?active=true|false (sin filtro = todos)
 // =============================================
 router.get('/', authenticate, async (req, res) => {
     try {
-        let query = `
-            SELECT id, name, prefix, website_url, scraper_key, price_format,
-                   is_published, default_discount, default_markup,
-                   markup_neggo, markup_preventas, scrape_schedule,
-                   last_scraped_at, active, status, scrape_enabled, created_at, updated_at,
-                   (
-                       status = 'active'
-                       AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
-                   ) AS is_stale
-            FROM suppliers
-        `;
+        let query = `SELECT ${SUPPLIER_COLS} FROM suppliers`;
         const params = [];
 
         if (req.query.active !== undefined) {
-            const activeValue = req.query.active === 'true';
             query += ` WHERE active = $1`;
-            params.push(activeValue);
+            params.push(req.query.active === 'true');
         }
 
         query += ` ORDER BY name ASC`;
 
         const result = await pool.query(query, params);
-        return ok(res, result.rows);
+        return ok(res, result.rows.map(withComputed));
     } catch (error) {
         console.error('❌ Error al listar proveedores:', error.message);
         return fail(res, 'Error al obtener proveedores', 500);
@@ -52,25 +78,40 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // =============================================
-// GET /unmapped-summary — Resumen global de categorías sin mapear
-// Retorna el total y el detalle por proveedor
+// GET /unmapped-summary — Resumen global de categorías sin regla
+// Retorna el total y el detalle por proveedor (badge del sidebar y de la lista)
 // =============================================
 router.get('/unmapped-summary', authenticate, async (req, res) => {
     try {
         const { rows } = await pool.query(`
-            SELECT pcm.supplier_id, s.name AS supplier_name,
-                   COUNT(*) AS unmapped_count
-            FROM pending_category_mappings pcm
-            JOIN suppliers s ON s.id = pcm.supplier_id
-            WHERE pcm.status = 'pending'
-            GROUP BY pcm.supplier_id, s.name
-            ORDER BY s.name
+            SELECT supplier_id, supplier_name, COUNT(*)::INTEGER AS unmapped_count
+            FROM (${UNMAPPED_SQL} GROUP BY sp.supplier_id, s.name, sp.source_category) u
+            GROUP BY supplier_id, supplier_name
+            ORDER BY supplier_name
         `);
-        const totalUnmapped = rows.reduce((sum, r) => sum + parseInt(r.unmapped_count), 0);
+        const totalUnmapped = rows.reduce((sum, r) => sum + r.unmapped_count, 0);
         return ok(res, { totalUnmapped, bySupplier: rows });
     } catch (error) {
         console.error('❌ Error al obtener resumen de categorías sin mapear:', error.message);
         return fail(res, 'Error al obtener resumen', 500);
+    }
+});
+
+// =============================================
+// GET /pending-categories — Categorías sin regla de todos los proveedores
+// Con hasta 3 productos de ejemplo para decidir la categoría de Odoo
+// =============================================
+router.get('/pending-categories', authenticate, async (req, res) => {
+    try {
+        const { rows } = await pool.query(`
+            ${UNMAPPED_SQL}
+            GROUP BY sp.supplier_id, s.name, sp.source_category
+            ORDER BY s.name, sp.source_category
+        `);
+        return ok(res, rows);
+    } catch (error) {
+        console.error('❌ Error al obtener categorías pendientes:', error.message);
+        return fail(res, 'Error al obtener categorías pendientes', 500);
     }
 });
 
@@ -94,6 +135,36 @@ router.get('/odoo-categories', authenticate, async (req, res) => {
 });
 
 // =============================================
+// GET /odoo-partners?q=texto — Busca proveedores en Odoo (solo lectura)
+// Para la fuente interna: indica de qué partner de Odoo salen los productos
+// =============================================
+router.get('/odoo-partners', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const q = String(req.query.q || '').trim();
+        if (q.length < 2) return ok(res, []);
+        const partners = await getPartners({ type: 'supplier', search: q });
+        return ok(res, partners.map(p => ({ id: p.id, name: p.name })));
+    } catch (error) {
+        console.error('❌ Error al buscar proveedores en Odoo:', error.message);
+        return fail(res, 'Error al buscar en Odoo', 500);
+    }
+});
+
+// =============================================
+// GET /odoo-partners/:partnerId — Nombre de un partner de Odoo (solo lectura)
+// =============================================
+router.get('/odoo-partners/:partnerId', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const partner = await getPartnerById(parseInt(req.params.partnerId, 10));
+        if (!partner) return fail(res, 'Proveedor no encontrado en Odoo', 404);
+        return ok(res, { id: partner.id, name: partner.name });
+    } catch (error) {
+        console.error('❌ Error al leer proveedor de Odoo:', error.message);
+        return fail(res, 'Error al consultar Odoo', 500);
+    }
+});
+
+// =============================================
 // GET /scraper-keys — Fuentes de scraping disponibles (para el selector del form)
 // Debe ir ANTES de /:id
 // =============================================
@@ -106,26 +177,16 @@ router.get('/scraper-keys', authenticate, async (req, res) => {
 // =============================================
 router.get('/:id', authenticate, async (req, res) => {
     try {
-        const { id } = req.params;
         const result = await pool.query(
-            `SELECT id, name, prefix, website_url, scraper_key, price_format,
-                    is_published, default_discount, default_markup,
-                    markup_neggo, markup_preventas, scrape_schedule,
-                    last_scraped_at, active, status, scrape_enabled, created_at, updated_at,
-                    (
-                        status = 'active'
-                        AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
-                    ) AS is_stale
-             FROM suppliers
-             WHERE id = $1`,
-            [id]
+            `SELECT ${SUPPLIER_COLS} FROM suppliers WHERE id = $1`,
+            [req.params.id]
         );
 
         if (result.rows.length === 0) {
             return fail(res, 'Proveedor no encontrado', 404);
         }
 
-        return ok(res, result.rows[0]);
+        return ok(res, withComputed(result.rows[0]));
     } catch (error) {
         console.error('❌ Error al obtener proveedor:', error.message);
         return fail(res, 'Error al obtener proveedor', 500);
@@ -139,8 +200,7 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const {
             name, prefix, website_url, scraper_key, price_format,
-            is_published, default_discount, default_markup,
-            markup_neggo, markup_preventas, scrape_schedule, scrape_enabled
+            default_discount, markup_neggo, markup_preventas, scrape_enabled, odoo_partner_id
         } = req.body;
 
         // Validaciones obligatorias
@@ -153,35 +213,31 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
         const errorKey = validarScraperKey(scraper_key);
         if (errorKey) return fail(res, errorKey);
 
+        const scrapeConfig = odoo_partner_id ? { odoo_partner_id: parseInt(odoo_partner_id, 10) } : {};
+
         const result = await pool.query(
             `INSERT INTO suppliers
                 (name, prefix, website_url, scraper_key, price_format,
-                 is_published, default_discount, default_markup,
-                 markup_neggo, markup_preventas, scrape_schedule, scrape_enabled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             RETURNING id, name, prefix, website_url, scraper_key, price_format,
-                       is_published, default_discount, default_markup,
-                       markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
+                 default_discount, markup_neggo, markup_preventas, scrape_enabled, scrape_config)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING ${SUPPLIER_COLS}`,
             [
                 name.trim(),
                 prefix.trim(),
                 website_url || null,
                 scraper_key || null,
                 price_format || 'ar',
-                is_published !== undefined ? is_published : true,
-                default_discount !== undefined ? default_discount : 0,
-                default_markup !== undefined ? default_markup : 0,
-                markup_neggo !== undefined ? markup_neggo : 0,
-                markup_preventas !== undefined ? markup_preventas : 0,
-                scrape_schedule || null,
+                default_discount ?? 0,
+                markup_neggo ?? 0,
+                markup_preventas ?? 0,
                 // Por defecto se habilita si tiene fuente
-                scrape_enabled !== undefined ? !!scrape_enabled : !!scraper_key
+                scraper_key ? (scrape_enabled !== undefined ? !!scrape_enabled : true) : false,
+                JSON.stringify(scrapeConfig)
             ]
         );
 
         console.log(`✅ Proveedor creado: ${result.rows[0].name} (id: ${result.rows[0].id})`);
-        return ok(res, result.rows[0], 201);
+        return ok(res, withComputed(result.rows[0]), 201);
     } catch (error) {
         if (error.code === '23505') {
             // unique_violation — name ya existe
@@ -198,17 +254,9 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
 router.get('/:id/unmapped-categories', authenticate, async (req, res) => {
     try {
         const { rows } = await pool.query(`
-            SELECT sp.source_category, COUNT(sp.id) AS product_count
-            FROM supplier_products sp
-            WHERE sp.supplier_id = $1
-              AND sp.available = true
-              AND NOT EXISTS (
-                  SELECT 1 FROM supplier_category_rules scr
-                  WHERE scr.supplier_id = sp.supplier_id
-                    AND scr.source_category = sp.source_category
-                    AND scr.active = true
-              )
-            GROUP BY sp.source_category
+            ${UNMAPPED_SQL}
+              AND sp.supplier_id = $1
+            GROUP BY sp.supplier_id, s.name, sp.source_category
             ORDER BY sp.source_category
         `, [req.params.id]);
         return ok(res, rows);
@@ -220,12 +268,13 @@ router.get('/:id/unmapped-categories', authenticate, async (req, res) => {
 
 // =============================================
 // PUT /:id — Editar proveedor (solo admin)
+// Solo se pisan los campos que vienen en el body.
+// odoo_partner_id se guarda dentro de scrape_config (lo usa la fuente interna Neggo).
 // =============================================
 router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Verificar que existe
         const existing = await pool.query('SELECT id FROM suppliers WHERE id = $1', [id]);
         if (existing.rows.length === 0) {
             return fail(res, 'Proveedor no encontrado', 404);
@@ -233,9 +282,8 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
 
         const {
             name, prefix, website_url, scraper_key, price_format,
-            is_published, default_discount, default_markup,
-            markup_neggo, markup_preventas, scrape_schedule,
-            last_scraped_at, active, scrape_enabled
+            default_discount, markup_neggo, markup_preventas,
+            active, scrape_enabled, odoo_partner_id
         } = req.body;
 
         const errorKey = validarScraperKey(scraper_key);
@@ -247,45 +295,43 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
                 prefix            = COALESCE($2, prefix),
                 website_url       = COALESCE($3, website_url),
                 -- scraper_key: si viene en el body se pisa (vacío = sin fuente); si no, se mantiene
-                scraper_key       = CASE WHEN $15::BOOLEAN THEN $4 ELSE scraper_key END,
-                scrape_enabled    = COALESCE($16, scrape_enabled),
+                scraper_key       = CASE WHEN $11::BOOLEAN THEN $4 ELSE scraper_key END,
+                -- sin fuente no se puede scrapear
+                scrape_enabled    = CASE WHEN $11::BOOLEAN AND $4 IS NULL THEN false
+                                         ELSE COALESCE($12, scrape_enabled) END,
                 price_format      = COALESCE($5, price_format),
-                is_published      = COALESCE($6, is_published),
-                default_discount  = COALESCE($7, default_discount),
-                default_markup    = COALESCE($8, default_markup),
-                markup_neggo      = COALESCE($9, markup_neggo),
-                markup_preventas  = COALESCE($10, markup_preventas),
-                scrape_schedule   = COALESCE($11, scrape_schedule),
-                last_scraped_at   = COALESCE($12, last_scraped_at),
-                active            = COALESCE($13, active),
+                default_discount  = COALESCE($6, default_discount),
+                markup_neggo      = COALESCE($7, markup_neggo),
+                markup_preventas  = COALESCE($8, markup_preventas),
+                active            = COALESCE($9, active),
+                scrape_config     = CASE
+                    WHEN NOT $13::BOOLEAN THEN scrape_config
+                    WHEN $14::INTEGER IS NULL THEN COALESCE(scrape_config, '{}'::jsonb) - 'odoo_partner_id'
+                    ELSE jsonb_set(COALESCE(scrape_config, '{}'::jsonb), '{odoo_partner_id}', to_jsonb($14::INTEGER))
+                END,
                 updated_at        = NOW()
-             WHERE id = $14
-             RETURNING id, name, prefix, website_url, scraper_key, price_format,
-                       is_published, default_discount, default_markup,
-                       markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
+             WHERE id = $10
+             RETURNING ${SUPPLIER_COLS}`,
             [
                 name?.trim() || null,
                 prefix?.trim() || null,
                 website_url !== undefined ? website_url : null,
                 scraper_key ? scraper_key : null,
                 price_format || null,
-                is_published !== undefined ? is_published : null,
-                default_discount !== undefined ? default_discount : null,
-                default_markup !== undefined ? default_markup : null,
-                markup_neggo !== undefined ? markup_neggo : null,
-                markup_preventas !== undefined ? markup_preventas : null,
-                scrape_schedule !== undefined ? scrape_schedule : null,
-                last_scraped_at || null,
-                active !== undefined ? active : null,
+                default_discount ?? null,
+                markup_neggo ?? null,
+                markup_preventas ?? null,
+                active ?? null,
                 id,
                 scraper_key !== undefined,
-                scrape_enabled !== undefined ? !!scrape_enabled : null
+                scrape_enabled !== undefined ? !!scrape_enabled : null,
+                odoo_partner_id !== undefined,
+                odoo_partner_id ? parseInt(odoo_partner_id, 10) : null
             ]
         );
 
         console.log(`✅ Proveedor actualizado: id ${id}`);
-        return ok(res, result.rows[0]);
+        return ok(res, withComputed(result.rows[0]));
     } catch (error) {
         if (error.code === '23505') {
             return fail(res, 'Ya existe un proveedor con ese nombre');
@@ -297,92 +343,38 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
 
 // =============================================
 // POST /:id/scraping/toggle — Activa/pausa el scraping del proveedor (solo admin)
-// Body opcional: { enabled: true|false } — sin body invierte el valor actual
+// Body opcional: { enabled: true|false } — sin body invierte el valor actual.
+// Solo se puede activar si la fuente tiene un scraper registrado.
 // =============================================
 router.post('/:id/scraping/toggle', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { id } = req.params;
         const { enabled } = req.body || {};
-        const { rows } = await pool.query(
-            `UPDATE suppliers
-             SET scrape_enabled = CASE WHEN $2::BOOLEAN IS NULL THEN NOT scrape_enabled ELSE $2::BOOLEAN END,
-                 updated_at = NOW()
-             WHERE id = $1
-             RETURNING id, name, scraper_key, scrape_enabled`,
-            [id, enabled === undefined ? null : !!enabled]
+
+        const { rows: current } = await pool.query(
+            'SELECT id, name, scraper_key, scrape_enabled FROM suppliers WHERE id = $1',
+            [id]
         );
-        if (rows.length === 0) {
+        if (current.length === 0) {
             return fail(res, 'Proveedor no encontrado', 404);
         }
-        const s = rows[0];
-        if (s.scrape_enabled && !s.scraper_key) {
-            console.log(`⚠️ "${s.name}" quedó con scraping activo pero sin fuente configurada`);
+        const target = enabled === undefined ? !current[0].scrape_enabled : !!enabled;
+        if (target && !getAvailableKeys().includes(current[0].scraper_key)) {
+            return fail(res, `"${current[0].name}" no tiene una fuente con scraper: elegí una antes de activarlo`);
         }
+
+        const { rows } = await pool.query(
+            `UPDATE suppliers SET scrape_enabled = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING ${SUPPLIER_COLS}`,
+            [id, target]
+        );
+        const s = rows[0];
         console.log(`${s.scrape_enabled ? '✅' : '⚠️'} Scraping de "${s.name}" ${s.scrape_enabled ? 'activado' : 'pausado'}`);
-        return ok(res, s);
+        return ok(res, withComputed(s));
     } catch (error) {
         console.error('❌ Error al cambiar estado de scraping:', error.message);
         return fail(res, 'Error al cambiar estado de scraping', 500);
-    }
-});
-
-// =============================================
-// POST /:id/promote — Promover proveedor staging → active (solo admin)
-// Una vez activo, el scheduler lo incluye y el resto del sistema lo procesa
-// =============================================
-router.post('/:id/promote', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { rows } = await pool.query(
-            `UPDATE suppliers
-             SET status = 'active', updated_at = NOW()
-             WHERE id = $1
-             RETURNING id, name, prefix, website_url, scraper_key, price_format,
-                       is_published, default_discount, default_markup,
-                       markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
-            [id]
-        );
-
-        if (rows.length === 0) {
-            return fail(res, 'Proveedor no encontrado', 404);
-        }
-
-        console.log(`✅ Proveedor "${rows[0].name}" (id: ${id}) promovido a active`);
-        return ok(res, rows[0]);
-    } catch (error) {
-        console.error('❌ Error al promover proveedor:', error.message);
-        return fail(res, 'Error al promover proveedor', 500);
-    }
-});
-
-// =============================================
-// POST /:id/stage — Volver proveedor a staging (solo admin)
-// El proveedor deja de ser procesado por el scheduler y servicios
-// =============================================
-router.post('/:id/stage', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { rows } = await pool.query(
-            `UPDATE suppliers
-             SET status = 'staging', updated_at = NOW()
-             WHERE id = $1
-             RETURNING id, name, prefix, website_url, scraper_key, price_format,
-                       is_published, default_discount, default_markup,
-                       markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
-            [id]
-        );
-
-        if (rows.length === 0) {
-            return fail(res, 'Proveedor no encontrado', 404);
-        }
-
-        console.log(`⚠️ Proveedor "${rows[0].name}" (id: ${id}) movido a staging`);
-        return ok(res, rows[0]);
-    } catch (error) {
-        console.error('❌ Error al mover proveedor a staging:', error.message);
-        return fail(res, 'Error al mover proveedor a staging', 500);
     }
 });
 
@@ -415,8 +407,37 @@ router.delete('/:id/products', authenticate, requireRole('admin'), async (req, r
 });
 
 // =============================================
+// GET /:id/delete-preview — Qué pasaría al eliminar el proveedor (solo admin)
+// Cuenta sus productos en Odoo Neggo y dice si está bloqueado (se usa en Preventas)
+// =============================================
+router.get('/:id/delete-preview', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await getDeletePreview(req.params.id));
+    } catch (error) {
+        console.error('❌ Error al preparar eliminación de proveedor:', error.message);
+        return fail(res, error.status ? error.message : 'Error al consultar el proveedor', error.status || 500);
+    }
+});
+
+// =============================================
+// POST /:id/delete — Elimina el proveedor definitivamente (solo admin)
+// Body: { replacement_supplier_id } — obligatorio si tiene productos en Odoo Neggo.
+// En Odoo Neggo esos productos pasan al proveedor de reemplazo; Preventas no se toca.
+// =============================================
+router.post('/:id/delete', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { replacement_supplier_id } = req.body || {};
+        return ok(res, await deleteSupplier(req.params.id, replacement_supplier_id));
+    } catch (error) {
+        console.error('❌ Error al eliminar proveedor:', error.message);
+        return fail(res, error.status ? error.message : `Error al eliminar proveedor: ${error.message}`, error.status || 500);
+    }
+});
+
+// =============================================
 // DELETE /:id — Desactiva el proveedor y elimina todos sus productos scrapeados
-// Pone active=false y borra supplier_products (cascada elimina price_history, mappings, sync_state)
+// Pone active=false, pausa el scraping y borra supplier_products
+// (cascada elimina price_history, mappings, sync_state)
 // =============================================
 router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
     const client = await pool.connect();
@@ -441,116 +462,20 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
         );
 
         await client.query(
-            'UPDATE suppliers SET active = false, updated_at = NOW() WHERE id = $1',
+            'UPDATE suppliers SET active = false, scrape_enabled = false, updated_at = NOW() WHERE id = $1',
             [id]
         );
 
         await client.query('COMMIT');
 
         console.log(`⚠️ Proveedor desactivado: "${name}" (id: ${id}) — ${deleted} productos eliminados`);
-        return ok(res, { id: parseInt(id), name, active: false, deleted_products: deleted });
+        return ok(res, { id: parseInt(id), name, active: false, scrape_enabled: false, deleted_products: deleted });
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('❌ Error al desactivar proveedor:', error.message);
         return fail(res, 'Error al desactivar proveedor', 500);
     } finally {
         client.release();
-    }
-});
-
-// =============================================
-// GET /:id/pending-categories — Categorías pendientes de mapeo
-// =============================================
-router.get('/:id/pending-categories', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const { rows } = await pool.query(`
-            SELECT id, supplier_id, source_category, sample_products, status, created_at
-            FROM pending_category_mappings
-            WHERE supplier_id = $1 AND status = 'pending'
-            ORDER BY created_at DESC
-        `, [req.params.id]);
-        return ok(res, rows);
-    } catch (error) {
-        console.error('❌ Error al obtener categorías pendientes:', error.message);
-        return fail(res, 'Error al obtener categorías pendientes', 500);
-    }
-});
-
-// =============================================
-// POST /:id/pending-categories/:pendingId/resolve — Resolver categoría pendiente
-// Body: { action: 'map' | 'ignore', dest_category_neggo, dest_category_preventas,
-//         discount_override, markup_neggo_override, markup_preventas_override }
-// =============================================
-router.post('/:id/pending-categories/:pendingId/resolve', authenticate, requireRole('admin'), async (req, res) => {
-    const { id, pendingId } = req.params;
-    const {
-        action, dest_category_neggo, dest_category_preventas,
-        discount_override, markup_neggo_override, markup_preventas_override
-    } = req.body;
-
-    if (!action || !['map', 'ignore'].includes(action)) {
-        return fail(res, 'El campo action debe ser "map" o "ignore"');
-    }
-
-    try {
-        // Verificar que existe el pending
-        const { rows: pending } = await pool.query(
-            'SELECT id, source_category FROM pending_category_mappings WHERE id = $1 AND supplier_id = $2',
-            [pendingId, id]
-        );
-        if (pending.length === 0) {
-            return fail(res, 'Categoría pendiente no encontrada', 404);
-        }
-        const { source_category } = pending[0];
-
-        if (action === 'map') {
-            // Crear regla en supplier_category_rules
-            await pool.query(`
-                INSERT INTO supplier_category_rules
-                    (supplier_id, source_category, dest_category_neggo, dest_category_preventas,
-                     discount_override, markup_neggo_override, markup_preventas_override, ignored, active)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, false, true)
-                ON CONFLICT (supplier_id, source_category)
-                DO UPDATE SET
-                    dest_category_neggo       = EXCLUDED.dest_category_neggo,
-                    dest_category_preventas   = EXCLUDED.dest_category_preventas,
-                    discount_override         = EXCLUDED.discount_override,
-                    markup_neggo_override     = EXCLUDED.markup_neggo_override,
-                    markup_preventas_override = EXCLUDED.markup_preventas_override,
-                    ignored                   = false,
-                    active                    = true
-            `, [
-                id, source_category,
-                dest_category_neggo || null,
-                dest_category_preventas || null,
-                discount_override !== undefined ? discount_override : null,
-                markup_neggo_override !== undefined ? markup_neggo_override : null,
-                markup_preventas_override !== undefined ? markup_preventas_override : null
-            ]);
-        } else {
-            // Ignorar: crear regla con ignored=true
-            await pool.query(`
-                INSERT INTO supplier_category_rules
-                    (supplier_id, source_category, dest_category_neggo, dest_category_preventas,
-                     ignored, active)
-                VALUES ($1, $2, NULL, NULL, true, true)
-                ON CONFLICT (supplier_id, source_category)
-                DO UPDATE SET ignored = true, active = true
-            `, [id, source_category]);
-        }
-
-        // Marcar pending como resuelto
-        await pool.query(`
-            UPDATE pending_category_mappings
-            SET status = $1, resolved_at = NOW(), resolved_by = $2
-            WHERE id = $3
-        `, [action === 'map' ? 'mapped' : 'ignored', req.user.id, pendingId]);
-
-        console.log(`✅ Categoría "${source_category}" resuelta como "${action}" por usuario ${req.user.id}`);
-        return ok(res, { source_category, action });
-    } catch (error) {
-        console.error('❌ Error al resolver categoría pendiente:', error.message);
-        return fail(res, 'Error al resolver categoría pendiente', 500);
     }
 });
 

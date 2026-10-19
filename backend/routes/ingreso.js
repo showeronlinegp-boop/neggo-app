@@ -136,8 +136,8 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
 
         const ingresoResult = await pool.query(
             `SELECT im.*, s.name as supplier_name, s.prefix as supplier_prefix, s.default_discount,
-                    COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0)     AS default_markup,
-                    COALESCE(NULLIF(s.markup_preventas, 0), s.default_markup, 0) AS default_markup_preventas
+                    COALESCE(s.markup_neggo, 0)     AS default_markup,
+                    COALESCE(s.markup_preventas, 0) AS default_markup_preventas
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,
@@ -625,7 +625,7 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             try {
                 const { rows: ingresoRows } = await pool.query(
                     `SELECT COALESCE(s.default_discount, 0) AS default_discount,
-                            COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0) AS default_markup,
+                            COALESCE(s.markup_neggo, 0) AS default_markup,
                             COALESCE(im.costo_envio,     0) AS costo_envio,
                             COALESCE(im.total_monto,     0) AS total_monto
                      FROM ingreso_mercaderia im
@@ -1436,8 +1436,8 @@ router.post('/:ingresoId/generate-oc', authenticate, requireRole('admin'), async
     try {
         const { rows: [ingreso] } = await pool.query(
             `SELECT im.*, s.prefix AS supplier_prefix, s.default_discount,
-                    COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0)     AS markup_neggo,
-                    COALESCE(NULLIF(s.markup_preventas, 0), s.default_markup, 0) AS markup_preventas
+                    COALESCE(s.markup_neggo, 0)     AS markup_neggo,
+                    COALESCE(s.markup_preventas, 0) AS markup_preventas
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,
@@ -1561,7 +1561,7 @@ router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), asy
 
     try {
         const { rows: [ingreso] } = await pool.query(
-            `SELECT im.*, s.prefix AS supplier_prefix, s.default_markup, s.default_discount
+            `SELECT im.*, s.prefix AS supplier_prefix, s.default_discount
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,
@@ -1710,7 +1710,7 @@ router.post('/:ingresoId/supplement-neggo-oc', authenticate, requireRole('admin'
     try {
         const { rows: [ingreso] } = await pool.query(
             `SELECT im.*, s.default_discount,
-                    COALESCE(NULLIF(s.markup_neggo, 0), s.default_markup, 0) AS markup_neggo
+                    COALESCE(s.markup_neggo, 0) AS markup_neggo
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,

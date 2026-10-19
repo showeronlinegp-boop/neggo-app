@@ -10,7 +10,7 @@ description: Reglas de negocio para cálculo de precios, matching de productos y
 ### Cascada de reglas
 1. Se busca la regla de categoría específica para el proveedor + categoría del producto
 2. Si existe y tiene `discount_override` → usar ese descuento. Si no → usar `default_discount` del proveedor
-3. Igual para markup: `markup_override` > `default_markup`
+3. Igual para markup, por empresa: `markup_neggo_override` > `markup_neggo` y `markup_preventas_override` > `markup_preventas`
 
 ### Fórmulas por empresa
 
@@ -117,15 +117,18 @@ function matchByRef(odooRef, supplierPrefix, supplierSku) {
 - `website_url`: URL base del sitio
 - `scraper_key`: clave en el registry de scrapers
 - `price_format`: 'ar' (argentino) o 'inv' (inverso)
-- `is_published`: si se incluye en catálogos
 - `default_discount`: descuento global (%)
-- `default_markup`: markup global (%)
+- `markup_neggo` / `markup_preventas`: markup global por empresa (%)
+- `scrape_config.odoo_partner_id`: partner de Odoo (lo usa la fuente interna `neggo_scraper`)
+- Estado: `active` (desactivado = sin productos ni scraping) + `scrape_enabled` (scraping sí/no).
+  En /scraping solo aparecen los activos, con scraping prendido y con scraper registrado para su fuente.
 
 ### Campos de regla por categoría
 - `source_category`: categoría tal como viene del scraping
-- `dest_category`: categoría estandarizada en Neggo
+- `dest_category_neggo` / `dest_category_preventas`: categoría destino en cada empresa
 - `discount_override`: sobreescribe el default (NULL = usar default)
-- `markup_override`: sobreescribe el default (NULL = usar default)
+- `markup_neggo_override` / `markup_preventas_override`: sobreescriben el markup del proveedor (NULL = usar default)
+- Una categoría con productos disponibles y sin regla activa es "pendiente" (se calcula en vivo)
 
 ### Migración desde Excel
 El "Maestro Preventas.xlsx" tiene dos hojas:

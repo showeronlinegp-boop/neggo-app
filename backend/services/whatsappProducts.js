@@ -58,13 +58,11 @@ const SELECT_COLUMNS = `
     opc.has_image,
     sp.raw_price,
     s.default_discount,
-    s.default_markup,
     s.markup_neggo,
     s.markup_preventas,
     scr.id AS rule_id,
     scr.ignored,
     scr.discount_override,
-    scr.markup_override,
     scr.markup_neggo_override,
     scr.markup_preventas_override,
     CASE WHEN opc.company = 'neggo' THEN scr.dest_category_neggo ELSE scr.dest_category_preventas END AS dest_category
