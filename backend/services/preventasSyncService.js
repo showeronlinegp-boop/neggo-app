@@ -10,7 +10,14 @@ const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     matcheados: ['activar', 'sin_cambios', 'precio_sube', 'precio_baja'],
     inactivar:  ['inactivar', 'solo_odoo'],
+    // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
+    sin_fuente: ['sin_fuente'],
 };
+
+// Estados que nunca generan una acción en Odoo
+const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
+// Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
+const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo'];
 
 async function getProductsToSync(pool, filters = {}) {
     const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
@@ -64,7 +71,7 @@ async function getProductsToSync(pool, filters = {}) {
         SELECT COUNT(*)::INTEGER AS total
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
-        LEFT JOIN suppliers s           ON s.id   = sp.supplier_id
+        LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
         LEFT JOIN odoo_products_cache opc
             ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
         ${whereClause}
@@ -101,7 +108,7 @@ async function getProductsToSync(pool, filters = {}) {
             opc.vendor_name AS odoo_vendor_name
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
-        LEFT JOIN suppliers s           ON s.id   = sp.supplier_id
+        LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
         LEFT JOIN odoo_products_cache opc
             ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
         ${whereClause}
@@ -225,20 +232,34 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
     } else {
         // Aplicar grupo/estado completo (sin paginación)
         const { grupo, estado, supplierId } = filters;
-        const conditions = [`pss.estado != 'sin_cambios'`];
-        const params = [];
-        let idx = 1;
+        const conditions = [`pss.estado != ALL($1::text[])`];
+        const params = [ESTADOS_SIN_ACCION];
+        let idx = 2;
 
-        if (estado && estado !== 'todos' && estado !== 'sin_cambios') {
-            conditions.push(`pss.estado = $${idx++}`);
-            params.push(estado);
+        let estadosPedidos = null; // null = todos los estados con acción
+        if (estado && estado !== 'todos') {
+            estadosPedidos = [estado];
         } else if (grupo && grupo !== 'todos' && GRUPO_ESTADOS[grupo]) {
-            // Para matcheados excluir sin_cambios (no tienen acción)
-            const estados = GRUPO_ESTADOS[grupo].filter(e => e !== 'sin_cambios');
-            if (estados.length > 0) {
-                conditions.push(`pss.estado = ANY($${idx++}::text[])`);
-                params.push(estados);
+            estadosPedidos = GRUPO_ESTADOS[grupo];
+        }
+
+        // Seguridad: nunca archivar en bulk productos de todos los proveedores a la vez
+        if (!supplierId) {
+            if (estadosPedidos && estadosPedidos.some(e => ESTADOS_INACTIVACION.includes(e))) {
+                throw new Error('Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
             }
+            // "Aplicar todo" sin proveedor: se aplica todo menos las inactivaciones
+            conditions.push(`pss.estado != ALL($${idx++}::text[])`);
+            params.push(ESTADOS_INACTIVACION);
+        }
+
+        if (estadosPedidos) {
+            const estados = estadosPedidos.filter(e => !ESTADOS_SIN_ACCION.includes(e));
+            if (estados.length === 0) {
+                return { ok: 0, error: 0, skipped: 0, detalles: [] };
+            }
+            conditions.push(`pss.estado = ANY($${idx++}::text[])`);
+            params.push(estados);
         }
 
         if (supplierId) {
@@ -256,7 +277,7 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
     const resultados = { ok: 0, error: 0, skipped: 0, detalles: [] };
 
     for (const prod of targets) {
-        if (prod.estado === 'sin_cambios') { resultados.skipped++; continue; }
+        if (ESTADOS_SIN_ACCION.includes(prod.estado)) { resultados.skipped++; continue; }
 
         try {
             await ejecutarAccion(prod, preventasCompanyId, pool);
@@ -473,14 +494,29 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
     console.log(`✅ Creado en Odoo Preventas: ${prod.scraper_sku} (variant: ${variantId})`);
 }
 
+// Imagen de un producto de Neggo: se copia directo desde Odoo (la URL local es un proxy relativo)
+const NEGGO_IMAGE_RE = /^\/api\/products\/odoo-image\/neggo\/(\d+)$/;
+
+async function getImageBase64(imageUrl) {
+    const m = imageUrl.match(NEGGO_IMAGE_RE);
+    if (m) {
+        const { neggo: neggoId } = await getCompanyIds();
+        const data = await callOdoo('product.template', 'read',
+            [[parseInt(m[1], 10)], ['image_1920']], { context: { allowed_company_ids: [neggoId] } });
+        return data?.[0]?.image_1920 || null;
+    }
+    const res = await fetch(imageUrl);
+    if (!res.ok) {
+        console.warn(`⚠️ No se pudo descargar imagen: ${imageUrl} (${res.status})`);
+        return null;
+    }
+    return Buffer.from(await res.arrayBuffer()).toString('base64');
+}
+
 async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     try {
-        const res = await fetch(imageUrl);
-        if (!res.ok) {
-            console.warn(`⚠️ No se pudo descargar imagen: ${imageUrl} (${res.status})`);
-            return;
-        }
-        const base64 = Buffer.from(await res.arrayBuffer()).toString('base64');
+        const base64 = await getImageBase64(imageUrl);
+        if (!base64) return;
         // Escribir en product.template con el template ID correcto
         await callOdoo('product.template', 'write', [[templateId], { image_1920: base64 }], { context: ctx });
         // Marcar has_image = true en cache para no re-subir en futuros applies

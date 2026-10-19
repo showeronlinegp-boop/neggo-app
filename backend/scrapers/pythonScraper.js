@@ -107,11 +107,6 @@ class PythonScraper extends BaseScraper {
                 };
             }
 
-            // Marcar como no disponibles los que no aparecieron en este run
-            // (se llama UNA vez aquí, no dentro de cada upsertProducts)
-            const markedUnavailable = await this.markUnavailableSince(runStartedAt);
-            stats.unavailable = markedUnavailable;
-
             // Determinar status final
             let finalStatus;
             if (signal) {
@@ -123,6 +118,13 @@ class PythonScraper extends BaseScraper {
             } else {
                 finalStatus = 'completed';
             }
+
+            // Eliminar los que no aparecieron SOLO si el run recorrió todo el catálogo:
+            // un run pausado, con errores o reanudado (salteó categorías) no vio todos los productos.
+            const esReanudado = 'SKIP_CATEGORIES' in this.pythonEnv;
+            stats.unavailable = (finalStatus === 'completed' && !esReanudado)
+                ? await this.markUnavailableSince(runStartedAt)
+                : 0;
 
             await this.updateRun(finalStatus, stats);
 

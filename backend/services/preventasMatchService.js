@@ -5,7 +5,9 @@
 //   barcode      (99)  — EAN/UPC coincide
 //   internal_ref (90)  — opc.internal_ref = SUBSTRING(sku, 4)  [strip PRE]
 //   internal_ref (88)  — opc.internal_ref = código sin PRE+prefix
+//   exact_sku    (98)  — internal_ref normalizada = sp.sku
 //   name_key     (85)  — ext_id_clean = PRE+prefix+name_key
+//   name_key     (86)  — fuente Neggo: internal_ref = PRE+prefix+NEG+nombre sin acentos
 //   fuzzy_name   (var) — similitud trigrama ≥ 0.75 (requiere pg_trgm)
 //   bracket_code (87)  — código entre {} o () del nombre scraper vs nombre Odoo
 
@@ -31,14 +33,28 @@ const ESTADO_CASE = `
         ELSE 'sin_cambios'
     END`;
 
+// Costo y precio Preventas según la fuente del producto:
+//   web   → costo = lista × (1 − descuento + 1,5%) · precio = lista × 1,015 × (1 + markup)
+//   neggo → costo = costo de Neggo (ya tiene el descuento del proveedor; no se vuelve a aplicar)
+//           precio = costo de Neggo × (1 + markup)
+const COSTO_EXPR = `
+    CASE
+        WHEN sp.raw_price IS NULL THEN NULL
+        WHEN sp.source = 'neggo' THEN ROUND(sp.raw_price, 2)
+        ELSE ROUND(sp.raw_price * (1 - COALESCE(scr.discount_override, s.default_discount, 0) / 100.0 + 0.015), 2)
+    END`;
+const PRECIO_EXPR = `
+    CASE
+        WHEN sp.raw_price IS NULL THEN NULL
+        WHEN sp.source = 'neggo' THEN
+            ROUND(sp.raw_price * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100.0), 2)
+        ELSE ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100.0), 2)
+    END`;
+
 const PRECIO_LATERAL = `
     CROSS JOIN LATERAL (SELECT
-        CASE WHEN sp.raw_price IS NOT NULL THEN
-            ROUND(sp.raw_price * (1 - COALESCE(scr.discount_override, s.default_discount, 0) / 100.0 + 0.015), 2)
-        END AS costo,
-        CASE WHEN sp.raw_price IS NOT NULL THEN
-            ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100.0), 2)
-        END AS precio_preventas
+        ${COSTO_EXPR} AS costo,
+        ${PRECIO_EXPR} AS precio_preventas
     ) p`;
 
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
@@ -62,6 +78,17 @@ WITH candidates AS (
     JOIN odoo_products_cache opc
         ON  opc.ext_id_clean IS NOT NULL
         AND opc.ext_id_clean = UPPER(sp.sku)
+        AND opc.company = 'preventas'
+
+    UNION ALL
+
+    -- 3. SKU = referencia interna de Odoo normalizada (98)
+    --    Los productos de Preventas guardan el código completo en default_code (ej: PRECYNEGABRELATAS)
+    SELECT sp.id, opc.odoo_id, 'exact_sku', 98
+    FROM supplier_products sp
+    JOIN odoo_products_cache opc
+        ON  opc.internal_ref IS NOT NULL
+        AND UPPER(REGEXP_REPLACE(opc.internal_ref, '[^A-Za-z0-9]', '', 'g')) = UPPER(sp.sku)
         AND opc.company = 'preventas'
 
     UNION ALL
@@ -108,6 +135,21 @@ WITH candidates AS (
         ON  sp.name_key IS NOT NULL AND opc.ext_id_clean IS NOT NULL
         AND opc.ext_id_clean = 'PRE' || sx.prefix || sp.name_key
         AND opc.company = 'preventas'
+
+    UNION ALL
+
+    -- 8. Fuente Neggo por nombre: PRE + prefijo + NEG + nombre sin acentos (86)
+    --    Cubre productos de Neggo que hoy tienen código pero se cargaron en Preventas por nombre
+    SELECT sp.id, opc.odoo_id, 'name_key', 86
+    FROM supplier_products sp
+    JOIN suppliers sx ON sx.id = sp.supplier_id
+    JOIN odoo_products_cache opc
+        ON  opc.internal_ref IS NOT NULL
+        AND UPPER(REGEXP_REPLACE(opc.internal_ref, '[^A-Za-z0-9]', '', 'g'))
+            = 'PRE' || UPPER(sx.prefix) || 'NEG'
+              || REGEXP_REPLACE(TRANSLATE(UPPER(sp.name), 'ÁÀÄÂÉÈËÊÍÌÏÎÓÒÖÔÚÙÜÛÑ', 'AAAAEEEEIIIIOOOOUUUUN'), '[^A-Z0-9]', '', 'g')
+        AND opc.company = 'preventas'
+    WHERE sp.source = 'neggo'
 
 ),
 
@@ -259,17 +301,57 @@ ON CONFLICT DO NOTHING
 `;
 
 // ─── Step 3: solo en Odoo ──────────────────────────────────────────────────────
+// Cada producto de Preventas se atribuye a un proveedor por su código: PRE + prefijo + resto.
+// Solo se propone inactivar ('solo_odoo') si ese proveedor tiene el scraping habilitado,
+// una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días.
+// En cualquier otro caso queda 'sin_fuente' y nunca se aplica nada en Odoo.
 
 const SOLO_ODOO_SQL = `
-INSERT INTO preventas_sync_state (odoo_product_id, estado, computed_at)
-SELECT opc.odoo_id, 'solo_odoo', NOW()
+INSERT INTO preventas_sync_state (odoo_product_id, supplier_id, estado, computed_at)
+SELECT
+    opc.odoo_id,
+    sx.id,
+    CASE
+        WHEN sx.id IS NOT NULL
+             AND sx.scrape_enabled = true
+             AND sx.scraper_key IS NOT NULL
+             AND lr.status = 'completed'
+             AND lr.finished_at >= NOW() - make_interval(days => $1::INTEGER)
+        THEN 'solo_odoo'
+        ELSE 'sin_fuente'
+    END,
+    NOW()
 FROM odoo_products_cache opc
+LEFT JOIN LATERAL (
+    SELECT s.id, s.scrape_enabled, s.scraper_key
+    FROM suppliers s
+    WHERE UPPER(REGEXP_REPLACE(COALESCE(NULLIF(opc.internal_ref, ''), opc.ext_id_clean, ''), '[^A-Za-z0-9]', '', 'g'))
+          LIKE 'PRE' || UPPER(s.prefix) || '%'
+    ORDER BY LENGTH(s.prefix) DESC
+    LIMIT 1
+) sx ON true
+LEFT JOIN LATERAL (
+    SELECT r.status, r.finished_at
+    FROM scraping_runs r
+    WHERE r.supplier_id = sx.id
+    ORDER BY r.started_at DESC
+    LIMIT 1
+) lr ON true
 WHERE opc.company = 'preventas'
   AND opc.active IS NOT FALSE
   AND NOT EXISTS (
       SELECT 1 FROM preventas_sync_state pss WHERE pss.odoo_product_id = opc.odoo_id
   )
 `;
+
+// Días máximos desde el último scrapeo completo para proponer inactivaciones
+async function getMaxDiasInactivar(client) {
+    const { rows } = await client.query(
+        `SELECT value FROM app_config WHERE key = 'preventas_inactivar_max_dias'`
+    );
+    const dias = parseInt(rows[0]?.value, 10);
+    return Number.isFinite(dias) && dias > 0 ? dias : 7;
+}
 
 // ─── Step 4: solo en scraper ──────────────────────────────────────────────────
 
@@ -280,12 +362,8 @@ SELECT
     sp.id,
     s.id,
     'solo_scraper',
-    CASE WHEN sp.raw_price IS NOT NULL THEN
-        ROUND(sp.raw_price * (1 - COALESCE(scr.discount_override, s.default_discount, 0) / 100.0 + 0.015), 2)
-    END,
-    CASE WHEN sp.raw_price IS NOT NULL THEN
-        ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100.0), 2)
-    END,
+    ${COSTO_EXPR},
+    ${PRECIO_EXPR},
     NOW()
 FROM supplier_products sp
 JOIN suppliers s ON s.id = sp.supplier_id
@@ -380,7 +458,7 @@ async function recomputeAll(pool) {
         }
 
         // Paso 4-5: solo_odoo y solo_scraper
-        await client.query(b(SOLO_ODOO_SQL));
+        await client.query(b(SOLO_ODOO_SQL), [await getMaxDiasInactivar(client)]);
         await client.query(b(SOLO_SCRAPER_SQL));
 
         // Swap atómico — bloquea la tabla principal por milisegundos

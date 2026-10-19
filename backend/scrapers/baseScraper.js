@@ -145,6 +145,10 @@ class BaseScraper {
                 const cleanCode = (product.sku || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
                 const finalSku = `PRE${this.supplier.prefix}${cleanCode}`;
                 const nameKey = (product.name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+                // Campos opcionales: los scrapers web no los mandan (disponible, fuente web)
+                const available = product.available !== false;
+                const source = product.source || 'web';
+                const neggoOdooId = product.neggo_odoo_id || null;
 
                 // Buscar si ya existe el producto para este supplier + sku
                 const { rows: existing } = await this.pool.query(
@@ -155,8 +159,9 @@ class BaseScraper {
 
                 if (existing.length === 0) {
                     // Antes de insertar, verificar duplicado por name_key
-                    // (mismo producto levantado desde otra sección del catálogo)
-                    const { rows: existingByName } = await this.pool.query(
+                    // (mismo producto levantado desde otra sección del catálogo).
+                    // No aplica a la fuente Neggo: las variantes comparten nombre y son productos distintos.
+                    const { rows: existingByName } = source === 'neggo' ? { rows: [] } : await this.pool.query(
                         `SELECT id, raw_price FROM supplier_products
                          WHERE supplier_id = $1 AND name_key = $2
                          LIMIT 1`,
@@ -174,12 +179,14 @@ class BaseScraper {
                             `UPDATE supplier_products SET
                                 raw_price = $1, offer_price = $2, image_url = $3,
                                 product_url = $4, source_category = $5, barcode = $6,
-                                available = true, last_scraped_at = NOW(), updated_at = NOW()
+                                available = $8, source = $9, neggo_odoo_id = $10,
+                                last_scraped_at = NOW(), updated_at = NOW()
                              WHERE id = $7`,
                             [
                                 newPrice, product.offer_price || null, product.image_url || null,
                                 product.product_url || null, product.source_category || null,
-                                product.barcode || null, dup.id
+                                product.barcode || null, dup.id,
+                                available, source, neggoOdooId
                             ]
                         );
                         duplicateCount++;
@@ -203,8 +210,9 @@ class BaseScraper {
                     await this.pool.query(
                         `INSERT INTO supplier_products
                             (supplier_id, sku, name, raw_price, offer_price, image_url,
-                             product_url, source_category, barcode, available, last_scraped_at, name_key)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, NOW(), $10)`,
+                             product_url, source_category, barcode, available, last_scraped_at, name_key,
+                             source, neggo_odoo_id)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11, NOW(), $10, $12, $13)`,
                         [
                             this.supplier.id,
                             finalSku,
@@ -215,7 +223,10 @@ class BaseScraper {
                             product.product_url || null,
                             product.source_category || null,
                             product.barcode || null,
-                            nameKey
+                            nameKey,
+                            available,
+                            source,
+                            neggoOdooId
                         ]
                     );
                     newCount++;
@@ -242,7 +253,9 @@ class BaseScraper {
                             product_url = $5,
                             source_category = $6,
                             barcode = $7,
-                            available = true,
+                            available = $10,
+                            source = $11,
+                            neggo_odoo_id = $12,
                             last_scraped_at = NOW(),
                             updated_at = NOW(),
                             name_key = $9
@@ -256,7 +269,10 @@ class BaseScraper {
                             product.source_category || null,
                             product.barcode || null,
                             existingProduct.id,
-                            nameKey
+                            nameKey,
+                            available,
+                            source,
+                            neggoOdooId
                         ]
                     );
                     updatedCount++;
@@ -529,7 +545,17 @@ class BaseScraper {
             // Upsert de todos los productos acumulados
             const runStartedAt = new Date();
             const upsertStats = await this.upsertProducts(this.products);
-            const markedUnavailable = await this.markUnavailableSince(runStartedAt);
+
+            const finalStatus = this.errors.length > 0 && this.products.length === 0
+                ? 'failed'
+                : this.errors.length > 0
+                    ? 'partial'
+                    : 'completed';
+
+            // Eliminar los que no aparecieron SOLO si el run recorrió todo sin errores
+            const markedUnavailable = finalStatus === 'completed'
+                ? await this.markUnavailableSince(runStartedAt)
+                : 0;
 
             const stats = {
                 found: this.products.length,
@@ -538,12 +564,6 @@ class BaseScraper {
                 priceChanges: upsertStats.priceChanges,
                 unavailable: markedUnavailable,
             };
-
-            const finalStatus = this.errors.length > 0 && this.products.length === 0
-                ? 'failed'
-                : this.errors.length > 0
-                    ? 'partial'
-                    : 'completed';
 
             await this.updateRun(finalStatus, stats);
 

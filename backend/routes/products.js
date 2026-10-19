@@ -333,15 +333,23 @@ router.get('/supplier', authenticate, async (req, res) => {
                 sp.source_category, sp.barcode, sp.available,
                 sp.last_scraped_at, sp.created_at, sp.updated_at,
                 s.name AS supplier_name, s.prefix AS supplier_prefix,
-                -- Precios calculados usando overrides de regla de categoría si existen
-                CASE WHEN sp.raw_price IS NOT NULL THEN
-                    ROUND(sp.raw_price * (1 - COALESCE(scr.discount_override, s.default_discount, 0) / 100 + 0.015), 2)
+                sp.source,
+                -- Precios calculados usando overrides de regla de categoría si existen.
+                -- Fuente Neggo: raw_price ya es el costo de Neggo (sin descuento ni flete extra)
+                CASE
+                    WHEN sp.raw_price IS NULL THEN NULL
+                    WHEN sp.source = 'neggo' THEN ROUND(sp.raw_price, 2)
+                    ELSE ROUND(sp.raw_price * (1 - COALESCE(scr.discount_override, s.default_discount, 0) / 100 + 0.015), 2)
                 END AS costo,
-                CASE WHEN sp.raw_price IS NOT NULL THEN
-                    ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_neggo_override, s.markup_neggo, 0) / 100), 2)
+                CASE
+                    WHEN sp.raw_price IS NULL OR sp.source = 'neggo' THEN NULL
+                    ELSE ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_neggo_override, s.markup_neggo, 0) / 100), 2)
                 END AS precio_neggo,
-                CASE WHEN sp.raw_price IS NOT NULL THEN
-                    ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100), 2)
+                CASE
+                    WHEN sp.raw_price IS NULL THEN NULL
+                    WHEN sp.source = 'neggo' THEN
+                        ROUND(sp.raw_price * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100), 2)
+                    ELSE ROUND(sp.raw_price * 1.015 * (1 + COALESCE(scr.markup_preventas_override, s.markup_preventas, 0) / 100), 2)
                 END AS precio_preventas
              FROM supplier_products sp
              JOIN suppliers s ON sp.supplier_id = s.id

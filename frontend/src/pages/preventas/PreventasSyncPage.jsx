@@ -23,6 +23,7 @@ const ESTADOS = [
     { key: 'solo_scraper',  label: 'Crear en Odoo',   color: '#155724', bg: '#d4edda' },
     { key: 'solo_odoo',     label: 'Solo en Odoo',    color: '#721c24', bg: '#f8d7da' },
     { key: 'sin_cambios',   label: 'Sin cambios',     color: '#999',    bg: '#eee'    },
+    { key: 'sin_fuente',    label: 'Sin fuente',      color: '#555',    bg: '#eee'    },
 ];
 
 const BADGE = Object.fromEntries(ESTADOS.filter(e => e.key !== 'todos').map(e => [e.key, e]));
@@ -125,6 +126,7 @@ function ComparisonBlock({ resumen, grupo, sinVendor, onFilter, onFilterVendor, 
                 {row('Matcheados',  resumen.odoo_matcheados, 'matcheados', 'success')}
                 {row('Inactivos',   resumen.odoo_inactivos,  null,         'warning')}
                 {row('Sin match',   resumen.solo_odoo,        'inactivar',  'danger')}
+                {row('Sin fuente (no se tocan)', resumen.sin_fuente, 'sin_fuente', 'normal')}
                 {divider()}
                 {sectionLabel('Proveedores en Odoo')}
                 <div onClick={onFilterVendor} title="Ver matcheados sin proveedor en Odoo" style={{
@@ -433,13 +435,20 @@ export default function PreventasSyncPage() {
 
     const pendientes = Object.entries(resumen).filter(([k]) => ['activar','inactivar','precio_sube','precio_baja','solo_scraper','solo_odoo'].includes(k)).reduce((sum, [, v]) => sum + v, 0);
     const grupoTotal = (() => {
-        const NON_ACTIONABLE = new Set(['sin_cambios', 'todos']);
-        if (estado && estado !== 'todos') return NON_ACTIONABLE.has(estado) ? 0 : (resumen[estado] || 0);
+        const NON_ACTIONABLE = new Set(['sin_cambios', 'sin_fuente', 'todos']);
+        if (estado && estado !== 'todos') {
+            if (NON_ACTIONABLE.has(estado)) return 0;
+            if (['inactivar', 'solo_odoo'].includes(estado) && !supplierId) return 0;
+            return resumen[estado] || 0;
+        }
         switch (grupo) {
+            case 'sin_fuente': return 0;
             case 'nuevos':     return resumen.solo_scraper || 0;
             case 'matcheados': return (resumen.activar || 0) + (resumen.precio_sube || 0) + (resumen.precio_baja || 0);
-            case 'inactivar':  return (resumen.inactivar || 0) + (resumen.solo_odoo || 0);
-            default:           return pendientes;
+            // Inactivar en bloque solo con un proveedor elegido
+            case 'inactivar':  return supplierId ? (resumen.inactivar || 0) + (resumen.solo_odoo || 0) : 0;
+            // "Aplicar todo" sin proveedor no inactiva (el backend lo excluye)
+            default:           return supplierId ? pendientes : pendientes - (resumen.inactivar || 0) - (resumen.solo_odoo || 0);
         }
     })();
 
@@ -529,6 +538,7 @@ export default function PreventasSyncPage() {
                     { key: 'nuevos',     label: 'Nuevos',      count: resumen.solo_scraper || 0, color: '#155724', bg: '#d4edda' },
                     { key: 'matcheados', label: 'Matcheados',  count: matcheadosTotal,           color: '#004085', bg: '#cce5ff' },
                     { key: 'inactivar',  label: 'A Inactivar', count: inactivarTotal,            color: '#721c24', bg: '#f8d7da' },
+                    { key: 'sin_fuente', label: 'Sin fuente',  count: resumen.sin_fuente || 0,   color: '#555',    bg: '#eee'    },
                 ];
                 const ESTADOS_MATCH = [
                     { key: 'todos',       label: 'Todos',        count: matcheadosTotal,          color: '#555',    bg: '#f0f0f0' },

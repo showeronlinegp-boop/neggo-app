@@ -2,6 +2,7 @@ const CastScraper = require('./cast');
 const MaliScraper = require('./mali');
 const ImpoteknóScraper = require('./impotekno');
 const ElReyScraper = require('./elrey');
+const NeggoScraper = require('./neggoScraper');
 
 /**
  * Mapa de scraper_key → clase scraper.
@@ -12,6 +13,8 @@ const SCRAPER_REGISTRY = {
     'mali': MaliScraper,
     'impotekno': ImpoteknóScraper,
     'elrey': ElReyScraper,
+    // Fuente interna: productos de Neggo (no scrapea ninguna web)
+    'neggo_scraper': NeggoScraper,
 };
 
 /**

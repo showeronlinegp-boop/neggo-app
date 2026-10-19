@@ -49,6 +49,11 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
         const esBulk = ids.length === 0 && odoo_ids.length === 0;
 
         if (esBulk) {
+            // Inactivar en bloque solo por proveedor (se valida acá para responder antes del background)
+            const pideInactivar = grupo === 'inactivar' || ['inactivar', 'solo_odoo'].includes(estado);
+            if (pideInactivar && !supplierId) {
+                return fail(res, 'Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
+            }
             if (bulkApplyJob.running) {
                 return fail(res, 'Ya hay un apply masivo en progreso', 409);
             }
