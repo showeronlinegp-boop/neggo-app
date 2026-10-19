@@ -12,16 +12,35 @@ import * as Icon from '../../components/common/icons';
 
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
 
-async function downloadPDF(supplier) {
+// Productos que el usuario destildó para que no salgan en el PDF.
+// Se guardan en el navegador para que no se pierdan al tocar "Actualizar".
+const EXCLUDED_KEY = 'neggo_pdf_excluidos';
+const productKey = (supplierName, product) => `${supplierName}::${product.product_id ?? product.product_name}`;
+
+function loadExcluded() {
+    try {
+        const raw = localStorage.getItem(EXCLUDED_KEY);
+        return new Set(raw ? JSON.parse(raw) : []);
+    } catch { return new Set(); }
+}
+
+function saveExcluded(set) {
+    try { localStorage.setItem(EXCLUDED_KEY, JSON.stringify([...set])); } catch { /* sin storage, queda solo en memoria */ }
+}
+
+// products: solo los tildados; los totales se recalculan sobre esos
+async function downloadPDF(supplier, products) {
+    const hasCost   = products.some(p => p.unit_cost != null);
+    const totalCost = products.reduce((s, p) => p.unit_cost != null ? s + parseFloat(p.unit_cost) * p.total_qty : s, 0);
     const token = localStorage.getItem('neggo_token');
     const res = await fetch('/api/preventas/odoo-quotations/pdf', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             supplier_name: supplier.supplier_name,
-            products:      supplier.products,
-            total_cost:    supplier.total_cost,
-            total_qty:     supplier.total_qty,
+            products,
+            total_cost:    hasCost ? Math.round(totalCost * 100) / 100 : null,
+            total_qty:     products.reduce((s, p) => s + p.total_qty, 0),
         }),
     });
     if (!res.ok) {
@@ -70,6 +89,25 @@ export default function OdooSupplierBreakdown() {
     const [expanded, setExpanded] = useState({});
     const [search, setSearch] = useState('');
     const [pdfLoading, setPdfLoading] = useState(null);
+    const [excluded, setExcluded] = useState(loadExcluded);
+
+    const updateExcluded = (fn) => setExcluded(prev => {
+        const next = new Set(prev);
+        fn(next);
+        saveExcluded(next);
+        return next;
+    });
+    const toggleProduct = (supplierName, product) => updateExcluded(next => {
+        const k = productKey(supplierName, product);
+        if (next.has(k)) next.delete(k); else next.add(k);
+    });
+    // Si están todos tildados los destilda; si no, los tilda todos
+    const toggleAllProducts = (supplier, allIncluded) => updateExcluded(next => {
+        for (const p of supplier.products) {
+            const k = productKey(supplier.supplier_name, p);
+            if (allIncluded) next.add(k); else next.delete(k);
+        }
+    });
 
     const load = async () => {
         setLoading(true); setError(null);
@@ -149,6 +187,8 @@ export default function OdooSupplierBreakdown() {
                         const key        = supplier.supplier_name;
                         const isOpen     = !!expanded[key];
                         const isUnmapped = supplier.supplier_name === 'Sin proveedor';
+                        const pdfProducts = supplier.products.filter(p => !excluded.has(productKey(key, p)));
+                        const allIncluded = pdfProducts.length === supplier.products.length;
                         return (
                             <Card key={key} padding={false} style={{ border: isUnmapped ? `1px solid ${t.color.warn}66` : undefined }}>
                                 {/* Cabecera del proveedor */}
@@ -169,12 +209,13 @@ export default function OdooSupplierBreakdown() {
                                                 size="sm"
                                                 variant="ghost"
                                                 leftIcon={<Icon.FileText size={13} />}
-                                                disabled={pdfLoading === key}
+                                                disabled={pdfLoading === key || pdfProducts.length === 0}
+                                                title={pdfProducts.length === 0 ? 'Tildá al menos un producto para generar el PDF' : undefined}
                                                 onClick={async () => {
                                                     setPdfLoading(key);
                                                     setError(null);
                                                     try {
-                                                        await downloadPDF(supplier);
+                                                        await downloadPDF(supplier, pdfProducts);
                                                     } catch (err) {
                                                         setError(err.message || 'No se pudo generar el PDF');
                                                     } finally {
@@ -182,7 +223,7 @@ export default function OdooSupplierBreakdown() {
                                                     }
                                                 }}
                                             >
-                                                {pdfLoading === key ? 'Generando…' : 'PDF'}
+                                                {pdfLoading === key ? 'Generando…' : allIncluded ? 'PDF' : `PDF (${pdfProducts.length}/${supplier.products.length})`}
                                             </Button>
                                             <Button size="sm" variant="success" onClick={() => downloadCSV(data, supplier.supplier_name)}>
                                                 CSV
@@ -197,6 +238,18 @@ export default function OdooSupplierBreakdown() {
                                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                             <thead>
                                                 <tr>
+                                                    {!isUnmapped && (
+                                                        <th style={{ ...thStyle, width: 36, textAlign: 'center', padding: '8px 4px 8px 12px' }} title="Sale en el PDF">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={allIncluded}
+                                                                ref={el => { if (el) el.indeterminate = !allIncluded && pdfProducts.length > 0; }}
+                                                                onChange={() => toggleAllProducts(supplier, allIncluded)}
+                                                                aria-label="Incluir todos en el PDF"
+                                                                style={{ cursor: 'pointer', accentColor: t.color.primary }}
+                                                            />
+                                                        </th>
+                                                    )}
                                                     <th style={{ ...thStyle, width: 52 }}></th>
                                                     <th style={thStyle}>Producto</th>
                                                     <th style={{ ...thStyle, width: 120 }}>SKU</th>
@@ -209,8 +262,21 @@ export default function OdooSupplierBreakdown() {
                                             <tbody>
                                                 {supplier.products.map((product, idx) => {
                                                     const totalCost = product.unit_cost != null ? product.unit_cost * product.total_qty : null;
+                                                    const inPdf = !excluded.has(productKey(key, product));
                                                     return (
-                                                        <tr key={idx} style={{ background: idx % 2 === 0 ? t.color.surface : t.color.surface2 }}>
+                                                        <tr key={idx} style={{ background: idx % 2 === 0 ? t.color.surface : t.color.surface2, opacity: isUnmapped || inPdf ? 1 : 0.45, transition: 'opacity 100ms' }}>
+                                                            {!isUnmapped && (
+                                                                <td style={{ ...tdStyle, textAlign: 'center', verticalAlign: 'middle', padding: '6px 4px 6px 12px' }}>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={inPdf}
+                                                                        onChange={() => toggleProduct(key, product)}
+                                                                        title={inPdf ? 'Sale en el PDF' : 'No sale en el PDF'}
+                                                                        aria-label={`Incluir ${product.product_name} en el PDF`}
+                                                                        style={{ cursor: 'pointer', accentColor: t.color.primary }}
+                                                                    />
+                                                                </td>
+                                                            )}
                                                             <td style={{ ...tdStyle, textAlign: 'center', padding: '6px 8px' }}>
                                                                 <ProductThumb imageUrl={product.image_url} emoji={product.product_name?.[0]} size={40} />
                                                             </td>
