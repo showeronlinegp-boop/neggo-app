@@ -5,6 +5,16 @@ const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const { getProductCategories } = require('../services/odooService');
+const { getAvailableKeys } = require('../scrapers/registry');
+
+// Valida scraper_key: vacío/null = sin fuente, o una clave registrada
+function validarScraperKey(key) {
+    if (key === null || key === undefined || key === '') return null;
+    if (!getAvailableKeys().includes(key)) {
+        return `Fuente de scraping desconocida: "${key}". Opciones: ${getAvailableKeys().join(', ')}`;
+    }
+    return null;
+}
 
 // =============================================
 // GET / — Lista todos los proveedores
@@ -16,7 +26,7 @@ router.get('/', authenticate, async (req, res) => {
             SELECT id, name, prefix, website_url, scraper_key, price_format,
                    is_published, default_discount, default_markup,
                    markup_neggo, markup_preventas, scrape_schedule,
-                   last_scraped_at, active, status, created_at, updated_at,
+                   last_scraped_at, active, status, scrape_enabled, created_at, updated_at,
                    (
                        status = 'active'
                        AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
@@ -84,6 +94,14 @@ router.get('/odoo-categories', authenticate, async (req, res) => {
 });
 
 // =============================================
+// GET /scraper-keys — Fuentes de scraping disponibles (para el selector del form)
+// Debe ir ANTES de /:id
+// =============================================
+router.get('/scraper-keys', authenticate, async (req, res) => {
+    return ok(res, getAvailableKeys());
+});
+
+// =============================================
 // GET /:id — Detalle de un proveedor
 // =============================================
 router.get('/:id', authenticate, async (req, res) => {
@@ -93,7 +111,7 @@ router.get('/:id', authenticate, async (req, res) => {
             `SELECT id, name, prefix, website_url, scraper_key, price_format,
                     is_published, default_discount, default_markup,
                     markup_neggo, markup_preventas, scrape_schedule,
-                    last_scraped_at, active, created_at, updated_at,
+                    last_scraped_at, active, status, scrape_enabled, created_at, updated_at,
                     (
                         status = 'active'
                         AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
@@ -122,7 +140,7 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
         const {
             name, prefix, website_url, scraper_key, price_format,
             is_published, default_discount, default_markup,
-            markup_neggo, markup_preventas, scrape_schedule
+            markup_neggo, markup_preventas, scrape_schedule, scrape_enabled
         } = req.body;
 
         // Validaciones obligatorias
@@ -132,17 +150,19 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
         if (!prefix || !prefix.trim()) {
             return fail(res, 'El campo prefix es obligatorio');
         }
+        const errorKey = validarScraperKey(scraper_key);
+        if (errorKey) return fail(res, errorKey);
 
         const result = await pool.query(
             `INSERT INTO suppliers
                 (name, prefix, website_url, scraper_key, price_format,
                  is_published, default_discount, default_markup,
-                 markup_neggo, markup_preventas, scrape_schedule)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 markup_neggo, markup_preventas, scrape_schedule, scrape_enabled)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              RETURNING id, name, prefix, website_url, scraper_key, price_format,
                        is_published, default_discount, default_markup,
                        markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, created_at, updated_at`,
+                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
             [
                 name.trim(),
                 prefix.trim(),
@@ -154,7 +174,9 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
                 default_markup !== undefined ? default_markup : 0,
                 markup_neggo !== undefined ? markup_neggo : 0,
                 markup_preventas !== undefined ? markup_preventas : 0,
-                scrape_schedule || null
+                scrape_schedule || null,
+                // Por defecto se habilita si tiene fuente
+                scrape_enabled !== undefined ? !!scrape_enabled : !!scraper_key
             ]
         );
 
@@ -213,15 +235,20 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
             name, prefix, website_url, scraper_key, price_format,
             is_published, default_discount, default_markup,
             markup_neggo, markup_preventas, scrape_schedule,
-            last_scraped_at, active
+            last_scraped_at, active, scrape_enabled
         } = req.body;
+
+        const errorKey = validarScraperKey(scraper_key);
+        if (errorKey) return fail(res, errorKey);
 
         const result = await pool.query(
             `UPDATE suppliers SET
                 name              = COALESCE($1, name),
                 prefix            = COALESCE($2, prefix),
                 website_url       = COALESCE($3, website_url),
-                scraper_key       = COALESCE($4, scraper_key),
+                -- scraper_key: si viene en el body se pisa (vacío = sin fuente); si no, se mantiene
+                scraper_key       = CASE WHEN $15::BOOLEAN THEN $4 ELSE scraper_key END,
+                scrape_enabled    = COALESCE($16, scrape_enabled),
                 price_format      = COALESCE($5, price_format),
                 is_published      = COALESCE($6, is_published),
                 default_discount  = COALESCE($7, default_discount),
@@ -236,12 +263,12 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
              RETURNING id, name, prefix, website_url, scraper_key, price_format,
                        is_published, default_discount, default_markup,
                        markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, created_at, updated_at`,
+                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
             [
                 name?.trim() || null,
                 prefix?.trim() || null,
                 website_url !== undefined ? website_url : null,
-                scraper_key !== undefined ? scraper_key : null,
+                scraper_key ? scraper_key : null,
                 price_format || null,
                 is_published !== undefined ? is_published : null,
                 default_discount !== undefined ? default_discount : null,
@@ -251,7 +278,9 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
                 scrape_schedule !== undefined ? scrape_schedule : null,
                 last_scraped_at || null,
                 active !== undefined ? active : null,
-                id
+                id,
+                scraper_key !== undefined,
+                scrape_enabled !== undefined ? !!scrape_enabled : null
             ]
         );
 
@@ -263,6 +292,37 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
         }
         console.error('❌ Error al actualizar proveedor:', error.message);
         return fail(res, 'Error al actualizar proveedor', 500);
+    }
+});
+
+// =============================================
+// POST /:id/scraping/toggle — Activa/pausa el scraping del proveedor (solo admin)
+// Body opcional: { enabled: true|false } — sin body invierte el valor actual
+// =============================================
+router.post('/:id/scraping/toggle', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { enabled } = req.body || {};
+        const { rows } = await pool.query(
+            `UPDATE suppliers
+             SET scrape_enabled = CASE WHEN $2::BOOLEAN IS NULL THEN NOT scrape_enabled ELSE $2::BOOLEAN END,
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, name, scraper_key, scrape_enabled`,
+            [id, enabled === undefined ? null : !!enabled]
+        );
+        if (rows.length === 0) {
+            return fail(res, 'Proveedor no encontrado', 404);
+        }
+        const s = rows[0];
+        if (s.scrape_enabled && !s.scraper_key) {
+            console.log(`⚠️ "${s.name}" quedó con scraping activo pero sin fuente configurada`);
+        }
+        console.log(`${s.scrape_enabled ? '✅' : '⚠️'} Scraping de "${s.name}" ${s.scrape_enabled ? 'activado' : 'pausado'}`);
+        return ok(res, s);
+    } catch (error) {
+        console.error('❌ Error al cambiar estado de scraping:', error.message);
+        return fail(res, 'Error al cambiar estado de scraping', 500);
     }
 });
 
@@ -280,7 +340,7 @@ router.post('/:id/promote', authenticate, requireRole('admin'), async (req, res)
              RETURNING id, name, prefix, website_url, scraper_key, price_format,
                        is_published, default_discount, default_markup,
                        markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, created_at, updated_at`,
+                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
             [id]
         );
 
@@ -310,7 +370,7 @@ router.post('/:id/stage', authenticate, requireRole('admin'), async (req, res) =
              RETURNING id, name, prefix, website_url, scraper_key, price_format,
                        is_published, default_discount, default_markup,
                        markup_neggo, markup_preventas, scrape_schedule,
-                       last_scraped_at, active, status, created_at, updated_at`,
+                       last_scraped_at, active, status, scrape_enabled, created_at, updated_at`,
             [id]
         );
 

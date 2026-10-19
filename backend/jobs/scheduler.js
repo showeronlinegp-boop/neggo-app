@@ -23,17 +23,18 @@ async function initScheduler(pool) {
              FROM suppliers
              WHERE scrape_schedule IS NOT NULL
                AND active = true
-               AND status = 'active'`
+               AND status = 'active'
+               AND scrape_enabled = true`
         );
         suppliers = rows;
     } catch (err) {
         console.error('❌ Error al cargar proveedores para el scheduler:', err.message);
-        return;
+        suppliers = [];
     }
 
+    // Sin proveedores programados igual se registran los crons de abajo (sync Odoo, alertas)
     if (suppliers.length === 0) {
-        console.log('⚠️ No hay proveedores con scrape_schedule configurado. Scheduler inactivo.');
-        return;
+        console.log('⚠️ No hay proveedores con scrape_schedule configurado. Scraping automático inactivo.');
     }
 
     for (const supplier of suppliers) {
@@ -94,6 +95,7 @@ async function initScheduler(pool) {
                 FROM suppliers
                 WHERE status = 'active'
                   AND active = true
+                  AND scrape_enabled = true
                   AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
                 ORDER BY last_scraped_at ASC NULLS FIRST
             `);

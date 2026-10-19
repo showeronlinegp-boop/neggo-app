@@ -23,7 +23,17 @@ const EMPTY_FORM = {
     name: '', prefix: '', website_url: '', scraper_key: '',
     price_format: 'ar', is_published: false,
     default_discount: '', markup_neggo: '', markup_preventas: '', scrape_schedule: '',
+    scrape_enabled: false,
 };
+
+// Fuente interna: los productos salen de Neggo, no de la web del proveedor
+const NEGGO_SOURCE_KEY = 'neggo_scraper';
+
+function fuenteLabel(key) {
+    if (!key) return 'Sin fuente';
+    if (key === NEGGO_SOURCE_KEY) return 'Neggo (interno)';
+    return `Web · ${key}`;
+}
 
 function formatDate(iso) {
     if (!iso) return 'Nunca';
@@ -83,6 +93,16 @@ export default function SupplierList() {
         setModalOpen(false);
     }
 
+    async function handleToggleScraping(supplier, enabled) {
+        const res = await api.post(`/suppliers/${supplier.id}/scraping/toggle`, { enabled });
+        if (res.success) {
+            setSuppliers(prev => prev.map(s => s.id === supplier.id ? { ...s, scrape_enabled: res.data.scrape_enabled } : s));
+            showToast(`Scraping de "${supplier.name}" ${res.data.scrape_enabled ? 'activado' : 'pausado'}`, 'success');
+        } else {
+            showToast(res.error || 'Error al cambiar el scraping', 'error');
+        }
+    }
+
     async function handleDeactivate(supplier) {
         const res = await api.del(`/suppliers/${supplier.id}`);
         setConfirmDeactivate(null);
@@ -126,7 +146,36 @@ export default function SupplierList() {
                 </span>
             ),
         },
-        { key: 'scraper_key', label: 'Scraper', render: v => v || <span style={{ color: t.color.textFaint }}>—</span> },
+        {
+            key: 'scraper_key',
+            label: 'Fuente',
+            render: v => (
+                <Badge tone={!v ? 'muted' : v === NEGGO_SOURCE_KEY ? 'primary' : 'accent'}>
+                    {fuenteLabel(v)}
+                </Badge>
+            ),
+        },
+        {
+            key: 'scrape_enabled',
+            label: 'Scraping',
+            render: (v, row) => (
+                <div
+                    style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}
+                    onClick={e => e.stopPropagation()}
+                    title={!row.scraper_key ? 'Configurá una fuente para poder scrapear' : undefined}
+                >
+                    <Toggle
+                        size="sm"
+                        checked={!!v}
+                        disabled={!isAdmin || !row.scraper_key}
+                        onChange={val => handleToggleScraping(row, val)}
+                    />
+                    <span style={{ fontSize: t.font.size.sm, color: v ? t.color.text : t.color.textFaint, fontFamily: t.font.family }}>
+                        {v ? 'Activo' : 'Pausado'}
+                    </span>
+                </div>
+            ),
+        },
         {
             key: 'default_discount',
             label: 'Descuento',
@@ -272,10 +321,27 @@ function SupplierForm({ supplier, tokens: t, onClose, onSave }) {
         markup_neggo:      supplier.markup_neggo ?? '',
         markup_preventas:  supplier.markup_preventas ?? '',
         scrape_schedule:   supplier.scrape_schedule || '',
+        scrape_enabled:    supplier.scrape_enabled ?? false,
     } : { ...EMPTY_FORM });
 
     const [errors, setErrors] = useState({});
     const [saving, setSaving] = useState(false);
+    const [scraperKeys, setScraperKeys] = useState([]);
+
+    useEffect(() => {
+        api.get('/suppliers/scraper-keys').then(res => {
+            if (res.success) setScraperKeys(res.data);
+        });
+    }, []);
+
+    // Neggo primero, después las webs; se conserva una clave guardada aunque ya no esté registrada
+    const fuenteOptions = [
+        { value: '', label: 'Sin fuente' },
+        ...[...new Set([...scraperKeys, form.scraper_key].filter(Boolean))]
+            .sort((a, b) => (a === NEGGO_SOURCE_KEY ? -1 : b === NEGGO_SOURCE_KEY ? 1 : a.localeCompare(b)))
+            .map(k => ({ value: k, label: fuenteLabel(k) })),
+    ];
+    const esFuenteNeggo = form.scraper_key === NEGGO_SOURCE_KEY;
 
     function validate() {
         const errs = {};
@@ -350,8 +416,17 @@ function SupplierForm({ supplier, tokens: t, onClose, onSave }) {
                     <Input type="url" placeholder="https://proveedor.com" {...field('website_url')} />
                 </FormField>
 
-                <FormField label="Clave scraper" tokens={t}>
-                    <Input placeholder="Ej: abc_scraper" {...field('scraper_key')} />
+                <FormField label="Fuente de datos" tokens={t}>
+                    <Select
+                        value={form.scraper_key}
+                        onChange={v => setForm(p => ({
+                            ...p,
+                            scraper_key: v,
+                            // Sin fuente no se puede scrapear; al elegir una se habilita
+                            scrape_enabled: v ? (p.scraper_key ? p.scrape_enabled : true) : false,
+                        }))}
+                        options={fuenteOptions}
+                    />
                 </FormField>
 
                 <FormField label="Formato de precio" tokens={t}>
@@ -364,6 +439,11 @@ function SupplierForm({ supplier, tokens: t, onClose, onSave }) {
 
                 <FormField label="Descuento default (%)" error={errors.default_discount} tokens={t}>
                     <Input type="number" min="0" max="100" step="0.01" placeholder="Ej: 20" {...field('default_discount')} style={errors.default_discount ? { borderColor: t.color.danger } : {}} />
+                    {esFuenteNeggo && (
+                        <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
+                            Con fuente Neggo se usa solo en el ingreso a Neggo. En Precompras no se aplica: el costo de Neggo ya lo incluye.
+                        </span>
+                    )}
                 </FormField>
 
                 <FormField label="Markup Neggo (%)" error={errors.markup_neggo} tokens={t}>
@@ -385,6 +465,17 @@ function SupplierForm({ supplier, tokens: t, onClose, onSave }) {
                     />
                     <span style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
                         Publicado
+                    </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3] }}>
+                    <Toggle
+                        checked={form.scrape_enabled}
+                        disabled={!form.scraper_key}
+                        onChange={v => setForm(p => ({ ...p, scrape_enabled: v }))}
+                    />
+                    <span style={{ fontSize: t.font.size.sm, color: form.scraper_key ? t.color.text : t.color.textFaint, fontFamily: t.font.family }}>
+                        {form.scraper_key ? 'Scraping activo' : 'Scraping activo (elegí una fuente)'}
                     </span>
                 </div>
             </div>

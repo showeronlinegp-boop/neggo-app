@@ -10,6 +10,18 @@ const scrapingLogs = require('./scrapingLogs');
 let runningCount = 0;
 const MAX_CONCURRENT = 2;
 
+/**
+ * Corta si el proveedor tiene el scraping pausado (suppliers.scrape_enabled = false).
+ * El preview (dry-run) no pasa por acá: se puede previsualizar aunque esté pausado.
+ */
+function assertScrapeEnabled(supplier) {
+    if (!supplier.scrape_enabled) {
+        const err = new Error(`El scraping de "${supplier.name}" está pausado. Activalo desde Proveedores para poder scrapear.`);
+        err.statusCode = 409;
+        throw err;
+    }
+}
+
 // =============================================
 // Servicio de scraping
 // =============================================
@@ -47,6 +59,7 @@ async function runScraper(pool, supplierId, triggeredBy) {
     }
 
     const supplier = rows[0];
+    assertScrapeEnabled(supplier);
 
     // Parsear scrape_config si llega como string
     if (typeof supplier.scrape_config === 'string') {
@@ -271,6 +284,7 @@ async function startScraperAsync(pool, supplierId, triggeredBy) {
     }
 
     const supplier = rows[0];
+    assertScrapeEnabled(supplier);
     if (typeof supplier.scrape_config === 'string') {
         try { supplier.scrape_config = JSON.parse(supplier.scrape_config); } catch (_) { supplier.scrape_config = {}; }
     }
@@ -425,6 +439,7 @@ async function resumeScraper(pool, supplierId, triggeredBy) {
     }
 
     const supplier = rows[0];
+    assertScrapeEnabled(supplier);
     if (typeof supplier.scrape_config === 'string') {
         try { supplier.scrape_config = JSON.parse(supplier.scrape_config); } catch (_) { supplier.scrape_config = {}; }
     }
