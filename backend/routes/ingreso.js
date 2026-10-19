@@ -584,11 +584,12 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             );
         }
 
-        // Actualizar unidades confirmadas para preventa
+        // La cantidad de preventa es del código completo: se reparte entre
+        // los renglones con el mismo código, sin pasar la cantidad de cada uno.
+        let siblings = [];
         if (preventa_qty_confirmed !== undefined) {
-            await pool.query(
-                `UPDATE ingreso_items SET preventa_qty_confirmed = $1 WHERE id = $2`,
-                [Math.max(0, parseInt(preventa_qty_confirmed, 10) || 0), itemId]
+            siblings = await ingresoService.distributePreventaQty(
+                pool, ingresoId, itemId, preventa_qty_confirmed
             );
         }
 
@@ -684,7 +685,7 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             }
         }
 
-        return ok(res, { message: 'Item actualizado', item: fi, odoo_applied: odooApplied });
+        return ok(res, { message: 'Item actualizado', item: fi, odoo_applied: odooApplied, siblings });
     } catch (err) {
         console.error('❌ Error en PATCH item:', err);
         return fail(res, err.message, 500);
@@ -709,21 +710,19 @@ router.patch('/:ingresoId/items/:itemId/preventa-link', authenticate, async (req
         if (!item) return fail(res, 'Item no encontrado', 404);
 
         if (preventas_product_id !== undefined) {
-            // Vincular o desvincular
             await pool.query(
                 `UPDATE ingreso_items
                  SET preventas_product_id   = $1,
-                     preventas_product_name = $2,
-                     preventa_qty_confirmed = COALESCE($3, preventa_qty_confirmed)
-                 WHERE id = $4`,
-                [preventas_product_id || null, preventas_product_name || null,
-                 preventa_qty_confirmed != null ? Math.max(0, parseInt(preventa_qty_confirmed)) : null,
-                 itemId]
+                     preventas_product_name = $2
+                 WHERE id = $3`,
+                [preventas_product_id || null, preventas_product_name || null, itemId]
             );
-        } else if (preventa_qty_confirmed != null) {
-            await pool.query(
-                `UPDATE ingreso_items SET preventa_qty_confirmed = $1 WHERE id = $2`,
-                [Math.max(0, parseInt(preventa_qty_confirmed)), itemId]
+        }
+
+        let siblings = [];
+        if (preventa_qty_confirmed != null) {
+            siblings = await ingresoService.distributePreventaQty(
+                pool, ingresoId, itemId, preventa_qty_confirmed
             );
         }
 
@@ -731,7 +730,7 @@ router.patch('/:ingresoId/items/:itemId/preventa-link', authenticate, async (req
             `SELECT id, preventa_qty_confirmed, preventas_product_id, preventas_product_name
              FROM ingreso_items WHERE id = $1`, [itemId]
         );
-        return ok(res, updated);
+        return ok(res, { ...updated, siblings });
     } catch (err) {
         console.error('❌ Error en preventa-link:', err);
         return fail(res, err.message, 500);
@@ -1464,8 +1463,8 @@ router.post('/:ingresoId/generate-oc', authenticate, requireRole('admin'), async
 
         for (const item of items) {
             const itemCompany = item.odoo_company || 'neggo';
-            const prevQty  = parseInt(item.preventa_qty_confirmed || 0, 10);
             const totalQty = parseInt(item.cantidad, 10);
+            const prevQty  = Math.min(parseInt(item.preventa_qty_confirmed || 0, 10), Math.max(0, totalQty));
             const neggoQty = Math.max(0, totalQty - prevQty);
 
             const packSize   = Math.max(1, parseInt(item.pack_size || 1, 10));
@@ -1502,25 +1501,39 @@ router.post('/:ingresoId/generate-oc', authenticate, requireRole('admin'), async
         }
 
         const partnerId = parseInt(odoo_partner_id, 10);
-        let ocNeggoId = null, ocPreventasId = null;
+        // Si un intento anterior ya creó la OC, no se vuelve a crear.
+        let ocNeggoId = ingreso.odoo_purchase_order_id || null;
+        let ocPreventasId = ingreso.odoo_purchase_order_id_preventas || null;
+        let createdNeggoId = null;
+        let createdPrevId = null;
 
-        if (purchaseLinesNeggo.length > 0) {
-            ocNeggoId = await odooService.createPurchaseOrder(partnerId, purchaseLinesNeggo, 'neggo');
-            console.log(`✅ OC Neggo generada: ${ocNeggoId}`);
-        }
-        if (purchaseLinesPreventas.length > 0) {
-            ocPreventasId = await odooService.createPurchaseOrder(partnerId, purchaseLinesPreventas, 'preventas');
-            console.log(`✅ OC Preventas generada: ${ocPreventasId}`);
-        }
+        try {
+            if (purchaseLinesNeggo.length > 0 && !ocNeggoId) {
+                createdNeggoId = await odooService.createPurchaseOrder(partnerId, purchaseLinesNeggo, 'neggo');
+                ocNeggoId = createdNeggoId;
+                console.log(`✅ OC Neggo generada: ${ocNeggoId}`);
+            }
+            if (purchaseLinesPreventas.length > 0 && !ocPreventasId) {
+                createdPrevId = await odooService.createPurchaseOrder(partnerId, purchaseLinesPreventas, 'preventas');
+                ocPreventasId = createdPrevId;
+                console.log(`✅ OC Preventas generada: ${ocPreventasId}`);
+            }
 
-        await pool.query(
-            `UPDATE ingreso_mercaderia
-             SET odoo_purchase_order_id = COALESCE($1, odoo_purchase_order_id),
-                 odoo_purchase_order_id_preventas = COALESCE($2, odoo_purchase_order_id_preventas),
-                 odoo_partner_id = $3
-             WHERE id = $4`,
-            [ocNeggoId, ocPreventasId, partnerId, ingresoId]
-        );
+            await pool.query(
+                `UPDATE ingreso_mercaderia
+                 SET odoo_purchase_order_id = COALESCE(odoo_purchase_order_id, $1),
+                     odoo_purchase_order_id_preventas = COALESCE(odoo_purchase_order_id_preventas, $2),
+                     odoo_partner_id = $3
+                 WHERE id = $4`,
+                [ocNeggoId, ocPreventasId, partnerId, ingresoId]
+            );
+        } catch (err) {
+            if (createdNeggoId || createdPrevId) {
+                await ingresoService.persistPurchaseOrderIds(ingresoId, createdNeggoId, createdPrevId);
+                console.error(`⚠️ OC guardada para no duplicarla (Neggo ${createdNeggoId || '—'}, Preventas ${createdPrevId || '—'}).`);
+            }
+            throw err;
+        }
 
         return ok(res, {
             odoo_purchase_order_id:           ocNeggoId,
@@ -1543,7 +1556,7 @@ router.post('/:ingresoId/generate-oc', authenticate, requireRole('admin'), async
 
 router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), async (req, res) => {
     const { ingresoId } = req.params;
-    const { normalize, similarity, baseCode } = require('../utils/textMatch');
+    const { baseCode } = require('../utils/textMatch');
     const normRef = (s) => (s || '').replace(/[-\s]/g, '').toUpperCase();
 
     try {
@@ -1614,7 +1627,6 @@ router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), asy
                 todasLasLineas.push({
                     ...line,
                     ref_candidates: refCandidates,
-                    nombre_norm:    normalize(line.product_name),
                 });
             }
         }
@@ -1626,7 +1638,6 @@ router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), asy
             const codigoBase   = baseCode(item.codigo || '');
             const clavePrePref = `PRE${supplierPrefix}${codigoBase}`;
             const claveBase    = `PRE${codigoBase}`;
-            const descNorm     = normalize(item.descripcion);
 
             let bestLine  = null;
             let bestScore = 0;
@@ -1636,10 +1647,6 @@ router.post('/:ingresoId/supplement-oc', authenticate, requireRole('admin'), asy
                 if (codigoBase.length >= 2 && line.ref_candidates.size > 0) {
                     if (line.ref_candidates.has(clavePrePref)) score = 1.0;
                     else if (line.ref_candidates.has(claveBase)) score = 0.97;
-                }
-                if (!score && descNorm && line.nombre_norm) {
-                    const sim = similarity(descNorm, line.nombre_norm);
-                    if (sim >= 0.72) score = sim;
                 }
                 if (score > bestScore) { bestScore = score; bestLine = line; }
             }
@@ -1988,7 +1995,7 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
 
 router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => {
     const { ingresoId } = req.params;
-    const { normalize, similarity, baseCode } = require('../utils/textMatch');
+    const { baseCode } = require('../utils/textMatch');
 
     // Normaliza un internal_ref quitando guiones y espacios, en mayúsculas
     const normRef = (s) => (s || '').replace(/[-\s]/g, '').toUpperCase();
@@ -2090,9 +2097,8 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
                 todasLasLineas.push({
                     ...line,
                     quotation:      q,
-                    ref_candidates: refCandidates,  // Set de todas las refs posibles
-                    ref_norm:       normRef(line.external_id), // mantener para compat
-                    nombre_norm:    normalize(line.product_name),
+                    ref_candidates: refCandidates,
+                    ref_norm:       normRef(line.external_id),
                 });
             }
         }
@@ -2117,8 +2123,6 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
             const codigoBase    = baseCode(item.codigo || '');
             const clavePrePref  = `PRE${supplierPrefix}${codigoBase}`; // ej: PREIMPINF1093
             const claveBaseSola = `PRE${codigoBase}`;                  // fallback sin prefijo proveedor
-            const descNorm      = normalize(item.descripcion);
-
             const matcheados = [];
 
             for (const line of todasLasLineas) {
@@ -2135,15 +2139,6 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
                     } else if (line.ref_candidates.has(claveBaseSola)) {
                         matchType  = 'pre_codigo';
                         matchScore = 0.97;
-                    }
-                }
-
-                // 2. Fuzzy nombre (fallback)
-                if (!matchType && descNorm && line.nombre_norm) {
-                    const sim = similarity(descNorm, line.nombre_norm);
-                    if (sim >= 0.72) {
-                        matchType  = 'nombre_fuzzy';
-                        matchScore = Math.round(sim * 100) / 100;
                     }
                 }
 
@@ -2416,24 +2411,29 @@ router.post('/:ingresoId/rematch', authenticate, async (req, res) => {
         const updated = [];
         for (const rm of rematched) {
             if (!rm.odoo_product_id) continue;
+            // Un parecido de nombre queda pendiente hasta que una persona lo confirme.
+            const auto = rm.estado_item === 'matched' && rm.match_level !== 'fuzzy_name';
 
             await pool.query(
                 `UPDATE ingreso_items
                  SET odoo_product_id   = $1,
                      odoo_product_name = $2,
-                     estado_item       = 'matched',
-                     odoo_active       = $3,
-                     confidence_match  = $4,
+                     estado_item       = $3,
+                     odoo_active       = $4,
+                     confidence_match  = $5,
                      error_match       = NULL,
-                     precio_odoo_anterior = $5,
-                     precio_odoo_lista    = $6
-                 WHERE id = $7`,
+                     precio_odoo_anterior = $6,
+                     precio_odoo_lista    = $7,
+                     match_level       = $8
+                 WHERE id = $9`,
                 [
                     rm.odoo_product_id, rm.odoo_product_name,
+                    auto ? 'matched' : 'pending',
                     rm.odoo_active !== false,
                     rm.confidence_match,
                     rm.precio_odoo_anterior || null,
                     rm.precio_odoo_lista    || null,
+                    rm.match_level || null,
                     rm.id,
                 ]
             );

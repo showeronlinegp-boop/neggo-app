@@ -28,6 +28,20 @@ const C = {
     checkedBg: _tk.color.successSoft,
 };
 
+// La cantidad confirmada de un código es la suma de todos sus renglones.
+function preventaConfirmada(items, pi) {
+    const code = (pi?.codigo || '').trim().toUpperCase();
+    if (!code) {
+        const one = items.find(i => i.id === pi?.ingreso_item_id);
+        return parseInt(one?.preventa_qty_confirmed, 10) || 0;
+    }
+    return items.reduce((sum, i) => (
+        (i.codigo || '').trim().toUpperCase() === code
+            ? sum + (parseInt(i.preventa_qty_confirmed, 10) || 0)
+            : sum
+    ), 0);
+}
+
 const fmtARS = (v) =>
     v != null ? `$${Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—';
 
@@ -726,7 +740,21 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
 
                 {/* Acciones para nuevos */}
                 {isNew && !isRejected && (
-                    <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        {item.match_level === 'fuzzy_name' && item.odoo_product_id && (
+                            <>
+                                <span style={{ fontSize: '12px', color: C.text }}>
+                                    Parecido: <strong>{item.odoo_product_name}</strong>
+                                    {item.confidence_match > 0 ? ` (${Math.round(item.confidence_match * 100)}%)` : ''}. Hay que confirmarlo.
+                                </span>
+                                <button
+                                    onClick={() => onLinked(item.id, item.odoo_product_id)}
+                                    style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.success}`, backgroundColor: C.success, color: C.white, cursor: 'pointer' }}
+                                >
+                                    Confirmar
+                                </button>
+                            </>
+                        )}
                         <button
                             onClick={() => setLinkingOpen(true)}
                             style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.secondary, color: C.white, cursor: 'pointer' }}
@@ -1853,17 +1881,21 @@ export default function IngresoPreview() {
         try {
             const res = await ingresoAPI.updateItem(ingresoId, itemId, data);
             if (res.success) {
-                // Aplicar respuesta del servidor en el ítem (incluye precios reales de Odoo)
                 const serverFields = res.data?.item  || {};
                 const odooApplied  = res.data?.odoo_applied;
+                const siblings     = Array.isArray(res.data?.siblings) ? res.data.siblings : [];
                 const merge = { ...serverFields };
-                // Si el backend aplicó precios a Odoo, reflejarlos en el display
                 if (odooApplied) {
                     merge.precio_odoo_anterior = odooApplied.cost;
                     merge.odoo_list_price      = odooApplied.list_price;
                 }
-                if (Object.keys(merge).length > 0)
-                    setItems(prev => prev.map(i => i.id === itemId ? { ...i, ...merge } : i));
+                if (Object.keys(merge).length > 0 || siblings.length > 0) {
+                    setItems(prev => prev.map(i => {
+                        const sibling = siblings.find(s => s.id === i.id);
+                        if (sibling) return { ...i, preventa_qty_confirmed: sibling.preventa_qty_confirmed };
+                        return i.id === itemId ? { ...i, ...merge } : i;
+                    }));
+                }
             }
         } catch (err) {
             setError(`Error actualizando item: ${err.message}`);
@@ -2294,7 +2326,7 @@ export default function IngresoPreview() {
             {preventaDetailItem && (() => {
                 const currentItem = items.find(i => i.id === preventaDetailItem.id) || preventaDetailItem;
                 const pi          = preventaMatchMap[currentItem.id];
-                const confirmed   = currentItem.preventa_qty_confirmed || 0;
+                const confirmed   = preventaConfirmada(items, { codigo: currentItem.codigo, ingreso_item_id: currentItem.id });
                 const discount    = currentItem.discount_override != null
                     ? parseFloat(currentItem.discount_override)
                     : parseFloat(ingreso.default_discount || 0);
@@ -2499,11 +2531,11 @@ export default function IngresoPreview() {
                             <div style={{ textAlign: 'center', padding: '48px', color: C.gray }}>
                                 <div style={{ fontSize: '40px', marginBottom: '12px' }}>🛒</div>
                                 <p style={{ fontWeight: 'bold' }}>Ningún artículo de esta factura aparece en cotizaciones abiertas de Odoo Preventas.</p>
-                                <p style={{ fontSize: '13px' }}>Se compara por código y por nombre de producto contra todas las cotizaciones.</p>
+                                <p style={{ fontSize: '13px' }}>Se compara por código contra todas las cotizaciones. Un nombre parecido no alcanza para proponerla.</p>
                             </div>
                         ) : (() => {
-                            const totalSeparado = items.reduce((s, i) => s + (i.preventa_qty_confirmed || 0), 0);
-                            const pendienteCount = preventaItems.filter(pi => !(items.find(i => i.id === pi.ingreso_item_id)?.preventa_qty_confirmed > 0)).length;
+                            const totalSeparado = items.reduce((s, i) => s + (parseInt(i.preventa_qty_confirmed, 10) || 0), 0);
+                            const pendienteCount = preventaItems.filter(pi => preventaConfirmada(items, pi) <= 0).length;
 
                             const clientesUnicos = [...new Set(
                                 preventaItems.flatMap(pi => pi.cotizaciones.map(c => c.client).filter(Boolean))
@@ -2512,10 +2544,7 @@ export default function IngresoPreview() {
                             const filteredPreventa = preventaItems.filter(pi => {
                                 const nombre = (pi.odoo_product_name || pi.descripcion || '').toLowerCase();
                                 if (filterPreventaText && !nombre.includes(filterPreventaText.toLowerCase())) return false;
-                                if (filterPreventaPending) {
-                                    const conf = items.find(i => i.id === pi.ingreso_item_id)?.preventa_qty_confirmed || 0;
-                                    if (conf > 0) return false;
-                                }
+                                if (filterPreventaPending && preventaConfirmada(items, pi) > 0) return false;
                                 if (filterPreventaClient && !pi.cotizaciones.some(c => c.client === filterPreventaClient)) return false;
                                 return true;
                             });
@@ -2574,7 +2603,7 @@ export default function IngresoPreview() {
                                         <p style={{ textAlign: 'center', color: C.gray, padding: '24px' }}>Sin resultados para los filtros aplicados.</p>
                                     ) : filteredPreventa.map(pi => {
                                         const ingresoItem  = items.find(i => i.id === pi.ingreso_item_id);
-                                        const confirmed    = ingresoItem?.preventa_qty_confirmed || 0;
+                                        const confirmed    = preventaConfirmada(items, pi);
                                         const insuficiente = pi.total_cotizado > pi.ingreso_cantidad;
                                         const imagenId     = pi.cotizaciones[0]?.product_id || null;
                                         const discount     = ingresoItem?.discount_override != null

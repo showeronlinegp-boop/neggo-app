@@ -155,6 +155,113 @@ function similarity(a, b) {
     return 1 - prev[lb] / Math.max(la, lb);
 }
 
+// Un parecido de nombre no se auto-confirma. Sí se confirma si el nombre
+// normalizado es el mismo (mayúsculas, acentos y espacios).
+function nameMatchDecision(descripcion, productName) {
+    const a = normalize(descripcion);
+    const b = normalize(productName);
+    if (!a || !b) return null;
+    if (a === b) {
+        return { matchLevel: 'exact_name', estado: 'matched', confidence: 1 };
+    }
+    const sim = similarity(a, b);
+    if (sim >= 0.72) {
+        return {
+            matchLevel: 'fuzzy_name',
+            estado: 'pending',
+            confidence: Math.round(sim * 1000) / 1000,
+        };
+    }
+    return null;
+}
+
+// Reparte una cantidad de preventa entre renglones del mismo código,
+// sin pasar la cantidad de cada renglón. El sobrante no se asigna.
+function allocatePreventaQty(rows, requestedQty) {
+    const ordered = [...rows].sort((a, b) => a.id - b.id);
+    const caps = ordered.map(r => Math.max(0, parseInt(r.cantidad, 10) || 0));
+    const totalCap = caps.reduce((s, n) => s + n, 0);
+    let remaining = Math.min(Math.max(0, parseInt(requestedQty, 10) || 0), totalCap);
+    return ordered.map((r, i) => {
+        const take = Math.min(remaining, caps[i]);
+        remaining -= take;
+        return { id: r.id, preventa_qty_confirmed: take };
+    });
+}
+
+// La OC de Preventas no puede llevar más unidades que las confirmadas en el renglón.
+function capPreventaShares(item) {
+    const cantidad = Math.max(0, parseInt(item.cantidad, 10) || 0);
+    const prevQty = Math.min(Math.max(0, parseInt(item.preventa_qty_confirmed, 10) || 0), cantidad);
+    if (prevQty <= 0) return [];
+
+    const links = Array.isArray(item.preventa_links) && item.preventa_links.length > 0
+        ? item.preventa_links
+        : [{
+            preventas_product_id: item.preventas_product_id || null,
+            preventas_product_name: item.preventas_product_name || null,
+            qty: prevQty,
+        }];
+
+    const sum = links.reduce((s, l) => s + (parseInt(l.qty, 10) || 0), 0);
+    if (sum <= 0) return [{ ...links[0], qty: prevQty }];
+
+    let assigned = 0;
+    return links.map((l, i) => {
+        const rawQty = parseInt(l.qty, 10) || 0;
+        const part = i === links.length - 1
+            ? prevQty - assigned
+            : Math.floor(prevQty * rawQty / sum);
+        assigned += part;
+        return { ...l, qty: part };
+    }).filter(l => l.qty > 0);
+}
+
+async function distributePreventaQty(db, ingresoId, itemId, requestedQty) {
+    const { rows: [seed] } = await db.query(
+        `SELECT id, codigo, cantidad FROM ingreso_items WHERE id = $1 AND ingreso_id = $2`,
+        [itemId, ingresoId]
+    );
+    if (!seed) return [];
+
+    const codigo = (seed.codigo || '').trim();
+    const { rows } = codigo
+        ? await db.query(
+            `SELECT id, cantidad FROM ingreso_items
+             WHERE ingreso_id = $1 AND UPPER(codigo) = UPPER($2)
+             ORDER BY id`,
+            [ingresoId, codigo]
+        )
+        : { rows: [seed] };
+
+    const allocation = allocatePreventaQty(rows, requestedQty);
+    for (const row of allocation) {
+        await db.query(
+            `UPDATE ingreso_items SET preventa_qty_confirmed = $1 WHERE id = $2`,
+            [row.preventa_qty_confirmed, row.id]
+        );
+    }
+
+    const ids = allocation.map(r => r.id);
+    const { rows: updated } = await db.query(
+        `SELECT id, codigo, cantidad, preventa_qty_confirmed, preventas_product_id, preventas_product_name
+         FROM ingreso_items WHERE id = ANY($1::int[]) ORDER BY id`,
+        [ids]
+    );
+    return updated;
+}
+
+async function persistPurchaseOrderIds(ingresoId, neggoId, preventasId, db = pool) {
+    if (!neggoId && !preventasId) return;
+    await db.query(
+        `UPDATE ingreso_mercaderia
+         SET odoo_purchase_order_id = COALESCE(odoo_purchase_order_id, $2),
+             odoo_purchase_order_id_preventas = COALESCE(odoo_purchase_order_id_preventas, $3)
+         WHERE id = $1`,
+        [ingresoId, neggoId || null, preventasId || null]
+    );
+}
+
 /**
  * Para cada item CSV, intenta matchear con un producto Odoo (empresa neggo).
  * Niveles en orden:
@@ -215,9 +322,13 @@ async function matchItems(items, supplierId = null) {
                 const { rows: spRows } = await pool.query(
                     `SELECT sp.id FROM supplier_products sp
                      WHERE sp.supplier_id = $1
-                       AND (UPPER(sp.sku) = UPPER($2) OR UPPER(sp.sku) LIKE UPPER($3))
+                       AND (
+                            UPPER(sp.sku) = UPPER($2)
+                            OR REPLACE(REPLACE(UPPER(sp.sku), '-', ''), ' ', '')
+                               = REPLACE(REPLACE(UPPER($2), '-', ''), ' ', '')
+                       )
                      LIMIT 1`,
-                    [supplierId, item.codigo, `%${item.codigo}%`]
+                    [supplierId, item.codigo]
                 );
 
                 if (spRows.length > 0) {
@@ -248,7 +359,9 @@ async function matchItems(items, supplierId = null) {
                 const { rows: icmRows } = await pool.query(
                     `SELECT odoo_product_id, odoo_product_name
                      FROM invoice_code_mappings
-                     WHERE supplier_id = $1 AND UPPER(raw_code) = UPPER($2)
+                     WHERE supplier_id = $1
+                       AND REPLACE(REPLACE(UPPER(raw_code), '-', ''), ' ', '')
+                           = REPLACE(REPLACE(UPPER($2), '-', ''), ' ', '')
                      LIMIT 1`,
                     [supplierId, item.codigo]
                 );
@@ -302,21 +415,28 @@ async function matchItems(items, supplierId = null) {
                 if (matched) { confidence = 0.85; matchLevel = 'desc_purchase'; }
             }
 
-            // ---- Nivel 7: fuzzy por nombre (Neggo) ----
+            // ---- Nivel 7: nombre. Idéntico se confirma; un parecido queda para una persona. ----
             if (!matched && item.descripcion) {
-                const normDesc = normalize(item.descripcion);
                 let bestSim = 0;
                 let bestProduct = null;
+                let bestLevel = null;
 
                 for (const p of odooCache) {
-                    const sim = similarity(normDesc, normalize(p.name));
-                    if (sim > bestSim) { bestSim = sim; bestProduct = p; }
+                    const decision = nameMatchDecision(item.descripcion, p.name);
+                    if (!decision) continue;
+                    const prefer = decision.confidence > bestSim
+                        || (decision.confidence === bestSim && decision.estado === 'matched');
+                    if (prefer) {
+                        bestSim = decision.confidence;
+                        bestProduct = p;
+                        bestLevel = decision.matchLevel;
+                    }
                 }
 
-                if (bestSim >= 0.72) {
-                    matched   = bestProduct;
-                    confidence = Math.round(bestSim * 1000) / 1000;
-                    matchLevel = 'fuzzy_name';
+                if (bestProduct) {
+                    matched = bestProduct;
+                    confidence = bestSim;
+                    matchLevel = bestLevel;
                 }
             }
 
@@ -345,7 +465,7 @@ async function matchItems(items, supplierId = null) {
             confidence_match:  confidence,
             match_level:       matchLevel,
             error_match:       errorMsg,
-            estado_item:       matched ? 'matched' : 'pending',
+            estado_item:       matched && matchLevel !== 'fuzzy_name' ? 'matched' : 'pending',
             precio_odoo_anterior: matched ? parseFloat(matched.standard_price || 0) : null,
             precio_odoo_lista:    matched ? parseFloat(matched.list_price    || 0) : null,
             supplier_product_id:   null,
@@ -636,6 +756,8 @@ async function findPreventasProductId(codigo, supplierPrefix, client) {
 
 async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
     const client = await pool.connect();
+    let createdNeggoId = null;
+    let createdPrevId = null;
 
     try {
         await client.query('BEGIN');
@@ -655,6 +777,17 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
         }
 
         const ingreso = ingresoResult.rows[0];
+        if (ingreso.estado === 'confirmado') {
+            await client.query('COMMIT');
+            return {
+                success: true,
+                already_confirmed: true,
+                updated_products_count: 0,
+                price_changes: [],
+                odoo_purchase_order_id: ingreso.odoo_purchase_order_id,
+                odoo_purchase_order_id_preventas: ingreso.odoo_purchase_order_id_preventas,
+            };
+        }
         const supplierMarkup   = parseFloat(ingreso.markup_neggo || 0);
         const supplierDiscount = parseFloat(ingreso.default_discount || 0);
         const costoEnvio       = parseFloat(ingreso.costo_envio      || 0);
@@ -686,8 +819,8 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
 
             // Ítems pending que solo van a Preventas (no existen en Neggo)
             if (isPendingConPreventa && item.estado_item === 'pending') {
-                const prevQtyP  = parseInt(item.preventa_qty_confirmed || 0, 10);
-                if (prevQtyP > 0) {
+                const shares = capPreventaShares(item);
+                if (shares.length > 0) {
                     const packSizeP     = Math.max(1, parseInt(item.pack_size || 1, 10));
                     const rawCost       = parseFloat(item.precio_unitario || 0) / packSizeP;
                     const discount      = item.discount_override !== null
@@ -702,19 +835,14 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
                         ? Math.round(costoEnvio * participacionP / (parseInt(item.cantidad) * packSizeP) * 100) / 100
                         : 0;
                     const newCost       = Math.round((newCostBase + envioUnitarioP) * 100) / 100;
-                    const prevLinksP = Array.isArray(item.preventa_links) && item.preventa_links.length > 0
-                        ? item.preventa_links
-                        : item.preventas_product_id
-                            ? [{ preventas_product_id: item.preventas_product_id, preventas_product_name: item.preventas_product_name, qty: prevQtyP }]
-                            : [{ preventas_product_id: null, preventas_product_name: null, qty: prevQtyP }];
-                    for (const link of prevLinksP) {
+                    for (const link of shares) {
                         const productId = link.preventas_product_id
                             || await findPreventasProductId(item.codigo, supplierPrefix, client);
                         if (productId) {
                             purchaseLinesPreventas.push({
                                 product_id: productId,
                                 name:       link.preventas_product_name || item.preventas_product_name || item.odoo_product_name || item.descripcion,
-                                quantity:   (link.qty || prevQtyP) * packSizeP,
+                                quantity:   link.qty * packSizeP,
                                 unit_price: newCost,
                             });
                             updatedProductsCount++;
@@ -727,7 +855,8 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
             }
 
             const itemCompany = item.odoo_company || 'neggo';
-            const prevQty  = parseInt(item.preventa_qty_confirmed || 0, 10);
+            const shares   = capPreventaShares(item);
+            const prevQty  = shares.reduce((sum, link) => sum + link.qty, 0);
             const totalQty = parseInt(item.cantidad, 10);
             const neggoQty = Math.max(0, totalQty - prevQty);
 
@@ -777,25 +906,18 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
                         unit_price: newCost
                     });
                 }
-                if (prevQty > 0) {
-                    const prevLinks = Array.isArray(item.preventa_links) && item.preventa_links.length > 0
-                        ? item.preventa_links
-                        : item.preventas_product_id
-                            ? [{ preventas_product_id: item.preventas_product_id, preventas_product_name: item.preventas_product_name, qty: prevQty }]
-                            : [{ preventas_product_id: null, preventas_product_name: null, qty: prevQty }];
-                    for (const link of prevLinks) {
-                        const productId = link.preventas_product_id
-                            || await findPreventasProductId(item.codigo, supplierPrefix, client);
-                        if (productId) {
-                            purchaseLinesPreventas.push({
-                                product_id: productId,
-                                name:       link.preventas_product_name || item.preventas_product_name || item.odoo_product_name || item.descripcion,
-                                quantity:   (link.qty || prevQty) * packSize,
-                                unit_price: newCost,
-                            });
-                        } else {
-                            console.log(`⚠️ Sin producto Preventas para "${item.descripcion}" (codigo: ${item.codigo}) — se omite de la OC Preventas`);
-                        }
+                for (const link of shares) {
+                    const productId = link.preventas_product_id
+                        || await findPreventasProductId(item.codigo, supplierPrefix, client);
+                    if (productId) {
+                        purchaseLinesPreventas.push({
+                            product_id: productId,
+                            name:       link.preventas_product_name || item.preventas_product_name || item.odoo_product_name || item.descripcion,
+                            quantity:   link.qty * packSize,
+                            unit_price: newCost,
+                        });
+                    } else {
+                        console.log(`⚠️ Sin producto Preventas para "${item.descripcion}" (codigo: ${item.codigo}) — se omite de la OC Preventas`);
                     }
                 }
             }
@@ -855,26 +977,38 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
             updatedProductsCount++;
         }
 
-        // Crear OC Neggo
-        let odooPurchaseOrderId = null;
-        if (odooPartnerId && purchaseLinesNeggo.length > 0) {
+        const { rows: ocCols } = await client.query(
+            `SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = 'ingreso_mercaderia'
+               AND column_name IN ('odoo_purchase_order_id', 'odoo_purchase_order_id_preventas')`
+        );
+        if (ocCols.length < 2) {
+            throw new Error('Faltan las columnas de la orden de compra. Reiniciá el backend para actualizar la base antes de confirmar.');
+        }
+
+        // Si un intento anterior ya creó la OC y falló el guardado, se reutiliza.
+        let odooPurchaseOrderId = ingreso.odoo_purchase_order_id || null;
+        let odooPurchaseOrderIdPreventas = ingreso.odoo_purchase_order_id_preventas || null;
+
+        if (odooPartnerId && purchaseLinesNeggo.length > 0 && !odooPurchaseOrderId) {
             try {
-                odooPurchaseOrderId = await odooService.createPurchaseOrder(
+                createdNeggoId = await odooService.createPurchaseOrder(
                     odooPartnerId, purchaseLinesNeggo, 'neggo'
                 );
+                odooPurchaseOrderId = createdNeggoId;
                 console.log(`✅ OC Neggo creada: ${odooPurchaseOrderId} (${purchaseLinesNeggo.length} líneas)`);
             } catch (err) {
                 console.error(`⚠️ No se pudo crear OC Neggo: ${err.message}`);
             }
         }
 
-        // Crear OC Preventas
-        let odooPurchaseOrderIdPreventas = null;
-        if (odooPartnerId && purchaseLinesPreventas.length > 0) {
+        if (odooPartnerId && purchaseLinesPreventas.length > 0 && !odooPurchaseOrderIdPreventas) {
             try {
-                odooPurchaseOrderIdPreventas = await odooService.createPurchaseOrder(
+                createdPrevId = await odooService.createPurchaseOrder(
                     odooPartnerId, purchaseLinesPreventas, 'preventas'
                 );
+                odooPurchaseOrderIdPreventas = createdPrevId;
                 console.log(`✅ OC Preventas creada: ${odooPurchaseOrderIdPreventas} (${purchaseLinesPreventas.length} líneas)`);
             } catch (err) {
                 console.error(`⚠️ No se pudo crear OC Preventas: ${err.message}`);
@@ -916,7 +1050,15 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
             odoo_purchase_order_id_preventas: odooPurchaseOrderIdPreventas
         };
     } catch (err) {
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK').catch(() => {});
+        if (createdNeggoId || createdPrevId) {
+            try {
+                await persistPurchaseOrderIds(ingresoId, createdNeggoId, createdPrevId);
+                console.error(`⚠️ OC guardada para no duplicarla en Odoo (Neggo ${createdNeggoId || '—'}, Preventas ${createdPrevId || '—'}). El confirm se puede reintentar.`);
+            } catch (saveErr) {
+                console.error('❌ No se pudo guardar el id de la OC ya creada:', saveErr.message);
+            }
+        }
         console.error('❌ Error confirming ingreso:', err);
         throw err;
     } finally {
@@ -934,5 +1076,10 @@ module.exports = {
     validateItems,
     createIngresoPreview,
     confirmIngreso,
-    findPreventasProductId
+    findPreventasProductId,
+    nameMatchDecision,
+    allocatePreventaQty,
+    capPreventaShares,
+    distributePreventaQty,
+    persistPurchaseOrderIds,
 };
