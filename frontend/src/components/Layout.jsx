@@ -24,6 +24,7 @@ const routeTitles = {
     '/preventas/listas-precios':     'Listas de precios especiales',
     '/admin':                        'Panel de administración',
     '/admin/odoo-products':          'Productos Odoo',
+    '/admin/whatsapp':               'WhatsApp',
     '/usuarios':                     'Usuarios',
     '/actividad':                    'Log de actividad',
 };
@@ -55,6 +56,7 @@ const NAV_ITEMS = [
 const ADMIN_ITEMS = [
     { icon: Icon.Settings,  label: 'Administración',  path: '/admin' },
     { icon: Icon.Database,  label: 'Productos Odoo',  path: '/admin/odoo-products' },
+    { icon: Icon.MessageCircle, label: 'WhatsApp',     path: '/admin/whatsapp' },
     { icon: Icon.Users,     label: 'Usuarios',         path: '/usuarios' },
     { icon: Icon.Activity,  label: 'Actividad',        path: '/actividad' },
 ];

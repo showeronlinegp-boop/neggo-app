@@ -84,6 +84,9 @@ app.use('/api/ingreso', require('./routes/ingreso'));
 // Listas de precios especiales para clientes
 app.use('/api/pricelists', require('./routes/pricelists'));
 
+// Publicación en grupos de WhatsApp (Evolution API)
+app.use('/api/whatsapp', require('./routes/whatsapp'));
+
 // 404 para rutas no encontradas
 app.use('/api/*', (req, res) => {
     res.status(404).json({
@@ -130,17 +133,18 @@ async function start() {
             console.log(`📦 Entorno: ${process.env.NODE_ENV || 'development'}`);
         });
 
-        // Inicializar scheduler de scrapers
+        // Inicializar scheduler de scrapers y la cola de WhatsApp
         const { initScheduler, stopScheduler } = require('./jobs/scheduler');
+        const { startWhatsappWorker, stopWhatsappWorker } = require('./jobs/whatsappWorker');
         await initScheduler(pool);
+        startWhatsappWorker(pool);
 
-        // Graceful shutdown del scheduler
-        process.on('SIGTERM', async () => {
+        const stopJobs = () => {
             stopScheduler();
-        });
-        process.on('SIGINT', async () => {
-            stopScheduler();
-        });
+            stopWhatsappWorker();
+        };
+        process.on('SIGTERM', stopJobs);
+        process.on('SIGINT', stopJobs);
     } catch (error) {
         console.error('❌ Error al iniciar el servidor:', error.message);
         process.exit(1);
