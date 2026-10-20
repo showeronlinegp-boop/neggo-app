@@ -18,6 +18,7 @@ const routeTitles = {
     '/ingreso/new':                  'Ingreso de Mercadería',
     '/ingreso':                      'Ingreso de Mercadería',
     '/reposicion':                   'Reposición',
+    '/reposicion/recorrida':         'Recorrida de depósito',
     '/preventas/pedidos':            'Pedidos',
     '/preventas/ordenes':            'Órdenes a proveedores',
     '/preventas/catalogos':          'Catálogos',

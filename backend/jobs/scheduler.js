@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const odooSync = require('./odooSync');
+const { syncSalesWeekly } = require('./salesWeeklySync');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -7,8 +8,8 @@ const scheduledTasks = [];
 const TZ = { timezone: 'America/Argentina/Buenos_Aires' };
 
 /**
- * Inicializa el scheduler: sync con Odoo cada hora y alerta diaria de proveedores sin scrapear.
- * El scraping se lanza a mano o con "Ejecutar todos" desde /scraping.
+ * Inicializa el scheduler: sync con Odoo cada hora, ventas semanales diarias
+ * y alerta de proveedores sin scrapear. El scraping se lanza a mano desde /scraping.
  *
  * @param {object} pool — instancia del pg pool
  */
@@ -27,6 +28,18 @@ async function initScheduler(pool) {
     }, TZ));
 
     console.log('✅ Cron de sync Odoo registrado (cada 1 hora).');
+
+    // Ventas semanales (reposición): todos los días a las 2:00 AM
+    scheduledTasks.push(cron.schedule('0 2 * * *', async () => {
+        console.log('📈 Iniciando sync de ventas semanales...');
+        try {
+            await syncSalesWeekly();
+        } catch (err) {
+            console.error('❌ Error en sync de ventas semanales:', err.message);
+        }
+    }, TZ));
+
+    console.log('✅ Cron de ventas semanales registrado (2:00 AM diario).');
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {
