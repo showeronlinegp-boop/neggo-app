@@ -429,6 +429,77 @@ function calcPrecioLista(costoUnitario, discountOverride, defaultDiscount, marku
 }
 
 // =============================================
+// Columna derecha de un ítem sin vincular: las primeras sugerencias del
+// modal de vinculación, para vincular con un clic. Si no hay, no se muestra.
+// =============================================
+const MAX_SUGERENCIAS_TARJETA = 3;
+
+function SugerenciasVinculo({ item, excluirOdooId, isMobile, onLink }) {
+    const [sugerencias, setSugerencias] = useState([]);
+    const [vinculando, setVinculando]   = useState(null);
+
+    useEffect(() => {
+        if (!item.codigo && !item.descripcion) { setSugerencias([]); return; }
+        let vigente = true;
+        api.get('/products/odoo/link-suggestions', {
+            company: 'neggo', codigo: item.codigo || '', descripcion: item.descripcion || '',
+            limit: MAX_SUGERENCIAS_TARJETA + 1,
+        })
+            .then(res => {
+                if (!vigente || !res.success) return;
+                // El parecido que ya se ofrece para confirmar no se repite acá
+                const lista = (res.data || []).filter(p => p.odoo_id !== excluirOdooId);
+                setSugerencias(lista.slice(0, MAX_SUGERENCIAS_TARJETA));
+            })
+            .catch(() => {});
+        return () => { vigente = false; };
+    }, [item.codigo, item.descripcion, excluirOdooId]);
+
+    if (sugerencias.length === 0) return null;
+
+    const vincular = async (p) => {
+        setVinculando(p.odoo_id);
+        try { await onLink(p); } finally { setVinculando(null); }
+    };
+
+    return (
+        <div style={{ flex: isMobile ? 'none' : 1, padding: '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
+            <p style={{ fontSize: '10px', color: C.gray, margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                ¿Es alguno de estos?
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {sugerencias.map(p => (
+                    <div key={p.odoo_id} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 8px', border: `1px solid ${C.border}`, borderRadius: '6px', backgroundColor: C.white }}>
+                        <OdooImage odooId={p.odoo_id} size={36} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div title={p.name} style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {p.name}
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '10px', color: C.gray, flexWrap: 'wrap' }}>
+                                {p.internal_ref && <code style={{ fontFamily: 'monospace' }}>{p.internal_ref}</code>}
+                                {MOTIVO_VINCULO[p.motivo] && <span>· {MOTIVO_VINCULO[p.motivo]}</span>}
+                                {!p.active && <span style={{ color: C.error, fontWeight: 'bold' }}>· INACTIVO</span>}
+                                {parseFloat(p.standard_price) > 0 && (
+                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>· Costo {fmtARS(p.standard_price)}</span>
+                                )}
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => vincular(p)}
+                            disabled={vinculando !== null}
+                            title="Vincular este ítem a este producto"
+                            style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.white, color: C.secondary, cursor: vinculando !== null ? 'default' : 'pointer', flexShrink: 0 }}
+                        >
+                            {vinculando === p.odoo_id ? '⏳' : 'Vincular'}
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+// =============================================
 // Tarjeta de ítem
 // =============================================
 function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
@@ -871,6 +942,16 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                     </div>
                 )}
             </div>
+
+            {/* COLUMNA DERECHA para nuevos: sugerencias de vinculación */}
+            {isNew && !isRejected && (
+                <SugerenciasVinculo
+                    item={item}
+                    excluirOdooId={item.match_level === 'fuzzy_name' ? item.odoo_product_id : null}
+                    isMobile={isMobile}
+                    onLink={(p) => onLinked(item.id, p.odoo_id)}
+                />
+            )}
 
             {/* FLECHA separadora */}
             {isMatched && !isMobile && (
