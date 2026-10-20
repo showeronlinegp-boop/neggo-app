@@ -1,8 +1,12 @@
 // Rutas de reposición (solo empresa Neggo)
-// GET   /api/reposicion?estado=pendiente|resueltos — cola con datos del producto
-// GET   /api/reposicion/buscar?q=                   — productos activos para marcar "reponer"
-// POST  /api/reposicion                             — { odoo_id, nota? } marca "reponer" (queda poco)
-// PATCH /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
+// GET    /api/reposicion?estado=pendiente|resueltos
+// GET    /api/reposicion/buscar?q=
+// GET    /api/reposicion/barcode?code=
+// GET    /api/reposicion/proveedor?nombre=
+// POST   /api/reposicion                             — { odoo_id, nota?, origen? }
+// POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
+// POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas (sin cron diario)
+// PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 
 const express = require('express');
 const router = express.Router();
@@ -31,16 +35,61 @@ router.get('/buscar', async (req, res) => {
     }
 });
 
+router.get('/barcode', async (req, res) => {
+    try {
+        const prod = await reposicion.buscarPorBarcode(req.query.code);
+        if (!prod) return fail(res, 'No hay producto con ese código de barras en Neggo', 404);
+        return ok(res, prod);
+    } catch (err) {
+        console.error('❌ Error buscando por barcode:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+router.get('/proveedor', async (req, res) => {
+    try {
+        return ok(res, await reposicion.detalleProveedor(req.query.nombre));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error detalle proveedor reposición:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
 router.post('/', async (req, res) => {
     const odooId = parseInt(req.body.odoo_id, 10);
     if (!Number.isInteger(odooId)) return fail(res, 'odoo_id es requerido', 400);
     try {
-        const item = await reposicion.agregarReponer(odooId, req.user.id, req.body.nota);
-        console.log(`✅ Reposición: "${item.name}" marcado para reponer por usuario ${req.user.id}`);
+        const origen = req.body.origen === 'recorrida' ? 'recorrida' : 'reponer';
+        const item = await reposicion.agregarReponer(odooId, req.user.id, req.body.nota, origen);
+        console.log(`✅ Reposición: "${item.name}" marcado (${origen}) por usuario ${req.user.id}`);
         return ok(res, item, 201);
     } catch (err) {
         if (!err.statusCode) console.error('❌ Error marcando para reponer:', err.message);
         return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/resolver', async (req, res) => {
+    try {
+        const result = await reposicion.resolverLote({
+            items: req.body.items,
+            estado: req.body.estado || 'repuesto',
+        }, req.user.id);
+        return ok(res, result);
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error resolviendo lote de reposición:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/sync-ventas', async (req, res) => {
+    try {
+        const { syncSalesWeekly } = require('../jobs/salesWeeklySync');
+        const result = await syncSalesWeekly();
+        return ok(res, result);
+    } catch (err) {
+        console.error('❌ Error sincronizando ventas de reposición:', err.message);
+        return fail(res, err.message, 500);
     }
 });
 

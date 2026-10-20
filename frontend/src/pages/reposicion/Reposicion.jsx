@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR } from '../../theme/tokens';
@@ -7,26 +8,34 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Tabs from '../../components/common/Tabs';
+import Modal from '../../components/common/Modal';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
 
-// Cola de reposición de Neggo: productos archivados en Odoo (se agotaron) y los marcados
-// "reponer" (queda poco). Se agrupan por proveedor y se resuelven como repuesto o descartado.
+// Cola de reposición de Neggo: archivados, bajo stock, recorrida y «queda poco».
+// Agrupa por proveedor; el modal muestra ritmo de venta, ABC y genera OC borrador.
 
 const ORIGEN = {
-    archivado: { label: 'Agotado',    tone: 'danger' },
-    reponer:   { label: 'Queda poco', tone: 'warn' },
+    archivado:  { label: 'Agotado',     tone: 'danger' },
+    reponer:    { label: 'Queda poco',  tone: 'warn' },
+    recorrida:  { label: 'Recorrida',   tone: 'warn' },
+    bajo_stock: { label: 'Bajo stock',  tone: 'muted' }, // legacy; Neggo no lleva stock en Odoo
 };
 const ESTADO = {
     repuesto:   { label: 'Repuesto',   tone: 'success' },
     descartado: { label: 'Descartado', tone: 'muted' },
+};
+const RITMO = {
+    reponer:   { label: 'Reponer',  tone: 'success' },
+    estable:   { label: 'Estable',  tone: 'muted' },
+    flojo:     { label: 'Flojo',    tone: 'warn' },
+    sin_datos: { label: 'Sin ventas', tone: 'muted' },
 };
 
 const fmtFecha = (iso) => iso
     ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '—';
 
-// Agrupa los ítems por proveedor, manteniendo el orden alfabético que manda el backend
 function agruparPorProveedor(items) {
     const grupos = new Map();
     for (const it of items) {
@@ -36,7 +45,6 @@ function agruparPorProveedor(items) {
     return [...grupos.entries()];
 }
 
-// Buscador para marcar un producto activo como "reponer"
 function BuscadorReponer({ onAgregado, onError }) {
     const { tokens: t } = useTheme();
     const [q, setQ] = useState('');
@@ -52,7 +60,7 @@ function BuscadorReponer({ onAgregado, onError }) {
         const timer = setTimeout(async () => {
             setBuscando(true);
             const res = await api.get('/reposicion/buscar', { q: term });
-            if (id !== pedido.current) return; // llegó una búsqueda más nueva
+            if (id !== pedido.current) return;
             setBuscando(false);
             if (res.success) setResultados(res.data || []);
             else onError(res.error || 'No se pudo buscar');
@@ -117,6 +125,184 @@ function BuscadorReponer({ onAgregado, onError }) {
     );
 }
 
+function ModalProveedor({ vendor, onClose, onChanged }) {
+    const { tokens: t } = useTheme();
+    const [detalle, setDetalle] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [qtys, setQtys] = useState({});
+    const [selected, setSelected] = useState({});
+    const [guardando, setGuardando] = useState(false);
+    const [aviso, setAviso] = useState(null);
+
+    const cargar = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        const res = await api.get('/reposicion/proveedor', { nombre: vendor });
+        setLoading(false);
+        if (!res.success) { setError(res.error || 'No se pudo cargar el proveedor'); return; }
+        setDetalle(res.data);
+        const q = {};
+        const sel = {};
+        for (const it of res.data.items || []) {
+            q[it.id] = it.qty_decidida ?? it.qty_sugerida_calc ?? '';
+            sel[it.id] = it.ritmo !== 'flojo'; // por defecto no marcar los flojos
+        }
+        setQtys(q);
+        setSelected(sel);
+    }, [vendor]);
+
+    useEffect(() => { cargar(); }, [cargar]);
+
+    const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }));
+
+    const itemsSeleccionados = () => (detalle?.items || [])
+        .filter(it => selected[it.id])
+        .map(it => ({ id: it.id, qty_decidida: qtys[it.id] === '' ? undefined : Number(qtys[it.id]) }));
+
+    const resolver = async (estado) => {
+        const items = itemsSeleccionados();
+        if (!items.length) { setError('Seleccioná al menos un producto'); return; }
+        setGuardando(true);
+        setError(null);
+        setAviso(null);
+        const res = await api.post('/reposicion/resolver', { items, estado });
+        setGuardando(false);
+        if (!res.success) { setError(res.error || 'No se pudo guardar la decisión'); return; }
+        const label = estado === 'repuesto' ? 'repuestos' : 'descartados';
+        setAviso(`${res.data.resueltos} producto(s) marcados como ${label}.`);
+        onChanged?.();
+        await cargar();
+    };
+
+    const th = {
+        padding: '8px 10px', textAlign: 'left', fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
+        color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em',
+        background: t.color.surface2, fontFamily: t.font.family, whiteSpace: 'nowrap',
+    };
+    const td = {
+        padding: '8px 10px', fontSize: t.font.size.sm, color: t.color.text,
+        borderTop: `1px solid ${t.color.border}`, verticalAlign: 'middle', fontFamily: t.font.family,
+    };
+
+    return (
+        <Modal
+            isOpen
+            onClose={onClose}
+            title={vendor}
+            subtitle={detalle ? `${detalle.resumen.pendientes} pendientes · ${detalle.resumen.reponer} para reponer · ${detalle.resumen.flojo} flojos` : 'Cargando…'}
+            size="xl"
+            footer={(
+                <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+                    <Button
+                        variant="ghost"
+                        leftIcon={<Icon.X size={14} />}
+                        disabled={guardando || loading || !(detalle?.items?.length)}
+                        onClick={() => resolver('descartado')}
+                    >
+                        Descartar
+                    </Button>
+                    <Button
+                        variant="success"
+                        leftIcon={<Icon.Check size={14} />}
+                        disabled={guardando || loading || !(detalle?.items?.length)}
+                        onClick={() => resolver('repuesto')}
+                    >
+                        {guardando ? 'Guardando…' : 'Marcar repuestos'}
+                    </Button>
+                </div>
+            )}
+        >
+            {loading && <div style={{ padding: 24, textAlign: 'center', color: t.color.textMuted, fontFamily: t.font.family }}>Cargando métricas…</div>}
+            {error && (
+                <div style={{ background: t.color.dangerSoft, color: t.color.danger, padding: '10px 14px', borderRadius: t.radius.sm, fontSize: t.font.size.sm, marginBottom: t.space[3], fontFamily: t.font.family }}>
+                    {error}
+                </div>
+            )}
+            {aviso && (
+                <div style={{ background: t.color.successSoft, color: t.color.success, padding: '10px 14px', borderRadius: t.radius.sm, fontSize: t.font.size.sm, marginBottom: t.space[3], fontFamily: t.font.family }}>
+                    {aviso}
+                </div>
+            )}
+            {!loading && detalle && (
+                <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+                        <thead>
+                            <tr>
+                                <th style={th}></th>
+                                <th style={th}>Producto</th>
+                                <th style={th}>Motivo</th>
+                                <th style={th}>Ritmo</th>
+                                <th style={th}>ABC</th>
+                                <th style={{ ...th, textAlign: 'right' }}>7d</th>
+                                <th style={{ ...th, textAlign: 'right' }}>30d u.</th>
+                                <th style={{ ...th, textAlign: 'right' }}>Prom/sem</th>
+                                <th style={{ ...th, textAlign: 'right' }}>Cant.</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {detalle.items.map(it => (
+                                <tr key={it.id}>
+                                    <td style={td}>
+                                        <input
+                                            type="checkbox"
+                                            checked={!!selected[it.id]}
+                                            onChange={() => toggle(it.id)}
+                                            aria-label={`Incluir ${it.name}`}
+                                        />
+                                    </td>
+                                    <td style={td}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}>
+                                            <ProductThumb imageUrl={it.image_url} size={32} />
+                                            <div style={{ minWidth: 0 }}>
+                                                <div style={{ fontWeight: t.font.weight.medium, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.name}>
+                                                    {it.name}
+                                                </div>
+                                                <div style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                                                    {it.internal_ref || it.barcode || '—'}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td style={td}><Badge tone={ORIGEN[it.origen]?.tone} dot>{ORIGEN[it.origen]?.label}</Badge></td>
+                                    <td style={td}><Badge tone={RITMO[it.ritmo]?.tone} dot>{RITMO[it.ritmo]?.label}</Badge></td>
+                                    <td style={td}><Badge tone={it.abc === 'A' ? 'success' : it.abc === 'B' ? 'warn' : 'muted'}>{it.abc}</Badge></td>
+                                    <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.qty_7d || 0).toLocaleString('es-AR')}</td>
+                                    <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.qty_30d || 0).toLocaleString('es-AR')}</td>
+                                    <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.avg_weekly || 0).toLocaleString('es-AR')}</td>
+                                    <td style={{ ...td, textAlign: 'right', width: 88 }}>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            step={1}
+                                            value={qtys[it.id] ?? ''}
+                                            onChange={e => setQtys(prev => ({ ...prev, [it.id]: e.target.value }))}
+                                            style={{
+                                                width: 72, padding: '4px 6px', border: `1px solid ${t.color.border}`,
+                                                borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: t.font.size.sm,
+                                                textAlign: 'right', background: t.color.surface,
+                                            }}
+                                        />
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {detalle.items.length === 0 && (
+                        <div style={{ padding: 24, textAlign: 'center', color: t.color.textMuted, fontFamily: t.font.family }}>
+                            Este proveedor ya no tiene pendientes.
+                        </div>
+                    )}
+                    <div style={{ marginTop: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
+                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal (y al prender la app); no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola.
+                    </div>
+                </div>
+            )}
+        </Modal>
+    );
+}
+
 export default function Reposicion() {
     const { tokens: t } = useTheme();
     const [tab, setTab] = useState('pendiente');
@@ -125,6 +311,7 @@ export default function Reposicion() {
     const [error, setError] = useState(null);
     const [aviso, setAviso] = useState(null);
     const [trabajando, setTrabajando] = useState(null);
+    const [modalVendor, setModalVendor] = useState(null);
 
     const cargar = useCallback(async () => {
         setLoading(true);
@@ -179,7 +366,14 @@ export default function Reposicion() {
                         </>
                     ) : 'Últimos 200 resueltos'}
                 </div>
-                <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={13} />} onClick={cargar}>Actualizar</Button>
+                <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                    <Link to="/reposicion/recorrida" style={{ textDecoration: 'none' }}>
+                        <Button size="sm" variant="secondary" leftIcon={<Icon.ScanBarcode size={13} />}>
+                            Recorrida
+                        </Button>
+                    </Link>
+                    <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={13} />} onClick={cargar}>Actualizar</Button>
+                </div>
             </div>
 
             <Tabs
@@ -205,7 +399,7 @@ export default function Reposicion() {
                 <Card><div style={{ padding: 40, textAlign: 'center', color: t.color.textMuted, fontFamily: t.font.family }}>Cargando…</div></Card>
             ) : items.length === 0 ? (
                 <Card>
-                    <div style={{ padding: 40, textAlign: 'center', fontFamily: t.font.family, maxWidth: 380, margin: '0 auto' }}>
+                    <div style={{ padding: 40, textAlign: 'center', fontFamily: t.font.family, maxWidth: 420, margin: '0 auto' }}>
                         <div style={{ width: 48, height: 48, borderRadius: '50%', background: t.color.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px', color: t.color.textMuted }}>
                             <Icon.Check size={22} />
                         </div>
@@ -214,7 +408,7 @@ export default function Reposicion() {
                         </div>
                         <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
                             {pendiente
-                                ? 'Cuando archives un producto en Odoo (se agotó) aparece acá en menos de una hora. También podés marcar «queda poco» con el buscador.'
+                                ? 'Cuando archives un producto (baja) aparece acá. También podés marcar «queda poco» o hacer la recorrida con el escáner.'
                                 : 'Los productos que marques como repuestos o descartados van a aparecer acá.'}
                         </div>
                     </div>
@@ -229,9 +423,15 @@ export default function Reposicion() {
                             {pendiente && lista.some(i => i.origen === 'archivado') && (
                                 <Badge tone="danger" dot>{lista.filter(i => i.origen === 'archivado').length} agotados</Badge>
                             )}
+                            {pendiente && (
+                                <Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }}
+                                    onClick={() => setModalVendor(proveedor)}>
+                                    Decidir
+                                </Button>
+                            )}
                         </div>
                         <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
                                 <thead>
                                     <tr>
                                         <th style={thStyle}>Producto</th>
@@ -298,6 +498,14 @@ export default function Reposicion() {
                         </div>
                     </Card>
                 ))
+            )}
+
+            {modalVendor && (
+                <ModalProveedor
+                    vendor={modalVendor}
+                    onClose={() => setModalVendor(null)}
+                    onChanged={cargar}
+                />
             )}
         </div>
     );

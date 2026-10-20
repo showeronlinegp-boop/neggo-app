@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const odooSync = require('./odooSync');
+const { syncSalesWeekly } = require('./salesWeeklySync');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -7,15 +8,17 @@ const scheduledTasks = [];
 const TZ = { timezone: 'America/Argentina/Buenos_Aires' };
 
 /**
- * Inicializa el scheduler: sync con Odoo cada hora y alerta diaria de proveedores sin scrapear.
- * El scraping se lanza a mano o con "Ejecutar todos" desde /scraping.
+ * Inicializa el scheduler: sync con Odoo cada hora (mientras la app esté prendida)
+ * y alerta de proveedores sin scrapear. El scraping se lanza a mano desde /scraping.
+ * Las ventas de reposición NO van por cron diario: la app corre local y no está
+ * siempre prendida; se sincronizan al arrancar y on-demand al abrir el modal.
  *
  * @param {object} pool — instancia del pg pool
  */
 async function initScheduler(pool) {
     console.log('📦 Inicializando scheduler...');
 
-    // Sync Odoo cada 1 hora
+    // Sync Odoo cada 1 hora (solo mientras el worker esté corriendo)
     scheduledTasks.push(cron.schedule('0 * * * *', async () => {
         console.log('📦 Iniciando sync Odoo...');
         try {
@@ -56,7 +59,7 @@ async function initScheduler(pool) {
 
     console.log('✅ Cron de verificación de proveedores inactivos registrado (9:00 AM diario).');
 
-    // Sync inmediato al arrancar (no bloquea el startup)
+    // Al arrancar (cuando prendés la app): sync Odoo y después ventas para reposición
     setImmediate(async () => {
         console.log('📦 Sync Odoo inicial al arrancar...');
         try {
@@ -64,6 +67,11 @@ async function initScheduler(pool) {
             console.log('✅ Sync Odoo inicial completado');
         } catch (err) {
             console.error('❌ Error en sync Odoo inicial:', err.message);
+        }
+        try {
+            await syncSalesWeekly();
+        } catch (err) {
+            console.error('❌ Error en sync de ventas al arrancar:', err.message);
         }
     });
 }

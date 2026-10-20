@@ -33,6 +33,7 @@ const AdminPanel        = lazy(() => import('./pages/admin/AdminPanel'));
 const OdooProducts      = lazy(() => import('./pages/admin/OdooProducts'));
 const WhatsAppPublish   = lazy(() => import('./pages/admin/WhatsAppPublish'));
 const Reposicion        = lazy(() => import('./pages/reposicion/Reposicion'));
+const Recorrida         = lazy(() => import('./pages/reposicion/Recorrida'));
 
 // ─── Fallback de carga ────────────────────────────────────────────────────────
 function PageLoader() {
@@ -84,6 +85,7 @@ export default function App() {
                         <Route path="/ingreso/new"             element={<IngresoUpload />} />
                         <Route path="/ingreso/:ingresoId"      element={<IngresoPreview />} />
                         <Route path="/reposicion"              element={<Reposicion />} />
+                        <Route path="/reposicion/recorrida"    element={<Recorrida />} />
                         <Route path="/admin"                    element={<AdminPanel />} />
                         <Route path="/admin/odoo-products"     element={<OdooProducts />} />
                         <Route path="/admin/whatsapp"          element={<WhatsAppPublish />} />
