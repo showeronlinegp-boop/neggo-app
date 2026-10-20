@@ -126,8 +126,13 @@ async function getProductById(productId, companyKey) {
 async function updateProductPrices(productId, cost, salePrice, companyKey, categId = null) {
     const companyId = await resolveCompanyId(companyKey);
 
-    const vals = { standard_price: cost, list_price: salePrice };
+    const vals = {};
+    const costN = Number(cost);
+    const saleN = salePrice == null || salePrice === '' ? null : Number(salePrice);
+    if (Number.isFinite(costN)) vals.standard_price = costN;
+    if (Number.isFinite(saleN)) vals.list_price = saleN;
     if (categId) vals.categ_id = categId;
+    if (Object.keys(vals).length === 0) return false;
 
     const result = await callOdoo(
         'product.product',

@@ -435,47 +435,33 @@ router.post('/:id/delete', authenticate, requireRole('admin'), async (req, res) 
 });
 
 // =============================================
-// DELETE /:id — Desactiva el proveedor y elimina todos sus productos scrapeados
-// Pone active=false, pausa el scraping y borra supplier_products
-// (cascada elimina price_history, mappings, sync_state)
+// DELETE /:id — Desactiva el proveedor
+// Pone active=false y pausa el scraping. Los productos, vínculos y reglas quedan:
+// reactivar vuelve a dejar el catálogo usable. El borrado de productos es DELETE /:id/products.
 // =============================================
 router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
-    const client = await pool.connect();
     try {
         const { id } = req.params;
 
-        await client.query('BEGIN');
-
-        const supplierRes = await client.query(
+        const supplierRes = await pool.query(
             'SELECT id, name FROM suppliers WHERE id = $1',
             [id]
         );
         if (supplierRes.rows.length === 0) {
-            await client.query('ROLLBACK');
             return fail(res, 'Proveedor no encontrado', 404);
         }
         const { name } = supplierRes.rows[0];
 
-        const { rowCount: deleted } = await client.query(
-            'DELETE FROM supplier_products WHERE supplier_id = $1',
-            [id]
-        );
-
-        await client.query(
+        await pool.query(
             'UPDATE suppliers SET active = false, scrape_enabled = false, updated_at = NOW() WHERE id = $1',
             [id]
         );
 
-        await client.query('COMMIT');
-
-        console.log(`⚠️ Proveedor desactivado: "${name}" (id: ${id}) — ${deleted} productos eliminados`);
-        return ok(res, { id: parseInt(id), name, active: false, scrape_enabled: false, deleted_products: deleted });
+        console.log(`⚠️ Proveedor desactivado: "${name}" (id: ${id}) — el catálogo se conserva`);
+        return ok(res, { id: parseInt(id), name, active: false, scrape_enabled: false, deleted_products: 0 });
     } catch (error) {
-        await client.query('ROLLBACK');
         console.error('❌ Error al desactivar proveedor:', error.message);
         return fail(res, 'Error al desactivar proveedor', 500);
-    } finally {
-        client.release();
     }
 });
 

@@ -12,6 +12,7 @@ const {
     formatMoneyAR,
     formatFechaAR,
     groupQuotationsBySupplier,
+    supplierNetCost,
 } = require('../services/supplierBreakdown');
 
 // =============================================
@@ -817,15 +818,24 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
                 productCacheMap[row.odoo_id] = {
                     vendor_name:    row.vendor_name    || null,
                     image_url:      row.image_url      || null,
-                    standard_price: row.standard_price || null,
+                    standard_price: row.standard_price ?? null,
                 };
             }
+
+            const orderCostByProductId = {};
+            const rememberCost = (odooId, row) => {
+                const net = supplierNetCost(row);
+                if (net != null) orderCostByProductId[odooId] = net;
+            };
 
             // Mapping directo del producto Preventas.
             const { rows: mapped } = await pool.query(
                 `SELECT DISTINCT ON (pm.odoo_product_id)
                         pm.odoo_product_id,
-                        s.name AS supplier_name
+                        s.name AS supplier_name,
+                        sp.raw_price,
+                        sp.offer_price,
+                        s.default_discount
                  FROM product_mappings pm
                  JOIN supplier_products sp ON sp.id = pm.supplier_product_id
                  JOIN suppliers s ON s.id = sp.supplier_id AND s.active = true
@@ -837,13 +847,17 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
             );
             for (const row of mapped) {
                 localSupplierByProductId[row.odoo_product_id] = row.supplier_name;
+                rememberCost(row.odoo_product_id, row);
             }
 
             // Respaldo: el mismo artículo mapeado del lado Neggo (referencia PRE + ref).
             const { rows: twins } = await pool.query(
                 `SELECT DISTINCT ON (opc_p.odoo_id)
                         opc_p.odoo_id,
-                        s.name AS supplier_name
+                        s.name AS supplier_name,
+                        sp.raw_price,
+                        sp.offer_price,
+                        s.default_discount
                  FROM odoo_products_cache opc_p
                  JOIN odoo_products_cache opc_n
                      ON opc_n.company = 'neggo'
@@ -864,7 +878,15 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
             for (const row of twins) {
                 if (!localSupplierByProductId[row.odoo_id]) {
                     localSupplierByProductId[row.odoo_id] = row.supplier_name;
+                    rememberCost(row.odoo_id, row);
                 }
+            }
+
+            for (const [odooId, net] of Object.entries(orderCostByProductId)) {
+                if (!productCacheMap[odooId]) {
+                    productCacheMap[odooId] = { vendor_name: null, image_url: null, standard_price: null };
+                }
+                productCacheMap[odooId].order_cost = net;
             }
         }
 
@@ -928,9 +950,12 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
             }
 
             // Fuente filesystem
-            if (imageUrl.startsWith('/storage')) {
-                const fullPath = path.join(STORAGE, imageUrl.replace('/storage', ''));
-                if (!fs.existsSync(fullPath)) return null;
+            if (imageUrl.startsWith('/storage/')) {
+                const root = path.resolve(STORAGE);
+                const rel = imageUrl.slice('/storage/'.length);
+                const fullPath = path.resolve(root, rel);
+                if (fullPath !== root && !fullPath.startsWith(root + path.sep)) return null;
+                if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return null;
                 try {
                     const ext  = path.extname(fullPath).toLowerCase().replace('.', '');
                     const mime = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : `image/${ext || 'png'}`;

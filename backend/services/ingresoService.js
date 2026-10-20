@@ -364,6 +364,31 @@ async function distributePreventaQty(db, ingresoId, itemId, requestedQty) {
     return updated;
 }
 
+/**
+ * Precio de lista que se escribe en Odoo.
+ * Si no se pidió aplicar precio, se conserva el de ahora. Nunca se reemplaza por el costo.
+ * @returns {number|null}
+ */
+function listPriceForOdoo(applyPrice, newListPrice, currentList) {
+    const chosen = applyPrice ? newListPrice : currentList;
+    if (chosen == null || chosen === '') return null;
+    const n = Number(chosen);
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Empresas a las que había que crearles OC y no quedó id.
+ * Sin partner no se pide OC: confirmar solo actualiza precios.
+ * @returns {string[]}
+ */
+function missingPurchaseOrders({ partnerId, neggoLineCount, prevLineCount, neggoId, prevId }) {
+    if (!partnerId) return [];
+    const missing = [];
+    if (neggoLineCount > 0 && !neggoId) missing.push('Neggo');
+    if (prevLineCount > 0 && !prevId) missing.push('Preventas');
+    return missing;
+}
+
 async function persistPurchaseOrderIds(ingresoId, neggoId, preventasId, db = pool) {
     if (!neggoId && !preventasId) return;
     await db.query(
@@ -1064,9 +1089,7 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
                 const company = itemCompany === 'preventas' ? 'preventas' : 'neggo';
 
                 if (item.apply_cost && newCost > 0) {
-                    const priceToApply = item.apply_price && newListPrice !== null
-                        ? newListPrice
-                        : parseFloat(item.precio_odoo_lista || newCost);
+                    const priceToApply = listPriceForOdoo(item.apply_price, newListPrice, item.precio_odoo_lista);
                     await odooService.updateProductPrices(item.odoo_product_id, newCost, priceToApply, company);
                     appliedCost  = newCost;
                     appliedPrice = priceToApply;
@@ -1094,16 +1117,28 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
                     });
                 }
 
-                // Actualizar cache local y el item para que el reload muestre valores correctos
+                // Actualizar cache local y el item para que el reload muestre valores correctos.
+                // Si no se aplicó precio de lista, no se pisa el que ya estaba.
                 if (appliedCost !== null) {
-                    await client.query(
-                        `UPDATE odoo_products_cache SET standard_price = $1, list_price = $2 WHERE odoo_id = $3 AND company = $4`,
-                        [appliedCost, appliedPrice, item.odoo_product_id, company]
-                    );
-                    await client.query(
-                        `UPDATE ingreso_items SET precio_odoo_anterior = $1, precio_odoo_lista = $2 WHERE id = $3`,
-                        [appliedCost, appliedPrice, item.id]
-                    );
+                    if (appliedPrice != null) {
+                        await client.query(
+                            `UPDATE odoo_products_cache SET standard_price = $1, list_price = $2 WHERE odoo_id = $3 AND company = $4`,
+                            [appliedCost, appliedPrice, item.odoo_product_id, company]
+                        );
+                        await client.query(
+                            `UPDATE ingreso_items SET precio_odoo_anterior = $1, precio_odoo_lista = $2 WHERE id = $3`,
+                            [appliedCost, appliedPrice, item.id]
+                        );
+                    } else {
+                        await client.query(
+                            `UPDATE odoo_products_cache SET standard_price = $1 WHERE odoo_id = $2 AND company = $3`,
+                            [appliedCost, item.odoo_product_id, company]
+                        );
+                        await client.query(
+                            `UPDATE ingreso_items SET precio_odoo_anterior = $1 WHERE id = $2`,
+                            [appliedCost, item.id]
+                        );
+                    }
                 }
             } catch (priceErr) {
                 console.error(`⚠️ No se pudo actualizar precio del item ${item.id} (${item.odoo_product_name}): ${priceErr.message}`);
@@ -1148,6 +1183,19 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
             } catch (err) {
                 console.error(`⚠️ No se pudo crear OC Preventas: ${err.message}`);
             }
+        }
+
+        const missingOrders = missingPurchaseOrders({
+            partnerId: odooPartnerId,
+            neggoLineCount: purchaseLinesNeggo.length,
+            prevLineCount: purchaseLinesPreventas.length,
+            neggoId: odooPurchaseOrderId,
+            prevId: odooPurchaseOrderIdPreventas,
+        });
+        if (missingOrders.length > 0) {
+            throw new Error(
+                `No se pudo crear la orden de compra de ${missingOrders.join(' y ')}. El ingreso sigue pendiente.`
+            );
         }
 
         // Actualizar estado del ingreso
@@ -1227,4 +1275,6 @@ module.exports = {
     capPreventaShares,
     distributePreventaQty,
     persistPurchaseOrderIds,
+    listPriceForOdoo,
+    missingPurchaseOrders,
 };
