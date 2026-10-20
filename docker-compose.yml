@@ -85,6 +85,32 @@ services:
     networks:
       - neggo-net
 
+  # Viernes 15:00, hora Argentina. Si la PC está apagada, se hace al volver a prenderla.
+  # La carpeta y el JSON del service account se configuran una vez: backup/README.md
+  db-backup:
+    build: ./backup
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD:-neggo_pass}
+      - PGHOST=postgres
+      - PGUSER=neggo
+      - PGDATABASE=neggo_app
+      - BACKUP_DIR=/backups
+      - BACKUP_KEEP=${BACKUP_KEEP:-8}
+      - BACKUP_HOUR=15
+      - BACKUP_WDAY=5
+      - TZ=America/Argentina/Buenos_Aires
+      - DRIVE_FOLDER_ID=${DRIVE_FOLDER_ID:-}
+      - DRIVE_SA_FILE=/secrets/drive-sa.json
+    volumes:
+      - ./volumes/backups:/backups
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
   chrome:
     image: browserless/chrome:latest
     environment:
