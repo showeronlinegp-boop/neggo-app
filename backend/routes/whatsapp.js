@@ -162,10 +162,11 @@ router.post('/batches/random', async (req, res) => {
     try {
         const company = req.body.company === 'neggo' ? 'neggo' : 'preventas';
         const settings = await queue.getSettings(pool);
-        const groupJid = req.body.group_jid || settings.group_jid;
-        const groupSubject = req.body.group_subject || settings.group_subject;
+        const destino = queue.assertDestino(req.body.destino);
+        const groupJid = destino === 'estado' ? undefined : (req.body.group_jid || settings.group_jid);
+        const groupSubject = destino === 'estado' ? undefined : (req.body.group_subject || settings.group_subject);
         const interval = queue.clampInterval(req.body.interval_seconds || settings.interval_seconds, 90);
-        queue.assertGroupJid(groupJid);
+        if (destino === 'grupo') queue.assertGroupJid(groupJid);
         queue.assertSchedule(req.body.scheduled_at);
         const groups = Array.isArray(req.body.groups) ? req.body.groups : [];
         // Validamos todo antes de crear nada.
@@ -182,6 +183,7 @@ router.post('/batches/random', async (req, res) => {
                 company,
                 category: g.category,
                 products: g.products,
+                destino,
                 groupJid,
                 groupSubject,
                 intervalSeconds: interval,
