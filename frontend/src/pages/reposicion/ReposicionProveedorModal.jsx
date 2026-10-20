@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
@@ -9,6 +9,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import ProductThumb from '../../components/common/ProductThumb';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
+import FotoAmpliada from '../../components/common/FotoAmpliada';
 import * as Icon from '../../components/common/icons';
 
 const BTN_MOVIL = {
@@ -91,7 +92,26 @@ function MetaProducto({ p, extra, t }) {
     );
 }
 
-function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActivar, extra, isMobile, t }) {
+// Miniatura que abre la foto en grande; sin foto queda como estaba
+function MiniaturaTocable({ p, size, onVerFoto, t }) {
+    if (!p.image_url) return <ProductThumb imageUrl={p.image_url} size={size} />;
+    return (
+        <button
+            type="button"
+            onClick={() => onVerFoto(p)}
+            aria-label={`Ver foto de ${p.name}`}
+            title="Ver foto en grande"
+            style={{
+                padding: 0, border: 'none', background: 'none', cursor: 'zoom-in',
+                borderRadius: t.radius.sm, flexShrink: 0, lineHeight: 0,
+            }}
+        >
+            <ProductThumb imageUrl={p.image_url} size={size} />
+        </button>
+    );
+}
+
+function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActivar, onVerFoto, extra, isMobile, t }) {
     const acciones = { p, trabajando, onReponer, onPedirArchivar, onPedirActivar, t };
 
     if (isMobile) {
@@ -102,7 +122,7 @@ function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActiva
                 borderTop: `1px solid ${t.color.border}`,
             }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <ProductThumb imageUrl={p.image_url} size={52} />
+                    <MiniaturaTocable p={p} size={52} onVerFoto={onVerFoto} t={t} />
                     <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                         <div title={p.name} style={{
                             fontSize: t.font.size.base, fontWeight: t.font.weight.semibold, color: t.color.text,
@@ -123,7 +143,7 @@ function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActiva
             display: 'flex', alignItems: 'center', gap: t.space[3],
             padding: '8px 4px', borderTop: `1px solid ${t.color.border}`,
         }}>
-            <ProductThumb imageUrl={p.image_url} size={36} />
+            <MiniaturaTocable p={p} size={36} onVerFoto={onVerFoto} t={t} />
             <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                 <div title={p.name} style={{
                     fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text,
@@ -146,6 +166,8 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
     const [loading, setLoading] = useState(true);
     const [trabajando, setTrabajando] = useState(null);
     const [confirmar, setConfirmar] = useState(null);
+    const [foto, setFoto] = useState(null);
+    const cerrarFoto = useCallback(() => setFoto(null), []);
 
     useEffect(() => {
         if (!vendorName) return;
@@ -154,6 +176,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         setDetalle(null);
         setTab('activos');
         setConfirmar(null);
+        setFoto(null);
         api.get('/reposicion/proveedor', { nombre: vendorName })
             .then(res => {
                 if (!vigente) return;
@@ -241,6 +264,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onReponer: reponer,
         onPedirArchivar: (p) => setConfirmar({ tipo: 'archivar', p }),
         onPedirActivar: (p) => setConfirmar({ tipo: 'activar', p }),
+        onVerFoto: setFoto,
         isMobile,
         t,
     };
@@ -350,6 +374,13 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                     </>
                 )}
             </Modal>
+
+            <FotoAmpliada
+                imageUrl={foto?.image_url}
+                nombre={foto?.name}
+                detalle={foto ? (foto.internal_ref || foto.barcode) : null}
+                onClose={cerrarFoto}
+            />
 
             <ConfirmDialog
                 isOpen={!!confirmar}
