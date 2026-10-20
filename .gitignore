@@ -3,6 +3,8 @@ node_modules/
 volumes/pg_data/
 volumes/pg_data.bak/
 volumes/backups/
+secrets/*
+!secrets/.gitkeep
 volumes/storage/catalogs/*
 volumes/storage/photos/*
 volumes/storage/marketing/*

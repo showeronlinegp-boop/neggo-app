@@ -85,6 +85,31 @@ services:
     networks:
       - neggo-net
 
+  # Dump semanal (domingo 03:00, hora Argentina) a volumes/backups y a Drive.
+  # La carpeta y el JSON del service account se configuran una vez: backup/README.md
+  db-backup:
+    build: ./backup
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD:-neggo_pass}
+      - PGHOST=postgres
+      - PGUSER=neggo
+      - PGDATABASE=neggo_app
+      - BACKUP_DIR=/backups
+      - BACKUP_KEEP=${BACKUP_KEEP:-8}
+      - TZ=America/Argentina/Buenos_Aires
+      - BACKUP_CRON=${BACKUP_CRON:-0 3 * * 0}
+      - DRIVE_FOLDER_ID=${DRIVE_FOLDER_ID:-}
+      - DRIVE_SA_FILE=/secrets/drive-sa.json
+    volumes:
+      - ./volumes/backups:/backups
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - neggo-net
+
   chrome:
     image: browserless/chrome:latest
     environment:
