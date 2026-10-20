@@ -69,9 +69,10 @@ class BaseScraper {
 - **Datos**: scrapea lista de favoritos (wishlist), no catálogo completo
 - **Paginación**: parámetro `page=N` en URL de wishlist
 
-### El Rey (Catálogo público)
-- **Tipo**: Sitio custom con categorías
-- **Similar a Cast** pero con selectores distintos
+### El Rey (Catálogo Smarty con token)
+- **Tipo**: Catálogo Smarty público, la URL lleva un token: `https://catalog.smarty.com.ar/token/{token}/?category_id={id}`
+- **Scraper**: `elrey.js` delega en `elrey_scraper.py` (Selenium). El token sale de `scrape_config.token` o `ELREY_TOKEN` (si no, el default del script); las categorías, de `scrape_config.category_ids`
+- **Selectores**: `div.itemWrapper`, `h5.item-name`, `span.reference` (SKU), `span.discountPrice`
 
 ### Impotekno (Catálogo público)
 - **Tipo**: Sitio con categorías y paginación estándar
