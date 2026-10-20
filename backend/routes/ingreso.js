@@ -19,7 +19,7 @@ const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
 
 // Primera línea de las publicaciones de WhatsApp que salen desde un ingreso
-const WHATSAPP_INGRESO_HEADER = '🆕 NUEVO INGRESO';
+const WHATSAPP_INGRESO_HEADER = 'Ingreso...';
 
 // Multer config — máximo 5MB
 const upload = multer({

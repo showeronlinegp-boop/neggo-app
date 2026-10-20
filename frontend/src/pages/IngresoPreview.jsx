@@ -1827,7 +1827,7 @@ function PreventaDetailModal({ item, pi, confirmed, discount, onConfirm, onClose
 // =============================================
 // Modal: programar una publicación de WhatsApp con productos del ingreso
 // Solo entran productos de Neggo con foto en Odoo. La tanda va a la cola de WhatsApp
-// (Admin → WhatsApp) con el texto "NUEVO INGRESO" arriba de cada producto.
+// (Admin → WhatsApp) con el texto "Ingreso..." arriba de cada producto.
 // =============================================
 
 // "AAAA-MM-DDTHH:mm" en la hora local del navegador, para el input datetime-local
@@ -1885,7 +1885,7 @@ function WhatsAppIngresoModal({ ingresoId, items, onClose, onScheduled }) {
             <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '20px', width: '560px', maxWidth: '92vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', ...containerStyle }}>
                 <h3 onMouseDown={onDragStart} style={{ margin: '0 0 6px', color: C.primary, ...dragStyle }}>📣 Publicar ingreso en WhatsApp</h3>
                 <p style={{ fontSize: '12px', color: C.gray, margin: '0 0 12px' }}>
-                    Cada producto sale con foto, nombre y precio de venta, con «NUEVO INGRESO» arriba.
+                    Cada producto sale con foto, nombre y precio de venta, con «Ingreso...» arriba.
                     {sinFoto > 0 && ` ${sinFoto} producto${sinFoto === 1 ? '' : 's'} sin foto no aparece${sinFoto === 1 ? '' : 'n'}: cargales la foto desde la tarjeta.`}
                 </p>
 
