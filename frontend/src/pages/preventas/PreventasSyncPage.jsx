@@ -65,6 +65,13 @@ const timeAgo = ts => {
 
 const PAGE_SIZE = 100;
 
+// Texto del resultado de un apply: ok, errores y omitidos por las protecciones
+const resumenApply = r => [
+    `${r.ok} ok`,
+    r.error > 0 ? `${r.error} errores` : null,
+    r.omitidos > 0 ? `${r.omitidos} omitidos (revisalos uno por uno)` : null,
+].filter(Boolean).join(', ');
+
 // ─── Bloque de comparación ─────────────────────────────────────────────────────
 function ComparisonBlock({ resumen, grupo, sinVendor, onFilter, onFilterVendor, tokens: t }) {
     const fmtN = n => (n || 0).toLocaleString('es-AR');
@@ -245,7 +252,7 @@ export default function PreventasSyncPage() {
             setBgApplying(running);
             if (!running && wasApplyingRef.current) {
                 if (error) showToast(`Apply masivo falló: ${error}`, 'error');
-                else if (result) showToast(`Apply completado: ${result.ok} ok${result.error > 0 ? `, ${result.error} errores` : ''}`, result.error > 0 ? 'warning' : 'success');
+                else if (result) showToast(`Apply completado: ${resumenApply(result)}`, result.error > 0 || result.omitidos > 0 ? 'warning' : 'success');
                 fetchDataRef.current(1); setSelected(new Set());
             }
             wasApplyingRef.current = running;
@@ -265,12 +272,20 @@ export default function PreventasSyncPage() {
         return { ids, odoo_ids };
     }
 
-    async function handleApply(keys) {
+    // confirmar: aplica también lo que requiere revisión (solo un producto, desde el detalle)
+    async function handleApply(keys, confirmar = false) {
         setApplying(true);
         const { ids, odoo_ids } = buildIds(keys);
-        const res = await api.post('/preventas-sync/apply', { ids, odoo_ids });
+        const res = await api.post('/preventas-sync/apply', { ids, odoo_ids, ...(confirmar ? { confirmar: true } : {}) });
         setApplying(false);
-        if (res.success) { const r = res.data; showToast(`Aplicado: ${r.ok} ok${r.error > 0 ? `, ${r.error} errores` : ''}`, r.error > 0 ? 'warning' : 'success'); fetchData(page); setSelected(new Set()); }
+        if (res.success) {
+            const r = res.data;
+            // Un solo producto omitido: mostrar el motivo concreto
+            const unicoOmitido = keys.length === 1 && r.omitidos === 1 ? r.detalles.find(d => d.resultado === 'omitido') : null;
+            if (unicoOmitido) showToast(`No se aplicó: ${unicoOmitido.motivo}`, 'warning');
+            else showToast(`Aplicado: ${resumenApply(r)}`, r.error > 0 || r.omitidos > 0 ? 'warning' : 'success');
+            fetchData(page); setSelected(new Set());
+        }
         else showToast(res.error || 'Error al aplicar', 'error');
     }
 
@@ -280,7 +295,7 @@ export default function PreventasSyncPage() {
         setApplying(false);
         if (res.success) {
             if (res.data.running) { setBgApplying(true); wasApplyingRef.current = true; showToast('Apply iniciado en background — te avisamos cuando termine', 'success'); }
-            else { const r = res.data; showToast(`Aplicado: ${r.ok} ok${r.error > 0 ? `, ${r.error} errores` : ''}`, r.error > 0 ? 'warning' : 'success'); setPage(1); fetchData(1); setSelected(new Set()); }
+            else { const r = res.data; showToast(`Aplicado: ${resumenApply(r)}`, r.error > 0 || r.omitidos > 0 ? 'warning' : 'success'); setPage(1); fetchData(1); setSelected(new Set()); }
         } else showToast(res.error || 'Error al aplicar', 'error');
     }
 
@@ -428,6 +443,14 @@ export default function PreventasSyncPage() {
             render: (_, row) => {
                 const label = ACCION_LABEL[row.estado];
                 if (!label) return <span style={{ color: t.color.textFaint, fontSize: 12 }}>—</span>;
+                // Sin precio válido: nunca se sincroniza (ej. ZLE sin cuenta de cliente)
+                if (row.bloqueo_motivo) {
+                    return <span title={row.bloqueo_motivo} style={{ background: t.color.dangerSoft, color: t.color.danger, padding: '3px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Sin precio: no se sincroniza</span>;
+                }
+                // Requiere revisión: se abre el detalle para confirmarlo a mano
+                if (row.revision_motivo) {
+                    return <Button size="sm" variant="secondary" title={row.revision_motivo} onClick={e => { e.stopPropagation(); setDetail(row); }}>Revisar</Button>;
+                }
                 return <Button size="sm" variant="accent" disabled={applying} onClick={e => { e.stopPropagation(); handleApply([rowKey(row)]); }}>{label}</Button>;
             },
         },
@@ -672,10 +695,22 @@ export default function PreventasSyncPage() {
                             </table>
                         </div>
 
-                        {ACCION_LABEL[detail.estado] && (
+                        {ACCION_LABEL[detail.estado] && detail.bloqueo_motivo && (
+                            <div style={{ background: t.color.dangerSoft, color: t.color.danger, border: `1px solid ${t.color.danger}`, borderRadius: t.radius.sm, padding: '10px 14px', fontSize: t.font.size.sm, fontFamily: t.font.family }}>
+                                <strong>No se sincroniza:</strong> {detail.bloqueo_motivo}. Cuando el proveedor tenga precio se va a poder aplicar.
+                            </div>
+                        )}
+
+                        {ACCION_LABEL[detail.estado] && detail.revision_motivo && (
+                            <div style={{ background: t.color.warnSoft, color: t.color.warn, border: `1px solid ${t.color.warn}`, borderRadius: t.radius.sm, padding: '10px 14px', fontSize: t.font.size.sm, fontFamily: t.font.family }}>
+                                <strong>Revisalo antes de aplicar:</strong> {detail.revision_motivo}. No entra en los "Aplicar" en bloque; si es correcto, confirmalo acá.
+                            </div>
+                        )}
+
+                        {ACCION_LABEL[detail.estado] && !detail.bloqueo_motivo && (
                             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                                <Button variant="primary" disabled={applying} onClick={() => { handleApply([rowKey(detail)]); setDetail(null); }}>
-                                    {applying ? 'Aplicando…' : ACCION_LABEL[detail.estado]}
+                                <Button variant="primary" disabled={applying} onClick={() => { handleApply([rowKey(detail)], !!detail.revision_motivo); setDetail(null); }}>
+                                    {applying ? 'Aplicando…' : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}
                                 </Button>
                             </div>
                         )}

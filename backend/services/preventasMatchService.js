@@ -411,6 +411,11 @@ async function recomputeAll(pool) {
         // Limpiar shadow table de una corrida anterior fallida
         await client.query('DROP TABLE IF EXISTS preventas_sync_state_building');
 
+        // Todos los pasos leen la MISMA foto de supplier_products y del cache de Odoo.
+        // Sin esto, un scraper que inserta mientras se recalcula deja productos que no pasaron
+        // por el matching pero sí por solo_scraper → se proponen "crear" aunque ya existan en Odoo.
+        await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+
         // Shadow table con SERIAL propio + índices únicos (necesarios para ON CONFLICT DO NOTHING)
         await client.query(`
             CREATE TABLE preventas_sync_state_building (
@@ -441,25 +446,28 @@ async function recomputeAll(pool) {
         // Paso 1: matches determinísticos
         await client.query(b(MATCH_SQL));
 
-        // Paso 2: fuzzy por nombre
-        if (hasTrgm) {
+        // Pasos opcionales: si fallan se descartan solos (savepoint) sin abortar la transacción
+        const pasoOpcional = async (nombre, sql) => {
+            await client.query('SAVEPOINT paso_opcional');
             try {
-                await client.query(b(FUZZY_SQL));
+                await client.query(sql);
+                await client.query('RELEASE SAVEPOINT paso_opcional');
             } catch (err) {
-                console.warn('⚠️ Fuzzy matching falló (no crítico):', err.message);
+                await client.query('ROLLBACK TO SAVEPOINT paso_opcional');
+                console.warn(`⚠️ ${nombre} falló (no crítico):`, err.message);
             }
-        }
+        };
+
+        // Paso 2: fuzzy por nombre
+        if (hasTrgm) await pasoOpcional('Fuzzy matching', b(FUZZY_SQL));
 
         // Paso 3: código en {} / () — ÚLTIMO método, solo sobrantes
-        try {
-            await client.query(b(BRACKET_CODE_SQL));
-        } catch (err) {
-            console.warn('⚠️ Bracket code matching falló (no crítico):', err.message);
-        }
+        await pasoOpcional('Bracket code matching', b(BRACKET_CODE_SQL));
 
         // Paso 4-5: solo_odoo y solo_scraper
         await client.query(b(SOLO_ODOO_SQL), [await getMaxDiasInactivar(client)]);
         await client.query(b(SOLO_SCRAPER_SQL));
+        await client.query('COMMIT');
 
         // Swap atómico — bloquea la tabla principal por milisegundos
         await client.query('BEGIN');
@@ -510,4 +518,4 @@ function scheduleRecompute(pool) {
     });
 }
 
-module.exports = { recomputeAll, scheduleRecompute, isRecomputing };
+module.exports = { recomputeAll, scheduleRecompute, isRecomputing, COSTO_EXPR, PRECIO_EXPR };

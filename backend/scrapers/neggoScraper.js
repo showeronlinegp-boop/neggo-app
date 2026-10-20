@@ -133,6 +133,7 @@ class NeggoScraper extends BaseScraper {
             }
 
             const runStartedAt = new Date();
+            this.runStartedAt = runStartedAt;
             const upsertStats = await this.upsertProducts(this.products);
 
             // 0 productos = el partner no tiene nada asociado en Neggo o falló Odoo: no borrar nada

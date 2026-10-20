@@ -22,6 +22,8 @@ class BaseScraper {
         this.dryRun = options.dryRun || false;
         // Callback para streaming de productos en tiempo real (usado en preview SSE)
         this.onProduct = options.onProduct || null;
+        // Inicio de los upserts del run: un producto ya actualizado desde acá es un duplicado
+        this.runStartedAt = null;
     }
 
     // =============================================
@@ -154,23 +156,42 @@ class BaseScraper {
                 const source = product.source || 'web';
                 const neggoOdooId = product.neggo_odoo_id || null;
 
-                // Buscar si ya existe el producto para este supplier + sku
+                // Buscar si ya existe el producto para este supplier + sku.
+                // visto_en_run: ya se actualizó en ESTE run (mismo SKU en otra categoría)
                 const { rows: existing } = await this.pool.query(
-                    `SELECT id, raw_price FROM supplier_products
+                    `SELECT id, raw_price,
+                            ($3::timestamp IS NOT NULL AND last_scraped_at >= $3) AS visto_en_run
+                     FROM supplier_products
                      WHERE supplier_id = $1 AND sku = $2`,
-                    [this.supplier.id, finalSku]
+                    [this.supplier.id, finalSku, this.runStartedAt]
                 );
+
+                // Duplicado dentro del mismo run: gana la primera aparición (su precio y su
+                // categoría). Si no, el último en llegar la pisa y el precio salta entre corridas.
+                if (existing.length > 0 && existing[0].visto_en_run) {
+                    duplicateCount++;
+                    continue;
+                }
 
                 if (existing.length === 0) {
                     // Antes de insertar, verificar duplicado por name_key
                     // (mismo producto levantado desde otra sección del catálogo).
                     // No aplica a la fuente Neggo: las variantes comparten nombre y son productos distintos.
                     const { rows: existingByName } = source === 'neggo' ? { rows: [] } : await this.pool.query(
-                        `SELECT id, raw_price FROM supplier_products
+                        `SELECT id, raw_price,
+                                ($3::timestamp IS NOT NULL AND last_scraped_at >= $3) AS visto_en_run
+                         FROM supplier_products
                          WHERE supplier_id = $1 AND name_key = $2
                          LIMIT 1`,
-                        [this.supplier.id, nameKey]
+                        [this.supplier.id, nameKey, this.runStartedAt]
                     );
+
+                    // Mismo nombre con otro SKU ya guardado en este run (el proveedor publica el
+                    // producto dos veces): no pisar el precio del primero
+                    if (existingByName.length > 0 && existingByName[0].visto_en_run) {
+                        duplicateCount++;
+                        continue;
+                    }
 
                     if (existingByName.length > 0) {
                         // Duplicado por nombre — actualizar el existente, no crear uno nuevo
@@ -316,7 +337,7 @@ class BaseScraper {
         );
 
         if (duplicateCount > 0) {
-            console.log(`⚠️ ${duplicateCount} productos ignorados por duplicado de nombre`);
+            console.log(`⚠️ ${duplicateCount} productos duplicados (mismo SKU o mismo nombre ya visto): se conservó la primera aparición`);
         }
         console.log(`📦 Upsert finalizado: ${newCount} nuevos, ${updatedCount} actualizados, ${duplicateCount} duplicados, ${priceChanges} cambios de precio`);
         return { new: newCount, updated: updatedCount, priceChanges, duplicates: duplicateCount };
@@ -498,6 +519,7 @@ class BaseScraper {
 
             // Upsert de todos los productos acumulados
             const runStartedAt = new Date();
+            this.runStartedAt = runStartedAt;
             const upsertStats = await this.upsertProducts(this.products);
 
             // 0 productos = algo falló (web caída, login, selectores): nunca 'completed', así no borra nada

@@ -2,6 +2,8 @@
 // El recomputo está en preventasMatchService.js
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
+const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
+const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
 // =============================================
 // getProductsToSync — lectura paginada (rápida)
@@ -127,6 +129,12 @@ async function getProductsToSync(pool, filters = {}) {
         LIMIT $${idx++} OFFSET $${idx++}
     `, params);
 
+    // bloqueo_motivo: nunca se aplica (ni confirmando) · revision_motivo: se confirma de a uno
+    for (const row of rows) {
+        row.bloqueo_motivo = motivoSinPrecio(row);
+        row.revision_motivo = row.bloqueo_motivo ? null : motivoRevision(row);
+    }
+
     return { rows, total: countRows[0]?.total || 0 };
 }
 
@@ -190,9 +198,14 @@ async function getResumen(pool, supplierId = null) {
 
 // =============================================
 // applyChanges — aplica en Odoo y actualiza sync_state
-// filters: { grupo, estado } para aplicar un grupo completo sin IDs específicos
+// filters:  { grupo, estado } para aplicar un grupo completo sin IDs específicos
+// opciones: { confirmar } — aplica también lo que requiere revisión (solo para un producto)
+//
+// Antes de escribir, cada producto pasa por las protecciones de preventasSyncGuards:
+// datos inválidos o viejos, revisión manual, cambios hechos en Odoo y duplicados.
+// Lo que no pasa queda 'omitido' con su motivo y no se toca en Odoo.
 // =============================================
-async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], filters = {}) {
+async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], filters = {}, opciones = {}) {
     const companyIds = await getCompanyIds();
     const preventasCompanyId = companyIds.preventas;
     if (!preventasCompanyId) throw new Error('No se encontró la empresa Preventas en Odoo');
@@ -205,9 +218,18 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                opc.template_id AS odoo_template_id,
                opc.has_image AS odoo_has_image,
                opc.active AS odoo_active, opc.standard_price AS odoo_standard_price,
-               scr.odoo_categ_id_preventas
+               scr.odoo_categ_id_preventas,
+               (sp.id IS NOT NULL) AS sp_existe,
+               -- Costo y precio con el precio scrapeado de AHORA (detecta cálculos viejos)
+               ${COSTO_EXPR} AS costo_actual,
+               ${PRECIO_EXPR} AS precio_actual,
+               EXISTS (
+                   SELECT 1 FROM scraping_runs r
+                   WHERE r.supplier_id = pss.supplier_id AND r.status IN ('running', 'queued')
+               ) AS proveedor_scrapeando
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+        LEFT JOIN suppliers s ON s.id = sp.supplier_id
         LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
         LEFT JOIN supplier_category_rules scr
             ON scr.supplier_id = pss.supplier_id
@@ -274,12 +296,36 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
         targets = allRows;
     }
 
-    const resultados = { ok: 0, error: 0, skipped: 0, detalles: [] };
+    const resultados = { ok: 0, error: 0, skipped: 0, omitidos: 0, detalles: [] };
+    const ctx = { allowed_company_ids: [preventasCompanyId] };
+    const confirmar = opciones.confirmar === true;
+
+    // Estado actual en Odoo de los productos a tocar (no confiar solo en el cache)
+    const odooActual = await leerEstadoOdoo(
+        targets.filter(p => p.odoo_product_id && ESTADOS_ODOO.includes(p.estado)).map(p => p.odoo_product_id),
+        ctx
+    );
 
     for (const prod of targets) {
         if (ESTADOS_SIN_ACCION.includes(prod.estado)) { resultados.skipped++; continue; }
 
         try {
+            const motivo = motivoOmitir(prod)
+                || (confirmar ? null : motivoRevision(prod))
+                || (prod.odoo_product_id ? motivoOdoo(prod, odooActual.get(prod.odoo_product_id) || null) : null)
+                || (prod.estado === 'solo_scraper' ? await buscarDuplicadoEnOdoo(prod, ctx, pool) : null);
+            if (motivo) {
+                resultados.omitidos++;
+                resultados.detalles.push({
+                    sku:       prod.scraper_sku || prod.odoo_ref,
+                    nombre:    prod.scraper_name || prod.odoo_nombre,
+                    estado:    prod.estado,
+                    resultado: 'omitido',
+                    motivo,
+                });
+                continue;
+            }
+
             await ejecutarAccion(prod, preventasCompanyId, pool);
             resultados.ok++;
             resultados.detalles.push({
@@ -301,8 +347,62 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
         }
     }
 
-    console.log(`✅ Apply Preventas: ${resultados.ok} ok, ${resultados.error} errores`);
+    console.log(`✅ Apply Preventas: ${resultados.ok} ok, ${resultados.error} errores, ${resultados.omitidos} omitidos por protección`);
     return resultados;
+}
+
+// ─── Protecciones que consultan Odoo ──────────────────────────────────────────
+
+/**
+ * Lee de Odoo costo y estado (activo/archivado) de los productos, en lotes.
+ * Si Odoo no responde se corta el apply: sin el estado real no se escribe nada.
+ * @returns {Map<number, {standard_price, active}>} — un ID ausente = ya no existe en Odoo
+ */
+async function leerEstadoOdoo(odooIds, ctx) {
+    const mapa = new Map();
+    const ids = [...new Set(odooIds)];
+    const LOTE = 200;
+    for (let i = 0; i < ids.length; i += LOTE) {
+        const filas = await callOdoo('product.product', 'search_read',
+            [[['id', 'in', ids.slice(i, i + LOTE)]]],
+            { fields: ['id', 'standard_price', 'active'], context: { ...ctx, active_test: false } });
+        for (const f of filas) mapa.set(f.id, { standard_price: f.standard_price, active: f.active });
+    }
+    return mapa;
+}
+
+// Referencia interna que se le pone en Odoo a un producto creado desde el scraper
+const refPreventas = sku => (sku.startsWith('PRE') ? sku : `PRE${sku}`);
+
+/**
+ * Antes de crear: si el código ya existe en Odoo (cache, default_code o external ID),
+ * no se crea un duplicado. Devuelve el motivo para omitir o null.
+ */
+async function buscarDuplicadoEnOdoo(prod, ctx, pool) {
+    const ref = refPreventas(prod.scraper_sku);
+    const sugerencia = 'recalculá para vincularlo en vez de crearlo de nuevo';
+
+    const { rows } = await pool.query(`
+        SELECT odoo_id FROM odoo_products_cache
+        WHERE company = 'preventas'
+          AND (ext_id_clean = UPPER($1)
+               OR UPPER(REGEXP_REPLACE(internal_ref, '[^A-Za-z0-9]', '', 'g'))
+                  = UPPER(REGEXP_REPLACE($2, '[^A-Za-z0-9]', '', 'g')))
+        LIMIT 1
+    `, [prod.scraper_sku, ref]);
+    if (rows[0]) return `Ya existe en Odoo (producto ${rows[0].odoo_id}): ${sugerencia}`;
+
+    const porCodigo = await callOdoo('product.product', 'search_read',
+        [[['default_code', '=', ref]]],
+        { fields: ['id'], limit: 1, context: { ...ctx, active_test: false } });
+    if (porCodigo.length) return `Ya existe en Odoo con el código ${ref} (producto ${porCodigo[0].id}): ${sugerencia}`;
+
+    const porExtId = await callOdoo('ir.model.data', 'search_read',
+        [[['name', '=', prod.scraper_sku], ['model', '=', 'product.product']]],
+        { fields: ['res_id'], limit: 1 });
+    if (porExtId.length) return `Ya existe en Odoo con el ID externo ${prod.scraper_sku} (producto ${porExtId[0].res_id}): ${sugerencia}`;
+
+    return null;
 }
 
 // ─── ejecutarAccion ────────────────────────────────────────────────────────────
@@ -429,15 +529,20 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
 
     // Formato Preventas: PRE + SKU del proveedor (que ya tiene el prefijo del proveedor)
     // Ej: scraper_sku="CAST001" → internalRef="PRECAST001"
-    const internalRef = prod.scraper_sku?.startsWith('PRE')
-        ? prod.scraper_sku
-        : `PRE${prod.scraper_sku}`;
+    const internalRef = refPreventas(prod.scraper_sku);
+
+    // Defensa final: nunca crear un producto a $0 (applyChanges ya lo filtra antes)
+    const listPrice = Number(prod.precio_preventas);
+    const costPrice = Number(prod.costo);
+    if (!(listPrice > 0) || !(costPrice > 0)) {
+        throw new Error(`Precio inválido para crear ${prod.scraper_sku}: costo=${prod.costo}, precio=${prod.precio_preventas}`);
+    }
 
     const templateData = {
         name:           prod.scraper_name,
         default_code:   internalRef,
-        list_price:     Number(prod.precio_preventas) || 0,
-        standard_price: Number(prod.costo) || 0,
+        list_price:     listPrice,
+        standard_price: costPrice,
         company_id:     preventasCompanyId,
         type:           'consu',
         active:         true,
