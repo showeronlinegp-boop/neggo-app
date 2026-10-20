@@ -15,6 +15,7 @@ const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { detectMime } = require('../services/whatsappMessage');
+const { writeOdooImage } = require('../services/odooImageService');
 const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
 
@@ -1181,38 +1182,6 @@ router.post('/:ingresoId/items/:itemId/upload-supplier-photo', authenticate, req
         return fail(res, err.message, err.statusCode || 500);
     }
 });
-
-/**
- * Sube la foto a un producto de Odoo Neggo (image_1920: Odoo arma las miniaturas)
- * y actualiza el cache local, así WhatsApp y el catálogo la ven sin esperar el sync.
- */
-async function writeOdooImage(odooProductId, base64) {
-    const { callOdoo, getCompanyIds } = require('../config/odoo');
-    const companyIds = await getCompanyIds();
-    const companyId  = companyIds.neggo;
-    if (!companyId) {
-        const err = new Error('Company Neggo no encontrada');
-        err.statusCode = 503;
-        throw err;
-    }
-    const ctx = { context: { allowed_company_ids: [companyId] } };
-
-    await callOdoo('product.product', 'write', [[odooProductId], { image_1920: base64 }], ctx);
-    const [product] = await callOdoo('product.product', 'read', [[odooProductId], ['product_tmpl_id']], ctx);
-    const templateId = product?.product_tmpl_id?.[0] || null;
-
-    await pool.query(
-        `UPDATE odoo_products_cache
-         SET has_image   = true,
-             template_id = COALESCE($2, template_id),
-             image_url   = CASE WHEN COALESCE($2, template_id) IS NOT NULL
-                                THEN '/api/products/odoo-image/neggo/' || COALESCE($2, template_id)
-                                ELSE image_url END
-         WHERE odoo_id = $1 AND company = 'neggo'`,
-        [odooProductId, templateId]
-    );
-    return { template_id: templateId };
-}
 
 // =============================================
 // POST /api/ingreso/:ingresoId/items/:itemId/photo

@@ -46,7 +46,7 @@ function EstadoProducto({ p }) {
     return null;
 }
 
-function AccionesProducto({ p, busy, onReponer, onQuitar, onArchivar, isMobile, t }) {
+function AccionesProducto({ p, busy, onReponer, onQuitar, onArchivar, onActivar, isMobile, t }) {
     if (!p.en_cache || p.es_liquidar || p.estado_cola === 'encargado') return null;
     const estilo = isMobile ? BTN_MOVIL : undefined;
     return (
@@ -62,10 +62,15 @@ function AccionesProducto({ p, busy, onReponer, onQuitar, onArchivar, isMobile, 
                     Reponer
                 </Button>
             )}
-            {p.active !== false && (
+            {p.active !== false ? (
                 <Button size="sm" variant="danger" leftIcon={<Icon.Archive size={13} />} disabled={busy}
                     onClick={() => onArchivar(p)} style={estilo}>
                     Archivar
+                </Button>
+            ) : (
+                <Button size="sm" variant="success" leftIcon={<Icon.Check size={13} />} disabled={busy}
+                    onClick={() => onActivar(p)} style={estilo}>
+                    Activar
                 </Button>
             )}
         </div>
@@ -282,11 +287,22 @@ export default function ReposicionOrdenes({ recargar, onCambioCola, onAviso, onE
         onCambioCola();
     };
 
-    const archivar = async () => {
-        const p = confirmar;
-        if (!p) return;
+    const confirmarOdoo = async () => {
+        const accion = confirmar;
+        if (!accion?.p) return;
+        const p = accion.p;
         setConfirmar(null);
         setTrabajando(p.odoo_id);
+        if (accion.tipo === 'activar') {
+            const res = await api.post('/reposicion/activar', { odoo_id: p.odoo_id });
+            setTrabajando(null);
+            if (!res.success) { onError(res.error || 'No se pudo activar en Odoo'); return; }
+            actualizarProducto(p.odoo_id, { active: true, en_cola: false, estado_cola: null, origen_cola: null });
+            const cola = res.data?.cola_cerrada ? ' Salió de la cola como repuesto.' : '';
+            onAviso(`«${p.name}» volvió a estar activo en Odoo y en el punto de venta.${cola}`);
+            onCambioCola();
+            return;
+        }
         const res = await api.post('/reposicion/archivar', { odoo_id: p.odoo_id });
         setTrabajando(null);
         if (!res.success) { onError(res.error || 'No se pudo archivar en Odoo'); return; }
@@ -327,7 +343,8 @@ export default function ReposicionOrdenes({ recargar, onCambioCola, onAviso, onE
     const acciones = (orden) => ({
         onReponer: (p) => reponer(orden, p),
         onQuitar: quitar,
-        onArchivar: setConfirmar,
+        onArchivar: (p) => setConfirmar({ tipo: 'archivar', p }),
+        onActivar: (p) => setConfirmar({ tipo: 'activar', p }),
     });
 
     const lista = (vista === 'revisadas' ? data.revisadas : data.pendientes)
@@ -417,11 +434,13 @@ export default function ReposicionOrdenes({ recargar, onCambioCola, onAviso, onE
             <ConfirmDialog
                 isOpen={!!confirmar}
                 onClose={() => setConfirmar(null)}
-                onConfirm={archivar}
-                danger
-                title="Archivar en Odoo"
-                confirmLabel="Sí, archivar"
-                message={`«${confirmar?.name || ''}» se apaga en Odoo porque no queda stock, y entra a la cola como agotado.`}
+                onConfirm={confirmarOdoo}
+                danger={confirmar?.tipo === 'archivar'}
+                title={confirmar?.tipo === 'activar' ? 'Activar en Odoo' : 'Archivar en Odoo'}
+                confirmLabel={confirmar?.tipo === 'activar' ? 'Sí, activar' : 'Sí, archivar'}
+                message={confirmar?.tipo === 'activar'
+                    ? `«${confirmar?.p?.name || ''}» vuelve a estar activo en Odoo y en el punto de venta. Si estaba en la cola, queda como repuesto.`
+                    : `«${confirmar?.p?.name || ''}» se apaga en Odoo porque no queda stock, y entra a la cola como agotado.`}
             />
         </div>
     );

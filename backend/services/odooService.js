@@ -513,6 +513,7 @@ async function updateSaleOrderLines(odooOrderId, lines, companyKey) {
 /**
  * Archiva o desarchiva un producto en Odoo (active = false/true).
  * Opera sobre product.product (variante) y también sobre product.template.
+ * Al archivar lo saca del PdV antes; al restaurar lo vuelve a poner en el PdV.
  *
  * @param {number} odooProductId — ID de product.product
  * @param {string} companyKey    — 'neggo' | 'preventas'
@@ -529,6 +530,14 @@ async function setProductArchived(odooProductId, companyKey, archived = true) {
         withCompany(companyId, { fields: ['product_tmpl_id'], limit: 1 })
     );
     const tmplId = variants?.[0]?.product_tmpl_id?.[0];
+    const posModel = tmplId ? 'product.template' : 'product.product';
+    const posId = tmplId || odooProductId;
+
+    // Odoo no deja archivar productos disponibles en el PdV mientras haya sesiones
+    // abiertas: primero se saca el producto del PdV y recién después se archiva.
+    if (archived) {
+        await callOdoo(posModel, 'write', [[posId], { available_in_pos: false }], withCompany(companyId));
+    }
 
     if (tmplId) {
         // Usar action_archive/action_unarchive en el template — método canónico de Odoo.
@@ -543,6 +552,11 @@ async function setProductArchived(odooProductId, companyKey, archived = true) {
             [[odooProductId], { active: !archived }],
             withCompany(companyId)
         );
+    }
+
+    // Paso inverso: al restaurar, el producto vuelve a estar disponible en el PdV
+    if (!archived) {
+        await callOdoo(posModel, 'write', [[posId], { available_in_pos: true }], withCompany(companyId));
     }
 
     console.log(`✅ Producto odoo_id=${odooProductId} (tmpl=${tmplId}) ${archived ? 'archivado' : 'restaurado'} en Odoo [${companyKey}]`);
