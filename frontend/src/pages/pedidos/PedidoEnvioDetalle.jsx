@@ -51,7 +51,7 @@ export default function PedidoEnvioDetalle() {
     const [saldarOpen, setSaldarOpen] = useState(false);
     const [foto, setFoto] = useState(null);
     const [busqueda, setBusqueda] = useState('');
-    const [soloFaltan, setSoloFaltan] = useState(true);
+    const [soloFaltan, setSoloFaltan] = useState(false);
     const [faltanteOpen, setFaltanteOpen] = useState(null);
     const [faltanteQty, setFaltanteQty] = useState(0);
 
@@ -154,16 +154,27 @@ export default function PedidoEnvioDetalle() {
         aplicar(res);
     };
 
-    const setQty = async (item, delta) => {
+    const setQtyAbs = async (item, qty, okMsg) => {
         const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
-        const actual = Number(item[campo]) || 0;
         const pedida = Number(item.qty_pedida) || 0;
-        const nueva = Math.max(0, Math.min(pedida, actual + delta));
+        const nueva = Math.max(0, Math.min(pedida, qty));
+        if (nueva === (Number(item[campo]) || 0)) return;
         setTrabajando(true);
         const res = await api.patch(`/pedido-envios/items/${item.id}`, { [campo]: nueva });
         setTrabajando(false);
-        aplicar(res);
+        aplicar(res, okMsg);
     };
+
+    const setQty = (item, delta) => {
+        const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
+        return setQtyAbs(item, (Number(item[campo]) || 0) + delta);
+    };
+
+    const marcarTodo = (item) => setQtyAbs(
+        item,
+        Number(item.qty_pedida) || 0,
+        `Marqué que llegó todo: ${item.product_name}`,
+    );
 
     const abrirFaltante = (item, motivo) => {
         setFaltanteOpen({ item, motivo });
@@ -386,7 +397,6 @@ export default function PedidoEnvioDetalle() {
                     const pedida = Number(it.qty_pedida) || 0;
                     const actual = qtyDe(it, envio.estado);
                     const completo = actual >= pedida && pedida > 0;
-                    const corto = actual < pedida;
                     return (
                         <div key={it.id} style={{
                             padding: 12, borderTop: `1px solid ${t.color.border}`,
@@ -434,7 +444,7 @@ export default function PedidoEnvioDetalle() {
                             </div>
 
                             {editable && (
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                                     <Button size="sm" variant="secondary" disabled={trabajando || actual <= 0}
                                         onClick={() => setQty(it, -1)}
                                         style={{ width: 48, height: 48, padding: 0 }} aria-label="Restar">
@@ -448,7 +458,22 @@ export default function PedidoEnvioDetalle() {
                                         style={{ width: 48, height: 48, padding: 0 }} aria-label="Sumar">
                                         <Icon.Plus size={18} />
                                     </Button>
-                                    {corto && envio.company_key === 'neggo' && (
+                                    {!completo && pedida > 0 && (
+                                        <Button
+                                            size="sm"
+                                            variant="success"
+                                            disabled={trabajando}
+                                            onClick={() => marcarTodo(it)}
+                                            leftIcon={<Icon.Check size={14} />}
+                                            style={{ height: 48 }}
+                                        >
+                                            Llegó todo
+                                        </Button>
+                                    )}
+                                    {completo && (
+                                        <Badge tone="success" dot>Llegó todo</Badge>
+                                    )}
+                                    {envio.company_key === 'neggo' && (
                                         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                                             <Button size="sm" variant="danger" disabled={trabajando}
                                                 onClick={() => abrirFaltante(it, 'archivado')}
