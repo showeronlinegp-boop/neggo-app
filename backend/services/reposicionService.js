@@ -333,10 +333,11 @@ async function archivarYEncolar(odooId, userId) {
 }
 
 /**
- * Reactiva en Odoo un producto archivado de Neggo. Si estaba pendiente o encargado,
- * la cola lo cierra como repuesto.
+ * Reactiva en Odoo un producto archivado de Neggo y lo saca de la cola de reposición
+ * (pendiente o encargado). Desarchivar a mano es deshacer: no queda como repuesto.
+ * El sync, en cambio, sigue cerrando como repuesto lo que se reactiva en Odoo.
  */
-async function activarYResolver(odooId, userId) {
+async function activarYResolver(odooId) {
     const { rows: [prod] } = await pool.query(
         `SELECT opc.odoo_id, opc.name, opc.active, ${NO_REPONER_SQL} AS es_liquidar
          FROM odoo_products_cache opc
@@ -354,7 +355,11 @@ async function activarYResolver(odooId, userId) {
           WHERE odoo_id = $1 AND company = 'neggo'`,
         [odooId]
     );
-    const cerrados = await resolverReactivados([odooId], { resolvedBy: userId });
+    const { rowCount: cerrados } = await pool.query(
+        `DELETE FROM reposicion_items
+         WHERE company = 'neggo' AND estado IN ('pendiente', 'encargado') AND odoo_id = $1`,
+        [odooId]
+    );
     const { rows: [item] } = await pool.query(
         `SELECT opc.odoo_id, opc.name, opc.active, opc.internal_ref, opc.barcode,
                 opc.image_url, opc.standard_price, opc.list_price

@@ -378,7 +378,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                 title={confirmar?.tipo === 'activar' ? 'Desarchivar en Odoo' : 'Archivar en Odoo'}
                 confirmLabel={confirmar?.tipo === 'activar' ? 'Sí, desarchivar' : 'Sí, archivar'}
                 message={confirmar?.tipo === 'activar'
-                    ? `«${confirmar?.p?.name || ''}» vuelve a estar activo en Odoo. Si estaba en la cola, queda como repuesto.`
+                    ? `«${confirmar?.p?.name || ''}» vuelve a estar activo en Odoo y sale de la lista de reposición.`
                     : `«${confirmar?.p?.name || ''}» se apaga en Odoo porque no queda stock, y entra a la cola como agotado.`}
             />
         </>

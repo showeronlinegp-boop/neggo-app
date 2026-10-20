@@ -914,7 +914,7 @@ export default function Reposicion() {
                 onAgregado={alAgregar}
                 onQuitado={alQuitar}
                 onActivado={(prod) => {
-                    const extra = prod?.cola_cerrada ? ' Si estaba en la cola, quedó como repuesto.' : '';
+                    const extra = prod?.cola_cerrada ? ' Salió de la lista de reposición.' : '';
                     setAviso(`«${prod.name}» quedó desarchivado en Odoo.${extra}`);
                     if (tab === 'pendiente' || tab === 'encargado') cargarCola();
                     cargarProveedores();
