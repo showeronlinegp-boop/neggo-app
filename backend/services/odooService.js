@@ -521,42 +521,39 @@ async function updateSaleOrderLines(odooOrderId, lines, companyKey) {
  */
 async function setProductArchived(odooProductId, companyKey, archived = true) {
     const companyId = await resolveCompanyId(companyKey);
+    // Sin active_test:false, search/read no ven productos ya archivados y Activar
+    // escribía active en la variante (el template seguía apagado y no iba al PdV).
+    const ctx = withCompany(companyId, { context: { active_test: false } });
 
-    // Obtener el template_id de la variante
     const variants = await callOdoo(
         'product.product',
-        'search_read',
-        [[['id', '=', odooProductId]]],
-        withCompany(companyId, { fields: ['product_tmpl_id'], limit: 1 })
+        'read',
+        [[odooProductId], ['product_tmpl_id', 'active']],
+        ctx
     );
-    const tmplId = variants?.[0]?.product_tmpl_id?.[0];
+    if (!variants?.[0]) {
+        throw new Error(`No encontré el producto ${odooProductId} en Odoo`);
+    }
+    const tmplRaw = variants[0].product_tmpl_id;
+    const tmplId = Array.isArray(tmplRaw) ? tmplRaw[0] : tmplRaw;
     const posModel = tmplId ? 'product.template' : 'product.product';
     const posId = tmplId || odooProductId;
 
     // Odoo no deja archivar productos disponibles en el PdV mientras haya sesiones
     // abiertas: primero se saca el producto del PdV y recién después se archiva.
     if (archived) {
-        await callOdoo(posModel, 'write', [[posId], { available_in_pos: false }], withCompany(companyId));
-    }
-
-    if (tmplId) {
-        // Usar action_archive/action_unarchive en el template — método canónico de Odoo.
-        // Afecta el template y todas sus variantes.
-        const method = archived ? 'action_archive' : 'action_unarchive';
-        await callOdoo('product.template', method, [[tmplId]], withCompany(companyId));
+        await callOdoo(posModel, 'write', [[posId], { available_in_pos: false }], ctx);
+        if (tmplId) {
+            await callOdoo('product.template', 'action_archive', [[tmplId]], ctx);
+        } else {
+            await callOdoo('product.product', 'write', [[odooProductId], { active: false }], ctx);
+        }
     } else {
-        // Fallback: write directo en la variante si no se encontró el template
-        await callOdoo(
-            'product.product',
-            'write',
-            [[odooProductId], { active: !archived }],
-            withCompany(companyId)
-        );
-    }
-
-    // Paso inverso: al restaurar, el producto vuelve a estar disponible en el PdV
-    if (!archived) {
-        await callOdoo(posModel, 'write', [[posId], { available_in_pos: true }], withCompany(companyId));
+        if (tmplId) {
+            await callOdoo('product.template', 'action_unarchive', [[tmplId]], ctx);
+        }
+        await callOdoo('product.product', 'write', [[odooProductId], { active: true }], ctx);
+        await callOdoo(posModel, 'write', [[posId], { available_in_pos: true }], ctx);
     }
 
     console.log(`✅ Producto odoo_id=${odooProductId} (tmpl=${tmplId}) ${archived ? 'archivado' : 'restaurado'} en Odoo [${companyKey}]`);

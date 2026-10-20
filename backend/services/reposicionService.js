@@ -322,7 +322,7 @@ async function archivarYEncolar(odooId, userId) {
     await odooService.setProductArchived(odooId, 'neggo', true);
     await pool.query(
         `UPDATE odoo_products_cache
-            SET locally_archived = true, active = false
+            SET locally_archived = true, active = false, available_in_pos = false
           WHERE odoo_id = $1 AND company = 'neggo'`,
         [odooId]
     );
@@ -355,7 +355,7 @@ async function activarYResolver(odooId) {
     await odooService.setProductArchived(odooId, 'neggo', false);
     await pool.query(
         `UPDATE odoo_products_cache
-            SET locally_archived = false, active = true
+            SET locally_archived = false, active = true, available_in_pos = true
           WHERE odoo_id = $1 AND company = 'neggo'`,
         [odooId]
     );
