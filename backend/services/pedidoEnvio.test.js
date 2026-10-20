@@ -10,6 +10,17 @@ const {
     previewSaldar,
     qtyCampoDeFase,
     refPendientes,
+    ordenFacturada,
+    esCotizacionParaArmar,
+    odooNecesitaConfirmar,
+    odooYaConfirmada,
+    armandoRequiereConfirmado,
+    primerPickingSalida,
+    planQtyMovesArmado,
+    hayFaltanteEnMoves,
+    esWizardBackorder,
+    auditarTerminarArmado,
+    auditarEmpezarArmar,
     auditarSaldar,
 } = require('./pedidoEnvioService');
 
@@ -164,6 +175,202 @@ function testAuditarDrift() {
     assert.match(r.error, /cantidad 4/);
 }
 
+function testCotizacionParaArmar() {
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent' })), true);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
+    assert.strictEqual(ordenFacturada(odooOrder({ invoice_status: 'invoiced' })), true);
+    assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
+}
+
+function testConfirmarAlEmpezar() {
+    assert.strictEqual(odooNecesitaConfirmar('draft'), true);
+    assert.strictEqual(odooNecesitaConfirmar('sent'), true);
+    assert.strictEqual(odooNecesitaConfirmar('sale'), false);
+    assert.strictEqual(odooNecesitaConfirmar('done'), false);
+    assert.strictEqual(odooYaConfirmada('sale'), true);
+    assert.strictEqual(odooYaConfirmada('done'), true);
+    assert.strictEqual(odooYaConfirmada('sent'), false);
+
+    assert.strictEqual(auditarEmpezarArmar(null).ok, false);
+    assert.strictEqual(auditarEmpezarArmar(null).statusCode, 404);
+
+    const cancelada = auditarEmpezarArmar(odooOrder({ state: 'cancel' }));
+    assert.strictEqual(cancelada.ok, false);
+    assert.match(cancelada.error, /cancelada/);
+
+    const rara = auditarEmpezarArmar(odooOrder({ state: 'waiting' }));
+    assert.strictEqual(rara.ok, false);
+    assert.match(rara.error, /waiting/);
+
+    const draft = auditarEmpezarArmar(odooOrder({ state: 'draft' }));
+    assert.strictEqual(draft.ok, true);
+    assert.strictEqual(draft.needsConfirm, true);
+
+    const sent = auditarEmpezarArmar(odooOrder({ state: 'sent' }));
+    assert.strictEqual(sent.ok, true);
+    assert.strictEqual(sent.needsConfirm, true);
+
+    const sale = auditarEmpezarArmar(odooOrder({ state: 'sale' }));
+    assert.strictEqual(sale.ok, true);
+    assert.strictEqual(sale.needsConfirm, false);
+
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'pendiente', odoo_state: 'sent' }).ok, true);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'sale' }).ok, true);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'done' }).ok, true);
+    const sinConfirmar = armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'sent', odoo_order_name: 'S0001' });
+    assert.strictEqual(sinConfirmar.ok, false);
+    assert.match(sinConfirmar.error, /confirmado/);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: null }).ok, false);
+}
+
+function testPrimerPickingSalida() {
+    assert.strictEqual(primerPickingSalida([]), null);
+    assert.strictEqual(primerPickingSalida(null), null);
+    const primero = primerPickingSalida([
+        { id: 88, name: 'WH/IN/0001', picking_type_code: 'incoming' },
+        { id: 91, name: 'WH/OUT/0002', picking_type_code: 'outgoing' },
+        { id: 90, name: 'WH/OUT/0001', picking_type_code: 'outgoing' },
+    ]);
+    assert.strictEqual(primero.id, 90);
+    assert.strictEqual(primero.name, 'WH/OUT/0001');
+
+    const pickShip = primerPickingSalida([
+        { id: 12, name: 'pre/OUT/1', picking_type_code: 'outgoing', state: 'waiting' },
+        { id: 10, name: 'pre/PICK/1', picking_type_code: 'internal', state: 'assigned' },
+        { id: 11, name: 'pre/PICK/2', picking_type_code: 'internal', state: 'cancel' },
+    ]);
+    assert.strictEqual(pickShip.id, 10);
+    assert.strictEqual(pickShip.name, 'pre/PICK/1');
+    assert.strictEqual(pickShip.state, 'assigned');
+
+    const suelto = primerPickingSalida([{ id: 5, name: 'OUT/1' }]);
+    assert.strictEqual(suelto.id, 5);
+    assert.strictEqual(suelto.name, 'OUT/1');
+}
+
+function testPlanQtyMovesArmado() {
+    const items = [
+        { odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 3 },
+        { odoo_line_id: 11, odoo_product_id: 101, qty_pedida: 2, qty_armada: 0 },
+        { odoo_line_id: 12, odoo_product_id: 102, qty_pedida: 1, qty_armada: 1 },
+    ];
+    const moves = [
+        { id: 1, sale_line_id: 10, product_id: 100, product_uom_qty: 5, state: 'assigned' },
+        { id: 2, sale_line_id: 11, product_id: 101, product_uom_qty: 2, state: 'assigned' },
+        { id: 3, sale_line_id: 12, product_id: 102, product_uom_qty: 1, state: 'assigned' },
+        { id: 4, sale_line_id: 99, product_id: 999, product_uom_qty: 4, state: 'cancel' },
+    ];
+    const plan = planQtyMovesArmado(moves, items);
+    assert.deepStrictEqual(plan.writes.map((w) => [w.id, w.quantity, w.demand]), [
+        [1, 3, 5],
+        [2, 0, 2],
+        [3, 1, 1],
+    ]);
+    assert.strictEqual(plan.hayFaltante, true);
+    assert.strictEqual(plan.hayAlgo, true);
+    assert.strictEqual(hayFaltanteEnMoves(plan.writes), true);
+
+    const completo = planQtyMovesArmado(
+        [{ id: 1, sale_line_id: 10, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 5 }]
+    );
+    assert.strictEqual(completo.hayFaltante, false);
+    assert.strictEqual(completo.writes[0].quantity, 5);
+
+    const porProducto = planQtyMovesArmado(
+        [{ id: 8, sale_line_id: null, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 2 }]
+    );
+    assert.strictEqual(porProducto.writes[0].quantity, 2);
+
+    const vacio = planQtyMovesArmado(
+        [{ id: 1, sale_line_id: 10, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 0 }]
+    );
+    assert.strictEqual(vacio.hayAlgo, false);
+    assert.strictEqual(vacio.hayFaltante, true);
+
+    // Entrega (2 pasos): se usa lo controlado, no lo armado
+    const salida = planQtyMovesArmado(
+        [{ id: 9, sale_line_id: 10, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 5, qty_controlada: 4 }],
+        'qty_controlada'
+    );
+    assert.strictEqual(salida.writes[0].quantity, 4);
+    assert.strictEqual(salida.hayFaltante, true);
+}
+
+function testWizardBackorder() {
+    assert.strictEqual(esWizardBackorder(true), false);
+    assert.strictEqual(esWizardBackorder(null), false);
+    assert.strictEqual(esWizardBackorder({ type: 'ir.actions.act_window', res_model: 'stock.backorder.confirmation' }), true);
+    assert.strictEqual(esWizardBackorder({ type: 'ir.actions.act_window', res_model: 'stock.immediate.transfer' }), false);
+}
+
+// Secuencia que odooService.validateSalePicking debe seguir en Odoo 19
+// cuando qty < demanda y el tipo de operación está en create_backorder=ask.
+function testMockOdooValidateFlow() {
+    const calls = [];
+    function fakeOdoo(model, method, args) {
+        calls.push(`${model}.${method}`);
+        if (model === 'stock.move' && method === 'write') {
+            assert.strictEqual(args[1].picked, true);
+            assert.ok(Object.prototype.hasOwnProperty.call(args[1], 'quantity'));
+            return true;
+        }
+        if (model === 'stock.picking' && method === 'button_validate') {
+            return {
+                type: 'ir.actions.act_window',
+                res_model: 'stock.backorder.confirmation',
+                context: { button_validate_picking_ids: args[0] },
+            };
+        }
+        if (model === 'stock.backorder.confirmation' && method === 'create') return 77;
+        if (model === 'stock.backorder.confirmation' && method === 'process') return true;
+        throw new Error(`call no mockeado: ${model}.${method}`);
+    }
+
+    fakeOdoo('stock.move', 'write', [[1], { quantity: 3, picked: true }]);
+    const wizard = fakeOdoo('stock.picking', 'button_validate', [[10]]);
+    assert.strictEqual(esWizardBackorder(wizard), true);
+    assert.deepStrictEqual(wizard.context.button_validate_picking_ids, [10]);
+    const wizId = fakeOdoo('stock.backorder.confirmation', 'create', [{}]);
+    const done = fakeOdoo('stock.backorder.confirmation', 'process', [[wizId]]);
+    assert.strictEqual(done, true);
+    assert.deepStrictEqual(calls, [
+        'stock.move.write',
+        'stock.picking.button_validate',
+        'stock.backorder.confirmation.create',
+        'stock.backorder.confirmation.process',
+    ]);
+}
+
+function testAuditarTerminarArmado() {
+    const envio = { estado: 'armando', odoo_picking_id: 10, odoo_picking_name: 'pre/PICK/1' };
+    assert.strictEqual(auditarTerminarArmado({ envio, picking: { id: 10, state: 'assigned' } }).ok, true);
+    assert.strictEqual(auditarTerminarArmado({ envio, picking: { id: 10, state: 'done' } }).alreadyDone, true);
+
+    const sinPicking = auditarTerminarArmado({ envio: { estado: 'armando' }, picking: null });
+    assert.strictEqual(sinPicking.ok, false);
+    assert.match(sinPicking.error, /envío 1/);
+
+    const noArmando = auditarTerminarArmado({ envio: { estado: 'pendiente', odoo_picking_id: 1 }, picking: { id: 1 } });
+    assert.strictEqual(noArmando.ok, false);
+
+    const cancelado = auditarTerminarArmado({
+        envio: { estado: 'armando', odoo_picking_id: 1, odoo_picking_name: 'X' },
+        picking: { id: 1, name: 'X', state: 'cancel' },
+    });
+    assert.strictEqual(cancelado.ok, false);
+    assert.match(cancelado.error, /cancelado/);
+}
+
+function testAuditarSent() {
+    const r = auditar([item()], odooOrder({ state: 'sent' }));
+    assert.strictEqual(r.ok, true);
+}
+
 function testAuditarFacturada() {
     const porEstado = auditar([item()], odooOrder({ invoice_status: 'invoiced' }));
     assert.strictEqual(porEstado.ok, false);
@@ -249,6 +456,14 @@ testAuditarIgual();
 testAuditarEscribeParcialYCero();
 testAuditarYaAplicado();
 testAuditarDrift();
+testCotizacionParaArmar();
+testConfirmarAlEmpezar();
+testPrimerPickingSalida();
+testPlanQtyMovesArmado();
+testWizardBackorder();
+testMockOdooValidateFlow();
+testAuditarTerminarArmado();
+testAuditarSent();
 testAuditarFacturada();
 testAuditarEntregadaYLocked();
 testAuditarCancelada();

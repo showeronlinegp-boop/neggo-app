@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { findPublishable } = require('./whatsappProducts');
 const { assertSendable } = require('./whatsappMessage');
+const { isTimeoutError } = require('./evolutionClient');
 
 const ART = 'America/Argentina/Buenos_Aires';
 const LOCK_KEY = 842190;
@@ -305,13 +306,22 @@ function cancelBatch(pool, id) {
 
 async function recoverStuck(pool, now) {
     const { rows } = await pool.query(`
-        UPDATE whatsapp_messages
-        SET status = CASE WHEN attempts >= max_attempts THEN 'error' ELSE 'pendiente' END,
-            last_error = COALESCE(last_error, 'Reintento tras reinicio'),
+        UPDATE whatsapp_messages m
+        SET status = CASE
+                WHEN m.attempts >= m.max_attempts OR b.destino = 'estado' THEN 'error'
+                ELSE 'pendiente'
+            END,
+            last_error = CASE
+                WHEN b.destino = 'estado'
+                    THEN COALESCE(m.last_error, 'Estado interrumpido: no se reintenta (pudo haberse publicado)')
+                ELSE COALESCE(m.last_error, 'Reintento tras reinicio')
+            END,
             updated_at = $1
-        WHERE status = 'enviando'
-          AND updated_at < $1::timestamptz - INTERVAL '2 minutes'
-        RETURNING id, batch_id, status
+        FROM whatsapp_batches b
+        WHERE m.batch_id = b.id
+          AND m.status = 'enviando'
+          AND m.updated_at < $1::timestamptz - INTERVAL '2 minutes'
+        RETURNING m.id, m.batch_id, m.status, b.destino
     `, [now]);
     for (const row of rows) {
         await logEvent(pool, {
@@ -319,7 +329,9 @@ async function recoverStuck(pool, now) {
             messageId: row.id,
             level: row.status === 'error' ? 'error' : 'warn',
             message: row.status === 'error'
-                ? 'Envío interrumpido y sin reintentos'
+                ? (row.destino === 'estado'
+                    ? 'Estado interrumpido: no se reintenta (pudo haberse publicado)'
+                    : 'Envío interrumpido y sin reintentos')
                 : 'Envío interrumpido: vuelve a pendiente',
         });
     }
@@ -407,27 +419,32 @@ async function markSent(pool, message, evolutionId, now) {
     await finishBatchIfDone(pool, message.batch_id, now);
 }
 
-async function markFailed(pool, message, errorText, now) {
+async function markFailed(pool, message, errorText, now, { retry = true } = {}) {
     const { rows } = await pool.query(`
         UPDATE whatsapp_messages m
-        SET status = CASE WHEN m.attempts >= m.max_attempts THEN 'error' ELSE 'pendiente' END,
+        SET status = CASE
+                WHEN $4::boolean = false OR m.attempts >= m.max_attempts THEN 'error'
+                ELSE 'pendiente'
+            END,
             last_error = $3,
             scheduled_at = CASE
-                WHEN m.attempts >= m.max_attempts THEN m.scheduled_at
+                WHEN $4::boolean = false OR m.attempts >= m.max_attempts THEN m.scheduled_at
                 ELSE $2::timestamptz + (COALESCE(m.gap_seconds, b.interval_seconds) * INTERVAL '1 second')
             END,
             updated_at = $2
         FROM whatsapp_batches b
         WHERE m.id = $1 AND b.id = m.batch_id
         RETURNING m.status, m.attempts, m.max_attempts
-    `, [message.id, now, String(errorText).slice(0, 500)]);
+    `, [message.id, now, String(errorText).slice(0, 500), retry]);
     const row = rows[0];
     await logEvent(pool, {
         batchId: message.batch_id,
         messageId: message.id,
         level: 'error',
         message: row?.status === 'error'
-            ? `Error definitivo (intento ${row.attempts}/${row.max_attempts}): ${errorText}`
+            ? (retry
+                ? `Error definitivo (intento ${row.attempts}/${row.max_attempts}): ${errorText}`
+                : `Error definitivo (intento ${row.attempts}/${row.max_attempts}, no se reintenta): ${errorText}`)
             : `Error, reintento ${row?.attempts}/${row?.max_attempts}: ${errorText}`,
     });
     await finishBatchIfDone(pool, message.batch_id, now);
@@ -464,7 +481,11 @@ async function tick(pool, deps, now = new Date()) {
             await markSent(pool, message, evolutionId, now);
             return { action: 'enviado', id: message.id };
         } catch (err) {
-            await markFailed(pool, message, err.message || 'Error al enviar', now);
+            const retry = !(message.destino === 'estado' && isTimeoutError(err));
+            const errorText = !retry
+                ? `Timeout de Evolution: el estado pudo haberse publicado. No se reintenta para no duplicarlo. (${err.message || 'timeout'})`
+                : (err.message || 'Error al enviar');
+            await markFailed(pool, message, errorText, now, { retry });
             return { action: 'error', id: message.id, error: err.message };
         }
     } finally {

@@ -49,6 +49,20 @@ export default function PedidoEnvios() {
 
     useEffect(() => { cargar(); }, [cargar]);
 
+    // Tilde de "cotización enviada" (solo queda en la app, no toca Odoo)
+    const [marcando, setMarcando] = useState(null);
+    const toggleCotizacion = async (it) => {
+        setMarcando(it.id);
+        setError(null);
+        const res = await api.post(`/pedido-envios/${it.id}/cotizacion-enviada`, { enviada: !it.cotizacion_enviada_at });
+        setMarcando(null);
+        if (!res.success) {
+            setError(res.error || 'No se pudo marcar la cotización');
+            return;
+        }
+        setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, ...res.data } : x)));
+    };
+
     const sync = async () => {
         setSyncing(true);
         setError(null);
@@ -72,7 +86,7 @@ export default function PedidoEnvios() {
                         Armado y control
                     </h1>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, fontFamily: t.font.family }}>
-                        Armás y controlás acá. Al cerrar, Odoo queda con lo que salió y se arma un pedido con lo que faltó.
+                        Al empezar a armar se confirma el pedido en Odoo y el envío 1 queda abierto. Al terminar el armado se valida ese envío con lo que armaste; lo que faltó queda de backorder en Odoo.
                     </div>
                 </div>
                 <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={syncing} onClick={sync}
@@ -142,7 +156,7 @@ export default function PedidoEnvios() {
                             : 'Todavía no saldaste ningún pedido'}
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
-                        Tocá «Traer de Odoo» para bajar las órdenes confirmadas (hasta 80, últimos 30 días).
+                        Tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las facturadas no entran.
                     </div>
                 </Card>
             ) : (
@@ -153,15 +167,16 @@ export default function PedidoEnvios() {
                         const hecha = tab === 'controlar' || tab === 'hechos'
                             ? Number(it.qty_controlada) || 0
                             : Number(it.qty_armada) || 0;
+                        const enviada = Boolean(it.cotizacion_enviada_at);
                         return (
+                            <div key={it.id} style={{ display: 'flex', alignItems: 'center', borderTop: `1px solid ${t.color.border}` }}>
                             <button
-                                key={it.id}
                                 type="button"
                                 onClick={() => navigate(`/pedidos/armado/${it.id}`)}
                                 style={{
-                                    display: 'flex', width: '100%', gap: 12, alignItems: 'center',
-                                    padding: `${isMobile ? 14 : 12}px ${pad}px`,
-                                    border: 'none', borderTop: `1px solid ${t.color.border}`,
+                                    display: 'flex', flex: 1, minWidth: 0, gap: 12, alignItems: 'center',
+                                    padding: `${isMobile ? 14 : 12}px 0 ${isMobile ? 14 : 12}px ${pad}px`,
+                                    border: 'none',
                                     background: 'transparent', cursor: 'pointer', textAlign: 'left',
                                     fontFamily: t.font.family, minHeight: 72,
                                 }}
@@ -177,11 +192,44 @@ export default function PedidoEnvios() {
                                         {it.partner_name || 'Sin cliente'}
                                     </div>
                                     <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 4, ...t.numericStyle }}>
-                                        {fmtFecha(it.date_order)} · {it.n_items} ítems · {hecha}/{pedida} u.
+                                        {fmtFecha(it.date_order)} · {it.n_items} ítems · {hecha}/{pedida} u.{it.odoo_picking_name ? ` · ${it.odoo_picking_name}${it.odoo_picking_state === 'done' ? ' ✓' : ''}` : ''}
                                     </div>
                                 </div>
+                            </button>
+                            <button
+                                type="button"
+                                disabled={marcando === it.id}
+                                onClick={() => toggleCotizacion(it)}
+                                title={enviada
+                                    ? `Cotización enviada${it.cotizacion_enviada_by_name ? ` por ${it.cotizacion_enviada_by_name}` : ''} el ${fmtFecha(it.cotizacion_enviada_at)}. Tocá para desmarcar.`
+                                    : 'Marcá cuando le mandes la cotización al cliente'}
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                                    margin: '0 8px 0 12px', padding: '6px 10px', minHeight: 36,
+                                    border: `1px solid ${enviada ? t.color.success : t.color.borderStrong}`,
+                                    background: enviada ? t.color.successSoft : t.color.surface,
+                                    color: enviada ? t.color.success : t.color.textMuted,
+                                    borderRadius: t.radius.full, cursor: marcando === it.id ? 'wait' : 'pointer',
+                                    fontFamily: t.font.family, fontSize: 12, fontWeight: t.font.weight.medium,
+                                    whiteSpace: 'nowrap',
+                                }}
+                            >
+                                {enviada ? <Icon.Check size={14} /> : <Icon.FileText size={14} />}
+                                {isMobile ? (enviada ? 'Enviada' : 'Cotización') : (enviada ? 'Cotización enviada' : 'Marcar cotización enviada')}
+                            </button>
+                            <button
+                                type="button"
+                                aria-label="Abrir pedido"
+                                onClick={() => navigate(`/pedidos/armado/${it.id}`)}
+                                style={{
+                                    display: 'flex', alignItems: 'center', alignSelf: 'stretch',
+                                    padding: `0 ${pad}px 0 4px`, border: 'none', background: 'transparent',
+                                    color: t.color.textMuted, cursor: 'pointer',
+                                }}
+                            >
                                 <Icon.ChevronRight size={18} />
                             </button>
+                            </div>
                         );
                     })}
                 </Card>

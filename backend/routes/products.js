@@ -12,6 +12,7 @@ const { syncOdooProducts } = require('../jobs/odooSync');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const linkSuggestionService = require('../services/linkSuggestionService');
+const { pipeOdooImage, TAMANIOS } = require('../services/odooImageService');
 
 // =============================================
 // POST /api/products/odoo/sync
@@ -522,46 +523,17 @@ router.get('/odoo/partners', authenticate, async (req, res) => {
 
 // =============================================
 // GET /api/products/odoo-image/:company/:templateId
-// Proxy de imagen: pide image_128 a Odoo vía JSON-RPC y la sirve como PNG.
+// Foto vigente de Odoo (product.template). Copia en disco; si Odoo cambia, se pisa.
 // ?size=256|512|1024|1920 trae una versión más grande (para ver la foto ampliada).
-// Cache de 24h en el browser para no sobrecargar Odoo.
 // =============================================
-
-const TAMANIOS_IMAGEN = ['128', '256', '512', '1024', '1920'];
 
 router.get('/odoo-image/:company/:templateId', async (req, res) => {
     const { company, templateId } = req.params;
     if (!['neggo', 'preventas'].includes(company)) return res.status(400).end();
-    const campo = `image_${TAMANIOS_IMAGEN.includes(req.query.size) ? req.query.size : '128'}`;
-
-    try {
-        const { callOdoo, getCompanyIds } = require('../config/odoo');
-        const ids = await getCompanyIds();
-        const companyId = ids[company];
-        if (!companyId) return res.status(404).end();
-
-        const data = await callOdoo(
-            'product.template',
-            'read',
-            [[parseInt(templateId)]],
-            { fields: [campo], context: { allowed_company_ids: [companyId] } }
-        );
-
-        const b64 = data?.[0]?.[campo];
-        if (!b64) return res.status(404).end();
-
-        const buf = Buffer.from(b64, 'base64');
-        // Las versiones grandes suelen venir en JPEG: detectar por magic bytes
-        let contentType = 'image/png';
-        if (buf[0] === 0xFF && buf[1] === 0xD8) contentType = 'image/jpeg';
-        else if (buf[0] === 0x47 && buf[1] === 0x49) contentType = 'image/gif';
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        res.send(buf);
-    } catch (err) {
-        console.error('❌ Error al traer imagen de Odoo:', err.message);
-        res.status(500).end();
-    }
+    const id = parseInt(templateId, 10);
+    if (!Number.isInteger(id)) return res.status(400).end();
+    const size = TAMANIOS.includes(req.query.size) ? req.query.size : '128';
+    return pipeOdooImage(req, res, { kind: 'template', company, id, size });
 });
 
 module.exports = router;

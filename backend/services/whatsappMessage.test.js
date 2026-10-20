@@ -101,12 +101,63 @@ async function testLinks() {
     console.log('links ok');
 }
 
+function testContactJids() {
+    assert.deepStrictEqual(evolution.contactJidsFrom([
+        { remoteJid: '549111@s.whatsapp.net' },
+        { remoteJid: '120363@g.us' },
+        { id: '549111@s.whatsapp.net' },
+        { remoteJid: 'status@broadcast' },
+        { id: '549222@s.whatsapp.net' },
+    ]), ['549111@s.whatsapp.net', '549222@s.whatsapp.net']);
+    assert.deepStrictEqual(evolution.detailFromEvolution(
+        { error: 'Bad Request', response: { message: ['statusJidList must contain at least 1 elements'] } },
+        '',
+        'Bad Request'
+    ), 'statusJidList must contain at least 1 elements');
+    console.log('contactos y errores de evolution ok');
+}
+
+async function testSendStatusMatchesDocs() {
+    const prevFetch = global.fetch;
+    process.env.EVOLUTION_API_KEY = 'x';
+    process.env.EVOLUTION_INSTANCE = 'neggo';
+    process.env.EVOLUTION_STATUS_INSTANCE = 'neggo-estados';
+    const calls = [];
+    global.fetch = async (url, init) => {
+        const href = String(url);
+        if (href.includes('findContacts')) {
+            throw new Error('sendStatus no debe consultar la agenda');
+        }
+        calls.push({ url: href, body: init.body ? JSON.parse(init.body) : null });
+        return { ok: true, text: async () => JSON.stringify({ key: { id: 'st-1' } }) };
+    };
+    try {
+        const id = await evolution.sendStatus({ caption: 'Mate\n$1.500', base64: JPEG });
+        assert.strictEqual(id, 'st-1');
+        assert.strictEqual(calls.length, 1);
+        assert.ok(calls[0].url.includes('sendStatus/neggo-estados'));
+        assert.strictEqual(calls[0].body.type, 'image');
+        assert.strictEqual(calls[0].body.allContacts, true);
+        assert.strictEqual(calls[0].body.caption, 'Mate\n$1.500');
+        assert.ok(String(calls[0].body.content).startsWith('data:image/jpeg;base64,'));
+        assert.ok(!Object.prototype.hasOwnProperty.call(calls[0].body, 'statusJidList'));
+        assert.ok(evolution.STATUS_SEND_TIMEOUT_MS >= 180000);
+        assert.ok(evolution.isTimeoutError(new Error('Evolution API no responde (The operation was aborted due to timeout)')));
+        assert.ok(!evolution.isTimeoutError(new Error('Evolution API 400: Bad Request')));
+    } finally {
+        global.fetch = prevFetch;
+    }
+    console.log('sendStatus sigue la doc (allContacts, sin agenda) ok');
+}
+
 (async () => {
     testEmpty();
     testValid();
     await testEvolutionGuard();
     testCommunityGroups();
     await testLinks();
+    testContactJids();
+    await testSendStatusMatchesDocs();
     console.log('✅ whatsappMessage.test ok');
 })().catch((err) => {
     console.error('❌', err);

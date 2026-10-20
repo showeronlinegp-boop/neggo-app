@@ -7,6 +7,9 @@ export default function ProductThumb({ emoji, imageUrl, size = 44, style }) {
   const hue = (code * 47) % 360;
 
   if (imageUrl) {
+    const src = /\/api\/(?:ingreso|products)\/odoo-image\//.test(imageUrl)
+      ? `${imageUrl}${imageUrl.includes('?') ? '&' : '?'}fresh=1`
+      : imageUrl;
     return (
       <div style={{
         width: size,
@@ -19,7 +22,7 @@ export default function ProductThumb({ emoji, imageUrl, size = 44, style }) {
         ...style,
       }}>
         <img
-          src={imageUrl}
+          src={src}
           alt=""
           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
           onError={e => { e.currentTarget.style.display = 'none'; }}

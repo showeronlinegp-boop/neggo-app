@@ -136,10 +136,10 @@ function OdooImage({ odooId, company = 'neggo', size = 64, version = 0 }) {
     }
 
     const baseUrl = `/api/ingreso/odoo-image/${odooId}`;
-    const params  = [];
+    const params  = ['fresh=1'];
     if (company !== 'neggo') params.push(`company=${company}`);
     if (version > 0)         params.push(`v=${version}`);
-    const src = params.length ? `${baseUrl}?${params.join('&')}` : baseUrl;
+    const src = `${baseUrl}?${params.join('&')}`;
 
     return (
         <img
