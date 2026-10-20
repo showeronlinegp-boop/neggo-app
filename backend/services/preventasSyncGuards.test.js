@@ -61,8 +61,10 @@ test('ZLE (raw_price NULL) queda marcado en la lista y bloqueado al aplicar', ()
     assert.match(motivoSinPrecio(zle), /no se sincroniza/);
     assert.match(motivoOmitir(zle), /no se sincroniza/);
     assert.match(motivoSinPrecio({ ...zle, estado: 'precio_baja', costo: '0' , precio_preventas: '0' }), /no se sincroniza/);
-    // Activar o archivar no dependen del precio: no se marcan
-    assert.strictEqual(motivoSinPrecio({ ...zle, estado: 'activar' }), null);
+    // Activar sin precio lo pondría a la venta con el precio viejo de Odoo (1002 casos de ZLE)
+    assert.match(motivoSinPrecio({ ...zle, estado: 'activar' }), /no se sincroniza/);
+    // Archivar no depende del precio
+    assert.strictEqual(motivoSinPrecio({ ...zle, estado: 'inactivar' }), null);
 });
 test('si el precio scrapeado cambió desde el cálculo, no aplicar lo viejo', () => {
     assert.match(motivoOmitir(fila({ costo_actual: '1300.00', precio_actual: '1800.00' })), /cambió desde el último cálculo/);
@@ -77,8 +79,8 @@ test('crear exige SKU y nombre', () => {
     assert.match(motivoOmitir(fila({ estado: 'solo_scraper', scraper_sku: null })), /SKU/);
     assert.match(motivoOmitir(fila({ estado: 'solo_scraper', scraper_name: '  ' })), /nombre/);
 });
-test('activar/inactivar no dependen del precio', () => {
-    assert.strictEqual(motivoOmitir(fila({ estado: 'activar', costo: null, precio_preventas: null })), null);
+test('activar con precio y archivar sin scraper se aplican', () => {
+    assert.strictEqual(motivoOmitir(fila({ estado: 'activar' })), null);
     assert.strictEqual(motivoOmitir({ estado: 'solo_odoo', supplier_product_id: null, proveedor_scrapeando: false }), null);
 });
 

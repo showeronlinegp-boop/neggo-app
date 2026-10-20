@@ -18,12 +18,16 @@ const ESTADOS_ODOO = ['activar', 'inactivar', 'solo_odoo', 'precio_sube', 'preci
 
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
 
+// Acciones que ponen un producto a la venta: sin precio del proveedor no se hacen
+const ESTADOS_CON_PRECIO = ['solo_scraper', 'activar', ...ESTADOS_PRECIO];
+
 /**
- * Crear o actualizar precio sin costo/precio válido (NULL o ≤ 0) nunca se sincroniza.
- * Caso típico: ZLE sin cuenta de cliente devuelve todos los precios vacíos.
+ * Crear, activar o actualizar precio sin costo/precio válido (NULL o ≤ 0) nunca se sincroniza.
+ * Caso típico: ZLE sin cuenta de cliente devuelve todos los precios vacíos; activar esos
+ * productos los pondría a la venta en Odoo con el precio viejo.
  */
 function motivoSinPrecio(prod) {
-    if (prod.estado !== 'solo_scraper' && !ESTADOS_PRECIO.includes(prod.estado)) return null;
+    if (!ESTADOS_CON_PRECIO.includes(prod.estado)) return null;
     const costo = num(prod.costo);
     const precio = num(prod.precio_preventas);
     if (!(costo > 0) || !(precio > 0)) return 'Sin precio válido (costo o precio en 0 o vacío): no se sincroniza';
