@@ -83,7 +83,7 @@ export default function OdooProducts() {
             : x));
         if (tipo === 'activar') {
             setAviso(res.data?.cola_cerrada
-                ? `«${p.name}» volvió a estar activo. Si estaba en Reposición, quedó como repuesto.`
+                ? `«${p.name}» volvió a estar activo y en el Punto de Venta. Salió de la lista de Reposición.`
                 : `«${p.name}» volvió a estar activo en Odoo.`);
         } else {
             setAviso(company === 'neggo'

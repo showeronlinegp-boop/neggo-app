@@ -9,7 +9,7 @@
 // POST   /api/reposicion/ordenes/reabrir             — { origen, odoo_order_id }
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
 // POST   /api/reposicion/archivar                    — { odoo_id } archiva en Odoo y encola
-// POST   /api/reposicion/activar                     — { odoo_id } desarchiva y cierra la cola
+// POST   /api/reposicion/activar                     — { odoo_id } desarchiva y lo saca de la cola
 // POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
@@ -139,7 +139,7 @@ router.post('/activar', async (req, res) => {
     const odooId = parseInt(req.body.odoo_id, 10);
     if (!Number.isInteger(odooId)) return fail(res, 'odoo_id es requerido', 400);
     try {
-        const item = await reposicion.activarYResolver(odooId, req.user.id);
+        const item = await reposicion.activarYResolver(odooId);
         console.log(`✅ Reposición: "${item.name}" activado en Odoo por usuario ${req.user.id}`);
         return ok(res, item);
     } catch (err) {
