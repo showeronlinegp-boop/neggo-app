@@ -34,6 +34,9 @@ const SCHEMA_038 = fs.readFileSync(
 const SCHEMA_039 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '039_pedido_envios_factura_pos.sql'), 'utf8'
 );
+const SCHEMA_040 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '040_pedido_envios_picking_done.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
@@ -194,9 +197,14 @@ function ordenCobradaAparte(odoo) {
     return ordenFacturada(odoo) || num(odoo.invoice_count) > 0 || num(odoo.pos_order_count) > 0;
 }
 
-// Para armar: cotización enviada, sin factura ni POS. Las sale confirmadas/facturadas no.
+// La base son los envíos de Odoo: 2 o más validados = ya se resolvió allá.
+function ordenEnviosYaHechos(odoo) {
+    return num(odoo?.done_picking_count) >= 2;
+}
+
+// Para armar: cotización enviada, sin factura ni POS ni 2 envíos hechos en Odoo.
 function esCotizacionParaArmar(odoo) {
-    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo);
+    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo) && !ordenEnviosYaHechos(odoo);
 }
 
 function odooNecesitaConfirmar(state) {
@@ -327,6 +335,13 @@ function auditarEmpezarArmar(odoo) {
         return {
             ok: false,
             error: `La orden ${odoo.name || ''} en Odoo está cancelada, no se puede armar`.replace(/\s+/g, ' ').trim(),
+            statusCode: 409,
+        };
+    }
+    if (ordenEnviosYaHechos(odoo)) {
+        return {
+            ok: false,
+            error: `${odoo.name || 'Este pedido'} ya tiene ${odoo.done_picking_count} envíos hechos en Odoo, no se arma acá`,
             statusCode: 409,
         };
     }
@@ -746,6 +761,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_037);
     await db.query(SCHEMA_038);
     await db.query(SCHEMA_039);
+    await db.query(SCHEMA_040);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -852,6 +868,7 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
         COALESCE(e.invoice_status, '') <> 'invoiced'
         AND COALESCE(e.odoo_invoice_count, 0) = 0
         AND COALESCE(e.odoo_pos_count, 0) = 0
+        AND COALESCE(e.odoo_picking_done_count, 0) < 2
         AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
     ))`);
     if (solapa === 'esperando_pago') {
@@ -1037,8 +1054,9 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
                          partner_id, partner_name, date_order, amount_total,
-                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count,
+                         odoo_picking_done_count
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
@@ -1046,6 +1064,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
                         num(order.invoice_count), num(order.pos_order_count),
+                        num(order.done_picking_count),
                     ]
                 );
                 envioId = row.id;
@@ -1062,6 +1081,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             invoice_status = $8,
                             odoo_invoice_count = $9,
                             odoo_pos_count = $10,
+                            odoo_picking_done_count = $11,
                             updated_at = NOW()
                       WHERE id = $1`,
                     [
@@ -1069,6 +1089,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
                         num(order.invoice_count), num(order.pos_order_count),
+                        num(order.done_picking_count),
                     ]
                 );
                 envioId = existente.id;
@@ -1106,10 +1127,11 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                         invoice_status = $4,
                         odoo_invoice_count = $5,
                         odoo_pos_count = $6,
+                        odoo_picking_done_count = $7,
                         updated_at = NOW()
                   WHERE company_key = $1 AND odoo_sale_order_id = $2
                     AND estado IN ('pendiente', 'armando')`,
-                [company, cab.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count]
+                [company, cab.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count, cab.done_picking_count]
             );
             actualizados += rowCount;
         }
@@ -1558,6 +1580,7 @@ module.exports = {
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
+    ordenEnviosYaHechos,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
