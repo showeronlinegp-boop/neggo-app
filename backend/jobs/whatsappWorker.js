@@ -34,7 +34,11 @@ function startWhatsappWorker(pool) {
     timer = setInterval(() => {
         if (busy) return;
         busy = true;
-        tick(pool, { loadImage: loadOdooImage, sendImage: evolution.sendImage })
+        tick(pool, {
+            loadImage: loadOdooImage,
+            sendImage: evolution.sendImage,
+            sendStatus: evolution.sendStatus,
+        })
             .then((result) => {
                 if (result.action === 'enviado') {
                     console.log(`✅ WhatsApp: mensaje ${result.id} enviado`);
