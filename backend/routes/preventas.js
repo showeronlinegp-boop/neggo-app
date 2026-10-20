@@ -616,10 +616,13 @@ router.get('/supplier-orders/:id/pdf', authenticate, async (req, res) => {
         const order = orders[0];
 
         const { rows: items } = await pool.query(
-            `SELECT product_name, quantity, unit_cost, notes
+            // Un mismo producto pedido por varios clientes va en una sola línea con la cantidad sumada
+            `SELECT MIN(product_name) AS product_name, SUM(quantity)::int AS quantity, unit_cost,
+                    STRING_AGG(notes, ' / ') FILTER (WHERE notes IS NOT NULL AND notes <> '') AS notes
              FROM preventa_supplier_order_items
              WHERE supplier_order_id = $1
-             ORDER BY id`,
+             GROUP BY COALESCE(supplier_product_id::text, product_name), unit_cost
+             ORDER BY MIN(id)`,
             [req.params.id]
         );
 

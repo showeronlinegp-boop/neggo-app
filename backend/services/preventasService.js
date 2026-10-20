@@ -52,7 +52,7 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
 
     const product = productResult.rows[0];
 
-    let unitPrice, unitCost;
+    let unitPrice, unitCost, prices;
 
     if (pricelistId && product.raw_price) {
         // Precio especial: raw_price × (1 - descuento_lista%)
@@ -65,7 +65,7 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
             default_discount: product.default_discount,
             markup_preventas: product.markup_preventas
         };
-        const prices = calculatePrices(product, supplier, categoryRule, 'preventas');
+        prices = calculatePrices(product, supplier, categoryRule, 'preventas');
         unitCost = Number.isFinite(prices.cost) ? prices.cost : null;
     } else {
         // Precio estándar usando rulesEngine
@@ -74,7 +74,7 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
             default_discount: product.default_discount,
             markup_preventas: product.markup_preventas
         };
-        const prices = calculatePrices(product, supplier, categoryRule, 'preventas');
+        prices = calculatePrices(product, supplier, categoryRule, 'preventas');
         unitPrice = Number.isFinite(prices.sale_price) ? prices.sale_price : null;
         unitCost  = Number.isFinite(prices.cost)       ? prices.cost       : null;
     }
@@ -260,12 +260,19 @@ async function generateSupplierOrders(clientOrderIds, createdBy) {
          JOIN suppliers s ON s.id = sp.supplier_id
          WHERE pcoi.client_order_id = ANY($1::int[])
            AND pcoi.supplier_product_id IS NOT NULL
+           -- Un ítem que ya está en una orden de proveedor vigente no se vuelve a pedir
+           AND NOT EXISTS (
+               SELECT 1 FROM preventa_supplier_order_items psoi
+               JOIN preventa_supplier_orders pso ON pso.id = psoi.supplier_order_id
+               WHERE psoi.client_order_item_id = pcoi.id
+                 AND pso.status NOT IN ('cancelada', 'cancelado')
+           )
          ORDER BY sp.supplier_id`,
         [clientOrderIds]
     );
 
     if (itemsResult.rows.length === 0) {
-        throw new Error('Los pedidos seleccionados no tienen ítems');
+        throw new Error('Los pedidos seleccionados no tienen ítems de proveedor sin pedir: ya están en una orden de proveedor o no tienen ítems');
     }
 
     // Agrupar ítems por proveedor
@@ -388,12 +395,15 @@ async function sendOrderToOdoo(supplierOrderId) {
 
     // Obtener ítems de la orden
     const itemsResult = await pool.query(
-        `SELECT psoi.supplier_product_id, psoi.product_name,
-                psoi.quantity, psoi.unit_cost,
+        // Un mismo producto pedido por varios clientes va en una sola línea con la cantidad sumada
+        `SELECT psoi.supplier_product_id, MIN(psoi.product_name) AS product_name,
+                SUM(psoi.quantity)::int AS quantity, psoi.unit_cost,
                 sp.sku
          FROM preventa_supplier_order_items psoi
          JOIN supplier_products sp ON sp.id = psoi.supplier_product_id
-         WHERE psoi.supplier_order_id = $1`,
+         WHERE psoi.supplier_order_id = $1
+         GROUP BY psoi.supplier_product_id, psoi.unit_cost, sp.sku
+         ORDER BY MIN(psoi.id)`,
         [supplierOrderId]
     );
 
