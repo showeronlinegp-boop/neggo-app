@@ -52,6 +52,8 @@ CATEGORIES = [
     {'id': 398,  'slug': 'botellas-todo',        'category': 'Botellas'},
     {'id': 27,   'slug': 'belleza',              'category': 'Belleza'},
     {'id': 19,   'slug': 'bazar',                'category': 'Bazar'},
+    {'id': 20,   'slug': 'jugueteria',           'category': 'Jugueteria'},
+    {'id': 26,   'slug': 'libreria',             'category': 'Libreria'},
     {'id': 486,  'slug': 'almohada-de-viaje',    'category': 'Almohadas'},
     {'id': 1122, 'slug': 'accesorios-p-celular', 'category': 'Tecnologia'},
 ]
