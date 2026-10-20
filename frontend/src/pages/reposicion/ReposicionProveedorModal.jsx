@@ -160,18 +160,40 @@ function MiniaturaTocable({ p, size, onVerFoto, onSubirFoto, subiendoFoto, t }) 
     }
     if (!p.image_url) return <ProductThumb imageUrl={p.image_url} size={size} />;
     return (
-        <button
-            type="button"
-            onClick={() => onVerFoto(p)}
-            aria-label={`Ver foto de ${p.name}`}
-            title="Ver foto en grande"
-            style={{
-                padding: 0, border: 'none', background: 'none', cursor: 'zoom-in',
-                borderRadius: t.radius.sm, flexShrink: 0, lineHeight: 0,
-            }}
-        >
-            <ProductThumb imageUrl={p.image_url} size={size} />
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+            <button
+                type="button"
+                onClick={() => onVerFoto(p)}
+                aria-label={`Ver foto de ${p.name}`}
+                title="Ver foto en grande"
+                style={{
+                    padding: 0, border: 'none', background: 'none', cursor: 'zoom-in',
+                    borderRadius: t.radius.sm, flexShrink: 0, lineHeight: 0,
+                }}
+            >
+                <ProductThumb imageUrl={p.image_url} size={size} />
+            </button>
+            {onSubirFoto && (
+                <label
+                    aria-label={`Cambiar foto de ${p.name}`}
+                    title="Cambiar la foto en Odoo"
+                    style={{
+                        fontFamily: t.font.family, fontSize: 9, fontWeight: t.font.weight.semibold,
+                        color: t.color.primary, cursor: subiendoFoto === p.odoo_id ? 'default' : 'pointer',
+                        opacity: subiendoFoto === p.odoo_id ? 0.6 : 1,
+                    }}
+                >
+                    {subiendoFoto === p.odoo_id ? '…' : 'Cambiar'}
+                    <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        disabled={subiendoFoto === p.odoo_id}
+                        style={{ display: 'none' }}
+                        onChange={e => { onSubirFoto(p, e.target.files?.[0]); e.target.value = ''; }}
+                    />
+                </label>
+            )}
+        </div>
     );
 }
 
