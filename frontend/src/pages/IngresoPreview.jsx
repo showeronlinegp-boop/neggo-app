@@ -362,7 +362,7 @@ function calcPrecioLista(costoUnitario, discountOverride, defaultDiscount, marku
 // =============================================
 // Tarjeta de ítem
 // =============================================
-function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
+function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
     const isMobile = useIsMobile();
     const [linkingOpen, setLinkingOpen] = useState(false);
     const [precioVentaInput, setPrecioVentaInput] = useState('');
@@ -844,6 +844,15 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                             )}
                             {photoError && (
                                 <span style={{ fontSize: '10px', color: C.error, textAlign: 'center', lineHeight: '1.2' }}>{photoError}</span>
+                            )}
+                            {onPublishWhatsApp && tieneFoto && (item.odoo_company || 'neggo') === 'neggo' && (
+                                <button
+                                    onClick={onPublishWhatsApp}
+                                    title="Programar la publicación de este producto en el grupo de WhatsApp"
+                                    style={{ padding: '3px 6px', fontSize: '10px', fontWeight: 'bold', borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap', border: `1px solid ${C.primary}`, backgroundColor: C.white, color: C.primary }}
+                                >
+                                    📣 WhatsApp
+                                </button>
                             )}
                         </div>
 
@@ -1825,9 +1834,9 @@ function PreventaDetailModal({ item, pi, confirmed, discount, onConfirm, onClose
 // Componente principal
 // =============================================
 // =============================================
-// Modal: programar una publicación de WhatsApp con productos del ingreso
-// Solo entran productos de Neggo con foto en Odoo. La tanda va a la cola de WhatsApp
-// (Admin → WhatsApp) con el texto "Ingreso..." arriba de cada producto.
+// Modal: programar la publicación de WhatsApp de un producto del ingreso
+// Se abre desde el botón 📣 de cada tarjeta (productos de Neggo con foto en Odoo).
+// Va a la cola de WhatsApp (Admin → WhatsApp) con el texto "Ingreso..." arriba.
 // =============================================
 
 // "AAAA-MM-DDTHH:mm" en la hora local del navegador, para el input datetime-local
@@ -1836,31 +1845,20 @@ function fechaLocalInput(date) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function WhatsAppIngresoModal({ ingresoId, items, onClose, onScheduled }) {
+function WhatsAppIngresoModal({ ingresoId, item, onClose, onScheduled }) {
     const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
-    const productos = items.filter(i =>
-        i.estado_item === 'matched' && i.odoo_product_id && (i.odoo_company || 'neggo') === 'neggo'
-    );
-    const conFoto = productos.filter(i => i.odoo_has_image);
-    const sinFoto = productos.length - conFoto.length;
+    const conPrecio = Number(item.odoo_list_price) > 0;
 
-    const [seleccion, setSeleccion] = useState(() => new Set(conFoto.map(i => i.id)));
     const [cuando, setCuando]       = useState(() => fechaLocalInput(new Date(Date.now() + 10 * 60 * 1000)));
     const [ahora, setAhora]         = useState(false);
     const [enviando, setEnviando]   = useState(false);
     const [error, setError]         = useState(null);
 
-    const toggle = (id) => setSeleccion(prev => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id); else next.add(id);
-        return next;
-    });
-
     const programar = async () => {
         setEnviando(true);
         setError(null);
         try {
-            const body = { item_ids: [...seleccion] };
+            const body = { item_ids: [item.id] };
             if (ahora) body.send_now = true; else body.scheduled_at = cuando;
             const result = await ingresoAPI.scheduleWhatsApp(ingresoId, body);
             if (!result.success) {
@@ -1868,11 +1866,11 @@ function WhatsAppIngresoModal({ ingresoId, items, onClose, onScheduled }) {
                 return;
             }
             const { total, omitidos = [] } = result.data;
-            onScheduled(
-                `📣 ${total} producto${total === 1 ? '' : 's'} en la cola de WhatsApp` +
-                (omitidos.length ? ` (${omitidos.length} sin foto o sin precio quedaron afuera)` : '') +
-                '. Lo ves en Admin → WhatsApp.'
-            );
+            if (!total && omitidos.length) {
+                setError('Este producto no se puede publicar: le falta la foto o el precio en Odoo');
+                return;
+            }
+            onScheduled(`📣 ${item.odoo_product_name} quedó en la cola de WhatsApp. Lo ves en Admin → WhatsApp.`);
         } catch (err) {
             setError(err.message || 'Error de conexión');
         } finally {
@@ -1882,63 +1880,40 @@ function WhatsAppIngresoModal({ ingresoId, items, onClose, onScheduled }) {
 
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
-            <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '20px', width: '560px', maxWidth: '92vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', ...containerStyle }}>
-                <h3 onMouseDown={onDragStart} style={{ margin: '0 0 6px', color: C.primary, ...dragStyle }}>📣 Publicar ingreso en WhatsApp</h3>
+            <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '20px', width: '480px', maxWidth: '92vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', ...containerStyle }}>
+                <h3 onMouseDown={onDragStart} style={{ margin: '0 0 6px', color: C.primary, ...dragStyle }}>📣 Publicar en WhatsApp</h3>
                 <p style={{ fontSize: '12px', color: C.gray, margin: '0 0 12px' }}>
-                    Cada producto sale con foto, nombre y precio de venta, con «Ingreso...» arriba.
-                    {sinFoto > 0 && ` ${sinFoto} producto${sinFoto === 1 ? '' : 's'} sin foto no aparece${sinFoto === 1 ? '' : 'n'}: cargales la foto desde la tarjeta.`}
+                    Sale con foto, nombre y precio de venta, con «Ingreso...» arriba.
                 </p>
 
-                {conFoto.length === 0 ? (
-                    <p style={{ fontSize: '13px', color: C.text, padding: '16px', backgroundColor: C.bg, borderRadius: '6px' }}>
-                        Ningún producto de este ingreso tiene foto en Odoo todavía.
-                    </p>
-                ) : (
-                    <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '12px' }}>
-                            <span style={{ color: C.gray }}>{seleccion.size} de {conFoto.length} elegidos</span>
-                            <button
-                                onClick={() => setSeleccion(seleccion.size === conFoto.length ? new Set() : new Set(conFoto.map(i => i.id)))}
-                                style={{ padding: '2px 10px', fontSize: '11px', border: `1px solid ${C.border}`, borderRadius: '4px', backgroundColor: C.white, cursor: 'pointer' }}
-                            >
-                                {seleccion.size === conFoto.length ? 'Ninguno' : 'Todos'}
-                            </button>
-                        </div>
-                        <div style={{ overflowY: 'auto', border: `1px solid ${C.border}`, borderRadius: '6px', marginBottom: '12px', flex: 1, minHeight: '120px' }}>
-                            {conFoto.map(i => (
-                                <label key={i.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 10px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', fontSize: '12px' }}>
-                                    <input type="checkbox" checked={seleccion.has(i.id)} onChange={() => toggle(i.id)} />
-                                    <OdooImage odooId={i.odoo_product_id} size={40} />
-                                    <span style={{ flex: 1, minWidth: 0 }}>
-                                        <span style={{ display: 'block', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{i.odoo_product_name}</span>
-                                        <span style={{ display: 'block', fontFamily: 'monospace', fontSize: '10px', color: C.gray }}>{i.odoo_internal_ref || i.codigo || ''}</span>
-                                    </span>
-                                    <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 'bold', color: Number(i.odoo_list_price) > 0 ? C.text : C.error }}>
-                                        {Number(i.odoo_list_price) > 0 ? fmtARS(i.odoo_list_price) : 'Sin precio'}
-                                    </span>
-                                </label>
-                            ))}
-                        </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: '6px', marginBottom: '12px', fontSize: '12px' }}>
+                    <OdooImage odooId={item.odoo_product_id} size={48} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.odoo_product_name}</span>
+                        <span style={{ display: 'block', fontFamily: 'monospace', fontSize: '10px', color: C.gray }}>{item.odoo_internal_ref || item.codigo || ''}</span>
+                    </span>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 'bold', color: conPrecio ? C.text : C.error }}>
+                        {conPrecio ? fmtARS(item.odoo_list_price) : 'Sin precio'}
+                    </span>
+                </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '12px', fontSize: '13px' }}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-                                <input type="checkbox" checked={ahora} onChange={(e) => setAhora(e.target.checked)} />
-                                Publicar ya
-                            </label>
-                            {!ahora && (
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    Fecha y hora
-                                    <input
-                                        type="datetime-local"
-                                        value={cuando}
-                                        onChange={(e) => setCuando(e.target.value)}
-                                        style={{ padding: '4px 6px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '13px' }}
-                                    />
-                                </label>
-                            )}
-                        </div>
-                    </>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '12px', fontSize: '13px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={ahora} onChange={(e) => setAhora(e.target.checked)} />
+                        Publicar ya
+                    </label>
+                    {!ahora && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            Fecha y hora
+                            <input
+                                type="datetime-local"
+                                value={cuando}
+                                onChange={(e) => setCuando(e.target.value)}
+                                style={{ padding: '4px 6px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '13px' }}
+                            />
+                        </label>
+                    )}
+                </div>
 
                 {error && (
                     <div style={{ backgroundColor: C.errorBg, color: C.error, borderRadius: '4px', padding: '8px 10px', fontSize: '12px', marginBottom: '12px' }}>
@@ -1952,12 +1927,12 @@ function WhatsAppIngresoModal({ ingresoId, items, onClose, onScheduled }) {
                     </button>
                     <button
                         onClick={programar}
-                        disabled={enviando || seleccion.size === 0 || (!ahora && !cuando)}
+                        disabled={enviando || !conPrecio || (!ahora && !cuando)}
                         style={{
                             padding: '10px 18px', backgroundColor: C.primary, color: C.white, border: 'none', borderRadius: '4px',
                             fontSize: '14px', fontWeight: 'bold',
-                            cursor: enviando || seleccion.size === 0 ? 'default' : 'pointer',
-                            opacity: enviando || seleccion.size === 0 ? 0.6 : 1,
+                            cursor: enviando || !conPrecio ? 'default' : 'pointer',
+                            opacity: enviando || !conPrecio ? 0.6 : 1,
                         }}
                     >
                         {enviando ? '⏳ Programando...' : ahora ? 'Publicar ahora' : 'Programar'}
@@ -1993,7 +1968,7 @@ export default function IngresoPreview() {
     const [items, setItems]           = useState([]);
     const [activeTab, setActiveTab]   = useState('activos');
     const [showPartnerModal, setShowPartnerModal] = useState(false);
-    const [showWhatsApp, setShowWhatsApp]         = useState(false);
+    const [whatsAppItem, setWhatsAppItem]         = useState(null);
     const { user } = useAuth();
     const [reactivating, setReactivating] = useState(null);
     const [creating, setCreating]         = useState(null);
@@ -2523,12 +2498,12 @@ export default function IngresoPreview() {
             <ScanToast toast={scanToast} />
             {showPartnerModal && <PartnerModal onConfirm={handleConfirm} onCancel={() => setShowPartnerModal(false)} />}
             {showGenerateOCModal && <PartnerModal onConfirm={handleGenerateOC} onCancel={() => setShowGenerateOCModal(false)} titulo="Generar OC en Odoo" subtitulo="Seleccioná el proveedor para crear la orden de compra." />}
-            {showWhatsApp && (
+            {whatsAppItem && (
                 <WhatsAppIngresoModal
                     ingresoId={ingresoId}
-                    items={items}
-                    onClose={() => setShowWhatsApp(false)}
-                    onScheduled={(msg) => { setShowWhatsApp(false); setSuccess(msg); }}
+                    item={whatsAppItem}
+                    onClose={() => setWhatsAppItem(null)}
+                    onScheduled={(msg) => { setWhatsAppItem(null); setSuccess(msg); }}
                 />
             )}
             {preventaLinkItem && (
@@ -2599,15 +2574,6 @@ export default function IngresoPreview() {
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-start', width: isMobile ? '100%' : 'auto' }}>
-                    {user?.role === 'admin' && (
-                        <button
-                            onClick={() => setShowWhatsApp(true)}
-                            title="Programar una publicación en el grupo de WhatsApp con los productos de este ingreso que tienen foto"
-                            style={{ backgroundColor: C.white, color: C.primary, border: `1px solid ${C.primary}`, borderRadius: '6px', padding: '10px 14px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', whiteSpace: 'nowrap' }}
-                        >
-                            📣 Publicar en WhatsApp
-                        </button>
-                    )}
                     {ingreso.supplier_name && (
                         <div style={{ display: 'flex', gap: '12px', backgroundColor: C.white, borderRadius: '6px', padding: '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', fontSize: '13px' }}>
                             <div><div style={{ color: C.gray, fontSize: '11px' }}>DESCUENTO</div><div style={{ fontWeight: 'bold', fontSize: '16px' }}>{ingreso.default_discount || 0}%</div></div>
@@ -2966,6 +2932,7 @@ export default function IngresoPreview() {
                                         if (result.success) marcarConFoto(item.id);
                                         return result;
                                     }}
+                                    onPublishWhatsApp={user?.role === 'admin' ? () => setWhatsAppItem(item) : null}
                                     onAssignSupplier={ingreso.supplier_id ? async (itemId) => {
                                         try {
                                             const result = await ingresoAPI.assignSupplier(ingresoId, itemId);
