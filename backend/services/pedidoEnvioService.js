@@ -1437,6 +1437,21 @@ async function persistBackorder(envioId, backorder) {
     );
 }
 
+// Etiqueta de Odoo que marca los pedidos creados con lo que quedó pendiente.
+const ETIQUETA_PENDIENTES = 'Pendiente';
+
+// Si la etiqueta no está o Odoo falla al buscarla, el pedido se crea igual.
+async function etiquetaPendientesId() {
+    try {
+        const tagId = await odooService.findSaleTagIdByName(ETIQUETA_PENDIENTES);
+        if (!tagId) console.warn(`⚠️ No existe la etiqueta "${ETIQUETA_PENDIENTES}" en Odoo; el pedido de pendientes va sin etiqueta`);
+        return tagId || null;
+    } catch (err) {
+        console.warn(`⚠️ No pude buscar la etiqueta "${ETIQUETA_PENDIENTES}" en Odoo:`, err.message);
+        return null;
+    }
+}
+
 async function asegurarBackorder(envio, plan) {
     if (envio.backorder_odoo_id) {
         return { id: envio.backorder_odoo_id, name: envio.backorder_odoo_name };
@@ -1452,8 +1467,16 @@ async function asegurarBackorder(envio, plan) {
         clientOrderRef,
         states: ['draft', 'sent'],
     });
+    const tagId = await etiquetaPendientesId();
     if (existentes.length > 0) {
         const reused = { id: existentes[0].id, name: existentes[0].name };
+        if (tagId) {
+            try {
+                await odooService.addSaleOrderTags(reused.id, [tagId], envio.company_key);
+            } catch (err) {
+                console.warn(`⚠️ No pude etiquetar ${reused.name} como "${ETIQUETA_PENDIENTES}":`, err.message);
+            }
+        }
         await persistBackorder(envio.id, reused);
         return reused;
     }
@@ -1471,6 +1494,7 @@ async function asegurarBackorder(envio, plan) {
             origin,
             client_order_ref: clientOrderRef,
             note: `Pendientes del control de ${envio.odoo_order_name} en Neggo App.`,
+            tag_ids: tagId ? [tagId] : [],
         }
     );
     await persistBackorder(envio.id, created);
@@ -1584,4 +1608,6 @@ module.exports = {
     marcarFaltante,
     preview,
     saldar,
+    ETIQUETA_PENDIENTES,
+    asegurarBackorder,
 };

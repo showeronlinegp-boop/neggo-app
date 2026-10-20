@@ -27,6 +27,8 @@ const {
     auditarCancelarOrden,
     condicionesListado,
     ordenListado,
+    ETIQUETA_PENDIENTES,
+    asegurarBackorder,
 } = require('./pedidoEnvioService');
 
 function testClamp() {
@@ -166,6 +168,49 @@ function auditar(items, odoo, extraEnvio = {}) {
 
 function testRefPendientes() {
     assert.strictEqual(refPendientes('S0001'), 'Pendientes de S0001');
+}
+
+// El pedido de pendientes lleva la etiqueta "Pendiente" (nueva o reusada) y
+// se crea igual si la etiqueta no existe. Odoo y la base mockeados.
+async function testEtiquetaPendientes() {
+    const odooService = require('./odooService');
+    const pool = require('../config/database');
+    const originales = { ...odooService };
+    const queryOriginal = pool.query;
+    pool.query = async () => ({ rows: [] });
+
+    const envio = { id: 1, partner_id: 9, company_key: 'neggo', odoo_order_name: 'S0001' };
+    const plan = { pendientes: [{ odoo_product_id: 5, product_name: 'X', qty_pendiente: 2, price_unit: 10 }] };
+    let creado = null;
+    let etiquetado = null;
+    odooService.createSaleOrder = async (partnerId, lines, companyKey, extra) => {
+        creado = extra;
+        return { id: 50, name: 'S0050' };
+    };
+    odooService.addSaleOrderTags = async (orderId, tagIds) => { etiquetado = { orderId, tagIds }; return true; };
+
+    try {
+        assert.strictEqual(ETIQUETA_PENDIENTES, 'Pendiente');
+
+        odooService.findSaleTagIdByName = async (name) => (name === 'Pendiente' ? 6 : null);
+        odooService.findSaleOrdersByOriginRef = async () => [];
+        assert.deepStrictEqual(await asegurarBackorder(envio, plan), { id: 50, name: 'S0050' });
+        assert.deepStrictEqual(creado.tag_ids, [6]);
+
+        odooService.findSaleOrdersByOriginRef = async () => [{ id: 40, name: 'S0040' }];
+        assert.deepStrictEqual(await asegurarBackorder(envio, plan), { id: 40, name: 'S0040' });
+        assert.deepStrictEqual(etiquetado, { orderId: 40, tagIds: [6] });
+
+        // Sin etiqueta en Odoo (o error buscándola): se crea sin tags.
+        odooService.findSaleOrdersByOriginRef = async () => [];
+        odooService.findSaleTagIdByName = async () => { throw new Error('caído'); };
+        creado = null;
+        await asegurarBackorder(envio, plan);
+        assert.deepStrictEqual(creado.tag_ids, []);
+    } finally {
+        Object.assign(odooService, originales);
+        pool.query = queryOriginal;
+    }
 }
 
 function testAuditarIgual() {
@@ -543,4 +588,6 @@ testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
-console.log('ok pedidoEnvio.test.js');
+testEtiquetaPendientes()
+    .then(() => console.log('ok pedidoEnvio.test.js'))
+    .catch((err) => { console.error(err); process.exit(1); });

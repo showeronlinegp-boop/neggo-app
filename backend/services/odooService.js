@@ -324,6 +324,9 @@ async function createSaleOrder(partnerId, lines, companyKey, extra = {}) {
     if (extra.origin) values.origin = extra.origin;
     if (extra.client_order_ref) values.client_order_ref = extra.client_order_ref;
     if (extra.note) values.note = extra.note;
+    if (Array.isArray(extra.tag_ids) && extra.tag_ids.length > 0) {
+        values.tag_ids = [[6, 0, extra.tag_ids]];
+    }
 
     const orderId = await callOdoo(
         'sale.order',
@@ -345,6 +348,36 @@ async function createSaleOrder(partnerId, lines, companyKey, extra = {}) {
 
     console.log(`✅ Sale order creada en Odoo [${companyKey}] — ID: ${orderId}, nombre: ${name}, partner: ${partnerId}, líneas: ${lines.length}`);
     return { id: orderId, name };
+}
+
+/**
+ * Busca una etiqueta de ventas (crm.tag) por nombre, sin distinguir
+ * mayúsculas. Devuelve el id o null si no existe. No la crea.
+ */
+async function findSaleTagIdByName(name) {
+    if (!name) return null;
+    const tags = await callOdoo(
+        'crm.tag',
+        'search_read',
+        [[['name', '=ilike', name]]],
+        { fields: ['id', 'name'], order: 'id asc', limit: 1 }
+    ) || [];
+    return tags[0]?.id || null;
+}
+
+/**
+ * Agrega etiquetas a una sale.order sin sacarle las que ya tiene.
+ */
+async function addSaleOrderTags(orderId, tagIds, companyKey) {
+    if (!orderId || !Array.isArray(tagIds) || tagIds.length === 0) return false;
+    const companyId = await resolveCompanyId(companyKey);
+    await callOdoo(
+        'sale.order',
+        'write',
+        [[orderId], { tag_ids: tagIds.map((id) => [4, id]) }],
+        withCompany(companyId)
+    );
+    return true;
 }
 
 /**
@@ -1509,6 +1542,8 @@ module.exports = {
     confirmPurchaseOrder,
     // Órdenes de venta
     createSaleOrder,
+    findSaleTagIdByName,
+    addSaleOrderTags,
     cancelSaleOrder,
     getSaleOrders,
     getSaleOrdersWithLines,
