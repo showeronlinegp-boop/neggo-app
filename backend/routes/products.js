@@ -227,6 +227,7 @@ router.patch('/odoo/:odooId/archive', authenticate, async (req, res) => {
             `UPDATE odoo_products_cache
                 SET locally_archived = $1,
                     active = $2,
+                    available_in_pos = $2,
                     synced_at = synced_at
              WHERE odoo_id = $3 AND company = $4
              RETURNING odoo_id, name, locally_archived, active`,

@@ -24,6 +24,31 @@ const STATUS_TONE = {
     error: 'danger',
 };
 
+// WhatsApp rota el QR cada ~45 s y Evolution reinicia la conexión cada ~3,5 min (eso invalida
+// el QR anterior). Mientras el QR está a la vista se vuelve a pedir para no mostrar uno vencido.
+const QR_REFRESH_MS = 10000;
+const QR_MAX_MS = 5 * 60 * 1000;
+
+function useQrRefresh(qrState, setQrState, which, onConnected) {
+    const active = Boolean(qrState?.base64) && !qrState.connected;
+    const startedAt = qrState?.startedAt;
+    useEffect(() => {
+        if (!active || !startedAt) return undefined;
+        let stop = false;
+        const id = setInterval(async () => {
+            if (Date.now() - startedAt > QR_MAX_MS) {
+                if (!stop) setQrState({ expired: true });
+                return;
+            }
+            const res = await api.post('/whatsapp/connect', { destino: which });
+            if (stop || !res.success) return;
+            setQrState({ ...res.data, startedAt });
+            if (res.data.connected) onConnected();
+        }, QR_REFRESH_MS);
+        return () => { stop = true; clearInterval(id); };
+    }, [active, startedAt, which, setQrState, onConnected]);
+}
+
 export default function WhatsAppPublish() {
     const { tokens: t } = useTheme();
     const { user } = useAuth();
@@ -89,6 +114,9 @@ export default function WhatsAppPublish() {
         return () => { stop = true; clearInterval(id); };
     }, [openId]);
 
+    useQrRefresh(qr, setQr, 'grupo', loadStatus);
+    useQrRefresh(qrStatus, setQrStatus, 'estado', loadStatus);
+
     if (user && user.role !== 'admin') {
         return <p style={{ color: t.color.textMuted }}>Solo un administrador puede publicar en WhatsApp.</p>;
     }
@@ -104,8 +132,9 @@ export default function WhatsAppPublish() {
         const res = await api.post('/whatsapp/connect', { destino: which });
         setBusy('');
         if (!res.success) { setError(res.error); return; }
-        if (which === 'estado') setQrStatus(res.data);
-        else setQr(res.data);
+        const next = { ...res.data, startedAt: Date.now() };
+        if (which === 'estado') setQrStatus(next);
+        else setQr(next);
         loadStatus();
     }
 
@@ -219,6 +248,16 @@ export default function WhatsAppPublish() {
                             style={{ width: 220, height: 220, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
                         />
                     )}
+                    {qr?.base64 && !qr.connected && (
+                        <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, margin: `${t.space[2]}px 0 0` }}>
+                            El QR se renueva solo. Escanealo con el teléfono que vas a vincular.
+                        </p>
+                    )}
+                    {qr?.expired && (
+                        <p style={{ color: t.color.warn, fontSize: t.font.size.sm }}>
+                            El QR venció. Tocá Mostrar QR para generar otro.
+                        </p>
+                    )}
                     {qr?.connected && <p style={{ color: t.color.success }}>El número de grupos ya está vinculado.</p>}
                 </Card>
                 <Card>
@@ -246,6 +285,16 @@ export default function WhatsAppPublish() {
                             src={qrStatus.base64.startsWith('data:') ? qrStatus.base64 : `data:image/png;base64,${qrStatus.base64}`}
                             style={{ width: 220, height: 220, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
                         />
+                    )}
+                    {qrStatus?.base64 && !qrStatus.connected && (
+                        <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, margin: `${t.space[2]}px 0 0` }}>
+                            El QR se renueva solo. Escanealo con el teléfono que vas a vincular.
+                        </p>
+                    )}
+                    {qrStatus?.expired && (
+                        <p style={{ color: t.color.warn, fontSize: t.font.size.sm }}>
+                            El QR venció. Tocá Mostrar QR para generar otro.
+                        </p>
                     )}
                     {qrStatus?.connected && <p style={{ color: t.color.success }}>El número de estados ya está vinculado.</p>}
                 </Card>
@@ -280,6 +329,14 @@ export default function WhatsAppPublish() {
             <WhatsAppRandomPicker
                 groupJid={groupJid}
                 groupSubject={groups.find((g) => g.jid === groupJid)?.subject || status?.settings?.group_subject}
+                intervalSeconds={intervalSeconds}
+                onScheduled={onRandomScheduled}
+                onError={setError}
+                onNotice={setNotice}
+            />
+
+            <WhatsAppRandomPicker
+                destino="estado"
                 intervalSeconds={intervalSeconds}
                 onScheduled={onRandomScheduled}
                 onError={setError}

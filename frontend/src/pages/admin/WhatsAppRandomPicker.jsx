@@ -11,7 +11,9 @@ import * as Icon from '../../components/common/icons';
 import { defaultSchedule, odooImageUrl } from './whatsappUtils';
 
 // Sorteo de N fotos por categoría: se revisan, se cambian o archivan, y se programan.
-export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalSeconds, onScheduled, onError, onNotice }) {
+// destino: 'grupo' (default) o 'estado' — misma UI, otro número de WhatsApp.
+export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, groupSubject, intervalSeconds, onScheduled, onError, onNotice }) {
+    const esEstado = destino === 'estado';
     const { tokens: t } = useTheme();
     const [company, setCompany] = useState('preventas');
     const [categories, setCategories] = useState([]);
@@ -106,11 +108,18 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
 
     async function sendNow(category, product) {
         setBusy(`p:${product.odoo_id}`); onError(null);
-        const res = await api.post('/whatsapp/send-now', { company, odoo_id: product.odoo_id, group_jid: groupJid || undefined });
+        const res = await api.post('/whatsapp/send-now', {
+            company,
+            odoo_id: product.odoo_id,
+            destino,
+            group_jid: esEstado ? undefined : (groupJid || undefined),
+        });
         if (!res.success) { setBusy(''); onError(res.error); return; }
         await replace(category, product.odoo_id);
         setBusy('');
-        onNotice(`"${product.name}" sale ahora. Lo ves en la cola.`);
+        onNotice(esEstado
+            ? `«${product.name}» se sube a los estados. Lo ves en la cola.`
+            : `«${product.name}» sale ahora al grupo. Lo ves en la cola.`);
         onScheduled();
     }
 
@@ -118,16 +127,19 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
         setBusy('schedule'); onError(null);
         const res = await api.post('/whatsapp/batches/random', {
             company,
+            destino,
             scheduled_at: scheduledAt,
             interval_seconds: Number(intervalSeconds),
-            group_jid: groupJid || undefined,
-            group_subject: groupSubject || undefined,
+            group_jid: esEstado ? undefined : (groupJid || undefined),
+            group_subject: esEstado ? undefined : (groupSubject || undefined),
             groups: picks.map((c) => ({ category: c.category, odoo_ids: c.products.map((p) => p.odoo_id) })),
         });
         setBusy('');
         if (!res.success) { onError(res.error); return; }
         const total = res.data.reduce((acc, b) => acc + b.total, 0);
-        onNotice(`Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos.`);
+        onNotice(esEstado
+            ? `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} de estados con ${total} fotos.`
+            : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos.`);
         setPicks([]);
         onScheduled();
     }
@@ -138,9 +150,11 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
 
     return (
         <Card>
-            <h2 style={sectionTitle}>Generar imágenes</h2>
+            <h2 style={sectionTitle}>{esEstado ? 'Generar imágenes para estados' : 'Generar imágenes'}</h2>
             <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, marginTop: 6 }}>
-                Elegí categorías y se sortean fotos de productos de Odoo con su precio de venta (el mismo del catálogo PDF). No se repite lo que ya está en cola ni lo publicado en los últimos 7 días. Si elegís varias categorías, se publican una atrás de la otra.
+                {esEstado
+                    ? 'Igual que para el grupo: elegí categorías y se sortean fotos de Odoo con el precio de venta del catálogo. Salen como estados del otro número (novedades), no al grupo. No se repite lo que ya está en cola ni lo publicado en los últimos 7 días.'
+                    : 'Elegí categorías y se sortean fotos de productos de Odoo con su precio de venta (el mismo del catálogo PDF). No se repite lo que ya está en cola ni lo publicado en los últimos 7 días. Si elegís varias categorías, se publican una atrás de la otra.'}
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: t.space[3], marginTop: t.space[4] }}>
                 <div>
@@ -190,8 +204,13 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
                     {busy === 'generate' ? 'Sorteando…' : 'Generar imágenes'}
                 </Button>
                 {total > 0 && (
-                    <Button variant="success" leftIcon={<Icon.MessageCircle size={16} />} onClick={schedule} disabled={busy === 'schedule'}>
-                        Programar {total} fotos
+                    <Button
+                        variant="success"
+                        leftIcon={<Icon.MessageCircle size={16} />}
+                        onClick={schedule}
+                        disabled={busy === 'schedule' || (!esEstado && !groupJid)}
+                    >
+                        {esEstado ? `Programar ${total} estados` : `Programar ${total} fotos`}
                     </Button>
                 )}
             </div>
