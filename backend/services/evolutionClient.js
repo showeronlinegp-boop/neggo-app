@@ -169,7 +169,17 @@ async function sendImage({ number, caption, base64, fileName }) {
     return payload?.key?.id || payload?.id || null;
 }
 
-async function sendStatus({ caption, base64 }) {
+// Evolution arma el estado como { image: { url: content } }: un base64 suelto lo toma como
+// ruta de archivo. Con prefijo data: lo decodifica.
+function statusDataUri(base64, mimetype) {
+    const raw = String(base64 || '');
+    if (raw.startsWith('data:')) return raw;
+    return `data:${mimetype || 'image/jpeg'};base64,${raw}`;
+}
+
+// allContacts necesita los contactos guardados en la base de Evolution
+// (DATABASE_SAVE_DATA_CONTACTS=true). Si no hay, Evolution responde "Contacts not found".
+async function sendStatus({ caption, base64, mimetype }) {
     const { instance } = config('estado');
     if (!caption || !base64) {
         throw new EvolutionError('Faltan texto o foto para el estado');
@@ -179,7 +189,7 @@ async function sendStatus({ caption, base64 }) {
         timeoutMs: SEND_TIMEOUT_MS,
         body: {
             type: 'image',
-            content: base64,
+            content: statusDataUri(base64, mimetype),
             caption,
             backgroundColor: '#1F3A68',
             font: 1,
@@ -203,4 +213,5 @@ module.exports = {
     fetchGroups,
     sendImage,
     sendStatus,
+    statusDataUri,
 };

@@ -59,6 +59,8 @@ Si un QR se vence, volvé a pedirlo en esa misma tarjeta. Si borrás el volumen 
 
 La cola es la misma, la instancia no. En **Armar tanda**, elegí **Estados**. Cada producto se publica como estado de la instancia `neggo-estados` (foto, nombre y precio de catálogo), uno cada intervalo, y lo ven los contactos de ese otro WhatsApp. No se usa el número de los grupos. Pausar, reanudar y cancelar funcionan igual. Un envío a un grupo y un estado no salen juntos: entre cualquier publicación hay al menos el intervalo de la tanda.
 
+El estado se manda a los contactos que Evolution tiene guardados en la base de esa instancia (`DATABASE_SAVE_DATA_CONTACTS=true` en el compose). Recién vinculado el número, la lista puede estar vacía hasta que WhatsApp sincroniza la agenda. En ese caso el envío falla con "Contacts not found": esperá a que aparezcan los contactos y reintentá la tanda.
+
 ## 6. Después de actualizar el código
 
 ```bash
