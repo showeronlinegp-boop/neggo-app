@@ -1423,17 +1423,21 @@ router.post('/:ingresoId/items/:itemId/assign-web-categ-from-product', authentic
 
 // =============================================
 // PATCH /api/ingreso/:ingresoId/items/:itemId/odoo-product
-// Actualiza ref interna y/o barcode del producto en Odoo + cache
+// Actualiza nombre, ref interna, barcode y campos del template en Odoo + cache
 // =============================================
 
 router.patch('/:ingresoId/items/:itemId/odoo-product', authenticate, requireRole('admin'), async (req, res) => {
     const { ingresoId, itemId } = req.params;
     const {
+        name,
         default_code, barcode,
         available_in_pos, is_published,
         categ_id, categ_name,
         website_categ_id, web_categ_name,
     } = req.body;
+
+    const nombre = name !== undefined ? String(name || '').trim() : undefined;
+    if (nombre === '') return fail(res, 'El nombre no puede quedar vacío', 400);
 
     try {
         const itemResult = await pool.query(
@@ -1465,6 +1469,7 @@ router.patch('/:ingresoId/items/:itemId/odoo-product', authenticate, requireRole
 
         // Campos de product.template
         const templateVals = {};
+        if (nombre           !== undefined) templateVals.name              = nombre;
         if (available_in_pos !== undefined) templateVals.available_in_pos = Boolean(available_in_pos);
         if (is_published      !== undefined) templateVals.website_published = Boolean(is_published);
         if (categ_id          !== undefined) templateVals.categ_id          = parseInt(categ_id, 10);
@@ -1489,6 +1494,7 @@ router.patch('/:ingresoId/items/:itemId/odoo-product', authenticate, requireRole
         const setClauses = [];
         const cacheParams = [];
         let pi = 1;
+        if (nombre            !== undefined) { setClauses.push(`name = $${pi++}`);             cacheParams.push(nombre); }
         if (default_code      !== undefined) { setClauses.push(`internal_ref = $${pi++}`);     cacheParams.push(default_code || null); }
         if (barcode            !== undefined) { setClauses.push(`barcode = $${pi++}`);           cacheParams.push(barcode || null); }
         if (available_in_pos   !== undefined) { setClauses.push(`available_in_pos = $${pi++}`); cacheParams.push(Boolean(available_in_pos)); }
@@ -1503,6 +1509,20 @@ router.patch('/:ingresoId/items/:itemId/odoo-product', authenticate, requireRole
             await pool.query(
                 `UPDATE odoo_products_cache SET ${setClauses.join(', ')} WHERE odoo_id = $${pi} AND company = 'neggo'`,
                 cacheParams
+            );
+        }
+
+        // El nombre también está copiado en los ítems de ingreso y en los mapeos de códigos
+        if (nombre !== undefined) {
+            await pool.query(
+                `UPDATE ingreso_items SET odoo_product_name = $1
+                 WHERE odoo_product_id = $2 AND COALESCE(odoo_company, 'neggo') = 'neggo'`,
+                [nombre, odoo_product_id]
+            );
+            await pool.query(
+                `UPDATE invoice_code_mappings SET odoo_product_name = $1
+                 WHERE odoo_product_id = $2 AND odoo_company = 'neggo'`,
+                [nombre, odoo_product_id]
             );
         }
 
