@@ -627,7 +627,7 @@ export default function PedidoEnvios() {
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
                         {solapa === 'pedidos'
-                            ? 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las que ya tienen factura o se cobraron en el POS no entran.'
+                            ? 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las que ya tienen factura, se cobraron en el POS o ya tienen 2 envíos hechos en Odoo no entran.'
                             : 'Cuando un pedido controlado tenga la cotización enviada, aparece acá.'}
                     </div>
                 </Card>

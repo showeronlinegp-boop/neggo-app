@@ -13,6 +13,7 @@ const {
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
+    ordenEnviosYaHechos,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -50,6 +51,7 @@ function testListado() {
     const pedidos = condicionesListado({ companies });
     assert.deepStrictEqual(pedidos.params, [companies]);
     assert.ok(pedidos.where.includes('e.cotizacion_enviada_at IS NULL'));
+    assert.ok(pedidos.where.some((w) => w.includes('odoo_picking_done_count')));
 
     const esperando = condicionesListado({ companies, solapa: 'esperando_pago', q: 'S04', dias: '7' });
     assert.deepStrictEqual(esperando.params, [companies, '%S04%', 7]);
@@ -218,6 +220,13 @@ function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', pos_order_count: 1 })), false);
     assert.strictEqual(ordenCobradaAparte(odooOrder({ pos_order_count: 1 })), true);
     assert.strictEqual(ordenCobradaAparte(odooOrder({})), false);
+    // La base son los envíos de Odoo: 2 validados no se arma
+    assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 2 })), true);
+    assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 1 })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', done_picking_count: 2 })), false);
+    const yaEnviada = auditarEmpezarArmar(odooOrder({ state: 'sale', done_picking_count: 2 }));
+    assert.strictEqual(yaEnviada.ok, false);
+    assert.match(yaEnviada.error, /envíos hechos/);
 }
 
 function testAuditarCancelarOrden() {
