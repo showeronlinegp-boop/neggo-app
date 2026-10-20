@@ -230,19 +230,16 @@ function BuscadorReponer({ onAgregado, onQuitado, onError, isMobile }) {
                             ) : p.estado_cola === 'encargado' ? (
                                 <Badge tone="accent" dot>Encargado</Badge>
                             ) : p.en_cola ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0 }}>
-                                    <Badge tone="success" dot>En la cola</Badge>
-                                    <Button size="sm" variant="ghost" leftIcon={<Icon.X size={isMobile ? 16 : 13} />}
-                                        disabled={agregando === p.odoo_id} onClick={() => quitar(p)}
-                                        title="Sacarlo de la cola de reposición"
-                                        style={isMobile ? { flex: 1, height: 44 } : undefined}>
-                                        Quitar
-                                    </Button>
-                                </div>
+                                <Button size="sm" variant="secondary" leftIcon={<Icon.X size={isMobile ? 16 : 13} />}
+                                    disabled={agregando === p.odoo_id} onClick={() => quitar(p)}
+                                    title="Está en la cola de reposición. Tocá para sacarlo."
+                                    style={isMobile ? { width: '100%', height: 44 } : { minWidth: 118 }}>
+                                    No reponer
+                                </Button>
                             ) : (
                                 <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={isMobile ? 16 : 13} />}
                                     disabled={agregando === p.odoo_id} onClick={() => agregar(p)}
-                                    style={isMobile ? { width: '100%', height: 44 } : undefined}>
+                                    style={isMobile ? { width: '100%', height: 44 } : { minWidth: 118 }}>
                                     Reponer
                                 </Button>
                             )}
@@ -918,7 +915,7 @@ export default function Reposicion() {
                 onQuitado={alQuitar}
                 onActivado={(prod) => {
                     const extra = prod?.cola_cerrada ? ' Si estaba en la cola, quedó como repuesto.' : '';
-                    setAviso(`«${prod.name}» volvió a estar activo en Odoo.${extra}`);
+                    setAviso(`«${prod.name}» quedó desarchivado en Odoo.${extra}`);
                     if (tab === 'pendiente' || tab === 'encargado') cargarCola();
                     cargarProveedores();
                 }}

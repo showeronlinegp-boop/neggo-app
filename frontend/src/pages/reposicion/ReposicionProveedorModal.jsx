@@ -24,7 +24,8 @@ const BTN_MOVIL = {
 function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, stacked, t }) {
     const busy = trabajando === p.odoo_id;
     const activo = p.active !== false;
-    const estilo = stacked ? BTN_MOVIL : undefined;
+    // Ancho fijo en escritorio: al alternar (Reponer ↔ No reponer) el botón no salta
+    const estilo = stacked ? BTN_MOVIL : { minWidth: 118 };
     const icon = stacked ? 18 : 13;
 
     return (
@@ -36,24 +37,18 @@ function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedir
             {p.estado_cola === 'encargado' ? (
                 <Badge tone="accent" dot>Encargado</Badge>
             ) : p.en_cola ? (
-                // Si se marcó por error, se puede sacar de la cola
-                <div style={{
-                    display: 'flex', alignItems: 'center', gap: t.space[2],
-                    flex: stacked ? 1 : undefined, minWidth: 0,
-                }}>
-                    <Badge tone="success" dot>En la cola</Badge>
-                    <Button
-                        size="sm"
-                        variant="ghost"
-                        leftIcon={<Icon.X size={icon} />}
-                        disabled={busy}
-                        onClick={() => onQuitar(p)}
-                        title="Sacarlo de la cola de reposición"
-                        style={estilo}
-                    >
-                        Quitar
-                    </Button>
-                </div>
+                // Ya está en la cola: el mismo botón la deshace
+                <Button
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<Icon.X size={icon} />}
+                    disabled={busy}
+                    onClick={() => onQuitar(p)}
+                    title="Está en la cola de reposición. Tocá para sacarlo."
+                    style={estilo}
+                >
+                    No reponer
+                </Button>
             ) : (
                 <Button
                     size="sm"
@@ -81,12 +76,12 @@ function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedir
                 <Button
                     size="sm"
                     variant="success"
-                    leftIcon={<Icon.Check size={icon} />}
+                    leftIcon={<Icon.Refresh size={icon} />}
                     disabled={busy}
                     onClick={() => onPedirActivar(p)}
                     style={estilo}
                 >
-                    Activar
+                    Desarchivar
                 </Button>
             )}
         </div>
@@ -201,6 +196,27 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onAgregado(res.data);
     };
 
+    // Archivar/desarchivar deja la fila en la pestaña donde estaba, con el botón ya
+    // convertido (Archivar ↔ Desarchivar), y la suma a la otra pestaña
+    const cambiarActivo = (prev, p, cambios) => {
+        const nuevo = { ...p, ...cambios };
+        const actualizar = (lista, agregarSiFalta) => {
+            if (lista.some(x => x.odoo_id === p.odoo_id)) {
+                return lista.map(x => x.odoo_id === p.odoo_id ? { ...x, ...cambios } : x);
+            }
+            return agregarSiFalta ? [nuevo, ...lista] : lista;
+        };
+        const cambio = (p.active !== false) !== cambios.active;
+        const delta = cambio ? (cambios.active ? 1 : -1) : 0;
+        return {
+            ...prev,
+            activos: actualizar(prev.activos, cambios.active),
+            archivados: actualizar(prev.archivados, !cambios.active),
+            n_activos_total: Math.max(0, (prev.n_activos_total || 0) + delta),
+            n_archivados_total: Math.max(0, (prev.n_archivados_total || 0) - delta),
+        };
+    };
+
     const quitar = async (p) => {
         setTrabajando(p.odoo_id);
         const res = await api.del(`/reposicion/producto/${p.odoo_id}`);
@@ -220,44 +236,19 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         if (accion.tipo === 'activar') {
             const res = await api.post('/reposicion/activar', { odoo_id: p.odoo_id });
             setTrabajando(null);
-            if (!res.success) { onError(res.error || 'No se pudo activar en Odoo'); return; }
-            setDetalle(prev => {
-                if (!prev) return prev;
-                const ya = prev.activos.some(x => x.odoo_id === p.odoo_id);
-                const activo = { ...p, active: true, en_cola: false, estado_cola: null };
-                return {
-                    ...prev,
-                    archivados: prev.archivados.filter(x => x.odoo_id !== p.odoo_id),
-                    n_archivados_total: Math.max(0, (prev.n_archivados_total || 0) - 1),
-                    n_activos_total: ya ? prev.n_activos_total : (prev.n_activos_total || 0) + 1,
-                    activos: ya
-                        ? prev.activos.map(x => x.odoo_id === p.odoo_id ? activo : x)
-                        : [activo, ...prev.activos],
-                };
-            });
+            if (!res.success) { onError(res.error || 'No se pudo desarchivar en Odoo'); return; }
+            setDetalle(prev => prev && cambiarActivo(prev, p, { active: true, en_cola: false, estado_cola: null }));
             onActivado?.(res.data);
             return;
         }
         const res = await api.post('/reposicion/archivar', { odoo_id: p.odoo_id });
         setTrabajando(null);
         if (!res.success) { onError(res.error || 'No se pudo archivar en Odoo'); return; }
-        setDetalle(prev => {
-            if (!prev) return prev;
-            const ya = prev.archivados.some(x => x.odoo_id === p.odoo_id);
-            const archivado = {
-                ...p,
-                active: false,
-                en_cola: true,
-                estado_cola: res.data?.estado || 'pendiente',
-            };
-            return {
-                ...prev,
-                activos: prev.activos.filter(x => x.odoo_id !== p.odoo_id),
-                n_activos_total: Math.max(0, (prev.n_activos_total || 0) - 1),
-                archivados: ya ? marcarEnCola(prev.archivados, p.odoo_id, { active: false }) : [archivado, ...prev.archivados],
-                n_archivados_total: ya ? prev.n_archivados_total : (prev.n_archivados_total || 0) + 1,
-            };
-        });
+        setDetalle(prev => prev && cambiarActivo(prev, p, {
+            active: false,
+            en_cola: true,
+            estado_cola: res.data?.estado || 'pendiente',
+        }));
         onAgregado(res.data);
     };
 
@@ -280,8 +271,8 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                 onClose={onClose}
                 title={vendorName}
                 subtitle={isMobile
-                    ? 'Reponer, archivar o volver a activar en Odoo.'
-                    : 'Reponer lo que falta, archivar en Odoo lo sin stock, o activar un archivado.'}
+                    ? 'Reponer o no, archivar o desarchivar en Odoo.'
+                    : 'Reponer lo que falta, archivar en Odoo lo sin stock, o desarchivar lo que vuelve.'}
                 size="lg"
                 fullScreen={isMobile}
             >
@@ -347,7 +338,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                             <div style={{ marginTop: t.space[4] }}>
                                 {!isMobile && (
                                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: t.space[3], fontFamily: t.font.family }}>
-                                        Ya no están en Odoo, ordenados por lo más vendido de la semana. Reponer los suma a la cola. Activar los vuelve a prender en Odoo.
+                                        Ya no están en Odoo, ordenados por lo más vendido de la semana. Reponer los suma a la cola. Desarchivar los vuelve a prender en Odoo.
                                     </div>
                                 )}
                                 {archivados.length === 0 ? (
@@ -384,8 +375,8 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                 onClose={() => setConfirmar(null)}
                 onConfirm={confirmarOdoo}
                 danger={confirmar?.tipo === 'archivar'}
-                title={confirmar?.tipo === 'activar' ? 'Activar en Odoo' : 'Archivar en Odoo'}
-                confirmLabel={confirmar?.tipo === 'activar' ? 'Sí, activar' : 'Sí, archivar'}
+                title={confirmar?.tipo === 'activar' ? 'Desarchivar en Odoo' : 'Archivar en Odoo'}
+                confirmLabel={confirmar?.tipo === 'activar' ? 'Sí, desarchivar' : 'Sí, archivar'}
                 message={confirmar?.tipo === 'activar'
                     ? `«${confirmar?.p?.name || ''}» vuelve a estar activo en Odoo. Si estaba en la cola, queda como repuesto.`
                     : `«${confirmar?.p?.name || ''}» se apaga en Odoo porque no queda stock, y entra a la cola como agotado.`}

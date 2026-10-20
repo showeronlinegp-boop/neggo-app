@@ -281,12 +281,12 @@ export default function Recorrida() {
                         <Badge tone="accent" dot>Encargado</Badge>
                     ) : producto.en_cola ? (
                         <Button
-                            variant="ghost"
+                            variant="secondary"
                             leftIcon={<Icon.X size={14} />}
                             disabled={agregando}
                             onClick={quitarDeCola}
                         >
-                            Quitar de la cola
+                            No reponer
                         </Button>
                     ) : (
                         <Button
