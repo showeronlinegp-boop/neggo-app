@@ -341,6 +341,9 @@ async function initDatabase() {
         await pool.query(`ALTER TABLE ingreso_items ADD COLUMN IF NOT EXISTS match_level VARCHAR(30)`);
         await pool.query(`ALTER TABLE ingreso_mercaderia ADD COLUMN IF NOT EXISTS odoo_purchase_order_id_preventas INTEGER`);
 
+        const { ensureSchema } = require('./services/whatsappQueue');
+        await ensureSchema(pool);
+
         console.log('✅ Base de datos inicializada correctamente');
     } catch (error) {
         console.error('❌ Error inicializando base de datos:', error.message);

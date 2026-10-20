@@ -30,6 +30,10 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - CHROME_WS_ENDPOINT=ws://chrome:3000
       - STORAGE_PATH=/app/storage
+      - EVOLUTION_API_URL=${EVOLUTION_API_URL:-http://evolution:8080}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-cambiar_esta_clave}
+      - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-neggo}
+      - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
     volumes:
       - ./volumes/storage:/app/storage
     depends_on:
@@ -51,6 +55,7 @@ services:
       - ./volumes/pg_data:/var/lib/postgresql/data
       - ./backend/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
       - ./backend/sql/seeds.sql:/docker-entrypoint-initdb.d/02-seeds.sql
+      - ./backend/sql/whatsapp.sql:/docker-entrypoint-initdb.d/03-whatsapp.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U neggo -d neggo_app"]
       interval: 5s
@@ -70,6 +75,42 @@ services:
     networks:
       - neggo-net
 
+  # Evolution API v2 (imagen oficial). La sesión de WhatsApp queda en el volumen.
+  # El QR se muestra en la app (admin); el puerto 8080 solo escucha en esta PC.
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - SERVER_URL=${EVOLUTION_SERVER_URL:-http://localhost:8080}
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-cambiar_esta_clave}
+      - LANGUAGE=es
+      - DEL_INSTANCE=false
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://neggo:${POSTGRES_PASSWORD:-neggo_pass}@postgres:5432/neggo_app?schema=evolution_api
+      - DATABASE_CONNECTION_CLIENT_NAME=evolution_neggo
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=false
+      - DATABASE_SAVE_MESSAGE_UPDATE=false
+      - DATABASE_SAVE_DATA_CONTACTS=false
+      - DATABASE_SAVE_DATA_CHATS=false
+      - DATABASE_SAVE_DATA_LABELS=false
+      - DATABASE_SAVE_DATA_HISTORIC=false
+      - CACHE_REDIS_ENABLED=false
+      - CACHE_LOCAL_ENABLED=true
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - neggo-net
+
 networks:
   neggo-net:
     driver: bridge
+
+volumes:
+  evolution_instances:
