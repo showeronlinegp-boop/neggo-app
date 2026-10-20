@@ -260,11 +260,12 @@ router.get('/odoo/web-categories', authenticate, async (req, res) => {
 
         const results = await callOdoo(
             'product.public.category', 'search_read',
-            [domain, ['id', 'name', 'complete_name']],
+            [domain, ['id', 'name', 'display_name']],
             { limit: 50, context: { allowed_company_ids: [companyId] } }
         );
 
-        return ok(res, results);
+        // Odoo 19 no tiene complete_name en product.public.category: display_name trae la ruta completa
+        return ok(res, results.map(c => ({ ...c, complete_name: c.display_name || c.name })));
     } catch (err) {
         console.error('❌ Error al obtener categorías web Odoo:', err.message);
         return fail(res, err.message, 500);
