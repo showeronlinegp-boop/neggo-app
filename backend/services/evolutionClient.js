@@ -4,6 +4,13 @@ const { assertSendable } = require('./whatsappMessage');
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const SEND_TIMEOUT_MS = 60000;
+// allContacts recorre la agenda en Evolution: 60 s abortaba con el estado ya publicado.
+const STATUS_SEND_TIMEOUT_MS = 180000;
+
+function isTimeoutError(err) {
+    const msg = String(err && err.message != null ? err.message : err || '');
+    return /timeout|aborted due to timeout|The operation was aborted/i.test(msg);
+}
 
 class EvolutionError extends Error {
     constructor(message, status) {
@@ -246,7 +253,7 @@ async function sendStatus({ caption, base64, mimetype }) {
     const ready = assertSendable({ caption, base64 });
     const payload = await request(`/message/sendStatus/${encodeURIComponent(instance)}`, {
         method: 'POST',
-        timeoutMs: SEND_TIMEOUT_MS,
+        timeoutMs: STATUS_SEND_TIMEOUT_MS,
         body: {
             type: 'image',
             content: statusDataUri(ready.base64, ready.mimetype),
@@ -275,4 +282,6 @@ module.exports = {
     statusDataUri,
     contactJidsFrom,
     detailFromEvolution,
+    isTimeoutError,
+    STATUS_SEND_TIMEOUT_MS,
 };

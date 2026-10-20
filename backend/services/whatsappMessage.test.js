@@ -141,6 +141,9 @@ async function testSendStatusMatchesDocs() {
         assert.strictEqual(calls[0].body.caption, 'Mate\n$1.500');
         assert.ok(String(calls[0].body.content).startsWith('data:image/jpeg;base64,'));
         assert.ok(!Object.prototype.hasOwnProperty.call(calls[0].body, 'statusJidList'));
+        assert.ok(evolution.STATUS_SEND_TIMEOUT_MS >= 180000);
+        assert.ok(evolution.isTimeoutError(new Error('Evolution API no responde (The operation was aborted due to timeout)')));
+        assert.ok(!evolution.isTimeoutError(new Error('Evolution API 400: Bad Request')));
     } finally {
         global.fetch = prevFetch;
     }
