@@ -443,6 +443,10 @@ export default function PreventasSyncPage() {
             render: (_, row) => {
                 const label = ACCION_LABEL[row.estado];
                 if (!label) return <span style={{ color: t.color.textFaint, fontSize: 12 }}>—</span>;
+                // Sin precio válido: nunca se sincroniza (ej. ZLE sin cuenta de cliente)
+                if (row.bloqueo_motivo) {
+                    return <span title={row.bloqueo_motivo} style={{ background: t.color.dangerSoft, color: t.color.danger, padding: '3px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Sin precio: no se sincroniza</span>;
+                }
                 // Requiere revisión: se abre el detalle para confirmarlo a mano
                 if (row.revision_motivo) {
                     return <Button size="sm" variant="secondary" title={row.revision_motivo} onClick={e => { e.stopPropagation(); setDetail(row); }}>Revisar</Button>;
@@ -691,13 +695,19 @@ export default function PreventasSyncPage() {
                             </table>
                         </div>
 
+                        {ACCION_LABEL[detail.estado] && detail.bloqueo_motivo && (
+                            <div style={{ background: t.color.dangerSoft, color: t.color.danger, border: `1px solid ${t.color.danger}`, borderRadius: t.radius.sm, padding: '10px 14px', fontSize: t.font.size.sm, fontFamily: t.font.family }}>
+                                <strong>No se sincroniza:</strong> {detail.bloqueo_motivo}. Cuando el proveedor tenga precio se va a poder aplicar.
+                            </div>
+                        )}
+
                         {ACCION_LABEL[detail.estado] && detail.revision_motivo && (
                             <div style={{ background: t.color.warnSoft, color: t.color.warn, border: `1px solid ${t.color.warn}`, borderRadius: t.radius.sm, padding: '10px 14px', fontSize: t.font.size.sm, fontFamily: t.font.family }}>
                                 <strong>Revisalo antes de aplicar:</strong> {detail.revision_motivo}. No entra en los "Aplicar" en bloque; si es correcto, confirmalo acá.
                             </div>
                         )}
 
-                        {ACCION_LABEL[detail.estado] && (
+                        {ACCION_LABEL[detail.estado] && !detail.bloqueo_motivo && (
                             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                 <Button variant="primary" disabled={applying} onClick={() => { handleApply([rowKey(detail)], !!detail.revision_motivo); setDetail(null); }}>
                                     {applying ? 'Aplicando…' : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}

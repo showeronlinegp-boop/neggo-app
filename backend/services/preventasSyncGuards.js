@@ -19,6 +19,18 @@ const ESTADOS_ODOO = ['activar', 'inactivar', 'solo_odoo', 'precio_sube', 'preci
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
 
 /**
+ * Crear o actualizar precio sin costo/precio válido (NULL o ≤ 0) nunca se sincroniza.
+ * Caso típico: ZLE sin cuenta de cliente devuelve todos los precios vacíos.
+ */
+function motivoSinPrecio(prod) {
+    if (prod.estado !== 'solo_scraper' && !ESTADOS_PRECIO.includes(prod.estado)) return null;
+    const costo = num(prod.costo);
+    const precio = num(prod.precio_preventas);
+    if (!(costo > 0) || !(precio > 0)) return 'Sin precio válido (costo o precio en 0 o vacío): no se sincroniza';
+    return null;
+}
+
+/**
  * Código del producto escrito en el nombre entre {} o (), normalizado a A-Z0-9.
  * "PEINE (MAB07) COLA" → "MAB07" · "VASO (FH-105)" → "FH105". Sin código → null.
  */
@@ -45,12 +57,12 @@ function motivoOmitir(prod) {
         return 'El producto ya no está en el scraper: recalculá';
     }
 
+    const sinPrecio = motivoSinPrecio(prod);
+    if (sinPrecio) return sinPrecio;
+
     if (prod.estado === 'solo_scraper' || ESTADOS_PRECIO.includes(prod.estado)) {
         const costo = num(prod.costo);
         const precio = num(prod.precio_preventas);
-        if (!(costo > 0) || !(precio > 0)) {
-            return 'Sin precio válido (costo o precio en 0 o vacío)';
-        }
         // El precio scrapeado cambió desde el último cálculo: lo calculado está viejo
         const costoActual = num(prod.costo_actual);
         const precioActual = num(prod.precio_actual);
@@ -118,6 +130,6 @@ function motivoOdoo(prod, odoo) {
 }
 
 module.exports = {
-    codigoEnNombre, motivoOmitir, motivoRevision, motivoOdoo,
+    codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo,
     UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO,
 };

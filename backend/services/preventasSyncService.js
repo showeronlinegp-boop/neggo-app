@@ -3,7 +3,7 @@
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
-const { motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
+const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
 // =============================================
 // getProductsToSync — lectura paginada (rápida)
@@ -129,8 +129,11 @@ async function getProductsToSync(pool, filters = {}) {
         LIMIT $${idx++} OFFSET $${idx++}
     `, params);
 
-    // Marcar las filas que no entran en un apply masivo (se confirman de a una)
-    for (const row of rows) row.revision_motivo = motivoRevision(row);
+    // bloqueo_motivo: nunca se aplica (ni confirmando) · revision_motivo: se confirma de a uno
+    for (const row of rows) {
+        row.bloqueo_motivo = motivoSinPrecio(row);
+        row.revision_motivo = row.bloqueo_motivo ? null : motivoRevision(row);
+    }
 
     return { rows, total: countRows[0]?.total || 0 };
 }

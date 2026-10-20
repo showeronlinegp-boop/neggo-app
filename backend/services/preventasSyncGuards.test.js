@@ -3,7 +3,7 @@
 // Los casos salen de datos reales encontrados en la auditoría del 2026-10-20.
 
 const assert = require('assert');
-const { codigoEnNombre, motivoOmitir, motivoRevision, motivoOdoo } = require('./preventasSyncGuards');
+const { codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo } = require('./preventasSyncGuards');
 
 // Fila típica de un cambio de precio correcto: todo coincide y el cambio es chico
 function fila(overrides = {}) {
@@ -55,6 +55,14 @@ test('nunca escribir precio 0 (vaso de Cast con precio 0 en la web)', () => {
 });
 test('nunca crear sin precio (ZLE sin login devuelve precio vacío)', () => {
     assert.match(motivoOmitir(fila({ estado: 'solo_scraper', costo: null, precio_preventas: null })), /Sin precio válido/);
+});
+test('ZLE (raw_price NULL) queda marcado en la lista y bloqueado al aplicar', () => {
+    const zle = { estado: 'solo_scraper', scraper_sku: 'PREZLBLG03', scraper_name: 'Glitter x12u', costo: null, precio_preventas: null };
+    assert.match(motivoSinPrecio(zle), /no se sincroniza/);
+    assert.match(motivoOmitir(zle), /no se sincroniza/);
+    assert.match(motivoSinPrecio({ ...zle, estado: 'precio_baja', costo: '0' , precio_preventas: '0' }), /no se sincroniza/);
+    // Activar o archivar no dependen del precio: no se marcan
+    assert.strictEqual(motivoSinPrecio({ ...zle, estado: 'activar' }), null);
 });
 test('si el precio scrapeado cambió desde el cálculo, no aplicar lo viejo', () => {
     assert.match(motivoOmitir(fila({ costo_actual: '1300.00', precio_actual: '1800.00' })), /cambió desde el último cálculo/);
