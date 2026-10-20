@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api/client';
+import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
 import useIsMobile from '../../hooks/useIsMobile';
@@ -22,11 +23,13 @@ const BTN_MOVIL = {
     fontSize: 11,
 };
 
-function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, stacked, t }) {
+function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, stacked, t }) {
     const busy = trabajando === p.odoo_id;
     const activo = p.active !== false;
     const estilo = stacked ? BTN_MOVIL : undefined;
     const icon = stacked ? 18 : 13;
+    // Solo se publica lo vivo y con foto: sin foto el mensaje no sale.
+    const publicable = onPublicar && activo && !!p.image_url;
 
     return (
         <div style={{
@@ -65,6 +68,19 @@ function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedir
                     style={estilo}
                 >
                     Reponer
+                </Button>
+            )}
+            {publicable && (
+                <Button
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<Icon.MessageCircle size={icon} />}
+                    disabled={busy}
+                    onClick={() => onPublicar(p)}
+                    title="Publicar en WhatsApp"
+                    style={stacked ? { ...BTN_MOVIL, flex: '0 0 68px' } : undefined}
+                >
+                    WhatsApp
                 </Button>
             )}
             {activo ? (
@@ -109,8 +125,39 @@ function MetaProducto({ p, extra, t }) {
     );
 }
 
-// Miniatura que abre la foto en grande; sin foto queda como estaba
-function MiniaturaTocable({ p, size, onVerFoto, t }) {
+// Miniatura que abre la foto en grande; sin foto, si se puede, es el botón para cargarla
+function MiniaturaTocable({ p, size, onVerFoto, onSubirFoto, subiendoFoto, t }) {
+    if (!p.image_url && onSubirFoto) {
+        const subiendo = subiendoFoto === p.odoo_id;
+        return (
+            <label
+                aria-label={`Cargar foto de ${p.name}`}
+                title="Cargar foto en Odoo"
+                style={{
+                    width: size, height: size, flexShrink: 0, boxSizing: 'border-box',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
+                    borderRadius: t.radius.sm, border: `1px dashed ${t.color.borderStrong}`,
+                    background: t.color.surface2, color: t.color.primary,
+                    cursor: subiendo ? 'default' : 'pointer', opacity: subiendo ? 0.6 : 1,
+                    fontFamily: t.font.family, fontSize: 9, fontWeight: t.font.weight.semibold,
+                }}
+            >
+                {subiendo ? '…' : (
+                    <>
+                        <Icon.Camera size={Math.round(size * 0.38)} />
+                        {size >= 48 && <span>Foto</span>}
+                    </>
+                )}
+                <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    disabled={subiendo}
+                    style={{ display: 'none' }}
+                    onChange={e => { onSubirFoto(p, e.target.files?.[0]); e.target.value = ''; }}
+                />
+            </label>
+        );
+    }
     if (!p.image_url) return <ProductThumb imageUrl={p.image_url} size={size} />;
     return (
         <button
@@ -128,8 +175,9 @@ function MiniaturaTocable({ p, size, onVerFoto, t }) {
     );
 }
 
-function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onVerFoto, extra, isMobile, t }) {
-    const acciones = { p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, t };
+function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, onVerFoto, onSubirFoto, subiendoFoto, extra, isMobile, t }) {
+    const acciones = { p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, t };
+    const mini = { p, onVerFoto, onSubirFoto, subiendoFoto, t };
 
     if (isMobile) {
         return (
@@ -139,7 +187,7 @@ function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onP
                 borderTop: `1px solid ${t.color.border}`,
             }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <MiniaturaTocable p={p} size={52} onVerFoto={onVerFoto} t={t} />
+                    <MiniaturaTocable {...mini} size={52} />
                     <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                         <div title={p.name} style={{
                             fontSize: t.font.size.base, fontWeight: t.font.weight.semibold, color: t.color.text,
@@ -160,7 +208,7 @@ function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onP
             display: 'flex', alignItems: 'center', gap: t.space[3],
             padding: '8px 4px', borderTop: `1px solid ${t.color.border}`,
         }}>
-            <MiniaturaTocable p={p} size={36} onVerFoto={onVerFoto} t={t} />
+            <MiniaturaTocable {...mini} size={36} />
             <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                 <div title={p.name} style={{
                     fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text,
@@ -175,8 +223,95 @@ function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onP
     );
 }
 
+// Elegir dónde sale la foto: el grupo configurado en Admin → WhatsApp o el estado (novedades).
+function PublicarWhatsApp({ producto, onClose, onPublicado, t }) {
+    const [config, setConfig] = useState(null);
+    const [enviando, setEnviando] = useState(null);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (!producto) return;
+        let vigente = true;
+        setConfig(null);
+        setError(null);
+        setEnviando(null);
+        api.get('/whatsapp/status')
+            .then(res => {
+                if (!vigente) return;
+                if (res.success) setConfig(res.data);
+                else setError(res.error || 'No se pudo leer la configuración de WhatsApp');
+            })
+            .catch(() => { if (vigente) setError('No se pudo leer la configuración de WhatsApp'); });
+        return () => { vigente = false; };
+    }, [producto]);
+
+    const grupo = config?.settings?.group_subject || config?.settings?.group_jid || null;
+    // Grupos y estados salen por números distintos: cada uno con su conexión.
+    const sinGrupos = config && config.evolution?.state !== 'open';
+    const sinEstados = config && config.evolution_status?.state !== 'open';
+    const desconectados = [sinGrupos && 'el de grupos', sinEstados && 'el de estados'].filter(Boolean);
+
+    const publicar = async (destino) => {
+        setEnviando(destino);
+        setError(null);
+        const res = await api.post('/whatsapp/send-now', { company: 'neggo', odoo_id: producto.odoo_id, destino });
+        setEnviando(null);
+        if (!res.success) { setError(res.error || 'No se pudo publicar'); return; }
+        onPublicado(destino === 'estado'
+            ? `«${producto.name}» se sube a los estados en unos segundos.`
+            : `«${producto.name}» sale al grupo ${grupo ? `«${grupo}» ` : ''}en unos segundos.`);
+    };
+
+    const btn = { width: '100%', height: 48, justifyContent: 'flex-start' };
+
+    return (
+        <Modal
+            isOpen={!!producto}
+            onClose={onClose}
+            title="Publicar en WhatsApp"
+            subtitle={producto?.name}
+            size="sm"
+        >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[3], fontFamily: t.font.family }}>
+                <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>
+                    Sale con la foto, el precio de la lista Neggo y el link a la web.
+                </div>
+                {desconectados.length > 0 && (
+                    <div style={{ background: t.color.warnSoft, color: t.color.warn, padding: '10px 12px', borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
+                        No está conectado {desconectados.join(' ni ')}. Lo que mandes ahí queda en la cola y sale cuando lo conectes en Admin → WhatsApp.
+                    </div>
+                )}
+                {error && (
+                    <div style={{ background: t.color.dangerSoft, color: t.color.danger, padding: '10px 12px', borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
+                        {error}
+                    </div>
+                )}
+                <Button
+                    variant="primary"
+                    leftIcon={<Icon.Users size={18} />}
+                    disabled={!config || !grupo || !!enviando}
+                    onClick={() => publicar('grupo')}
+                    style={btn}
+                >
+                    {enviando === 'grupo' ? 'Publicando…' : grupo ? `Al grupo «${grupo}»` : 'Al grupo (elegilo en Admin → WhatsApp)'}
+                </Button>
+                <Button
+                    variant="secondary"
+                    leftIcon={<Icon.MessageCircle size={18} />}
+                    disabled={!config || !!enviando}
+                    onClick={() => publicar('estado')}
+                    style={btn}
+                >
+                    {enviando === 'estado' ? 'Publicando…' : 'A los estados (novedades)'}
+                </Button>
+            </div>
+        </Modal>
+    );
+}
+
 export default function ReposicionProveedorModal({ vendorName, onClose, onAgregado, onQuitado, onActivado, onError }) {
     const { tokens: t } = useTheme();
+    const { user } = useAuth();
     const isMobile = useIsMobile();
     const [tab, setTab] = useState('activos');
     const [detalle, setDetalle] = useState(null);
@@ -184,7 +319,10 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
     const [trabajando, setTrabajando] = useState(null);
     const [confirmar, setConfirmar] = useState(null);
     const [foto, setFoto] = useState(null);
+    const [subiendoFoto, setSubiendoFoto] = useState(null);
     const cerrarFoto = useCallback(() => setFoto(null), []);
+    const [publicando, setPublicando] = useState(null);
+    const [avisoWa, setAvisoWa] = useState(null);
 
     useEffect(() => {
         if (!vendorName) return;
@@ -194,6 +332,8 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         setTab('activos');
         setConfirmar(null);
         setFoto(null);
+        setPublicando(null);
+        setAvisoWa(null);
         api.get('/reposicion/proveedor', { nombre: vendorName })
             .then(res => {
                 if (!vigente) return;
@@ -284,6 +424,21 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onAgregado(res.data);
     };
 
+    const subirFoto = async (p, file) => {
+        if (!file) return;
+        setSubiendoFoto(p.odoo_id);
+        const form = new FormData();
+        form.append('image', file);
+        const res = await api.post(`/reposicion/foto/${p.odoo_id}`, form);
+        setSubiendoFoto(null);
+        if (!res.success) { onError(res.error || 'No se pudo cargar la foto en Odoo'); return; }
+        // Cache-buster: la URL del template puede ser la misma que antes de tener foto
+        const imageUrl = res.data?.image_url ? `${res.data.image_url}?v=${Date.now()}` : null;
+        if (!imageUrl) return;
+        const ponerFoto = (lista) => lista.map(x => x.odoo_id === p.odoo_id ? { ...x, image_url: imageUrl, has_image: true } : x);
+        setDetalle(prev => prev && { ...prev, activos: ponerFoto(prev.activos), archivados: ponerFoto(prev.archivados) });
+    };
+
     const activos = detalle?.activos || [];
     const archivados = detalle?.archivados || [];
     const propsFila = {
@@ -293,6 +448,11 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onPedirArchivar: (p) => setConfirmar({ tipo: 'archivar', p }),
         onPedirActivar: (p) => setConfirmar({ tipo: 'activar', p }),
         onVerFoto: setFoto,
+        // Publicar en WhatsApp es solo para admin (igual que Admin → WhatsApp).
+        onPublicar: user?.role === 'admin' ? (p) => { setAvisoWa(null); setPublicando(p); } : null,
+        // Cargar foto escribe en Odoo: solo admin
+        onSubirFoto: user?.role === 'admin' ? subirFoto : null,
+        subiendoFoto,
         isMobile,
         t,
     };
@@ -315,6 +475,25 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                     </div>
                 ) : (
                     <>
+                        {avisoWa && (
+                            <div style={{
+                                display: 'flex', alignItems: 'center', gap: t.space[2],
+                                background: t.color.successSoft, color: t.color.success, padding: '10px 12px',
+                                borderRadius: t.radius.sm, fontSize: t.font.size.sm, fontFamily: t.font.family,
+                                marginBottom: t.space[3],
+                            }}>
+                                <Icon.Check size={16} />
+                                <span style={{ flex: 1, minWidth: 0 }}>{avisoWa}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setAvisoWa(null)}
+                                    aria-label="Cerrar aviso"
+                                    style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 4, display: 'flex' }}
+                                >
+                                    <Icon.X size={14} />
+                                </button>
+                            </div>
+                        )}
                         <Tabs
                             fullWidth={isMobile}
                             tabs={[
@@ -408,6 +587,13 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
                 nombre={foto?.name}
                 detalle={foto ? (foto.internal_ref || foto.barcode) : null}
                 onClose={cerrarFoto}
+            />
+
+            <PublicarWhatsApp
+                producto={publicando}
+                onClose={() => setPublicando(null)}
+                onPublicado={(msg) => { setPublicando(null); setAvisoWa(msg); }}
+                t={t}
             />
 
             <ConfirmDialog
