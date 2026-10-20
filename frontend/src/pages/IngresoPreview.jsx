@@ -251,7 +251,7 @@ function DatoItem({ label, value, color }) {
     );
 }
 
-function ProductSearchModal({ item, costos, onLink, onCancel }) {
+function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
     const [search, setSearch]     = useState(item?.codigo || '');
     const [results, setResults]   = useState([]);
     const [loading, setLoading]   = useState(false);
@@ -287,8 +287,15 @@ function ProductSearchModal({ item, costos, onLink, onCancel }) {
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginTop: '8px', paddingTop: '8px', borderTop: `1px solid ${C.border}` }}>
                             <DatoItem label="Cantidad" value={item?.cantidad ?? '—'} />
                             <DatoItem label="Precio factura" value={fmtARS(item?.precio_unitario)} />
+                            {/* Pack editable: si viene por pack, divide el precio y recalcula la comparación con Odoo */}
+                            <div style={{ display: 'flex', flexDirection: 'column', minWidth: '70px' }}>
+                                <span style={{ fontSize: '10px', color: C.gray, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Pack ÷</span>
+                                {onPackChange
+                                    ? <PackInput value={costos.packSize} onSave={onPackChange} />
+                                    : <strong style={{ fontSize: '13px', color: C.text, fontVariantNumeric: 'tabular-nums' }}>{costos.packSize}</strong>}
+                            </div>
                             {costos.packSize > 1 && (
-                                <DatoItem label={`Pack ÷${costos.packSize}`} value={fmtARS(costos.costoUnitario)} />
+                                <DatoItem label="Unitario" value={fmtARS(costos.costoUnitario)} />
                             )}
                             {costos.effectiveDiscount > 0 && (
                                 <DatoItem label={`Con dto −${costos.effectiveDiscount}%`} value={fmtARS(costos.costoConDescuento)} color={C.success} />
@@ -1138,6 +1145,7 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                 <ProductSearchModal
                     item={item}
                     costos={{ packSize, costoUnitario, effectiveDiscount, costoConDescuento, envioUnitario, costoConEnvio }}
+                    onPackChange={(v) => onItemUpdate(item.id, { pack_size: v })}
                     onLink={async (product) => {
                         setLinkingOpen(false);
                         await onLinked(item.id, product.odoo_id);
