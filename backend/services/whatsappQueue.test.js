@@ -290,9 +290,33 @@ async function testQueue(pool) {
     console.log('cola ok');
 }
 
+// Cola atrasada: todas las horas programadas ya pasaron, pero salen de a una.
+function testEstimate() {
+    const now = new Date('2020-01-05T12:30:00.000Z');
+    const msg = (id, scheduled, extra = {}) => ({
+        id, scheduled_at: scheduled, interval_seconds: 90, batch_status: 'en_curso', status: 'pendiente', ...extra,
+    });
+    const out = queue.estimateDepartures([
+        msg(1, '2020-01-05T12:03:00.000Z'),
+        msg(2, '2020-01-05T12:04:30.000Z'),
+        msg(3, '2020-01-05T13:00:00.000Z'),
+        msg(4, '2020-01-05T12:05:00.000Z', { batch_status: 'pausada' }),
+    ], '2020-01-05T12:29:13.000Z', now);
+    assert.deepStrictEqual(out.map((m) => m.eta), [
+        '2020-01-05T12:30:43.000Z',
+        '2020-01-05T12:32:13.000Z',
+        '2020-01-05T13:00:00.000Z',
+        null,
+    ]);
+    const fresh = queue.estimateDepartures([msg(1, '2020-01-05T12:00:00.000Z')], null, now);
+    assert.strictEqual(fresh[0].eta, now.toISOString());
+    console.log('estimacion ok');
+}
+
 async function main() {
     testPrice();
     testEvolutionParse();
+    testEstimate();
     const pool = await recreateDb();
     try {
         const ids = await seed(pool);

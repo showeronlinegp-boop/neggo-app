@@ -201,12 +201,26 @@ async function getBatch(pool, id) {
     return { ...rows[0], messages: messages.rows, logs: logs.rows };
 }
 
+// Hora en que va a salir de verdad cada mensaje, con la misma regla que claimNext:
+// de a uno y nunca antes de que pase el intervalo desde el último intento.
+// Si la cola viene atrasada, la hora programada ya pasó pero no salen todos juntos.
+function estimateDepartures(messages, lastAttemptAt, now) {
+    let prev = lastAttemptAt ? new Date(lastAttemptAt).getTime() : null;
+    return messages.map((m) => {
+        if (m.batch_status === 'pausada' || m.status === 'enviando') return { ...m, eta: null };
+        const afterPrev = prev == null ? 0 : prev + m.interval_seconds * 1000;
+        const eta = Math.max(new Date(m.scheduled_at).getTime(), afterPrev, now.getTime());
+        prev = eta;
+        return { ...m, eta: new Date(eta).toISOString() };
+    });
+}
+
 // Mensajes que todavía no salieron, en el orden en que van a salir.
-async function listQueue(pool) {
+async function listQueue(pool, now = new Date()) {
     const { rows } = await pool.query(`
         SELECT m.id, m.batch_id, m.position, m.odoo_id, m.company, m.product_name,
                m.price_label, m.image_template_id, m.status, m.attempts, m.last_error,
-               m.scheduled_at, b.status AS batch_status, b.category,
+               m.scheduled_at, b.status AS batch_status, b.category, b.interval_seconds,
                COALESCE(b.group_subject, b.group_jid) AS group_name
         FROM whatsapp_messages m
         JOIN whatsapp_batches b ON b.id = m.batch_id
@@ -215,7 +229,10 @@ async function listQueue(pool) {
         ORDER BY (b.status = 'pausada'), m.scheduled_at, m.position
         LIMIT 300
     `);
-    return rows;
+    const last = await pool.query(
+        'SELECT MAX(updated_at) AS at FROM whatsapp_messages WHERE attempts > 0'
+    );
+    return estimateDepartures(rows, last.rows[0].at, now);
 }
 
 async function setBatchStatus(pool, id, from, to, logMessage) {
@@ -427,6 +444,7 @@ module.exports = {
     createBatch,
     listBatches,
     listQueue,
+    estimateDepartures,
     getBatch,
     pauseBatch,
     resumeBatch,
