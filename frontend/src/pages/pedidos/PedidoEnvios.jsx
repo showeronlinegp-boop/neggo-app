@@ -156,7 +156,7 @@ export default function PedidoEnvios() {
                             : 'Todavía no saldaste ningún pedido'}
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
-                        Tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las facturadas no entran.
+                        Tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las que ya tienen factura o se cobraron en el POS no entran.
                     </div>
                 </Card>
             ) : (
