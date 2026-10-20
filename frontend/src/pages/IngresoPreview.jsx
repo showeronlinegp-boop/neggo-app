@@ -610,7 +610,9 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
 
     const tieneFoto = !!item.odoo_has_image;
 
-    // Edición inline de ref y barcode de Odoo
+    // Edición inline de nombre, ref y barcode de Odoo
+    const [nombreInput, setNombreInput]   = useState('');
+    const [editandoNombre, setEditandoNombre] = useState(false);
     const [refInput, setRefInput]         = useState('');
     const [editandoRef, setEditandoRef]   = useState(false);
     const [barcodeInput, setBarcodeInput] = useState('');
@@ -636,6 +638,31 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
         try { await onUpdateOdooProduct(fields); } catch (_) {}
         finally { setSavingOdoo(false); }
     };
+
+    // Guarda el nombre solo si cambió y no quedó vacío (Enter y blur pueden llegar los dos)
+    const empezarEdicionNombre = () => {
+        if (!onUpdateOdooProduct) return;
+        setNombreInput(item.odoo_product_name || '');
+        setEditandoNombre(true);
+    };
+    const guardarNombre = async () => {
+        if (!editandoNombre) return;
+        setEditandoNombre(false);
+        const nuevo = nombreInput.trim();
+        if (!nuevo || nuevo === (item.odoo_product_name || '')) return;
+        await saveOdooField('name', nuevo);
+    };
+    const inputNombre = (fontSize) => (
+        <input
+            autoFocus
+            value={nombreInput}
+            onChange={(e) => setNombreInput(e.target.value)}
+            onBlur={guardarNombre}
+            onKeyDown={(e) => { if (e.key === 'Enter') guardarNombre(); if (e.key === 'Escape') setEditandoNombre(false); }}
+            title="Enter para guardar en Odoo · Esc para cancelar"
+            style={{ width: '100%', boxSizing: 'border-box', padding: '3px 6px', border: `2px solid ${C.primary}`, borderRadius: '4px', fontSize, fontWeight: 'bold', color: C.text }}
+        />
+    );
 
     const packSize      = Math.max(1, parseInt(item.pack_size || 1, 10));
     const costoUnitario = parseFloat(item.precio_unitario || 0) / packSize;
@@ -793,9 +820,12 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                         <OdooImage odooId={item.odoo_product_id} version={photoVersion} size={56} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 11, color: C.gray, fontWeight: 600, marginBottom: 2 }}>En Odoo</div>
-                            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>
-                                {item.odoo_product_name}
-                            </p>
+                            {editandoNombre ? inputNombre('14px') : (
+                                <p onClick={empezarEdicionNombre} style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text, lineHeight: 1.3, cursor: onUpdateOdooProduct ? 'pointer' : 'default' }}>
+                                    {item.odoo_product_name}
+                                    {onUpdateOdooProduct && <span style={{ color: C.gray, fontWeight: 'normal', marginLeft: 4 }}>✏</span>}
+                                </p>
+                            )}
                             <div style={{ fontSize: 12, color: C.gray, marginTop: 4, fontFamily: 'monospace' }}>
                                 {item.odoo_internal_ref || 'Sin ref'}
                                 {item.odoo_barcode ? ` · ${item.odoo_barcode}` : ''}
@@ -1337,9 +1367,18 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                             </span>
 
                             {/* Nombre */}
-                            <p style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, margin: '6px 0 8px', lineHeight: '1.3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.odoo_product_name}>
-                                {item.odoo_product_name}
-                            </p>
+                            {editandoNombre ? (
+                                <div style={{ margin: '6px 0 8px' }}>{inputNombre('12px')}</div>
+                            ) : (
+                                <p
+                                    onClick={empezarEdicionNombre}
+                                    style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, margin: '6px 0 8px', lineHeight: '1.3', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: onUpdateOdooProduct ? 'pointer' : 'default' }}
+                                    title={onUpdateOdooProduct ? `${item.odoo_product_name} — click para editar el nombre` : item.odoo_product_name}
+                                >
+                                    {item.odoo_product_name}
+                                    {onUpdateOdooProduct && <span style={{ color: C.gray, fontWeight: 'normal', marginLeft: '4px' }}>✏</span>}
+                                </p>
+                            )}
 
                             {/* Ref interna (editable) */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
@@ -2908,6 +2947,7 @@ export default function IngresoPreview() {
                 return;
             }
             const localUpdates = {};
+            if (fields.name            !== undefined) localUpdates.odoo_product_name    = fields.name;
             if (fields.default_code    !== undefined) localUpdates.odoo_internal_ref    = fields.default_code    || null;
             if (fields.barcode         !== undefined) localUpdates.odoo_barcode         = fields.barcode         || null;
             if (fields.available_in_pos !== undefined) localUpdates.odoo_available_in_pos = Boolean(fields.available_in_pos);
