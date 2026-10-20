@@ -896,9 +896,13 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
     try {
         if (!CHROME_WS) throw new Error('CHROME_WS_ENDPOINT no configurado');
 
-        const fmtARS = n => n != null
-            ? new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n)
-            : '—';
+        const fmtARS = n => {
+            if (n == null || n === '' || Number.isNaN(Number(n))) return '—';
+            const rounded = Math.round(Number(n));
+            const sign = rounded < 0 ? '-' : '';
+            const body = String(Math.abs(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+            return `${sign}$${body}`;
+        };
 
         const dateStr = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 

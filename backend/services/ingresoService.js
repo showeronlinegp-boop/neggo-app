@@ -215,9 +215,9 @@ async function matchItems(items, supplierId = null) {
                 const { rows: spRows } = await pool.query(
                     `SELECT sp.id FROM supplier_products sp
                      WHERE sp.supplier_id = $1
-                       AND (UPPER(sp.sku) = UPPER($2) OR UPPER(sp.sku) LIKE UPPER($3))
+                       AND UPPER(sp.sku) = UPPER($2)
                      LIMIT 1`,
-                    [supplierId, item.codigo, `%${item.codigo}%`]
+                    [supplierId, item.codigo]
                 );
 
                 if (spRows.length > 0) {
@@ -345,7 +345,8 @@ async function matchItems(items, supplierId = null) {
             confidence_match:  confidence,
             match_level:       matchLevel,
             error_match:       errorMsg,
-            estado_item:       matched ? 'matched' : 'pending',
+            // El parecido de nombre queda como sugerencia: el operador lo acepta en el preview.
+            estado_item:       matched && matchLevel !== 'fuzzy_name' ? 'matched' : 'pending',
             precio_odoo_anterior: matched ? parseFloat(matched.standard_price || 0) : null,
             precio_odoo_lista:    matched ? parseFloat(matched.list_price    || 0) : null,
             supplier_product_id:   null,

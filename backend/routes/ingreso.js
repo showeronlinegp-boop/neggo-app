@@ -505,13 +505,28 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             );
         }
 
-        // Restaurar item rechazado: vuelve a matched si tenía producto, pending si no
+        // Restaurar item rechazado. Una sugerencia fuzzy sigue pendiente hasta aceptarla.
         if (estado_item === 'restore') {
             const currentItem = itemResult.rows[0];
-            const estadoRestaurado = currentItem.odoo_product_id ? 'matched' : 'pending';
+            const sugerenciaFuzzy = currentItem.match_level === 'fuzzy_name' && currentItem.odoo_product_id;
+            const estadoRestaurado = currentItem.odoo_product_id && !sugerenciaFuzzy ? 'matched' : 'pending';
             await pool.query(
                 `UPDATE ingreso_items SET estado_item = $1, motivo_rechazo = NULL WHERE id = $2`,
                 [estadoRestaurado, itemId]
+            );
+        }
+
+        // Aceptar la sugerencia fuzzy: solo cambia el estado local, no escribe en Odoo.
+        if (estado_item === 'accept_suggestion') {
+            const currentItem = itemResult.rows[0];
+            if (currentItem.match_level !== 'fuzzy_name' || !currentItem.odoo_product_id) {
+                return fail(res, 'No hay una sugerencia para aceptar', 400);
+            }
+            await pool.query(
+                `UPDATE ingreso_items
+                 SET estado_item = 'matched', match_level = 'fuzzy_accepted', error_match = NULL
+                 WHERE id = $1`,
+                [itemId]
             );
         }
 

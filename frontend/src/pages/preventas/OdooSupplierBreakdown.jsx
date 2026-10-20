@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../../api/client';
+import { useToast } from '../../context/ToastContext';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR } from '../../theme/tokens';
 import Card from '../../components/common/Card';
@@ -24,7 +25,14 @@ async function downloadPDF(supplier) {
             total_qty:     supplier.total_qty,
         }),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+        let message = 'No se pudo generar el PDF';
+        try {
+            const body = await res.json();
+            if (body?.error) message = body.error;
+        } catch { /* el cuerpo no es JSON */ }
+        throw new Error(message);
+    }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -57,6 +65,7 @@ function downloadCSV(data, supplierNameFilter = null) {
 
 export default function OdooSupplierBreakdown() {
     const { tokens: t } = useTheme();
+    const { showToast } = useToast();
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -165,8 +174,13 @@ export default function OdooSupplierBreakdown() {
                                                 disabled={pdfLoading === key}
                                                 onClick={async () => {
                                                     setPdfLoading(key);
-                                                    await downloadPDF(supplier);
-                                                    setPdfLoading(null);
+                                                    try {
+                                                        await downloadPDF(supplier);
+                                                    } catch (err) {
+                                                        showToast(err.message || 'No se pudo generar el PDF', 'error');
+                                                    } finally {
+                                                        setPdfLoading(null);
+                                                    }
                                                 }}
                                             >
                                                 {pdfLoading === key ? 'Generando…' : 'PDF'}

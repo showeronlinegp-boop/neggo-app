@@ -55,7 +55,7 @@ export default function Dashboard() {
 
                 setStats({
                     alertsPending: alertsSummary.success ? alertsSummary.data?.pending ?? 0 : '—',
-                    activeOrders:  ordersRes.success  ? (ordersRes.total ?? ordersRes.data?.length ?? 0) : '—',
+                    activeOrders:  ordersRes.success  ? (ordersRes.pagination?.total ?? ordersRes.data?.length ?? 0) : '—',
                     unmappedProducts: mappingsRes.success ? (mappingsRes.total ?? mappingsRes.data?.length ?? 0) : '—',
                     lastRun: runsRes.success && runsRes.data?.[0] ? runsRes.data[0] : null,
                 });
