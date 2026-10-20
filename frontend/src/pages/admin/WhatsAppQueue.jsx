@@ -7,6 +7,13 @@ import ProductThumb from '../../components/common/ProductThumb';
 import { fmtWhen, fmtCountdown, odooImageUrl } from './whatsappUtils';
 
 const VISIBLE = 60;
+// Más de un minuto después de lo programado ya cuenta como atraso.
+const LATE_MS = 60_000;
+
+function delayMs(m) {
+    if (!m.eta) return 0;
+    return new Date(m.eta).getTime() - new Date(m.scheduled_at).getTime();
+}
 
 // Lo que falta publicar, en orden, con cuenta regresiva por foto.
 export default function WhatsAppQueue({ refreshKey }) {
@@ -37,11 +44,13 @@ export default function WhatsAppQueue({ refreshKey }) {
 
     const serverNow = now + skew;
     const next = messages.find((m) => m.batch_status !== 'pausada');
+    const nextDelay = next ? delayMs(next) : 0;
 
     function countdown(m) {
         if (m.batch_status === 'pausada') return <Badge tone="warn">Pausada</Badge>;
         if (m.status === 'enviando') return <Badge tone="primary">Enviando…</Badge>;
-        const ms = new Date(m.scheduled_at).getTime() - serverNow;
+        // La hora estimada (eta) ya tiene en cuenta el atraso y el intervalo entre fotos.
+        const ms = new Date(m.eta || m.scheduled_at).getTime() - serverNow;
         if (ms <= 0) return <Badge tone="primary">En instantes</Badge>;
         return <span style={{ ...t.numericStyle, fontWeight: t.font.weight.semibold }}>{fmtCountdown(ms)}</span>;
     }
@@ -62,6 +71,12 @@ export default function WhatsAppQueue({ refreshKey }) {
                     </span>
                 )}
             </div>
+            {nextDelay > LATE_MS && (
+                <p style={{ margin: 0, padding: `0 ${t.space[5]}px ${t.space[3]}px`, color: t.color.textMuted, fontSize: t.font.size.sm }}>
+                    <Badge tone="warn">Atrasada {Math.round(nextDelay / 60_000)} min</Badge>{' '}
+                    Igual salen de a una, cada {next.interval_seconds} s: no se mandan todas juntas. «Sale» muestra la hora estimada.
+                </p>
+            )}
             <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: t.font.family, fontSize: t.font.size.sm }}>
                     <thead>
@@ -89,7 +104,14 @@ export default function WhatsAppQueue({ refreshKey }) {
                                 <td style={{ ...td, ...t.numericStyle, whiteSpace: 'nowrap' }}>{m.price_label}</td>
                                 <td style={td}>{m.category || '—'}</td>
                                 <td style={td}>{m.group_name}</td>
-                                <td style={{ ...td, ...t.numericStyle, whiteSpace: 'nowrap' }}>{fmtWhen(m.scheduled_at)}</td>
+                                <td style={{ ...td, ...t.numericStyle, whiteSpace: 'nowrap' }}>
+                                    <div>{fmtWhen(m.eta || m.scheduled_at)}</div>
+                                    {delayMs(m) > LATE_MS && (
+                                        <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
+                                            programada {fmtWhen(m.scheduled_at)}
+                                        </div>
+                                    )}
+                                </td>
                                 <td style={{ ...td, whiteSpace: 'nowrap' }}>{countdown(m)}</td>
                             </tr>
                         ))}
