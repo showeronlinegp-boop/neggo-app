@@ -3,6 +3,7 @@
 // GET    /api/pedido-envios/:id
 // POST   /api/pedido-envios/sync                 { company? }
 // POST   /api/pedido-envios/:id/estado           { estado }  // armando: confirma Odoo + ata envío 1
+// POST   /api/pedido-envios/:id/cotizacion-enviada  { enviada: bool }  (solo en la app)
 // PATCH  /api/pedido-envios/items/:itemId        { qty_armada? | qty_controlada? }
 // POST   /api/pedido-envios/:id/escanear         { code }
 // POST   /api/pedido-envios/items/:itemId/faltante  { motivo: archivado|reponer|faltante }
@@ -81,6 +82,18 @@ router.post('/:id/estado', async (req, res) => {
         return ok(res, data);
     } catch (err) {
         return sendErr(res, err, 'Error cambiando estado del pedido');
+    }
+});
+
+router.post('/:id/cotizacion-enviada', async (req, res) => {
+    try {
+        return ok(res, await servicio.marcarCotizacionEnviada(
+            parseInt(req.params.id, 10),
+            req.body?.enviada !== false,
+            req.user.id
+        ));
+    } catch (err) {
+        return sendErr(res, err, 'Error marcando cotización enviada');
     }
 });
 

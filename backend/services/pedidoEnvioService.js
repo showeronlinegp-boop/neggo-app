@@ -25,6 +25,9 @@ const SCHEMA_035 = fs.readFileSync(
 const SCHEMA_036 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '036_pedido_envios_picking_state.sql'), 'utf8'
 );
+const SCHEMA_037 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '037_pedido_envios_cotizacion.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
@@ -34,11 +37,13 @@ const SELECT_ENVIO = `
     SELECT e.*,
            ua.display_name AS assembled_by_name,
            uc.display_name AS checked_by_name,
-           us.display_name AS saldado_by_name
+           us.display_name AS saldado_by_name,
+           uq.display_name AS cotizacion_enviada_by_name
       FROM pedido_envios e
       LEFT JOIN users ua ON ua.id = e.assembled_by
       LEFT JOIN users uc ON uc.id = e.checked_by
       LEFT JOIN users us ON us.id = e.saldado_by
+      LEFT JOIN users uq ON uq.id = e.cotizacion_enviada_by
 `;
 
 function httpError(message, statusCode) {
@@ -678,6 +683,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_034);
     await db.query(SCHEMA_035);
     await db.query(SCHEMA_036);
+    await db.query(SCHEMA_037);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -1025,6 +1031,28 @@ async function cambiarEstado(id, estado, userId) {
     return obtener(id);
 }
 
+// Marca/desmarca que la cotización ya se le mandó al cliente (solo en la app, no toca Odoo)
+async function marcarCotizacionEnviada(id, enviada, userId) {
+    const { rows: [row] } = await pool.query(
+        `UPDATE pedido_envios
+            SET cotizacion_enviada_at = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_at, NOW()) END,
+                cotizacion_enviada_by = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_by, $3) END,
+                updated_at = NOW()
+          WHERE id = $1
+          RETURNING id`,
+        [id, Boolean(enviada), userId]
+    );
+    if (!row) throw httpError('Pedido no encontrado', 404);
+    await logActividad(userId, enviada ? 'COTIZACION_ENVIADA' : 'COTIZACION_NO_ENVIADA', id, {});
+    const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
+    return {
+        id: envio.id,
+        cotizacion_enviada_at: envio.cotizacion_enviada_at,
+        cotizacion_enviada_by: envio.cotizacion_enviada_by,
+        cotizacion_enviada_by_name: envio.cotizacion_enviada_by_name,
+    };
+}
+
 async function setQty(itemId, campo, qty, userId) {
     if (campo !== 'qty_armada' && campo !== 'qty_controlada') {
         throw httpError('Campo de cantidad inválido', 400);
@@ -1283,6 +1311,7 @@ module.exports = {
     obtener,
     syncDesdeOdoo,
     cambiarEstado,
+    marcarCotizacionEnviada,
     setQty,
     escanear,
     marcarFaltante,
