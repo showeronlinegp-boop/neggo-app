@@ -27,7 +27,7 @@ ARG CACHEBUST=1
 RUN echo "cachebust=$CACHEBUST"
 COPY . .
 
-RUN mkdir -p /app/storage/catalogs /app/storage/photos
+RUN mkdir -p /app/storage/catalogs /app/storage/photos/odoo
 
 EXPOSE 3000
 CMD ["node", "server.js"]
