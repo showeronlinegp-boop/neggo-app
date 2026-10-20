@@ -152,7 +152,10 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(true);
         const res = await api.post(`/pedido-envios/${id}/estado`, { estado });
         setTrabajando(false);
-        aplicar(res);
+        const okMsg = estado === 'armando' && res.success && res.data?.odoo_picking_name
+            ? `Atado al envío 1: ${res.data.odoo_picking_name}.`
+            : null;
+        aplicar(res, okMsg);
     };
 
     const setQtyAbs = async (item, qty, okMsg) => {
@@ -266,6 +269,11 @@ export default function PedidoEnvioDetalle() {
                     {envio.checked_by_name && (
                         <div style={{ fontSize: 12, color: t.color.textFaint }}>Controló {envio.checked_by_name}</div>
                     )}
+                    {envio.odoo_picking_name && (
+                        <div style={{ fontSize: 12, color: t.color.textFaint, marginTop: 4 }}>
+                            Envío 1: {envio.odoo_picking_name}
+                        </div>
+                    )}
                     {envio.backorder_odoo_name && (
                         <div style={{ fontSize: 12, color: t.color.success, marginTop: 4 }}>Pendientes: {envio.backorder_odoo_name}</div>
                     )}
@@ -276,11 +284,17 @@ export default function PedidoEnvioDetalle() {
                 {envio.estado === 'pendiente' && (
                     <Button variant="primary" disabled={trabajando} onClick={() => setEstado('armando')}
                         style={{ height: 48, flex: 1, minWidth: 160 }}>
-                        Empezar a armar
+                        {trabajando ? 'Confirmando en Odoo…' : 'Empezar a armar'}
                     </Button>
                 )}
                 {envio.estado === 'armando' && (
                     <>
+                        {!envio.odoo_picking_id && (
+                            <Button variant="primary" disabled={trabajando} onClick={() => setEstado('armando')}
+                                style={{ height: 48, flex: 1, minWidth: 160 }}>
+                                {trabajando ? 'Confirmando en Odoo…' : 'Confirmar en Odoo y atar envío 1'}
+                            </Button>
+                        )}
                         <Button variant="success" disabled={trabajando} onClick={() => setEstado('armado')}
                             style={{ height: 48, flex: 1, minWidth: 160 }} leftIcon={<Icon.Check size={16} />}>
                             Terminar armado

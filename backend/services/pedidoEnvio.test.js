@@ -12,6 +12,10 @@ const {
     refPendientes,
     ordenFacturada,
     esCotizacionParaArmar,
+    odooNecesitaConfirmar,
+    odooYaConfirmada,
+    primerPickingSalida,
+    auditarEmpezarArmar,
     auditarSaldar,
 } = require('./pedidoEnvioService');
 
@@ -174,6 +178,54 @@ function testCotizacionParaArmar() {
     assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
 }
 
+function testConfirmarAlEmpezar() {
+    assert.strictEqual(odooNecesitaConfirmar('draft'), true);
+    assert.strictEqual(odooNecesitaConfirmar('sent'), true);
+    assert.strictEqual(odooNecesitaConfirmar('sale'), false);
+    assert.strictEqual(odooNecesitaConfirmar('done'), false);
+    assert.strictEqual(odooYaConfirmada('sale'), true);
+    assert.strictEqual(odooYaConfirmada('done'), true);
+    assert.strictEqual(odooYaConfirmada('sent'), false);
+
+    assert.strictEqual(auditarEmpezarArmar(null).ok, false);
+    assert.strictEqual(auditarEmpezarArmar(null).statusCode, 404);
+
+    const cancelada = auditarEmpezarArmar(odooOrder({ state: 'cancel' }));
+    assert.strictEqual(cancelada.ok, false);
+    assert.match(cancelada.error, /cancelada/);
+
+    const rara = auditarEmpezarArmar(odooOrder({ state: 'waiting' }));
+    assert.strictEqual(rara.ok, false);
+    assert.match(rara.error, /waiting/);
+
+    const draft = auditarEmpezarArmar(odooOrder({ state: 'draft' }));
+    assert.strictEqual(draft.ok, true);
+    assert.strictEqual(draft.needsConfirm, true);
+
+    const sent = auditarEmpezarArmar(odooOrder({ state: 'sent' }));
+    assert.strictEqual(sent.ok, true);
+    assert.strictEqual(sent.needsConfirm, true);
+
+    const sale = auditarEmpezarArmar(odooOrder({ state: 'sale' }));
+    assert.strictEqual(sale.ok, true);
+    assert.strictEqual(sale.needsConfirm, false);
+}
+
+function testPrimerPickingSalida() {
+    assert.strictEqual(primerPickingSalida([]), null);
+    assert.strictEqual(primerPickingSalida(null), null);
+    const primero = primerPickingSalida([
+        { id: 88, name: 'WH/IN/0001', picking_type_code: 'incoming' },
+        { id: 91, name: 'WH/OUT/0002', picking_type_code: 'outgoing' },
+        { id: 90, name: 'WH/OUT/0001', picking_type_code: 'outgoing' },
+    ]);
+    assert.deepStrictEqual(primero, { id: 90, name: 'WH/OUT/0001' });
+    assert.deepStrictEqual(
+        primerPickingSalida([{ id: 5, name: 'OUT/1' }]),
+        { id: 5, name: 'OUT/1' }
+    );
+}
+
 function testAuditarSent() {
     const r = auditar([item()], odooOrder({ state: 'sent' }));
     assert.strictEqual(r.ok, true);
@@ -265,6 +317,8 @@ testAuditarEscribeParcialYCero();
 testAuditarYaAplicado();
 testAuditarDrift();
 testCotizacionParaArmar();
+testConfirmarAlEmpezar();
+testPrimerPickingSalida();
 testAuditarSent();
 testAuditarFacturada();
 testAuditarEntregadaYLocked();

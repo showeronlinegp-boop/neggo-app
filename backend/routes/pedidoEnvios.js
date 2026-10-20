@@ -62,11 +62,15 @@ router.get('/:id', async (req, res) => {
 
 router.post('/:id/estado', async (req, res) => {
     try {
-        return ok(res, await servicio.cambiarEstado(
+        const data = await servicio.cambiarEstado(
             parseInt(req.params.id, 10),
             req.body?.estado,
             req.user.id
-        ));
+        );
+        if (req.body?.estado === 'armando' && data.odoo_picking_name) {
+            console.log(`✅ Pedido ${data.odoo_order_name} armando · envío ${data.odoo_picking_name}`);
+        }
+        return ok(res, data);
     } catch (err) {
         return sendErr(res, err, 'Error cambiando estado del pedido');
     }

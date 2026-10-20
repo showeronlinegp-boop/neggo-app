@@ -677,7 +677,11 @@ async function cambiarEstado(id, estado, userId) {
         );
     }
 
-    await logActividad(userId, `ESTADO_${estado.toUpperCase()}`, id, { de: actual, a: estado });
+    await logActividad(userId, `ESTADO_${estado.toUpperCase()}`, id, {
+        de: actual,
+        a: estado,
+        odoo_picking: odooPatch?.picking?.name || envio.odoo_picking_name || null,
+    });
     return obtener(id);
 }
 

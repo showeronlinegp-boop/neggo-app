@@ -72,7 +72,7 @@ export default function PedidoEnvios() {
                         Armado y control
                     </h1>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, fontFamily: t.font.family }}>
-                        Armás las cotizaciones enviadas. Las facturadas no aparecen. Al cerrar, Odoo queda con lo que salió y se arma un pedido con lo que faltó.
+                        Al empezar a armar se confirma el pedido en Odoo y se ata al envío 1. Las facturadas no aparecen. Al cerrar, Odoo queda con lo que salió y se arma un pedido con lo que faltó.
                     </div>
                 </div>
                 <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={syncing} onClick={sync}
@@ -177,7 +177,7 @@ export default function PedidoEnvios() {
                                         {it.partner_name || 'Sin cliente'}
                                     </div>
                                     <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 4, ...t.numericStyle }}>
-                                        {fmtFecha(it.date_order)} · {it.n_items} ítems · {hecha}/{pedida} u.
+                                        {fmtFecha(it.date_order)} · {it.n_items} ítems · {hecha}/{pedida} u.{it.odoo_picking_name ? ` · ${it.odoo_picking_name}` : ''}
                                     </div>
                                 </div>
                                 <Icon.ChevronRight size={18} />
