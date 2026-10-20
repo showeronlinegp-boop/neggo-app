@@ -2,6 +2,8 @@
 
 Lectura estática de `master` (`af61429`, 19 de octubre de 2026). No se cambió código de la aplicación y no se llamó a Odoo. Cada ítem trae importancia, consecuencia de negocio y arreglo mínimo.
 
+La revisión que sigue, antes del recorrido módulo por módulo, es la de proveedores, scraping, ingresos, WhatsApp, pedidos por proveedor y reposición. WhatsApp no está en `master`: el código vive solo en el PR #5. Reposición no tiene rutas ni pantallas: solo el schema y `docs/agents/14-smart-purchasing.md`. Los ítems que ya estaban más abajo se repiten acá para leerlos juntos.
+
 Dentro de cada módulo van primero los críticos, después altos, medios y bajos. Si un PR abierto ya lo cubre, está marcado. Esos PR todavía no están en `master`.
 
 | PR | Qué cierra |
@@ -9,7 +11,367 @@ Dentro de cada módulo van primero los críticos, después altos, medios y bajos
 | [#2](https://github.com/showeronlinegp-boop/neggo-app/pull/2) | Columnas que el código lee y el schema no crea, y el índice `idx_pco_pricelist` que aborta una base vacía. |
 | [#3](https://github.com/showeronlinegp-boop/neggo-app/pull/3) | PDF de catálogos: miles, logo, categorías al cambiar de tipo, reglas ignoradas. Depende del #2. |
 | [#4](https://github.com/showeronlinegp-boop/neggo-app/pull/4) | Pedidos x Proveedor: paginado de cotizaciones, timeouts, líneas sin producto, agrupado, PDF y Chrome. Depende del #2. No toca Órdenes a proveedores. |
-| [#5](https://github.com/showeronlinegp-boop/neggo-app/pull/5) | WhatsApp nuevo. No corrige bugs de `master`. |
+| [#5](https://github.com/showeronlinegp-boop/neggo-app/pull/5) | WhatsApp nuevo. No corrige bugs de `master`. Trae los de la sección W. |
+
+## Revisión prioritaria
+
+### P. Proveedores
+
+#### Alto — Desactivar borra el catálogo, y la pantalla dice que se puede volver atrás
+
+`suppliers.js:361-386`, `SupplierList.jsx:248-254`, `schema.sql:137`, `149`, `181`, `migrations/009_preventas_sync_state.sql:7`.
+
+**Importancia.** Alta: es el botón de la lista de proveedores. El diálogo dice "Esta acción se puede revertir". El `DELETE` pone `active = false` y además hace `DELETE FROM supplier_products`. La cascada se lleva historial de precios, vínculos con Odoo y el estado de sync de Preventas. El mismo borrado está en "eliminar todos los productos" (`suppliers.js:334-347`, `SupplierRules.jsx:175-176`).
+
+**Consecuencias.** Se pierde el catálogo de ese proveedor. El ingreso deja de matchear por código, Preventas no tiene contra qué comparar y las alertas no vuelven a disparar hasta re-scrapear y re-vincular. Reactivar la fila del proveedor no devuelve los productos. No es una baja lógica.
+
+**Cómo arreglarlo.** Desactivar solo con `active = false` (y, si corresponde, `status = 'inactive'`). El borrado físico de productos, en una acción aparte, con el texto real de lo que se pierde.
+
+#### Alto — El prefijo no es único, y cambiarlo no reescribe los códigos
+
+`schema.sql:43`, `suppliers.js:222`, `baseScraper.js:145-146`, `ingreso.js:1495` y `2118`, `SupplierRules.jsx:157-161`.
+
+**Importancia.** Alta porque el prefijo arma el SKU `PRE` + prefijo + código. Ese SKU es el que usa el scraping para no pisar productos, y el ingreso y Preventas para encontrar el artículo. El nombre del proveedor es único; el prefijo no.
+
+**Consecuencias.** Dos proveedores con el mismo prefijo generan el mismo `PRE…`. El match del ingreso puede agarrar el producto del otro. Si se edita el prefijo en la ficha, los SKU ya scrapeados quedan con el prefijo viejo y las búsquedas nuevas usan el nuevo: la factura deja de identificar la mercadería y Preventas no encuentra el par. Hay que re-scrapear y re-vincular.
+
+**Cómo arreglarlo.** `UNIQUE` en `prefix`. Al cambiarlo, reescribir `supplier_products.sku` en la misma transacción, o bloquear el cambio si ya hay productos.
+
+#### Alto — Un proveedor en staging se ve activo y puede publicarse
+
+`schema.sql:47-55`, `suppliers.js:93-100` y `140-152`, `catalogService.js:237-238` y `394`, `scrapingService.js:37-39`, `scheduler.js:26`, `SupplierList.jsx:110-112`. El cron sí exige `status = 'active'`. El catálogo, el scrape manual, Pedidos x Proveedor (PR #4) y WhatsApp (PR #5) no.
+
+**Importancia.** Alta porque `staging` es el estado de un proveedor que todavía no se quiere usar. El alta lo deja en `staging` con `active = true`. La lista muestra el badge "Activo" mirando `active`, no `status`. El detalle (`GET /:id`) ni siquiera devuelve `status`, así que la pantalla de reglas no puede mostrarlo.
+
+**Consecuencias.** Con `is_published = true` entra al PDF del catálogo antes de promoverlo: el cliente pide algo que no está listo. El scrape manual corre en staging y, si termina mal, dispara el borrado de la sección S. En el PR #4 la compra se puede agrupar contra ese proveedor. En el PR #5 el producto se puede mandar al grupo de WhatsApp.
+
+**Cómo arreglarlo.** Filtrar `status = 'active'` en catálogo, scrape manual, agrupado de pedidos y WhatsApp. Mostrar `status` en la lista y devolverlo en el detalle. Promover sigue siendo el único paso que lo habilita.
+
+#### Medio — La clave del scraper no se edita, y el arranque la vuelve a escribir
+
+`suppliers.js:212-217`, `initDatabase.js:86-106`. El detalle del secreto está en la sección 12.
+
+**Importancia.** Media para operar el día a día, crítica si el repo o la base se leen desde afuera. `PUT` no acepta `scrape_config`. La ficha no tiene campo. Si la config quedó `{}`, cada arranque vuelve a grabar el usuario y la clave de Mali y el token de El Rey.
+
+**Consecuencias.** No se puede rotar la clave desde la app. Quien lee el código entra a la cuenta del proveedor y ve el costo real, que es la base del precio de venta.
+
+**Cómo arreglarlo.** Sacar las cadenas del código (sección 12). Guardar la config por variable de entorno, y un formulario de admin que la escriba sin loguearla.
+
+#### Bajo — Un campo vacío en el alta no se puede borrar después
+
+`suppliers.js:220-233`, `SupplierList.jsx:305-312`.
+
+**Importancia.** Baja. El 0 de markup sí se guarda (a diferencia del ingreso, sección 3). Lo que no se puede es volver un campo opcional a vacío: `COALESCE` conserva el valor anterior cuando el body manda `null`.
+
+**Consecuencias.** Un sitio web, un cron o un `scraper_key` mal cargado quedan pegados. El cron sigue disparando, o el scraper sigue asociado al proveedor equivocado, hasta un arreglo en la base.
+
+**Cómo arreglarlo.** Distinguir "no vino la clave" de "vino null". Solo el segundo limpia la columna.
+
+### S. Scraping
+
+#### Crítico — Pausar, o terminar en cero, borra el catálogo del proveedor
+
+`pythonScraper.js:84-112` y `117-118`, `261-267`, `baseScraper.js:316-322` y `530-532`, `mali_scraper.py:52-54`. El mismo ítem está en la sección 10.
+
+**Importancia.** Crítica. Es el origen de los precios de catálogo, de las alertas y de los vínculos con Odoo. `markUnavailableSince` hace `DELETE` de todo producto del proveedor con `last_scraped_at` anterior al run. La cascada se lleva historial, `product_mappings` y `preventas_sync_state`. Corre también si el proceso fue pausado con `SIGTERM`, si Python sale con código 0 y 0 productos (el login de Mali trata `NoSuchElementException` como sesión ya activa) y, en el camino Puppeteer, cuando el estado es `partial`.
+
+**Consecuencias.** Se vacía el catálogo de Cast, Mali, El Rey o Impotekno. El ingreso deja de matchear, Preventas no compara, las alertas no disparan y los pedidos que apuntaban a esos `supplier_product_id` quedan colgados. No es un precio viejo: es la base de precios borrada.
+
+**Cómo arreglarlo.** No borrar en `paused`, `failed` ni `partial`. En `completed`, no borrar si `found` es 0 o cayó por debajo de la mitad del catálogo anterior. Marcar `available = false`. El delete, si hace falta, como acción aparte.
+
+#### Alto — Sin SKU, todos esos productos pisan la misma fila
+
+`baseScraper.js:145-146` y `223-261`. También en la sección 10.
+
+**Importancia.** Alta en cualquier página que no traiga código. El SKU queda `PRE` + prefijo, vacío el resto. El segundo producto pisa nombre y precio del primero.
+
+**Consecuencias.** Un solo precio para muchos artículos. El delete del ítem anterior borra lo que no se "vio". El catálogo queda con un producto que no corresponde a ninguno.
+
+**Cómo arreglarlo.** Si no hay código, no insertar. No usar esa fila en el delete.
+
+#### Medio — Mali lee un precio argentino como un decimal chico
+
+`mali_scraper.py:59-66`. Cast y El Rey sí separan miles (`cast_scraper.py:76`, `elrey_scraper.py:60`). También en la sección 10.
+
+**Importancia.** Media si Mali manda `$310.00`. Alta si manda `$1.234,56`.
+
+**Consecuencias.** `$1.234,56` queda `1.23456`. Ese costo entra al catálogo y, si está vinculado a Preventas, se escribe solo en Odoo (sección 9). Se vende a pesos en lugar de a miles.
+
+**Cómo arreglarlo.** El parser de Cast: si hay punto y coma, el último separador es el decimal.
+
+#### Medio — Pueden correr más de dos scrapers a la vez
+
+`scrapingService.js:28-71`. También en la sección 10.
+
+**Importancia.** Media. El tope existe para no tumbar Chrome ni el sitio del proveedor. El contador sube después del `await` que lee el proveedor, así que dos pedidos pasan el `if` con el contador viejo.
+
+**Consecuencias.** Un tercer Chromium compite, el sitio puede bloquear la IP y el run termina a medias. Junto con el delete crítico, un run a medias borra el resto del catálogo.
+
+**Cómo arreglarlo.** Subir `runningCount` antes del primer `await`. Bajarlo en el `finally` si el proveedor no se puede scrapear.
+
+#### Bajo — El camino Python no marca categorías pendientes al terminar
+
+`baseScraper.js:554`. Los cuatro scrapers reales extienden `PythonScraper`. También en la sección 10.
+
+**Importancia.** Baja. La pantalla igual lista el faltante con `GET /api/suppliers/:id/unmapped-categories`.
+
+**Consecuencias.** El badge puede no enterarse por este camino. Esas categorías no entran al catálogo hasta que alguien cree la regla. No se pierden productos ya cargados.
+
+**Cómo arreglarlo.** Llamar a `detectPendingCategories()` al final de `PythonScraper.run` cuando el estado es `completed`.
+
+### I. Ingresos
+
+#### Crítico — Sin las columnas nuevas no se guarda el reparto ni la OC de Preventas
+
+`ingresoService.js:524`, `ingreso.js:590`, `ingresoService.js:730` y `891`. **Cubierto por el PR #2.** El mismo ítem está en la sección 6.
+
+**Importancia.** Crítica en una base que no haya corrido las migraciones a mano.
+
+**Consecuencias.** No se guarda el preview, o toda la cantidad sigue a Neggo. En el peor caso Odoo ya creó la OC de Preventas, el `UPDATE` falla, Postgres hace rollback y reintentar crea otra OC.
+
+**Cómo arreglarlo.** El del PR #2, más el arreglo del confirm de abajo.
+
+#### Alto — Confirmar cierra el ingreso aunque la OC no exista, y dos clicks crean dos
+
+`ingresoService.js:643-650` y `859-895`, `ingreso.js:1911-1913`, `IngresoPreview.jsx:2343-2345`. El PR #2 cubre la columna. No cubre este flujo. También en la sección 6.
+
+**Importancia.** Alta en cada factura. El error de `createPurchaseOrder` se traga y el estado pasa a `confirmado`. No hay `SELECT … FOR UPDATE`. Las llamadas a Odoo están dentro del `BEGIN`.
+
+**Consecuencias.** Compra que no existe y no se puede reintentar, o dos OC por la misma factura. Precios ya escritos en Odoo que la base no registra. La OC queda en borrador: confirmar el ingreso no mueve stock (`odooService.js:640-663` no llama a `button_confirm`; sección 5).
+
+**Cómo arreglarlo.** `SELECT … FOR UPDATE`. Pasar a `confirmando` y guardar el id de cada OC en cuanto Odoo lo devuelve. Si el `create` falla, dejar `pending`.
+
+#### Alto — El costo que se escribe en Odoo no es el del catálogo ni el de WhatsApp
+
+`ingresoService.js:742-759`, `rulesEngine.js:9-11` y `37-39`. Ningún PR #2-#5 lo unifica. El markup 0 tratado como "no configurado" está en la sección 3.
+
+**Importancia.** Alta cada vez que se confirma una factura con "aplicar costo" o "aplicar precio". El catálogo, las alertas y el WhatsApp del PR #5 usan `rulesEngine`: costo = lista × (1 − descuento/100 + 0,015) y venta = lista × 1,015 × (1 + markup/100), redondeada hacia arriba. El ingreso hace lista × (1 − descuento/100), suma el flete prorrateado del remito, y el precio de lista solo si el markup es mayor que 0.
+
+**Consecuencias.** El PDF y el mensaje de WhatsApp muestran un precio. Odoo, después del ingreso, tiene otro. Se cobra de menos o de más según desde qué pantalla se vendió. Un markup de 0% no actualiza la lista con la fórmula del catálogo.
+
+**Cómo arreglarlo.** Calcular costo y venta con `rulesEngine` y, encima, sumar el prorrateo del flete del remito. Mostrar en el preview el número que va a quedar en Odoo.
+
+#### Alto — El código `100` se vincula al producto `1001`
+
+`ingresoService.js:218-220`. En el plan, sin PR. También en la sección 6.
+
+**Importancia.** Alta en cada factura. El match es `LIKE '%' || codigo || '%'` y, si pega, la confianza queda en 1.
+
+**Consecuencias.** El costo y el precio de lista se escriben en el producto equivocado. La OC compra un artículo que no vino. El que sí vino no actualiza stock ni precio.
+
+**Cómo arreglarlo.** Igualdad contra el SKU normalizado (`ingresoService.js:274-289`). Sacar el `LIKE`.
+
+#### Alto — Un parecido de nombre de 0,72 se acepta solo
+
+`ingresoService.js:316-320`, `IngresoPreview.jsx:448`. También en la sección 6.
+
+**Importancia.** Alta porque el estado queda `matched`, el mismo que un código exacto.
+
+**Consecuencias.** Precio y OC sobre otro producto. Dos artículos de nombre parecido se mezclan.
+
+**Cómo arreglarlo.** Dejar `fuzzy_name` en `pending` hasta que una persona lo acepte.
+
+#### Alto — La cantidad de Preventas de un código repetido cae en un solo renglón
+
+`ingreso.js:2018-2032`, `IngresoPreview.jsx:2063`. También en la sección 6.
+
+**Importancia.** Alta en facturas con el mismo código en más de una línea.
+
+**Consecuencias.** La pantalla suma las cantidades, pero `preventa_qty_confirmed` se guarda en el primer id. El otro renglón entra entero a Neggo. Preventas queda corta y Neggo compra de más.
+
+**Cómo arreglarlo.** Repartir la cantidad de Preventas en todos los ítems de ese código, o fusionar los duplicados antes de confirmar.
+
+#### Alto — La pestaña Preventa propone un pedido de otro cliente por el nombre
+
+`ingreso.js:2142-2147`. El timeout de esa lectura lo cubre el PR #4. El match, no. También en la sección 6.
+
+**Importancia.** Alta al separar la mercadería contra cotizaciones abiertas.
+
+**Consecuencias.** Se reserva cantidad para el pedido de otro cliente. La OC de Preventas sale con el producto equivocado.
+
+**Cómo arreglarlo.** Proponer solo por código. El nombre queda como pista, sin seleccionar solo.
+
+#### Alto — Tildar "aplicar costo" también cambia el precio de lista, sin ser admin
+
+`ingreso.js:391` y `661-668`, `ingresoService.js:809-813`. También en la sección 6.
+
+**Importancia.** Alta porque escribe en Odoo antes de que un admin confirme, y la ruta solo pide estar logueado.
+
+**Consecuencias.** Si `apply_price` es false y `precio_odoo_lista` viene vacío, se manda el costo calculado como `list_price`. Cambian costo y precio de venta. Un operador pisa el precio que ven los clientes.
+
+**Cómo arreglarlo.** `requireRole('admin')` para escribir precios. Si `apply_price` es false, reenviar el `list_price` actual.
+
+#### Medio — La OC usa la cantidad facturada, no la recibida
+
+`IngresoPreview.jsx:148-213`, `ingresoService.js:731-776`. También en la sección 6.
+
+**Importancia.** Media si el control físico es solo un checklist. Alta si esa cantidad es la que entró.
+
+**Consecuencias.** Llegaron 3 de 10 y la OC carga 10. `received_qty` se edita en pantalla y no entra al cálculo.
+
+**Cómo arreglarlo.** Usar `received_qty` cuando es mayor que 0, o no dejar confirmar si el control no cierra contra la factura.
+
+#### Medio — En el buscador de cotizaciones, todas las filas sin id quedan elegidas
+
+`IngresoPreview.jsx:1396`. También en la sección 11.
+
+**Importancia.** Media, en el modal que vincula un renglón de la factura con una línea de cotización. `??` pierde contra `===`.
+
+**Consecuencias.** Si las líneas no traen `line_id`, todas se marcan. Se confirma la cantidad contra la cotización equivocada.
+
+**Cómo arreglarlo.** Comparar `line_id` solo si no es null, y si no, comparar `id` solo si no es null.
+
+#### Medio — La foto del producto se baja sin login
+
+`ingreso.js:93`, `products.js:476`. También en la sección 6.
+
+**Importancia.** Media en la LAN. Alta si el puerto 80 o el 3000 se publican.
+
+**Consecuencias.** No cambia precios. Cualquiera que adivine el id baja la foto de Odoo con la API key del servidor.
+
+**Cómo arreglarlo.** `authenticate` en las dos rutas.
+
+### W. WhatsApp
+
+No está en `master`. Todo esto es del PR #5 (`cursor/whatsapp-evolution-f7f3`), que además necesita las columnas del PR #2 (`has_image`, `template_id`, markups, `locally_archived`). Las rutas piden admin. El precio es el de catálogo (`whatsappPrice.js:1-2` y `42`), no el `list_price` de Odoo.
+
+#### Alto — Si el proceso muere después de que Evolution aceptó el mensaje, se manda otra vez
+
+`whatsappQueue.js:228-236`, `290` y `364-381`, en el PR #5.
+
+**Importancia.** Alta en una tanda al grupo de clientes. El worker marca `enviando` y suma el intento antes de llamar a Evolution. `markSent` corre después. Si el proceso cae en el medio, `recoverStuck` (a los 2 minutos) vuelve la fila a `pendiente` mientras queden intentos (el default es 3).
+
+**Consecuencias.** El grupo recibe el mismo producto, con el mismo precio, dos veces. No es un reintento de un envío que falló: Evolution ya lo había aceptado. Con tres caídas puede salir tres veces.
+
+**Cómo arreglarlo.** Guardar un id de idempotencia antes de enviar y no reenviar si Evolution ya devolvió id. Si no hay id y el estado es `enviando`, dejar la fila para revisión humana en vez de volverla a `pendiente`.
+
+#### Alto — Publica el proveedor de mayor confianza, aunque esté en staging o sin stock
+
+`whatsappProducts.js:16-27` y `77-90`, en el PR #5.
+
+**Importancia.** Alta porque es el precio que ve el grupo. La query pide `s.active`, producto no archivado, foto y regla de categoría. No pide `s.status = 'active'`, ni `s.is_published`, ni `sp.available`. `DISTINCT ON` se queda con el vínculo de mayor `match_confidence`.
+
+**Consecuencias.** Entra un proveedor que todavía no se promovió, o uno cuyo producto el scrape marcó como no disponible. Si hay dos proveedores, se publica el precio del match más confiado, que puede ser el más caro. El cliente pide a un número que no es el de la lista de Odoo ni el de su lista especial: la lista de cliente, en este PR, solo filtra proveedores y no baja el precio.
+
+**Cómo arreglarlo.** Exigir `status = 'active'`, `is_published` y `sp.available`. Elegir el proveedor por costo, no solo por confianza, y mostrar cuál se usó. Si el grupo es de un cliente con lista, aplicar el descuento de esa lista después de `rulesEngine`.
+
+#### Medio — La foto se manda siempre como JPEG
+
+`whatsappWorker.js:28`, en el PR #5. Odoo devuelve `image_512` o `image_128` sin decir el tipo.
+
+**Importancia.** Media. El mensaje igual sale si Evolution acepta el binario.
+
+**Consecuencias.** Una foto PNG etiquetada como `image/jpeg` puede llegar rota o no llegar. El cliente ve el texto del precio sin la imagen, o una imagen que no abre, y pide por un mensaje que no muestra el producto.
+
+**Cómo arreglarlo.** Detectar el tipo por los primeros bytes del base64 y mandar ese `mimetype` y esa extensión.
+
+### X. Pedidos por proveedor
+
+La pantalla es `/preventas/ordenes-odoo`. En `master` agrupa por `vendor_name` del cache y se corta en 200 cotizaciones. **El PR #4** pagina, saltea líneas sin producto, agrupa por el proveedor local, alarga el timeout y formatea el PDF de esta pantalla. Lo que sigue queda después de ese PR. El PDF de Órdenes a proveedores (`preventas.js:679` en `master`) no lo toca el #4; está en la sección 7.
+
+#### Alto — El costo que se le muestra al proveedor es el costo interno de Odoo
+
+`supplierBreakdown.js:65` y `preventas.js:798-815` en el PR #4. En `master`, el mismo `standard_price` está en `preventas.js` alrededor del armado de `by-supplier`.
+
+**Importancia.** Alta: ese número va al PDF que se le manda al proveedor. `standard_price` es el costo guardado en el cache de Preventas, no la lista actual del proveedor después del descuento.
+
+**Consecuencias.** Se le pide al proveedor un precio que puede ser el de la última carga, con flete o margen adentro. Si el costo interno es más alto que su lista, el PDF le muestra nuestro costo. Si es más bajo, la orden sale barata y el proveedor la rechaza o entrega otra cosa.
+
+**Cómo arreglarlo.** Usar el `raw_price` del `supplier_product` vinculado, pasado por la misma fórmula de costo que el ingreso. Si no hay vínculo, dejar el costo vacío y no inventarlo con `standard_price`.
+
+#### Alto — La cantidad es la de la cotización entera
+
+`supplierBreakdown.js:71-72` en el PR #4.
+
+**Importancia.** Alta en la compra del día. Se suma `line.quantity` de cada cotización abierta. No se resta el stock a mano, ni las OC abiertas, ni lo que ya está en un ingreso sin confirmar.
+
+**Consecuencias.** Se le vuelve a pedir al proveedor mercadería que ya está en depósito o que ya viene en camino. Cuando exista reposición (sección R), el mismo artículo se compra dos veces: una por esta pantalla y otra por la alerta de stock.
+
+**Cómo arreglarlo.** Cantidad a pedir = pedido de clientes − stock a mano − OC abiertas − ingreso en tránsito, con un piso de 0. Mostrar los tres descuentos en la fila.
+
+#### Alto — El vínculo de mayor confianza se queda con toda la cantidad
+
+`preventas.js:821-830` y `839-856` en el PR #4. El fallback es `vendor_name`, y si no hay nada, "Sin proveedor".
+
+**Importancia.** Alta cuando el mismo producto está mapeado a más de un proveedor. `DISTINCT ON` ordena por `match_confidence`. No mira el precio ni `status`.
+
+**Consecuencias.** Toda la cantidad va a un solo proveedor, que puede ser el más caro o uno que sigue en staging (sección P). El otro, que sí lo tiene en stock, no recibe el pedido. Lo que no matchea cae en "Sin proveedor" y el PDF no tiene a quién enviarse.
+
+**Cómo arreglarlo.** Filtrar `status = 'active'`. Si hay más de un proveedor, partir la cantidad o elegir por costo y mostrarlo. No mandar el PDF de "Sin proveedor" como si fuera una orden.
+
+#### Alto — El PDF puede leer un archivo del servidor
+
+`preventas.js:934-940` en `master`, cerca de la línea 927 en el PR #4. También en la sección 7.
+
+**Importancia.** Alta para cualquiera con sesión. `image_url` viene del body. `path.join` con un tramo absoluto sale de la carpeta de storage.
+
+**Consecuencias.** El PDF puede incluir `.env` o la clave de Odoo. Con eso se cambian precios, OC y pedidos.
+
+**Cómo arreglarlo.** `path.resolve` y rechazar si el archivo no queda debajo de `STORAGE`. Buscar la foto por id de producto en el servidor.
+
+### R. Reposición
+
+No hay módulo en ejecución. No hay rutas, servicios ni páginas. Hay tablas en `schema.sql:589-670` y el diseño en `docs/agents/14-smart-purchasing.md`. Estos son los agujeros para cerrar antes de construirlo. Ningún PR #2-#5 los toca.
+
+#### Crítico — La clave del competidor queda en texto plano
+
+`schema.sql:595`, `docs/agents/14-smart-purchasing.md:23`.
+
+**Importancia.** Crítica el día que se cargue el primer competidor. `login_password` es `VARCHAR(200)`, igual que el usuario, sin cifrar. El mismo diseño pide reutilizar el scraper de proveedores, que ya guarda secretos en la base (sección P).
+
+**Consecuencias.** Quien lee la base entra a la cuenta del competidor. Desde ahí ve sus precios. Esos precios iban a decidir si conviene comprar o bajar el nuestro.
+
+**Cómo arreglarlo.** No crear la columna en claro. Guardar el secreto cifrado o en una variable de entorno, y no devolverlo en el `GET`.
+
+#### Alto — El cron diario duplica alertas y sugerencias de compra
+
+`schema.sql:625-653`, `docs/agents/14-smart-purchasing.md:136-149`. `stock_alerts` y `purchase_suggestions` no tienen clave única. El diseño inserta cada mañana.
+
+**Importancia.** Alta: es la lista que va a disparar compras. `sales_seasonality` sí tiene `UNIQUE(category, month)`. Estas dos tablas no.
+
+**Consecuencias.** El mismo producto aparece dos veces como urgente. Se compran dos veces, o se descarta una alerta y la otra sigue pidiendo. Junto con Pedidos x Proveedor (sección X), el mismo SKU sale por las dos pantallas.
+
+**Cómo arreglarlo.** Una fila abierta por producto, empresa y tipo. El cron actualiza esa fila. No inserta otra si ya hay una `pending` o `active`.
+
+#### Alto — Los días de stock se parten por cero, y mezclan Neggo con Preventas
+
+`docs/agents/14-smart-purchasing.md:136-138`, `schema.sql:625-636`.
+
+**Importancia.** Alta en el primer producto que no vendió en la ventana. La fórmula es `days = qty_available / avg_daily_sales`. No hay columna `company`.
+
+**Consecuencias.** Con venta promedio 0 el cálculo es infinito o revienta el insert. Un producto con stock en Neggo y un pedido en Preventas se lee como una sola bolsa: se compra para la empresa que no lo necesita, o no se compra para la que se está quedando sin.
+
+**Cómo arreglarlo.** Si la venta promedio es 0, no dividir: alerta aparte ("sin ventas"). `company` en alertas, sugerencias y estacionalidad. Stock y ventas de esa empresa sola.
+
+#### Alto — El stock que leería no es el que acaba de entrar
+
+`docs/agents/14-smart-purchasing.md:136`, `ingresoService.js:862-875`, `odooService.js:640-663`. El sync de Odoo pisa `qty_available` del cache (sección 4). Confirmar un ingreso crea la OC en borrador y no llama a `button_confirm` ni mueve stock (sección 5).
+
+**Importancia.** Alta porque la alerta de stock bajo es el corazón de reposición. Va a leer un cache que el sync puede borrar o dejar viejo, y no va a ver la mercadería del ingreso de hoy.
+
+**Consecuencias.** Sugiere comprar lo que ya está en el camión o lo que ya se confirmó en la factura. O no sugiere nada porque el cache se borró en el sync y el producto "no existe". Se compra de más, o se pierde la venta por falta de stock que en realidad ya se pidió.
+
+**Cómo arreglarlo.** No construir la alerta sobre `odoo_products_cache` sin una lectura fresca de Odoo. Restar OC abiertas e ingresos confirmados que todavía no movieron stock. Recién después, si el negocio lo quiere, confirmar la OC para que el stock se mueva.
+
+#### Alto — Reusar el scraper actual borra los precios del competidor
+
+`docs/agents/14-smart-purchasing.md:100-103` y `212`. Pide el mismo `BaseScraper` de la sección S.
+
+**Importancia.** Alta el primer scrape que falle o que vuelva con 0 productos. `markUnavailableSince` hace `DELETE`, no una baja lógica.
+
+**Consecuencias.** Se pierde el historial contra el que se iba a detectar "está más barato que hace 30 días". La oportunidad de compra desaparece, o se calcula contra un catálogo vacío y sugiere comprar todo.
+
+**Cómo arreglarlo.** El arreglo de la sección S antes de copiar el scraper. En competidores, `available = false` y un `UNIQUE` que también cubra el producto sin SKU (en Postgres, `UNIQUE(competitor_id, sku)` deja pasar varias filas con `sku` null: `schema.sql:613`).
+
+#### Medio — "Actuar" no compra, y la sugerencia no mira si el proveedor sigue activo
+
+`docs/agents/14-smart-purchasing.md:168` y `191`, `schema.sql:645`.
+
+**Importancia.** Media el día que la pantalla exista. El botón abre la comparativa. No crea una OC ni marca la sugerencia de forma que Pedidos x Proveedor la descuente. `best_supplier_id` no exige `status = 'active'`.
+
+**Consecuencias.** La persona cree que ya pidió. El proveedor está en staging o fue desactivado y el precio sugerido es de un catálogo que no se puede comprar. Vuelve a pedir por la otra pantalla.
+
+**Cómo arreglarlo.** "Actuar" tiene que crear la OC o sumar la cantidad a Pedidos x Proveedor, y pasar la sugerencia a `acted` con el id de esa OC. El proveedor sugerido sale solo si está `active` y publicado.
 
 ## 1. Auth y usuarios
 
@@ -203,6 +565,8 @@ Dentro de cada módulo van primero los críticos, después altos, medios y bajos
 
 ## 6. Ingreso de mercadería
 
+La lectura junta de este módulo está en la sección I. Acá queda el mismo detalle para el recorrido por módulo.
+
 ### Crítico — Sin las columnas nuevas no se guarda el reparto ni la OC de Preventas
 
 `ingresoService.js:524` (`match_level`), `ingreso.js:590` y `ingresoService.js:730` (`preventa_qty_confirmed`), `ingresoService.js:891` (`odoo_purchase_order_id_preventas`). **Cubierto por el PR #2.**
@@ -304,6 +668,8 @@ Dentro de cada módulo van primero los críticos, después altos, medios y bajos
 **Cómo arreglarlo.** El del PR #4. Sigue dependiendo de que `getPreventasQuotations` pagine (el mismo PR).
 
 ## 7. Preventas — pedidos y órdenes
+
+Pedidos x Proveedor, con lo que el PR #4 no cierra, está en la sección X.
 
 ### Crítico — Agregar un producto de proveedor guarda la fila y responde 500
 
@@ -453,6 +819,8 @@ Los cuatro los cierra el PR #3, que a su vez necesita las columnas de markup del
 
 ## 10. Scraping de proveedores
 
+La lectura junta de este módulo está en la sección S.
+
 ### Crítico — Pausar, o terminar en cero, borra el catálogo del proveedor
 
 `pythonScraper.js:84-112` y `20`, `117-118`, `261-267`, `baseScraper.js:316-322` y `530-532`, `mali_scraper.py:52-54`.
@@ -583,6 +951,8 @@ El login y las rutas sin rol están en la sección 1 (`client.js`, `ProtectedRou
 
 ## Cómo se reparte
 
-Sin PR, y en este orden si se va a tocar código: el delete del scraping, el `prices` de `addItemToOrder`, los secretos y el JWT, el comando `5` de las órdenes de venta, el confirm del ingreso, el paginado del sync de productos, el `PATCH` de precios, las alertas, y el match de factura (`LIKE`, fuzzy, renglones duplicados).
+En los seis módulos de arriba, sin PR y en este orden: no borrar el catálogo al scrapear, no borrar productos al desactivar un proveedor, unificar el costo del ingreso con el del catálogo, cerrar el confirm para que una falla no deje el ingreso confirmado ni duplique la OC, y sacar el `LIKE` y el fuzzy automático. El prefijo único y el filtro `status = 'active'` en catálogo, scrape manual, pedidos y WhatsApp van juntos.
 
-Con PR ya abierto: #2 antes que #3 y #4. El #5 no entra en esta lista.
+Antes de escribir reposición: clave de competidor cifrada, una sola alerta abierta por producto y empresa, no dividir por venta cero, restar lo que ya está en camino, y no copiar el `DELETE` del scraper.
+
+Con PR ya abierto: #2 antes que #3 y #4. En el #4 quedan el costo (`standard_price`), la cantidad bruta, el ganador por confianza y el path del PDF. En el #5 quedan el reenvío si el proceso muere y el filtro de staging. El #5 no corrige bugs de `master`.
