@@ -22,11 +22,13 @@ DRIVE_FOLDER_ID=el_id_de_la_carpeta
 docker compose up -d db-backup
 ```
 
-Para forzarlo ahora, sin esperar al viernes:
+Para forzarlo ahora, sin esperar al viernes: en la app, **Admin → Backup de la base → Hacer backup ahora** (solo admin). El servicio lo toma en unos 10 segundos y la tarjeta muestra el resultado. También desde la terminal:
 
 ```
 docker compose exec db-backup backup-db.sh
 ```
+
+El botón no ejecuta nada en el backend: deja un pedido en `volumes/backups/.manual-request`, que `db-backup` toma y responde en `.manual-status`. Por eso el backend monta esa carpeta.
 
 Si Drive responde, el archivo `neggo_app_AAAA-MM-DD.dump` aparece en la carpeta. El log queda en `volumes/backups/backup.log`.
 

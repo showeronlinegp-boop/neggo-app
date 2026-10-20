@@ -13,6 +13,7 @@ function getModule(path) {
     if (path.includes('/catalogs')) return 'catalogs';
     if (path.includes('/reposicion')) return 'reposicion';
     if (path.includes('/pedido-envios')) return 'armado_pedidos';
+    if (path.includes('/backup')) return 'backup';
     return 'general';
 }
 

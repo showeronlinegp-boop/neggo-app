@@ -5,6 +5,7 @@ import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
+import BackupCard from './BackupCard';
 
 function formatFecha(ts) {
     if (!ts) return 'Nunca';
@@ -115,6 +116,8 @@ export default function AdminPanel() {
                     )}
                 </div>
             </Card>
+
+            <BackupCard />
         </div>
     );
 }
