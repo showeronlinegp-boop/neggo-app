@@ -1,7 +1,7 @@
 // Cola de reposición de Neggo.
-// Orígenes: archivado (sync), reponer (manual), recorrida (escáner), bajo_stock (umbral).
-// Se resuelven como repuesto o descartado. Solo lee Odoo vía cache; Generar OC sí escribe
-// un borrador de purchase.order (reusa odooService.createPurchaseOrder).
+// Orígenes: archivado (sync / baja en el sistema), reponer (manual), recorrida (escáner).
+// Neggo no lleva stock en Odoo: archivar = dar de baja el artículo. No hay origen bajo_stock.
+// Solo lee Odoo vía cache; Generar OC sí escribe un borrador de purchase.order.
 
 const fs = require('fs');
 const path = require('path');
@@ -17,15 +17,9 @@ const SCHEMA_030 = fs.readFileSync(
 const NO_REPONER_SQL = `LOWER(TRIM(COALESCE(opc.vendor_name, ''))) = 'liquidar'`;
 const ESTADOS_FINALES = ['repuesto', 'descartado'];
 // Prioridad al actualizar un pendiente existente (mayor gana)
-const ORIGEN_RANK = { archivado: 4, bajo_stock: 3, recorrida: 2, reponer: 1 };
+const ORIGEN_RANK = { archivado: 3, recorrida: 2, reponer: 1 };
 
-/** Umbral de stock para origen bajo_stock (env o default 3). */
-function stockMin() {
-    const n = parseInt(process.env.REPOSICION_STOCK_MIN, 10);
-    return Number.isInteger(n) && n >= 0 ? n : 3;
-}
-
-/** Semanas de cobertura para qty sugerida (env o default 2). */
+/** Semanas de cobertura para qty sugerida (env o default 2). Sin stock: solo ritmo de venta. */
 function semanasCobertura() {
     const n = parseFloat(process.env.REPOSICION_COBERTURA_SEMANAS);
     return Number.isFinite(n) && n > 0 ? n : 2;
@@ -61,22 +55,7 @@ function detectarTransiciones(antes, productos) {
 }
 
 /**
- * Productos activos con stock bajo el umbral (y no Liquidar).
- * @param {Array<{id:number, active:boolean, qty_available?:number}>} productos
- */
-function detectarBajoStock(productos, umbral = stockMin()) {
-    const ids = [];
-    for (const p of productos) {
-        if (!p.active) continue;
-        const qty = p.qty_available == null ? null : Number(p.qty_available);
-        if (qty === null || Number.isNaN(qty)) continue;
-        if (qty <= umbral) ids.push(p.id);
-    }
-    return ids;
-}
-
-/**
- * Mete en la cola productos archivados (origen 'archivado'), salvo los de "Liquidar".
+ * Mete en la cola productos archivados (= baja en el sistema), salvo los de "Liquidar".
  * Si ya estaban pendientes con otro origen, suben a 'archivado'.
  */
 async function registrarArchivados(odooIds, { createdBy = null, db = pool } = {}) {
@@ -96,47 +75,6 @@ async function registrarArchivados(odooIds, { createdBy = null, db = pool } = {}
     return rows.map(r => r.odoo_id);
 }
 
-/**
- * Encola activos con stock bajo. No pisa un pendiente 'archivado'.
- */
-async function registrarBajoStock(odooIds, { createdBy = null, db = pool } = {}) {
-    if (!odooIds.length) return [];
-    const { rows } = await db.query(
-        `INSERT INTO reposicion_items (odoo_id, company, origen, created_by)
-         SELECT opc.odoo_id, 'neggo', 'bajo_stock', $2
-         FROM odoo_products_cache opc
-         WHERE opc.company = 'neggo'
-           AND opc.odoo_id = ANY($1::int[])
-           AND opc.active = true
-           AND NOT ${NO_REPONER_SQL}
-         ON CONFLICT (odoo_id, company) WHERE estado = 'pendiente'
-         DO UPDATE SET origen = CASE
-             WHEN reposicion_items.origen = 'archivado' THEN reposicion_items.origen
-             ELSE 'bajo_stock'
-         END
-         RETURNING odoo_id`,
-        [odooIds, createdBy]
-    );
-    return rows.map(r => r.odoo_id);
-}
-
-/**
- * Stock se recuperó por encima del umbral: los pendientes solo por bajo_stock se resuelven.
- */
-async function resolverStockRecuperado(odooIdsSobreUmbral, { resolvedBy = null, db = pool } = {}) {
-    if (!odooIdsSobreUmbral.length) return 0;
-    const { rowCount } = await db.query(
-        `UPDATE reposicion_items
-         SET estado = 'repuesto', resolved_at = NOW(), resolved_by = $2,
-             nota = COALESCE(nota, 'Stock recuperado por encima del umbral')
-         WHERE company = 'neggo' AND estado = 'pendiente'
-           AND origen = 'bajo_stock'
-           AND odoo_id = ANY($1::int[])`,
-        [odooIdsSobreUmbral, resolvedBy]
-    );
-    return rowCount;
-}
-
 async function resolverReactivados(odooIds, { resolvedBy = null, db = pool } = {}) {
     if (!odooIds.length) return 0;
     const { rowCount } = await db.query(
@@ -151,32 +89,17 @@ async function resolverReactivados(odooIds, { resolvedBy = null, db = pool } = {
 
 /**
  * Lo llama el sync de Odoo (empresa Neggo) con el estado previo del cache.
+ * Solo detecta altas/bajas por archivo: Neggo no usa qty_available para reponer.
  */
 async function procesarSync(antes, productos) {
     const { archivados, reactivados } = detectarTransiciones(antes, productos);
-    const bajoIds = detectarBajoStock(productos);
-    const umbral = stockMin();
-    const recuperados = productos
-        .filter(p => p.active && p.qty_available != null && Number(p.qty_available) > umbral)
-        .map(p => p.id);
-
     const encolados = await registrarArchivados(archivados);
-    const encoladosBajo = await registrarBajoStock(bajoIds);
     const repuestos = await resolverReactivados(reactivados);
-    const stockOk = await resolverStockRecuperado(recuperados);
 
-    if (encolados.length || encoladosBajo.length || repuestos || stockOk) {
-        console.log(
-            `📦 Reposición: ${encolados.length} archivado(s), ${encoladosBajo.length} bajo stock, `
-            + `${repuestos} reactivado(s), ${stockOk} stock recuperado`
-        );
+    if (encolados.length || repuestos) {
+        console.log(`📦 Reposición: ${encolados.length} archivado(s) a la cola, ${repuestos} reactivado(s) marcados repuestos`);
     }
-    return {
-        encolados: encolados.length,
-        bajoStock: encoladosBajo.length,
-        repuestos,
-        stockRecuperado: stockOk,
-    };
+    return { encolados: encolados.length, repuestos };
 }
 
 const SELECT_ITEM = `
@@ -367,8 +290,8 @@ async function metricasVenta(odooIds) {
         const avgWeekly = last4.length
             ? last4.reduce((s, w) => s + Number(w.qty_vendida), 0) / last4.length
             : 0;
-        const amount30 = weeks.reduce((s, w) => s + Number(w.amount_total), 0);
-        // Semáforo: ritmo reciente vs promedio
+        const qty30 = weeks.reduce((s, w) => s + Number(w.qty_vendida), 0);
+        // Semáforo: ritmo reciente vs promedio (unidades)
         let ritmo = 'sin_datos';
         if (avgWeekly > 0 || qty7 > 0) {
             if (avgWeekly <= 0) ritmo = 'reponer';
@@ -376,17 +299,19 @@ async function metricasVenta(odooIds) {
             else if (qty7 <= avgWeekly * 0.7) ritmo = 'flojo';
             else ritmo = 'estable';
         }
-        out.set(id, { qty_7d: qty7, avg_weekly: avgWeekly, amount_30d: amount30, ritmo });
+        out.set(id, { qty_7d: qty7, avg_weekly: avgWeekly, qty_30d: qty30, ritmo });
     }
-    // qty sugerida se completa en detalleProveedor con stock
     void cobertura;
     return out;
 }
 
-/** Clasificación ABC por amount_30d (A = top ~80% acumulado, B ~15%, C resto). */
-function clasificarAbc(itemsConAmount) {
-    const sorted = [...itemsConAmount].sort((a, b) => b.amount_30d - a.amount_30d);
-    const total = sorted.reduce((s, i) => s + i.amount_30d, 0);
+/**
+ * Pareto ABC por unidades vendidas (qty_30d), no por monto.
+ * A ≈ 80% acumulado de unidades, B ≈ 15%, C resto.
+ */
+function clasificarAbc(itemsConQty) {
+    const sorted = [...itemsConQty].sort((a, b) => b.qty_30d - a.qty_30d);
+    const total = sorted.reduce((s, i) => s + i.qty_30d, 0);
     const labels = new Map();
     if (total <= 0) {
         for (const i of sorted) labels.set(i.odoo_id, 'C');
@@ -394,7 +319,7 @@ function clasificarAbc(itemsConAmount) {
     }
     let acum = 0;
     for (const i of sorted) {
-        acum += i.amount_30d;
+        acum += i.qty_30d;
         const pct = acum / total;
         labels.set(i.odoo_id, pct <= 0.8 ? 'A' : pct <= 0.95 ? 'B' : 'C');
     }
@@ -416,24 +341,34 @@ async function detalleProveedor(vendorName) {
         [nombre]
     );
 
+    // Ventas on-demand: no hay cron diario (la app corre local)
+    let ventasMeta = null;
+    try {
+        ventasMeta = await require('../jobs/salesWeeklySync').ensureFresh(12);
+    } catch (err) {
+        console.warn(`⚠️ Reposición: no se pudieron refrescar ventas: ${err.message}`);
+    }
+
     const ids = items.map(i => i.odoo_id);
     const metrics = await metricasVenta(ids);
     const forAbc = ids.map(id => ({
         odoo_id: id,
-        amount_30d: metrics.get(id)?.amount_30d || 0,
+        qty_30d: metrics.get(id)?.qty_30d || 0,
     }));
     const abc = clasificarAbc(forAbc);
     const cobertura = semanasCobertura();
 
     const enriched = items.map(it => {
-        const m = metrics.get(it.odoo_id) || { qty_7d: 0, avg_weekly: 0, amount_30d: 0, ritmo: 'sin_datos' };
-        const stock = it.qty_available == null ? 0 : Number(it.qty_available);
-        const sugerida = Math.max(0, Math.ceil(m.avg_weekly * cobertura - stock));
+        const m = metrics.get(it.odoo_id) || { qty_7d: 0, avg_weekly: 0, qty_30d: 0, ritmo: 'sin_datos' };
+        // Sin stock en Odoo: sugerencia = ritmo semanal × semanas de cobertura
+        const sugerida = m.avg_weekly > 0
+            ? Math.max(1, Math.ceil(m.avg_weekly * cobertura))
+            : (m.qty_7d > 0 ? Math.max(1, Math.ceil(m.qty_7d)) : 0);
         return {
             ...it,
             qty_7d: m.qty_7d,
             avg_weekly: Math.round(m.avg_weekly * 100) / 100,
-            amount_30d: m.amount_30d,
+            qty_30d: m.qty_30d,
             ritmo: m.ritmo,
             abc: abc.get(it.odoo_id) || 'C',
             qty_sugerida_calc: sugerida,
@@ -443,6 +378,7 @@ async function detalleProveedor(vendorName) {
     return {
         vendor_name: nombre,
         items: enriched,
+        ventas: ventasMeta,
         resumen: {
             pendientes: enriched.length,
             reponer: enriched.filter(i => i.ritmo === 'reponer').length,
@@ -503,8 +439,10 @@ async function generarOc({ vendorName, items, partnerId, userId }) {
         if (qty == null || qty === '') qty = f.qty_decidida;
         if (qty == null || qty === '') {
             const m = (await metricasVenta([f.odoo_id])).get(f.odoo_id);
-            const stock = f.qty_available == null ? 0 : Number(f.qty_available);
-            qty = Math.max(1, Math.ceil((m?.avg_weekly || 0) * semanasCobertura() - stock));
+            const avg = m?.avg_weekly || 0;
+            qty = avg > 0
+                ? Math.max(1, Math.ceil(avg * semanasCobertura()))
+                : Math.max(1, Math.ceil(m?.qty_7d || 1));
         }
         qty = parseInt(qty, 10);
         if (!Number.isInteger(qty) || qty < 1) {
@@ -541,13 +479,9 @@ async function generarOc({ vendorName, items, partnerId, userId }) {
 
 module.exports = {
     ensureSchema,
-    stockMin,
     detectarTransiciones,
-    detectarBajoStock,
     registrarArchivados,
-    registrarBajoStock,
     resolverReactivados,
-    resolverStockRecuperado,
     procesarSync,
     listar,
     agregarReponer,

@@ -1,10 +1,9 @@
-// Detección de transiciones, bajo stock y ABC para la cola de reposición. Sin base de datos.
-// node backend/services/reposicion.test.js
+// Detección de transiciones y Pareto ABC (por unidades) para la cola de reposición.
+// Sin base de datos. node backend/services/reposicion.test.js
 
 const assert = require('assert');
 const {
     detectarTransiciones,
-    detectarBajoStock,
     clasificarAbc,
     lunesDe,
 } = require('./reposicionService');
@@ -33,40 +32,27 @@ function testCacheVacio() {
     assert.deepStrictEqual(r, { archivados: [], reactivados: [] });
 }
 
-function testBajoStock() {
-    const productos = [
-        { id: 1, active: true, qty_available: 0 },
-        { id: 2, active: true, qty_available: 3 },
-        { id: 3, active: true, qty_available: 10 },
-        { id: 4, active: false, qty_available: 1 }, // archivado: no entra por bajo_stock
-        { id: 5, active: true, qty_available: null },
-    ];
-    assert.deepStrictEqual(detectarBajoStock(productos, 3), [1, 2]);
-}
-
-function testAbc() {
+function testAbcPorUnidades() {
+    // Pareto sobre unidades vendidas (no monto)
     const items = [
-        { odoo_id: 1, amount_30d: 800 },
-        { odoo_id: 2, amount_30d: 150 },
-        { odoo_id: 3, amount_30d: 50 },
+        { odoo_id: 1, qty_30d: 800 },
+        { odoo_id: 2, qty_30d: 150 },
+        { odoo_id: 3, qty_30d: 50 },
     ];
     const labels = clasificarAbc(items);
-    assert.strictEqual(labels.get(1), 'A'); // 80% acumulado
+    assert.strictEqual(labels.get(1), 'A');
     assert.strictEqual(labels.get(2), 'B');
     assert.strictEqual(labels.get(3), 'C');
 }
 
 function testLunesDe() {
-    // 2026-10-20 es martes → lunes 2026-10-19
     assert.strictEqual(lunesDe('2026-10-20T15:00:00Z'), '2026-10-19');
-    // domingo → lunes anterior
     assert.strictEqual(lunesDe('2026-10-18T12:00:00Z'), '2026-10-12');
 }
 
 testTransiciones();
 testCacheVacio();
-testBajoStock();
-testAbc();
+testAbcPorUnidades();
 testLunesDe();
 console.log('✅ reposicion: todos los casos pasan');
 process.exit(0);

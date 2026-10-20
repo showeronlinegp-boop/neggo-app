@@ -19,7 +19,7 @@ const ORIGEN = {
     archivado:  { label: 'Agotado',     tone: 'danger' },
     reponer:    { label: 'Queda poco',  tone: 'warn' },
     recorrida:  { label: 'Recorrida',   tone: 'warn' },
-    bajo_stock: { label: 'Bajo stock',  tone: 'warn' },
+    bajo_stock: { label: 'Bajo stock',  tone: 'muted' }, // legacy; Neggo no lleva stock en Odoo
 };
 const ESTADO = {
     repuesto:   { label: 'Repuesto',   tone: 'success' },
@@ -105,7 +105,6 @@ function BuscadorReponer({ onAgregado, onError }) {
                                 <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
                                 <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
                                     <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || p.barcode || '—'}</span> · {p.vendor_name}
-                                    {p.qty_available != null && <> · stock {Number(p.qty_available).toLocaleString('es-AR')}</>}
                                 </div>
                             </div>
                             {p.es_liquidar ? (
@@ -228,8 +227,8 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                                 <th style={th}>Motivo</th>
                                 <th style={th}>Ritmo</th>
                                 <th style={th}>ABC</th>
-                                <th style={{ ...th, textAlign: 'right' }}>Stock</th>
                                 <th style={{ ...th, textAlign: 'right' }}>7d</th>
+                                <th style={{ ...th, textAlign: 'right' }}>30d u.</th>
                                 <th style={{ ...th, textAlign: 'right' }}>Prom/sem</th>
                                 <th style={{ ...th, textAlign: 'right' }}>Pedir</th>
                             </tr>
@@ -261,10 +260,8 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                                     <td style={td}><Badge tone={ORIGEN[it.origen]?.tone} dot>{ORIGEN[it.origen]?.label}</Badge></td>
                                     <td style={td}><Badge tone={RITMO[it.ritmo]?.tone} dot>{RITMO[it.ritmo]?.label}</Badge></td>
                                     <td style={td}><Badge tone={it.abc === 'A' ? 'success' : it.abc === 'B' ? 'warn' : 'muted'}>{it.abc}</Badge></td>
-                                    <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>
-                                        {it.qty_available != null ? Number(it.qty_available).toLocaleString('es-AR') : '—'}
-                                    </td>
                                     <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.qty_7d || 0).toLocaleString('es-AR')}</td>
+                                    <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.qty_30d || 0).toLocaleString('es-AR')}</td>
                                     <td style={{ ...td, textAlign: 'right', ...t.numericStyle }}>{Number(it.avg_weekly || 0).toLocaleString('es-AR')}</td>
                                     <td style={{ ...td, textAlign: 'right', width: 88 }}>
                                         <input
@@ -290,7 +287,7 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                         </div>
                     )}
                     <div style={{ marginTop: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        El ritmo compara lo vendido esta semana con el promedio de las últimas 4. La cantidad sugerida cubre ~2 semanas menos el stock actual. «Generar OC» crea un borrador en Odoo Neggo.
+                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal (y al prender la app); no hay cron diario. «Generar OC» crea un borrador en Odoo Neggo.
                     </div>
                 </div>
             )}
@@ -403,7 +400,7 @@ export default function Reposicion() {
                         </div>
                         <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
                             {pendiente
-                                ? 'Cuando se archive un producto o baje el stock aparece acá. También podés marcar «queda poco» o hacer la recorrida con el escáner.'
+                                ? 'Cuando archives un producto (baja) aparece acá. También podés marcar «queda poco» o hacer la recorrida con el escáner.'
                                 : 'Los productos que marques como repuestos o descartados van a aparecer acá.'}
                         </div>
                     </div>
@@ -432,7 +429,6 @@ export default function Reposicion() {
                                         <th style={thStyle}>Producto</th>
                                         <th style={thStyle}>{pendiente ? 'Motivo' : 'Resultado'}</th>
                                         <th style={thStyle}>{pendiente ? 'Desde' : 'Resuelto'}</th>
-                                        <th style={{ ...thStyle, textAlign: 'right' }}>Stock</th>
                                         <th style={{ ...thStyle, textAlign: 'right' }}>Costo</th>
                                         <th style={{ ...thStyle, textAlign: 'right' }}>Venta</th>
                                         <th style={{ ...thStyle, textAlign: 'right' }}></th>
@@ -468,9 +464,6 @@ export default function Reposicion() {
                                                 {(pendiente ? it.created_by_name : it.resolved_by_name) && (
                                                     <div>{pendiente ? it.created_by_name : it.resolved_by_name}</div>
                                                 )}
-                                            </td>
-                                            <td style={{ ...tdStyle, textAlign: 'right', color: t.color.textMuted, ...t.numericStyle }}>
-                                                {it.qty_available != null ? Number(it.qty_available).toLocaleString('es-AR') : '—'}
                                             </td>
                                             <td style={{ ...tdStyle, textAlign: 'right', color: t.color.textMuted, ...t.numericStyle }}>{fmtAR(it.standard_price)}</td>
                                             <td style={{ ...tdStyle, textAlign: 'right', fontWeight: t.font.weight.semibold, color: t.color.primary, ...t.numericStyle }}>{fmtAR(it.list_price)}</td>

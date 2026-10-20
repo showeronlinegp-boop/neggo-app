@@ -5,6 +5,7 @@
 // GET    /api/reposicion/proveedor?nombre=
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
 // POST   /api/reposicion/generar-oc                  — { vendor_name, items, partner_id? }
+// POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas (sin cron diario)
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 
 const express = require('express');
@@ -80,6 +81,17 @@ router.post('/generar-oc', async (req, res) => {
     } catch (err) {
         if (!err.statusCode) console.error('❌ Error generando OC de reposición:', err.message);
         return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/sync-ventas', async (req, res) => {
+    try {
+        const { syncSalesWeekly } = require('../jobs/salesWeeklySync');
+        const result = await syncSalesWeekly();
+        return ok(res, result);
+    } catch (err) {
+        console.error('❌ Error sincronizando ventas de reposición:', err.message);
+        return fail(res, err.message, 500);
     }
 });
 

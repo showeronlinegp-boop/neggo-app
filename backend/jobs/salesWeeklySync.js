@@ -175,7 +175,7 @@ async function persistir(agg) {
 }
 
 /**
- * Sync completo. No lanza: loguea y retorna resumen (el scheduler no debe caerse).
+ * Sync completo (on-demand / al arrancar). La app corre local: no hay cron diario.
  */
 async function syncSalesWeekly() {
     await require('../services/reposicionService').ensureSchema(pool);
@@ -192,4 +192,22 @@ async function syncSalesWeekly() {
     return { written, saleRows: sale.size, posRows: pos.size };
 }
 
-module.exports = { syncSalesWeekly, leerVentasSaleOrder, lunesDe };
+/**
+ * Si no hay datos o el último sync tiene más de maxAgeHours, vuelve a pedir a Odoo.
+ * @returns {{ synced: boolean, ageHours: number|null, result?: object }}
+ */
+async function ensureFresh(maxAgeHours = 12) {
+    await require('../services/reposicionService').ensureSchema(pool);
+    const { rows: [row] } = await pool.query(
+        `SELECT MAX(synced_at) AS last_sync FROM product_sales_weekly WHERE company = 'neggo'`
+    );
+    const last = row?.last_sync ? new Date(row.last_sync) : null;
+    const ageHours = last ? (Date.now() - last.getTime()) / 3600000 : null;
+    if (last && ageHours < maxAgeHours) {
+        return { synced: false, ageHours, last_sync: last.toISOString() };
+    }
+    const result = await syncSalesWeekly();
+    return { synced: true, ageHours, last_sync: new Date().toISOString(), result };
+}
+
+module.exports = { syncSalesWeekly, ensureFresh, leerVentasSaleOrder, lunesDe };

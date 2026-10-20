@@ -253,9 +253,6 @@ export default function Recorrida() {
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 4 }}>
                             <span style={{ fontFamily: t.font.mono }}>{producto.barcode || producto.internal_ref || '—'}</span>
                             {' · '}{producto.vendor_name}
-                            {producto.qty_available != null && (
-                                <> · stock {Number(producto.qty_available).toLocaleString('es-AR')}</>
-                            )}
                         </div>
                         <div style={{ marginTop: t.space[2], display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
                             {producto.es_liquidar && <Badge tone="muted">Liquidar</Badge>}

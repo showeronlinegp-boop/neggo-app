@@ -8,15 +8,17 @@ const scheduledTasks = [];
 const TZ = { timezone: 'America/Argentina/Buenos_Aires' };
 
 /**
- * Inicializa el scheduler: sync con Odoo cada hora, ventas semanales diarias
+ * Inicializa el scheduler: sync con Odoo cada hora (mientras la app esté prendida)
  * y alerta de proveedores sin scrapear. El scraping se lanza a mano desde /scraping.
+ * Las ventas de reposición NO van por cron diario: la app corre local y no está
+ * siempre prendida; se sincronizan al arrancar y on-demand al abrir el modal.
  *
  * @param {object} pool — instancia del pg pool
  */
 async function initScheduler(pool) {
     console.log('📦 Inicializando scheduler...');
 
-    // Sync Odoo cada 1 hora
+    // Sync Odoo cada 1 hora (solo mientras el worker esté corriendo)
     scheduledTasks.push(cron.schedule('0 * * * *', async () => {
         console.log('📦 Iniciando sync Odoo...');
         try {
@@ -28,18 +30,6 @@ async function initScheduler(pool) {
     }, TZ));
 
     console.log('✅ Cron de sync Odoo registrado (cada 1 hora).');
-
-    // Ventas semanales (reposición): todos los días a las 2:00 AM
-    scheduledTasks.push(cron.schedule('0 2 * * *', async () => {
-        console.log('📈 Iniciando sync de ventas semanales...');
-        try {
-            await syncSalesWeekly();
-        } catch (err) {
-            console.error('❌ Error en sync de ventas semanales:', err.message);
-        }
-    }, TZ));
-
-    console.log('✅ Cron de ventas semanales registrado (2:00 AM diario).');
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {
@@ -69,7 +59,7 @@ async function initScheduler(pool) {
 
     console.log('✅ Cron de verificación de proveedores inactivos registrado (9:00 AM diario).');
 
-    // Sync inmediato al arrancar (no bloquea el startup)
+    // Al arrancar (cuando prendés la app): sync Odoo y después ventas para reposición
     setImmediate(async () => {
         console.log('📦 Sync Odoo inicial al arrancar...');
         try {
@@ -77,6 +67,11 @@ async function initScheduler(pool) {
             console.log('✅ Sync Odoo inicial completado');
         } catch (err) {
             console.error('❌ Error en sync Odoo inicial:', err.message);
+        }
+        try {
+            await syncSalesWeekly();
+        } catch (err) {
+            console.error('❌ Error en sync de ventas al arrancar:', err.message);
         }
     });
 }
