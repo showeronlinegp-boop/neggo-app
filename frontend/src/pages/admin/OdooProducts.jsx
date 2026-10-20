@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR } from '../../theme/tokens';
@@ -7,6 +8,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Toggle from '../../components/common/Toggle';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 
 const fmtDate = (iso) => {
@@ -28,7 +30,10 @@ export default function OdooProducts() {
     const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [aviso, setAviso] = useState(null);
     const [lastSync, setLastSync] = useState(null);
+    const [trabajando, setTrabajando] = useState(null);
+    const [confirmar, setConfirmar] = useState(null);
 
     const load = useCallback(async () => {
         setLoading(true); setError(null);
@@ -48,6 +53,47 @@ export default function OdooProducts() {
     }, [company, search, includeInactive, page]);
 
     useEffect(() => { load(); }, [load]);
+
+    const reponer = async (p) => {
+        setTrabajando(p.odoo_id); setError(null); setAviso(null);
+        const res = await api.post('/reposicion', { odoo_id: p.odoo_id });
+        setTrabajando(null);
+        if (!res.success) { setError(res.error || 'No se pudo marcar para reponer'); return; }
+        const como = res.data?.origen === 'archivado' ? 'agotado' : 'queda poco';
+        setAviso(`«${p.name}» entró a Reposición como «${como}».`);
+    };
+
+    const confirmarOdoo = async () => {
+        const { tipo, p } = confirmar || {};
+        if (!p) return;
+        setConfirmar(null);
+        setTrabajando(p.odoo_id); setError(null); setAviso(null);
+        let res;
+        if (company === 'neggo' && tipo === 'activar') {
+            res = await api.post('/reposicion/activar', { odoo_id: p.odoo_id });
+        } else if (company === 'neggo' && tipo === 'archivar') {
+            res = await api.post('/reposicion/archivar', { odoo_id: p.odoo_id });
+        } else {
+            res = await api.patch(`/products/odoo/${p.odoo_id}/archive`, { company, archived: tipo === 'archivar' });
+        }
+        setTrabajando(null);
+        if (!res.success) { setError(res.error || 'No se pudo actualizar en Odoo'); return; }
+        setProducts(prev => prev.map(x => x.odoo_id === p.odoo_id
+            ? { ...x, active: tipo === 'activar', locally_archived: tipo === 'archivar' }
+            : x));
+        if (tipo === 'activar') {
+            setAviso(res.data?.cola_cerrada
+                ? `«${p.name}» volvió a estar activo. Si estaba en Reposición, quedó como repuesto.`
+                : `«${p.name}» volvió a estar activo en Odoo.`);
+        } else {
+            setAviso(company === 'neggo'
+                ? `«${p.name}» se archivó y fue a Reposición como agotado.`
+                : `«${p.name}» archivado en Odoo Preventas.`);
+        }
+        if (!includeInactive && tipo === 'archivar') {
+            setProducts(prev => prev.filter(x => x.odoo_id !== p.odoo_id));
+        }
+    };
 
     useEffect(() => {
         const timer = setTimeout(() => { setSearch(searchInput); setPage(0); }, 350);
@@ -79,9 +125,18 @@ export default function OdooProducts() {
                     <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{total.toLocaleString('es-AR')}</span> productos
                     {lastSync && <span style={{ marginLeft: t.space[3] }}>· Sync: {fmtDate(lastSync)}</span>}
                 </div>
-                <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={13} />} onClick={load}>
-                    Actualizar
-                </Button>
+                <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                    {company === 'neggo' && (
+                        <Link to="/reposicion" style={{ textDecoration: 'none' }}>
+                            <Button size="sm" variant="secondary" leftIcon={<Icon.Package size={13} />}>
+                                Ir a Reposición
+                            </Button>
+                        </Link>
+                    )}
+                    <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={13} />} onClick={load}>
+                        Actualizar
+                    </Button>
+                </div>
             </div>
 
             {/* Filtros */}
@@ -122,6 +177,11 @@ export default function OdooProducts() {
                     {error}
                 </div>
             )}
+            {aviso && !error && (
+                <div style={{ background: t.color.successSoft, color: t.color.success, padding: '10px 16px', borderRadius: t.radius.sm, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
+                    {aviso}
+                </div>
+            )}
 
             {/* Tabla */}
             <Card padding={false} style={{ overflow: 'hidden' }}>
@@ -151,6 +211,7 @@ export default function OdooProducts() {
                                     <th style={{ ...thStyle, textAlign: 'right' }}>Stock</th>
                                     <th style={{ ...thStyle, textAlign: 'center' }}>Estado</th>
                                     <th style={thStyle}>Sync</th>
+                                    <th style={{ ...thStyle, textAlign: 'right' }}></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -172,6 +233,27 @@ export default function OdooProducts() {
                                             <Badge tone={p.active ? 'success' : 'muted'} dot>{p.active ? 'Activo' : 'Inactivo'}</Badge>
                                         </td>
                                         <td style={{ ...tdStyle, fontSize: t.font.size.xs, color: t.color.textFaint, whiteSpace: 'nowrap' }}>{fmtDate(p.synced_at)}</td>
+                                        <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                            <div style={{ display: 'inline-flex', gap: t.space[2] }}>
+                                                {company === 'neggo' && (
+                                                    <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />}
+                                                        disabled={trabajando === p.odoo_id} onClick={() => reponer(p)}>
+                                                        Reponer
+                                                    </Button>
+                                                )}
+                                                {p.active ? (
+                                                    <Button size="sm" variant="danger" leftIcon={<Icon.Archive size={13} />}
+                                                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'archivar', p })}>
+                                                        Archivar
+                                                    </Button>
+                                                ) : (
+                                                    <Button size="sm" variant="success" leftIcon={<Icon.Check size={13} />}
+                                                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'activar', p })}>
+                                                        Activar
+                                                    </Button>
+                                                )}
+                                            </div>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -192,6 +274,20 @@ export default function OdooProducts() {
                     </div>
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={!!confirmar}
+                onClose={() => setConfirmar(null)}
+                onConfirm={confirmarOdoo}
+                danger={confirmar?.tipo === 'archivar'}
+                title={confirmar?.tipo === 'activar' ? 'Activar en Odoo' : 'Archivar en Odoo'}
+                confirmLabel={confirmar?.tipo === 'activar' ? 'Sí, activar' : 'Sí, archivar'}
+                message={confirmar?.tipo === 'activar'
+                    ? `«${confirmar?.p?.name || ''}» vuelve a estar activo en Odoo.${company === 'neggo' ? ' Si estaba en Reposición, queda como repuesto.' : ''}`
+                    : (company === 'neggo'
+                        ? `«${confirmar?.p?.name || ''}» se apaga en Odoo porque no queda stock y entra a Reposición como agotado.`
+                        : `«${confirmar?.p?.name || ''}» se archiva en Odoo Preventas.`)}
+            />
         </div>
     );
 }
