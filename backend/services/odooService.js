@@ -1344,7 +1344,7 @@ async function getSaleOrdersWithLines(companyKey, {
             fields: [
                 'id', 'name', 'partner_id', 'date_order', 'amount_total',
                 'amount_untaxed', 'state', 'order_line', 'origin', 'client_order_ref',
-                'invoice_status', 'locked',
+                'invoice_status', 'locked', 'invoice_count', 'pos_order_count',
             ],
             order: 'date_order desc',
             limit: pageSize,
@@ -1395,7 +1395,31 @@ async function getSaleOrdersWithLines(companyKey, {
         client_order_ref: o.client_order_ref || null,
         invoice_status:   o.invoice_status || null,
         locked:           !!o.locked,
+        invoice_count:    Number(o.invoice_count) || 0,
+        pos_order_count:  Number(o.pos_order_count) || 0,
         lines:            linesByOrder[o.id] || [],
+    }));
+}
+
+/**
+ * Solo el encabezado (estado, facturación, POS) de varias sale.order, sin líneas.
+ * Sirve para refrescar muchos pedidos de una sin bajar todo el detalle.
+ */
+async function getSaleOrderHeaders(companyKey, ids) {
+    if (!ids || ids.length === 0) return [];
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await readByIds(
+        'sale.order',
+        ids,
+        ['id', 'state', 'invoice_status', 'invoice_count', 'pos_order_count'],
+        { allowed_company_ids: [companyId] }
+    );
+    return rows.map(o => ({
+        id:              o.id,
+        state:           o.state,
+        invoice_status:  o.invoice_status || null,
+        invoice_count:   Number(o.invoice_count) || 0,
+        pos_order_count: Number(o.pos_order_count) || 0,
     }));
 }
 
@@ -1488,6 +1512,7 @@ module.exports = {
     cancelSaleOrder,
     getSaleOrders,
     getSaleOrdersWithLines,
+    getSaleOrderHeaders,
     findSaleOrdersByOriginRef,
     writeSaleOrderLineQty,
     unlinkSaleOrderLines,

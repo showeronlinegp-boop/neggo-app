@@ -9,8 +9,10 @@ const {
     itemPorCodigo,
     previewSaldar,
     qtyCampoDeFase,
+    topeDeFase,
     refPendientes,
     ordenFacturada,
+    ordenCobradaAparte,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -111,6 +113,12 @@ function testPreviewNadaControlado() {
 function testFaseQty() {
     assert.strictEqual(qtyCampoDeFase('armando'), 'qty_armada');
     assert.strictEqual(qtyCampoDeFase('controlando'), 'qty_controlada');
+    // Con el envío 1 validado, en el control el tope es lo armado
+    const it = { qty_pedida: 3, qty_armada: 1 };
+    assert.strictEqual(topeDeFase(it, 'controlando', 'done'), 1);
+    assert.strictEqual(topeDeFase({ qty_pedida: 1, qty_armada: 0 }, 'controlando', 'done'), 0);
+    assert.strictEqual(topeDeFase(it, 'controlando', 'assigned'), 3);
+    assert.strictEqual(topeDeFase(it, 'armando', 'done'), 3);
 }
 
 function item(over = {}) {
@@ -204,6 +212,11 @@ function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
     assert.strictEqual(ordenFacturada(odooOrder({ invoice_status: 'invoiced' })), true);
     assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
+    // Con factura (aunque sea borrador) o derivada al POS no se arma
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_count: 1 })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', pos_order_count: 1 })), false);
+    assert.strictEqual(ordenCobradaAparte(odooOrder({ pos_order_count: 1 })), true);
+    assert.strictEqual(ordenCobradaAparte(odooOrder({})), false);
 }
 
 function testConfirmarAlEmpezar() {
