@@ -22,6 +22,7 @@ export default function Modal({
   footer,
   width = 560,
   size,
+  fullScreen = false,
 }) {
   const { tokens: t } = useTheme();
   const visible = isOpen ?? open ?? false;
@@ -59,9 +60,9 @@ export default function Modal({
         background: 'rgba(20,20,18,0.42)',
         backdropFilter: 'blur(2px)',
         display: 'flex',
-        alignItems: 'flex-start',
+        alignItems: fullScreen ? 'stretch' : 'flex-start',
         justifyContent: 'center',
-        padding: '8vh 16px',
+        padding: fullScreen ? 0 : '8vh 16px',
         ...overlayStyle,
       }}
     >
@@ -69,30 +70,31 @@ export default function Modal({
         onClick={e => e.stopPropagation()}
         style={{
           width: '100%',
-          maxWidth: maxWidth,
+          maxWidth: fullScreen ? '100%' : maxWidth,
+          height: fullScreen ? '100dvh' : undefined,
           background: t.color.surface,
-          border: `1px solid ${t.color.border}`,
-          borderRadius: t.radius.lg,
-          boxShadow: t.shadow.pop,
+          border: fullScreen ? 'none' : `1px solid ${t.color.border}`,
+          borderRadius: fullScreen ? 0 : t.radius.lg,
+          boxShadow: fullScreen ? 'none' : t.shadow.pop,
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: '90vh',
+          maxHeight: fullScreen ? '100dvh' : '90vh',
           overflow: 'hidden',
-          ...containerStyle,
+          ...(fullScreen ? {} : containerStyle),
         }}
       >
         {(title || subtitle) && (
           <div
-            onMouseDown={onDragStart}
+            onMouseDown={fullScreen ? undefined : onDragStart}
             style={{
-              padding: '20px 24px',
+              padding: fullScreen ? '14px 16px' : '20px 24px',
               borderBottom: `1px solid ${t.color.border}`,
               display: 'flex',
               alignItems: 'flex-start',
               justifyContent: 'space-between',
               gap: 16,
               flexShrink: 0,
-              ...dragStyle,
+              ...(fullScreen ? {} : dragStyle),
             }}
           >
             <div>
@@ -130,7 +132,7 @@ export default function Modal({
           </div>
         )}
 
-        <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1 }}>
+        <div style={{ padding: fullScreen ? '12px 14px 28px' : '20px 24px', overflowY: 'auto', flex: 1 }}>
           {children}
         </div>
 

@@ -1,12 +1,12 @@
 import { useTheme } from '../../theme/ThemeContext';
 
-export default function Tabs({ tabs = [], value, onChange, style }) {
+export default function Tabs({ tabs = [], value, onChange, style, fullWidth }) {
   const { tokens: t } = useTheme();
 
   return (
     <div style={{
       display: 'flex',
-      gap: 4,
+      gap: fullWidth ? 0 : 4,
       borderBottom: `1px solid ${t.color.border}`,
       ...style,
     }}>
@@ -18,7 +18,7 @@ export default function Tabs({ tabs = [], value, onChange, style }) {
             type="button"
             onClick={() => onChange(tab.value)}
             style={{
-              padding: '10px 14px',
+              padding: fullWidth ? '10px 6px' : '10px 14px',
               fontSize: t.font.size.sm,
               fontWeight: t.font.weight.medium,
               fontFamily: t.font.family,
@@ -27,12 +27,20 @@ export default function Tabs({ tabs = [], value, onChange, style }) {
               marginBottom: -1,
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
+              justifyContent: fullWidth ? 'center' : undefined,
+              gap: fullWidth ? 5 : 8,
               cursor: 'pointer',
               background: 'transparent',
               transition: 'color 120ms',
+              flex: fullWidth ? 1 : undefined,
+              minWidth: 0,
             }}
           >
+            {tab.icon && (
+              <span style={{ display: 'flex', color: active ? t.color.primary : t.color.textMuted, flexShrink: 0 }}>
+                {tab.icon}
+              </span>
+            )}
             {tab.label}
             {tab.count != null && (
               <span style={{

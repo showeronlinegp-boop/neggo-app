@@ -916,6 +916,92 @@ async function getPreventasQuotations(states = ['draft', 'sent']) {
     }));
 }
 
+const WEEKLY_SALES_TTL_MS = 10 * 60 * 1000;
+const WEEKLY_SALES_ERROR_TTL_MS = 2 * 60 * 1000;
+let weeklySoldCache = null;
+
+function odooProductId(value) {
+    if (Array.isArray(value)) return value[0] || null;
+    return value || null;
+}
+
+function sumQtyByProduct(lines, qtyField) {
+    const qtyById = new Map();
+    for (const line of lines) {
+        const pid = Number(odooProductId(line.product_id));
+        const qty = Number(line[qtyField]) || 0;
+        if (!pid || qty <= 0) continue;
+        qtyById.set(pid, (qtyById.get(pid) || 0) + qty);
+    }
+    return qtyById;
+}
+
+function mergeQtyMaps(into, from) {
+    for (const [id, qty] of from) into.set(id, (into.get(id) || 0) + qty);
+    return into;
+}
+
+/**
+ * Cantidades vendidas en los últimos 7 días (empresa Neggo por defecto).
+ * Suma líneas de sale.order confirmadas y, si existe, de pos.order.
+ * Solo lee Odoo. Cachea 10 minutos para no pegarle en cada modal.
+ *
+ * @returns {Promise<{ qtyById: Map<number, number>, error: string|null, desde: string }>}
+ */
+async function getWeeklySoldQty(companyKey = 'neggo') {
+    const now = Date.now();
+    if (weeklySoldCache && weeklySoldCache.companyKey === companyKey) {
+        const ttl = weeklySoldCache.error ? WEEKLY_SALES_ERROR_TTL_MS : WEEKLY_SALES_TTL_MS;
+        if (now - weeklySoldCache.at < ttl) return weeklySoldCache;
+    }
+
+    const since = new Date(now - 7 * 24 * 60 * 60 * 1000);
+    const desde = since.toISOString().slice(0, 19).replace('T', ' ');
+
+    try {
+        const companyId = await resolveCompanyId(companyKey);
+        const context = { allowed_company_ids: [companyId], active_test: false };
+        const qtyById = new Map();
+
+        const saleLines = await readAllPages((offset, limit) => callOdoo(
+            'sale.order.line',
+            'search_read',
+            [[
+                ['order_id.company_id', '=', companyId],
+                ['order_id.state', 'in', ['sale', 'done']],
+                ['order_id.date_order', '>=', desde],
+                ['product_id', '!=', false],
+            ]],
+            { fields: ['id', 'product_id', 'product_uom_qty'], limit, offset, context }
+        ));
+        mergeQtyMaps(qtyById, sumQtyByProduct(saleLines, 'product_uom_qty'));
+
+        try {
+            const posLines = await readAllPages((offset, limit) => callOdoo(
+                'pos.order.line',
+                'search_read',
+                [[
+                    ['order_id.company_id', '=', companyId],
+                    ['order_id.state', 'in', ['paid', 'done', 'invoiced']],
+                    ['order_id.date_order', '>=', desde],
+                    ['product_id', '!=', false],
+                ]],
+                { fields: ['id', 'product_id', 'qty'], limit, offset, context }
+            ));
+            mergeQtyMaps(qtyById, sumQtyByProduct(posLines, 'qty'));
+        } catch (err) {
+            console.warn(`⚠️ POS no disponible para ventas de la semana: ${err.message}`);
+        }
+
+        weeklySoldCache = { at: now, companyKey, qtyById, error: null, desde };
+        return weeklySoldCache;
+    } catch (err) {
+        console.error('❌ Ventas de la semana (reposición):', err.message);
+        weeklySoldCache = { at: now, companyKey, qtyById: new Map(), error: err.message, desde };
+        return weeklySoldCache;
+    }
+}
+
 module.exports = {
     // Productos
     getProducts,
@@ -943,7 +1029,9 @@ module.exports = {
     cancelSaleOrder,
     getSaleOrders,
     getPreventasQuotations,
+    getWeeklySoldQty,
     readAllPages,
     normalizeQuotationLine,
+    sumQtyByProduct,
 };
 

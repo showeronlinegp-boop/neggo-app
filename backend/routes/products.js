@@ -247,7 +247,11 @@ router.patch('/odoo/:odooId/archive', authenticate, async (req, res) => {
 
         const action = archived ? 'archivado' : 'restaurado';
         console.log(`✅ Producto ${rows[0].name} (odoo_id=${odooId}) ${action} en Odoo y cache local`);
-        ok(res, rows[0]);
+        ok(res, {
+            ...rows[0],
+            en_cola: company === 'neggo' && !!archived,
+            cola_cerrada: company === 'neggo' && !archived,
+        });
     } catch (err) {
         console.error('❌ Error al archivar producto en Odoo:', err.message);
         fail(res, err.message, 500);

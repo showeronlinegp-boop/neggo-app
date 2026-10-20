@@ -1123,13 +1123,8 @@ router.post('/:ingresoId/items/:itemId/reactivate', authenticate, requireRole('a
             [item.odoo_product_id]
         );
 
-        // Reposición: si estaba en la cola por agotado, entró mercadería → repuesto
-        try {
-            await require('../services/reposicionService')
-                .resolverReactivados([item.odoo_product_id], { resolvedBy: req.user.id });
-        } catch (err) {
-            console.error(`⚠️ Reposición: no se pudo marcar repuesto ${item.odoo_product_id}: ${err.message}`);
-        }
+        // No cerramos la cola acá: Reposición destaca el ítem (llego_ingreso) para que
+        // el operador lo saque de pendientes o encargados con «Ya llegó».
 
         console.log(`✅ Producto ${item.odoo_product_id} (template ${templateId}) reactivado en Odoo`);
 
