@@ -87,4 +87,21 @@ export const ingresoAPI = {
    */
   assignWebCategFromProduct: (ingresoId, itemId) =>
     api.post(`/ingreso/${ingresoId}/items/${itemId}/assign-web-categ-from-product`, {}),
+
+  /**
+   * Carga o reemplaza la foto del producto Odoo del ítem (JPG, PNG o WEBP, hasta 5MB)
+   * @returns { success, data: { template_id } }
+   */
+  uploadPhoto: (ingresoId, itemId, file) => {
+    const formData = new FormData();
+    formData.append('image', file);
+    return api.post(`/ingreso/${ingresoId}/items/${itemId}/photo`, formData);
+  },
+
+  /**
+   * Programa una tanda de WhatsApp con productos del ingreso (con foto y precio)
+   * @param {object} body — { item_ids, scheduled_at? ('AAAA-MM-DDTHH:mm'), send_now? }
+   * @returns { success, data: { id, total, scheduled_at, omitidos } }
+   */
+  scheduleWhatsApp: (ingresoId, body) => api.post(`/ingreso/${ingresoId}/whatsapp`, body),
 };

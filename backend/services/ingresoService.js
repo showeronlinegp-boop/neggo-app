@@ -23,19 +23,59 @@ function normalizeHeader(h) {
 }
 
 /**
- * Parsea un número en formato español: "7.854,00" → 7854.00
+ * Parsea un monto de la factura.
+ * Formato argentino: "7.854,00" → 7854, "$ 1.234" → 1234.
+ * Sin coma y con 1 o 2 decimales tras el punto es decimal: "1234.56" → 1234.56
+ * (así exporta Excel con configuración en inglés; antes daba 123456).
  */
 function parsePrecio(val) {
     if (val === null || val === undefined || val === '') return 0;
-    const s = String(val).trim()
-        .replace(/\./g, '')
-        .replace(',', '.');
+    let s = String(val).replace(/[$\s ]/g, '');
+    if (s.includes(',')) {
+        s = s.replace(/\./g, '').replace(',', '.');
+    } else if (!/^-?\d+\.\d{1,2}$/.test(s)) {
+        s = s.replace(/\./g, '');
+    }
     return parseFloat(s) || 0;
+}
+
+/**
+ * Cantidad entera. "1.000" es mil (separador de miles) y "5,00" es cinco.
+ * "2,5" no es una cantidad válida: devuelve NaN en vez de truncar a 2.
+ */
+function parseCantidad(val) {
+    const s = String(val ?? '').replace(/[\s ]/g, '');
+    if (/^\d{1,3}(\.\d{3})+$/.test(s)) return parseInt(s.replace(/\./g, ''), 10);
+    if (/^\d+([.,]0+)?$/.test(s)) return parseInt(s, 10);
+    return NaN;
+}
+
+/**
+ * Los CSV que guarda Excel en Windows suelen venir en Latin-1. Leídos como UTF-8,
+ * la "ó" de "Descripción" se rompe y la columna no se reconoce.
+ */
+function decodeCsv(buffer) {
+    const utf8 = buffer.toString('utf-8');
+    return utf8.includes('�') ? buffer.toString('latin1') : utf8;
+}
+
+/**
+ * Claves para buscar el código de la factura entre los SKU scrapeados del proveedor.
+ * Los scrapers guardan PRE + prefijo + código ("PRECT0440209"); la factura trae "0440209".
+ */
+function supplierSkuKeys(codigo, supplierPrefix) {
+    const norm = (s) => String(s || '').replace(/[-\s]/g, '').toUpperCase();
+    const code = norm(codigo);
+    const pref = norm(supplierPrefix);
+    if (!code) return [];
+    const keys = [code];
+    if (pref && !code.startsWith(`PRE${pref}`)) keys.push(`PRE${pref}${code}`);
+    return keys;
 }
 
 async function parseCSV(fileBuffer) {
     return new Promise((resolve) => {
-        const csvString = fileBuffer.toString('utf-8');
+        const csvString = decodeCsv(fileBuffer);
 
         papa.parse(csvString, {
             header: true,
@@ -51,7 +91,7 @@ async function parseCSV(fileBuffer) {
                         const codigo = (row.codigo || row.code || '').trim();
                         const descripcion = (row.descripcion || row.description || row.desc || '').trim();
                         const cantidadRaw = row.cantidad || row.quantity || row.cant || '';
-                        const cantidad = parseInt(String(cantidadRaw).trim(), 10);
+                        const cantidad = parseCantidad(cantidadRaw);
                         const precioRaw = row.precio || row['precio unitario'] || row.unit_price || row.price || '';
                         const precioUnitario = parsePrecio(precioRaw);
                         const subtotalRaw = row.subtotal || row.importe || row.total || row.monto || '';
@@ -322,13 +362,9 @@ async function matchItems(items, supplierId = null) {
                 const { rows: spRows } = await pool.query(
                     `SELECT sp.id FROM supplier_products sp
                      WHERE sp.supplier_id = $1
-                       AND (
-                            UPPER(sp.sku) = UPPER($2)
-                            OR REPLACE(REPLACE(UPPER(sp.sku), '-', ''), ' ', '')
-                               = REPLACE(REPLACE(UPPER($2), '-', ''), ' ', '')
-                       )
+                       AND REPLACE(REPLACE(UPPER(sp.sku), '-', ''), ' ', '') = ANY($2::text[])
                      LIMIT 1`,
-                    [supplierId, item.codigo]
+                    [supplierId, supplierSkuKeys(item.codigo, supplierPrefix)]
                 );
 
                 if (spRows.length > 0) {
@@ -520,6 +556,12 @@ async function matchItems(items, supplierId = null) {
                 const p = supplierPrefix.toUpperCase();
                 if (skuUpper.startsWith(p + '-')) bySpSku.set(skuUpper.slice(p.length + 1), sp);
                 if (skuUpper.startsWith(p))       bySpSku.set(skuUpper.slice(p.length), sp);
+                // Formato actual de los scrapers: PRE + prefijo + código ("PRECT0440209" → "0440209")
+                if (skuUpper.startsWith(`PRE${p}`)) {
+                    const code = skuUpper.slice(p.length + 3);
+                    bySpSku.set(code, sp);
+                    if (code.replace(/-/g, '').length >= 2) bySpBaseCode.set(code.replace(/-/g, ''), sp);
+                }
             }
         }
 
@@ -768,7 +810,10 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
                     COALESCE(s.markup_preventas, 0) AS markup_preventas
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
-             WHERE im.id = $1`,
+             WHERE im.id = $1
+             -- Bloquea el ingreso: un doble clic en Confirmar espera al primero y
+             -- después ve 'confirmado', en vez de crear la OC dos veces en Odoo
+             FOR UPDATE OF im`,
             [ingresoId]
         );
 
@@ -1072,6 +1117,10 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
 
 module.exports = {
     parseCSV,
+    parsePrecio,
+    parseCantidad,
+    decodeCsv,
+    supplierSkuKeys,
     matchItems,
     validateItems,
     createIngresoPreview,
