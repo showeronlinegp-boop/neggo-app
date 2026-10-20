@@ -85,7 +85,7 @@ services:
     networks:
       - neggo-net
 
-  # Dump semanal (domingo 03:00, hora Argentina) a volumes/backups y a Drive.
+  # Al prender el servidor, si pasó una semana desde el último backup en Drive, lo hace.
   # La carpeta y el JSON del service account se configuran una vez: backup/README.md
   db-backup:
     build: ./backup
@@ -96,8 +96,9 @@ services:
       - PGDATABASE=neggo_app
       - BACKUP_DIR=/backups
       - BACKUP_KEEP=${BACKUP_KEEP:-8}
+      - BACKUP_EVERY_DAYS=${BACKUP_EVERY_DAYS:-7}
+      - BACKUP_CHECK_SECONDS=${BACKUP_CHECK_SECONDS:-3600}
       - TZ=America/Argentina/Buenos_Aires
-      - BACKUP_CRON=${BACKUP_CRON:-0 3 * * 0}
       - DRIVE_FOLDER_ID=${DRIVE_FOLDER_ID:-}
       - DRIVE_SA_FILE=/secrets/drive-sa.json
     volumes:

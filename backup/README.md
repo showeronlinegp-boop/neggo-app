@@ -1,6 +1,6 @@
 # Backup semanal de la base en Drive
 
-El servicio `db-backup` hace un `pg_dump` de `neggo_app` (incluye el schema de Evolution) todos los domingos a las 03:00, hora de Argentina. Guarda el archivo en `volumes/backups/` y lo copia a una carpeta de Google Drive. En el disco y en Drive quedan las últimas 8 copias.
+El servicio `db-backup` hace un `pg_dump` de `neggo_app` (incluye el schema de Evolution) y lo copia a una carpeta de Google Drive. No usa un horario de madrugada: el servidor local no está prendido a esa hora. Cuando se prende la máquina, si pasaron 7 días desde el último backup que llegó a Drive, lo hace en ese momento. Si la PC sigue prendida, vuelve a mirar cada una hora. En el disco y en Drive quedan las últimas 8 copias.
 
 El dump tiene precios, pedidos, usuarios y las claves de scraping que estén en la base. La carpeta de Drive tiene que ser de alguien de la empresa, no un link público.
 
@@ -16,10 +16,15 @@ El dump tiene precios, pedidos, usuarios y las claves de scraping que estén en 
 DRIVE_FOLDER_ID=el_id_de_la_carpeta
 ```
 
-6. Levantá el servicio y probá una copia ahora:
+6. Levantá el servicio. La primera vez que la base esté arriba, hace el backup. Después lo repite al prender el servidor, cuando hayan pasado 7 días desde la última copia que llegó a Drive.
 
 ```
 docker compose up -d db-backup
+```
+
+Para forzarlo ahora, sin esperar esos 7 días:
+
+```
 docker compose exec db-backup backup-db.sh
 ```
 

@@ -115,5 +115,75 @@ code=$?
 set -e
 test "$code" -eq 1
 grep -q "RESTORE_CONFIRM=si" "$TMP/restore"
+test -f "$TMP/backups/.last-success"
+
+# Si el dump de hoy ya está, no se vuelve a dumpear: solo se sube.
+cat > "$TMP/bin/pg_dump" <<'EOF'
+#!/bin/sh
+echo "no tenía que dumpear de nuevo" >&2
+exit 1
+EOF
+chmod 755 "$TMP/bin/pg_dump"
+PATH="$TMP/bin:$PATH" \
+BACKUP_DIR="$TMP/backups" \
+BACKUP_KEEP=8 \
+DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+DRIVE_FOLDER_ID=carpeta-prueba \
+DRIVE_MOCK="$TMP/drive" \
+    "$ROOT/backup-db.sh" > "$TMP/reuse"
+grep -q "Ya hay un dump de hoy" "$TMP/reuse"
+
+# Al prender el servidor: sin marca previa, corre. Con una marca reciente, no.
+cat > "$TMP/bin/ran-backup" <<'EOF'
+#!/bin/sh
+touch "$RAN"
+EOF
+chmod 755 "$TMP/bin/ran-backup"
+
+rm -f "$TMP/backups/.last-success" "$TMP/ran"
+RAN="$TMP/ran" \
+BACKUP_DIR="$TMP/backups" \
+DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+DRIVE_FOLDER_ID=carpeta-prueba \
+BACKUP_EVERY_DAYS=7 \
+BACKUP_BIN="$TMP/bin/ran-backup" \
+    "$ROOT/backup-if-due.sh" > "$TMP/due1"
+test -f "$TMP/ran"
+grep -q "No hay un backup previo" "$TMP/due1"
+
+rm -f "$TMP/ran"
+touch "$TMP/backups/.last-success"
+RAN="$TMP/ran" \
+BACKUP_DIR="$TMP/backups" \
+DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+DRIVE_FOLDER_ID=carpeta-prueba \
+BACKUP_EVERY_DAYS=7 \
+BACKUP_BIN="$TMP/bin/ran-backup" \
+    "$ROOT/backup-if-due.sh" > "$TMP/due2"
+test ! -f "$TMP/ran"
+grep -q "El próximo es al cumplir" "$TMP/due2"
+
+rm -f "$TMP/ran"
+touch -d '8 days ago' "$TMP/backups/.last-success"
+RAN="$TMP/ran" \
+BACKUP_DIR="$TMP/backups" \
+DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+DRIVE_FOLDER_ID=carpeta-prueba \
+BACKUP_EVERY_DAYS=7 \
+BACKUP_BIN="$TMP/bin/ran-backup" \
+    "$ROOT/backup-if-due.sh" > "$TMP/due3"
+test -f "$TMP/ran"
+grep -q "Se hace ahora" "$TMP/due3"
+
+rm -f "$TMP/ran" "$TMP/backups/.last-success"
+RAN="$TMP/ran" \
+BACKUP_DIR="$TMP/backups" \
+DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+DRIVE_FOLDER_ID= \
+BACKUP_EVERY_DAYS=7 \
+BACKUP_BIN="$TMP/bin/ran-backup" \
+    "$ROOT/backup-if-due.sh" > "$TMP/due4"
+test ! -f "$TMP/ran"
+grep -q "Drive no está configurado" "$TMP/due4"
 
 echo "backup ok"

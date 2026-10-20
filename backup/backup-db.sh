@@ -1,7 +1,8 @@
 #!/bin/sh
 # Dump de neggo_app y, si Drive está configurado, copia a esa carpeta.
-# Corre solo (domingo 03:00, hora Argentina) y también a mano:
+# A mano, sin esperar la semana:
 #   docker compose exec db-backup backup-db.sh
+# El automático lo dispara backup-if-due.sh al prender el servidor.
 
 set -eu
 
@@ -43,12 +44,16 @@ trap 'rm -f "$PARTIAL" "$LIST"' EXIT
 mkdir -p "$BACKUP_DIR"
 rm -f "$PARTIAL"
 
-log "Empieza el dump de ${PGDATABASE}"
-"$PG_DUMP" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
-    -Fc --no-owner --no-acl -f "$PARTIAL"
-"$PG_RESTORE" -l "$PARTIAL" >/dev/null
-mv "$PARTIAL" "$FILE"
-log "Dump local listo: ${FILE} ($(wc -c < "$FILE" | tr -d ' ') bytes)"
+if [ -s "$FILE" ] && "$PG_RESTORE" -l "$FILE" >/dev/null 2>&1; then
+    log "Ya hay un dump de hoy (${FILE}). Se reintenta la subida sin volver a dumpear."
+else
+    log "Empieza el dump de ${PGDATABASE}"
+    "$PG_DUMP" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
+        -Fc --no-owner --no-acl -f "$PARTIAL"
+    "$PG_RESTORE" -l "$PARTIAL" >/dev/null
+    mv "$PARTIAL" "$FILE"
+    log "Dump local listo: ${FILE} ($(wc -c < "$FILE" | tr -d ' ') bytes)"
+fi
 
 find "$BACKUP_DIR" -maxdepth 1 -type f -name 'neggo_app_*.dump' | sort > "$LIST"
 prune_names "$LIST" | while read -r old; do
@@ -80,4 +85,5 @@ prune_names "$LIST" | while read -r old; do
     log "Borrado en Drive: ${old}"
 done
 
+touch "$BACKUP_DIR/.last-success"
 log "Backup en Drive listo"
