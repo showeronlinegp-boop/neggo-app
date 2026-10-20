@@ -4,6 +4,7 @@ import { ingresoAPI } from '../api/ingresoClient';
 import api from '../api/client';
 import { getTokens } from '../theme/tokens';
 import { useDraggable } from '../hooks/useDraggable';
+import useIsMobile from '../hooks/useIsMobile';
 import { useAuth } from '../context/AuthContext';
 
 // Mapeamos todos los colores del sistema viejo a tokens del nuevo sistema.
@@ -51,29 +52,63 @@ const pctDiff = (a, b) => {
     return ((b - a) / a * 100).toFixed(1);
 };
 
-function useIsMobile(breakpoint = 640) {
-    const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= breakpoint);
-    useEffect(() => {
-        const handler = () => setIsMobile(window.innerWidth <= breakpoint);
-        window.addEventListener('resize', handler);
-        return () => window.removeEventListener('resize', handler);
-    }, [breakpoint]);
-    return isMobile;
+const TAP = {
+    minHeight: 44,
+    padding: '10px 12px',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    borderRadius: '8px',
+    cursor: 'pointer',
+};
+
+function tapStyle(tone = 'ghost', extra = {}) {
+    const tones = {
+        ghost:   { backgroundColor: C.white, color: C.text, border: `1px solid ${C.border}` },
+        primary: { backgroundColor: C.primary, color: C.white, border: `1px solid ${C.primary}` },
+        accent:  { backgroundColor: C.secondary, color: C.white, border: `1px solid ${C.secondary}` },
+        success: { backgroundColor: C.success, color: C.white, border: `1px solid ${C.success}` },
+        danger:  { backgroundColor: C.white, color: C.error, border: `1px solid ${C.error}` },
+        blue:    { backgroundColor: C.white, color: C.blue, border: `1px solid ${C.blue}` },
+        muted:   { backgroundColor: C.white, color: C.gray, border: `1px solid ${C.border}` },
+    };
+    return { ...TAP, flex: 1, ...tones[tone], ...extra };
+}
+
+function Fold({ title, open, onToggle, children, hint }) {
+    return (
+        <div style={{ borderTop: `1px solid ${C.border}` }}>
+            <button type="button" onClick={onToggle} style={{
+                width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 14px', background: 'none', border: 'none', cursor: 'pointer',
+                minHeight: 44, fontFamily: 'inherit',
+            }}>
+                <span>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: C.text }}>{title}</span>
+                    {hint && !open && (
+                        <span style={{ fontSize: '12px', color: C.gray, marginLeft: 8 }}>{hint}</span>
+                    )}
+                </span>
+                <span style={{ color: C.gray, fontSize: 14 }}>{open ? '▴' : '▾'}</span>
+            </button>
+            {open && <div style={{ padding: '0 14px 14px' }}>{children}</div>}
+        </div>
+    );
 }
 
 // =============================================
 // Toast de scanner HID
 // =============================================
 function ScanToast({ toast }) {
+    const isMobile = useIsMobile();
     if (!toast) return null;
     return (
         <div style={{
-            position: 'fixed', bottom: '24px', right: '24px',
+            position: 'fixed', bottom: isMobile ? 88 : 24, right: isMobile ? 12 : 24, left: isMobile ? 12 : 'auto',
             backgroundColor: toast.ok ? '#1B5E20' : '#B71C1C',
             color: C.white, padding: '12px 18px', borderRadius: '8px',
             boxShadow: '0 4px 20px rgba(0,0,0,0.35)', zIndex: 9999,
             fontSize: '14px', fontWeight: 'bold',
-            display: 'flex', alignItems: 'center', gap: '10px', maxWidth: '380px',
+            display: 'flex', alignItems: 'center', gap: '10px', maxWidth: isMobile ? 'none' : '380px',
         }}>
             <span style={{ fontSize: '22px' }}>{toast.ok ? '📦' : '❌'}</span>
             <span>{toast.msg}</span>
@@ -260,6 +295,7 @@ const MOTIVO_VINCULO = {
 
 function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
     // Vacío = sugerencias armadas con el código y la descripción del ítem
+    const isMobile = useIsMobile();
     const [search, setSearch]     = useState('');
     const [results, setResults]   = useState([]);
     const [loading, setLoading]   = useState(false);
@@ -283,8 +319,19 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
     }, [search, sugiriendo, item?.codigo, item?.descripcion]);
 
     return (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
-            <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '24px', width: '540px', maxWidth: '92vw', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', ...containerStyle }}>
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
+            <div style={{
+                backgroundColor: C.white,
+                borderRadius: isMobile ? 0 : '8px',
+                padding: isMobile ? '16px 14px calc(16px + env(safe-area-inset-bottom))' : '24px',
+                width: isMobile ? '100%' : '540px',
+                maxWidth: isMobile ? '100vw' : '92vw',
+                height: isMobile ? '100%' : 'auto',
+                maxHeight: isMobile ? '100%' : '90vh',
+                overflow: 'auto',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+                ...(isMobile ? {} : containerStyle),
+            }}>
                 <h3 onMouseDown={onDragStart} style={{ marginBottom: '4px', color: C.primary, fontSize: '16px', ...dragStyle }}>🔗 Vincular a producto existente</h3>
                 <p style={{ fontSize: '12px', color: C.gray, marginBottom: '12px' }}>
                     Incluye activos e inactivos. La vinculación se persiste para futuras facturas del mismo proveedor.
@@ -322,7 +369,7 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                     placeholder="Buscá por código o por palabras del nombre, en cualquier orden..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    style={{ width: '100%', padding: '10px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '14px', boxSizing: 'border-box', marginBottom: '10px' }}
+                    style={{ width: '100%', padding: isMobile ? '12px' : '10px 12px', minHeight: isMobile ? 44 : undefined, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 16, boxSizing: 'border-box', marginBottom: 10 }}
                 />
 
                 {loading && <p style={{ fontSize: '12px', color: C.gray }}>Buscando...</p>}
@@ -334,13 +381,13 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                 )}
 
                 {results.length > 0 && (
-                    <div style={{ border: `1px solid ${C.border}`, borderRadius: '4px', maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
+                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, maxHeight: isMobile ? 'calc(100vh - 340px)' : 300, overflowY: 'auto', marginBottom: 14 }}>
                         {results.map(p => (
                             <div
                                 key={p.odoo_id}
                                 onClick={() => setSelected(p)}
                                 style={{
-                                    padding: '8px 12px', cursor: 'pointer',
+                                    padding: isMobile ? '12px' : '8px 12px', cursor: 'pointer', minHeight: isMobile ? 56 : undefined,
                                     backgroundColor: selected?.odoo_id === p.odoo_id ? C.infoBg : 'transparent',
                                     borderBottom: `1px solid ${C.border}`, fontSize: '13px',
                                     display: 'flex', gap: '10px', alignItems: 'center'
@@ -401,16 +448,16 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                     </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                    <button onClick={onCancel} style={{ padding: '10px 20px', backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '14px' }}>
+                <div style={{ display: 'flex', gap: 8, justifyContent: isMobile ? 'stretch' : 'flex-end' }}>
+                    <button onClick={onCancel} style={{ padding: '12px 20px', minHeight: 48, flex: isMobile ? 1 : undefined, backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: 'pointer', fontSize: 14 }}>
                         Cancelar
                     </button>
                     <button
                         onClick={() => selected && onLink(selected)}
                         disabled={!selected}
-                        style={{ padding: '10px 20px', backgroundColor: selected ? C.primary : '#ccc', color: C.white, border: 'none', borderRadius: '4px', cursor: selected ? 'pointer' : 'not-allowed', fontSize: '14px', fontWeight: 'bold' }}
+                        style={{ padding: '12px 20px', minHeight: 48, flex: isMobile ? 1 : undefined, backgroundColor: selected ? C.primary : '#ccc', color: C.white, border: 'none', borderRadius: 8, cursor: selected ? 'pointer' : 'not-allowed', fontSize: 14, fontWeight: 'bold' }}
                     >
-                        Vincular y guardar
+                        {isMobile ? 'Vincular' : 'Vincular y guardar'}
                     </button>
                 </div>
             </div>
@@ -463,34 +510,33 @@ function SugerenciasVinculo({ item, excluirOdooId, isMobile, onLink }) {
     };
 
     return (
-        <div style={{ flex: isMobile ? 'none' : 1, padding: '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
-            <p style={{ fontSize: '10px', color: C.gray, margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+        <div style={{ flex: isMobile ? 'none' : 1, padding: isMobile ? '10px 12px 12px' : '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
+            <p style={{ fontSize: '11px', color: C.gray, margin: '0 0 8px', fontWeight: 600 }}>
                 ¿Es alguno de estos?
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? '8px' : '6px' }}>
                 {sugerencias.map(p => (
-                    <div key={p.odoo_id} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 8px', border: `1px solid ${C.border}`, borderRadius: '6px', backgroundColor: C.white }}>
-                        <OdooImage odooId={p.odoo_id} size={36} />
+                    <div key={p.odoo_id} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: isMobile ? '8px' : '6px 8px', border: `1px solid ${C.border}`, borderRadius: '8px', backgroundColor: C.white }}>
+                        <OdooImage odooId={p.odoo_id} size={isMobile ? 44 : 36} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                            <div title={p.name} style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <div title={p.name} style={{ fontSize: '13px', fontWeight: 'bold', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {p.name}
                             </div>
-                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '10px', color: C.gray, flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '11px', color: C.gray, flexWrap: 'wrap' }}>
                                 {p.internal_ref && <code style={{ fontFamily: 'monospace' }}>{p.internal_ref}</code>}
                                 {MOTIVO_VINCULO[p.motivo] && <span>· {MOTIVO_VINCULO[p.motivo]}</span>}
                                 {!p.active && <span style={{ color: C.error, fontWeight: 'bold' }}>· INACTIVO</span>}
-                                {parseFloat(p.standard_price) > 0 && (
-                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>· Costo {fmtARS(p.standard_price)}</span>
-                                )}
                             </div>
                         </div>
                         <button
                             onClick={() => vincular(p)}
                             disabled={vinculando !== null}
                             title="Vincular este ítem a este producto"
-                            style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.white, color: C.secondary, cursor: vinculando !== null ? 'default' : 'pointer', flexShrink: 0 }}
+                            style={isMobile
+                                ? { ...tapStyle('accent', { flex: 'none', padding: '8px 12px' }), cursor: vinculando !== null ? 'default' : 'pointer' }
+                                : { padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.white, color: C.secondary, cursor: vinculando !== null ? 'default' : 'pointer', flexShrink: 0 }}
                         >
-                            {vinculando === p.odoo_id ? '⏳' : 'Vincular'}
+                            {vinculando === p.odoo_id ? '⏳' : (isMobile ? 'Sí' : 'Vincular')}
                         </button>
                     </div>
                 ))}
@@ -502,7 +548,7 @@ function SugerenciasVinculo({ item, excluirOdooId, isMobile, onLink }) {
 // =============================================
 // Tarjeta de ítem
 // =============================================
-function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
+function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
     const isMobile = useIsMobile();
     const [linkingOpen, setLinkingOpen] = useState(false);
     const [precioVentaInput, setPrecioVentaInput] = useState('');
@@ -566,6 +612,8 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
     // Campos adicionales de Odoo (template-level)
     const [editandoCateg, setEditandoCateg]         = useState(false);
     const [editandoWebCateg, setEditandoWebCateg]   = useState(false);
+    const [foldPrecios, setFoldPrecios]             = useState(false);
+    const [foldOdoo, setFoldOdoo]                   = useState(false);
 
     const saveOdooField = async (field, value) => {
         setSavingOdoo(true);
@@ -636,6 +684,267 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
 
     let borderColor = isHighlighted ? C.blue : isNew ? '#EF9A9A' : isInactive ? '#FFB74D' : isComplete ? C.success : C.border;
     let bgColor     = isHighlighted ? '#EBF5FF' : isComplete ? '#F1F8E9' : C.white;
+
+    const linkingModal = linkingOpen && (
+        <ProductSearchModal
+            item={item}
+            costos={{ packSize, costoUnitario, effectiveDiscount, costoConDescuento, envioUnitario, costoConEnvio }}
+            onPackChange={(v) => onItemUpdate(item.id, { pack_size: v })}
+            onLink={async (product) => {
+                setLinkingOpen(false);
+                await onLinked(item.id, product.odoo_id);
+            }}
+            onCancel={() => setLinkingOpen(false)}
+        />
+    );
+
+    if (isMobile) {
+        const qty = parseInt(item.cantidad || 0, 10);
+        const received = parseInt(item.received_qty || 0, 10);
+        const toggleRecibido = (e) => {
+            e.stopPropagation();
+            onItemUpdate(item.id, { received_qty: isComplete ? 0 : qty });
+        };
+        return (
+            <div
+                data-itemid={item.id}
+                style={{
+                    backgroundColor: bgColor,
+                    border: `1.5px solid ${borderColor}`,
+                    borderRadius: 12,
+                    overflow: 'hidden',
+                    boxShadow: isHighlighted ? `0 0 0 3px ${C.blue}33` : '0 1px 4px rgba(0,0,0,0.08)',
+                }}
+            >
+                <div style={{ padding: '12px 12px 10px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    {isMatched && (
+                        <button
+                            type="button"
+                            onClick={toggleRecibido}
+                            title={isComplete ? 'Desmarcar recibido' : 'Marcar recibido'}
+                            style={{
+                                width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                                border: `2px solid ${isComplete ? C.success : C.border}`,
+                                backgroundColor: isComplete ? C.success : C.white,
+                                color: isComplete ? C.white : C.gray,
+                                fontSize: 18, fontWeight: 700, cursor: 'pointer',
+                            }}
+                        >✓</button>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', backgroundColor: '#ECEFF1', color: '#455A64', padding: '3px 8px', borderRadius: 6 }}>
+                                {item.codigo || 'S/COD'}
+                            </span>
+                            {isNew && (
+                                <span style={{ fontSize: 11, fontWeight: 700, backgroundColor: C.errorBg, color: C.error, padding: '3px 8px', borderRadius: 6 }}>Para vincular</span>
+                            )}
+                            {isRejected && (
+                                <span style={{ fontSize: 11, fontWeight: 700, backgroundColor: C.error, color: '#fff', padding: '3px 8px', borderRadius: 6 }}>Rechazado</span>
+                            )}
+                            {isMatched && (
+                                <span style={{
+                                    fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                                    backgroundColor: isInactive ? C.warningBg : C.successBg,
+                                    color: isInactive ? C.warning : C.success,
+                                }}>
+                                    {isInactive ? 'Inactivo' : 'Activo'}
+                                </span>
+                            )}
+                            {isMatched && (
+                                <span style={{ fontSize: 12, color: isComplete ? C.success : C.gray, fontWeight: 600, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
+                                    {received}/{qty}
+                                </span>
+                            )}
+                        </div>
+                        <p style={{ fontWeight: 700, fontSize: 15, color: C.text, margin: 0, lineHeight: 1.35 }}>
+                            {item.descripcion}
+                        </p>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 12px', marginTop: 8, fontSize: 13, color: C.gray, alignItems: 'center' }}>
+                            <span>Cant. <strong style={{ color: C.text }}>{item.cantidad}</strong></span>
+                            <span>Precio <strong style={{ color: C.text }}>{fmtARS(item.precio_unitario)}</strong></span>
+                            {packSize > 1 && <span>Unit. <strong style={{ color: C.text }}>{fmtARS(costoUnitario)}</strong></span>}
+                        </div>
+                    </div>
+                </div>
+
+                {item.supplier_match_level === 'fuzzy' && !supplierMatchConfirmed && item.supplier_product_id && (
+                    <div style={{ margin: '0 12px 10px', padding: 10, borderRadius: 8, backgroundColor: C.warningBg, border: `1px solid ${C.warning}` }}>
+                        <p style={{ margin: '0 0 8px', fontSize: 12, color: C.text }}>
+                            ¿Es este del proveedor? <strong>{item.supplier_product_name_matched}</strong>
+                        </p>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button type="button" onClick={() => setSupplierMatchConfirmed(true)} style={tapStyle('success')}>Sí</button>
+                            <button type="button" onClick={() => onItemUpdate(item.id, { supplier_product_id: null })} style={tapStyle('danger')}>No</button>
+                        </div>
+                    </div>
+                )}
+
+                {isMatched && (
+                    <div style={{ margin: '0 12px 10px', padding: 10, borderRadius: 10, backgroundColor: '#FAFAFA', border: `1px solid ${C.border}`, display: 'flex', gap: 10 }}>
+                        <OdooImage odooId={item.odoo_product_id} version={photoVersion} size={56} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 11, color: C.gray, fontWeight: 600, marginBottom: 2 }}>En Odoo</div>
+                            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text, lineHeight: 1.3 }}>
+                                {item.odoo_product_name}
+                            </p>
+                            <div style={{ fontSize: 12, color: C.gray, marginTop: 4, fontFamily: 'monospace' }}>
+                                {item.odoo_internal_ref || 'Sin ref'}
+                                {item.odoo_barcode ? ` · ${item.odoo_barcode}` : ''}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {isMatched && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '0 12px 10px' }}>
+                        <div style={{ backgroundColor: C.white, border: `1px solid ${hayAlerta ? '#FFB74D' : C.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                            <div style={{ fontSize: 11, color: C.gray, fontWeight: 600 }}>Costo a aplicar</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtARS(costoConEnvio)}</div>
+                            {diff !== null && (
+                                <div style={{ fontSize: 11, fontWeight: 700, color: parseFloat(diff) > 0 ? C.warning : C.success }}>
+                                    {parseFloat(diff) > 0 ? '▲' : '▼'} {Math.abs(diff)}% vs Odoo
+                                </div>
+                            )}
+                        </div>
+                        <div style={{ backgroundColor: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                            <div style={{ fontSize: 11, color: C.gray, fontWeight: 600 }}>Lista sugerida</div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: C.blue, fontVariantNumeric: 'tabular-nums' }}>
+                                {nuevoPrecioLista ? fmtARS(nuevoPrecioLista) : '—'}
+                            </div>
+                            <div style={{ fontSize: 11, color: C.gray }}>PVP hoy {fmtARS(item.odoo_list_price)}</div>
+                        </div>
+                    </div>
+                )}
+
+                {isMatched && (
+                    <Fold
+                        title="Ajustar precios"
+                        open={foldPrecios}
+                        onToggle={() => setFoldPrecios(v => !v)}
+                        hint={`Dto ${effectiveDiscount}% · Mkp ${effectiveMarkup}%`}
+                    >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 12, color: C.gray, width: 56 }}>Pack ÷</span>
+                                <PackInput value={packSize} onSave={(v) => onItemUpdate(item.id, { pack_size: v })} />
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 12, color: C.gray, width: 56 }}>Dto %</span>
+                                <input
+                                    type="number"
+                                    value={item.discount_override !== null && item.discount_override !== undefined ? item.discount_override : ''}
+                                    placeholder={String(ingreso.default_discount || 0)}
+                                    min="0" max="100" step="0.5"
+                                    onChange={(e) => {
+                                        const v = e.target.value === '' ? null : parseFloat(e.target.value);
+                                        onItemUpdate(item.id, { discount_override: v });
+                                    }}
+                                    style={{ flex: 1, minHeight: 40, padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14 }}
+                                />
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 12, color: C.gray, width: 56 }}>Mkp %</span>
+                                <input
+                                    type="number"
+                                    value={item.markup_override !== null && item.markup_override !== undefined ? item.markup_override : ''}
+                                    placeholder={String(ingreso.default_markup || 0)}
+                                    min="0" step="0.5"
+                                    onChange={(e) => {
+                                        const v = e.target.value === '' ? null : parseFloat(e.target.value);
+                                        onItemUpdate(item.id, { markup_override: v });
+                                    }}
+                                    style={{ flex: 1, minHeight: 40, padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14 }}
+                                />
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, minHeight: 40 }}>
+                                <input type="checkbox" checked={Boolean(item.apply_cost)} onChange={(e) => onItemUpdate(item.id, { apply_cost: e.target.checked })} style={{ width: 18, height: 18 }} />
+                                Aplicar costo a Odoo
+                            </label>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, minHeight: 40 }}>
+                                <input type="checkbox" checked={Boolean(item.apply_price)} onChange={(e) => onItemUpdate(item.id, { apply_price: e.target.checked })} style={{ width: 18, height: 18 }} />
+                                Aplicar precio de lista
+                            </label>
+                        </div>
+                    </Fold>
+                )}
+
+                {isMatched && (
+                    <Fold title="Datos de Odoo" open={foldOdoo} onToggle={() => setFoldOdoo(v => !v)} hint={item.odoo_categ_name || ''}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ display: 'flex', gap: 16 }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, minHeight: 40 }}>
+                                    <input type="checkbox" checked={item.odoo_available_in_pos ?? false} disabled={!onUpdateOdooProduct}
+                                        onChange={e => saveOdooField('available_in_pos', e.target.checked)} style={{ width: 18, height: 18 }} />
+                                    POS
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, minHeight: 40 }}>
+                                    <input type="checkbox" checked={item.odoo_is_published ?? false} disabled={!onUpdateOdooProduct}
+                                        onChange={e => saveOdooField('is_published', e.target.checked)} style={{ width: 18, height: 18 }} />
+                                    Web
+                                </label>
+                            </div>
+                            {onUploadPhoto && (item.odoo_company || 'neggo') === 'neggo' && (
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={handleFileChosen} style={{ display: 'none' }} />
+                                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingPhoto} style={tapStyle('blue')}>
+                                        {uploadingPhoto ? '⏳' : photoOk ? '✅ Guardada' : tieneFoto ? '📷 Cambiar foto' : '📷 Cargar foto'}
+                                    </button>
+                                    {onPublishWhatsApp && tieneFoto && (
+                                        <button type="button" onClick={onPublishWhatsApp} style={tapStyle('primary')}>📣 WhatsApp</button>
+                                    )}
+                                </div>
+                            )}
+                            {photoError && <span style={{ fontSize: 12, color: C.error }}>{photoError}</span>}
+                        </div>
+                    </Fold>
+                )}
+
+                {isNew && !isRejected && (
+                    <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {item.match_level === 'fuzzy_name' && item.odoo_product_id && (
+                            <div style={{ padding: 10, borderRadius: 8, backgroundColor: C.warningBg, fontSize: 13 }}>
+                                Parecido: <strong>{item.odoo_product_name}</strong>
+                                <button type="button" onClick={() => onLinked(item.id, item.odoo_product_id)} style={{ ...tapStyle('success'), marginTop: 8, width: '100%' }}>
+                                    Confirmar este
+                                </button>
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button type="button" onClick={() => setLinkingOpen(true)} style={tapStyle('accent')}>🔗 Vincular</button>
+                            <button type="button" onClick={() => onCreated(item.id)} disabled={creating === item.id} style={tapStyle('primary', { opacity: creating === item.id ? 0.6 : 1 })}>
+                                {creating === item.id ? '⏳' : '+ Crear'}
+                            </button>
+                        </div>
+                        {item.error_match && <span style={{ fontSize: 12, color: C.error }}>{item.error_match}</span>}
+                    </div>
+                )}
+
+                {isNew && !isRejected && (
+                    <SugerenciasVinculo
+                        item={item}
+                        excluirOdooId={item.match_level === 'fuzzy_name' ? item.odoo_product_id : null}
+                        isMobile
+                        onLink={(p) => onLinked(item.id, p.odoo_id)}
+                    />
+                )}
+
+                {isMatched && (
+                    <div style={{ display: 'flex', gap: 8, padding: 12, borderTop: `1px solid ${C.border}` }}>
+                        {isInactive && (
+                            <button type="button" onClick={() => onReactivate(item.id, item.odoo_product_id)} disabled={reactivating === item.id} style={tapStyle('success')}>
+                                {reactivating === item.id ? '⏳' : 'Reactivar'}
+                            </button>
+                        )}
+                        <button type="button" onClick={() => setLinkingOpen(true)} style={tapStyle('blue')}>Cambiar</button>
+                        <button type="button" onClick={() => onLinked(item.id, null)} style={tapStyle('muted')}>Soltar</button>
+                        <button type="button" onClick={() => onReject(item.id)} style={tapStyle('danger', { flex: 'none' })}>✕</button>
+                    </div>
+                )}
+                {linkingModal}
+            </div>
+        );
+    }
 
     return (
         <div
@@ -1241,6 +1550,13 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                                         {reactivating === item.id ? '⏳' : '⚡ Reactivar'}
                                     </button>
                                 )}
+                                {item.odoo_product_id && (
+                                    <button onClick={() => onReponer?.(item)} disabled={reponiendo === item.id}
+                                        title="Sumar a la cola de Reposición"
+                                        style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.primary}`, backgroundColor: 'transparent', color: C.primary, cursor: reponiendo === item.id ? 'not-allowed' : 'pointer', opacity: reponiendo === item.id ? 0.6 : 1 }}>
+                                        {reponiendo === item.id ? '⏳' : '📦 Reponer'}
+                                    </button>
+                                )}
                                 <button onClick={() => setLinkingOpen(true)}
                                     style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.blue}`, backgroundColor: 'transparent', color: C.blue, cursor: 'pointer' }}>
                                     🔗 Cambiar
@@ -1259,19 +1575,7 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                 </div>
             )}
 
-            {/* Modal de vinculación inline */}
-            {linkingOpen && (
-                <ProductSearchModal
-                    item={item}
-                    costos={{ packSize, costoUnitario, effectiveDiscount, costoConDescuento, envioUnitario, costoConEnvio }}
-                    onPackChange={(v) => onItemUpdate(item.id, { pack_size: v })}
-                    onLink={async (product) => {
-                        setLinkingOpen(false);
-                        await onLinked(item.id, product.odoo_id);
-                    }}
-                    onCancel={() => setLinkingOpen(false)}
-                />
-            )}
+            {linkingModal}
         </div>
     );
 }
@@ -1280,24 +1584,27 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
 // Barra de filtros
 // =============================================
 function FilterBar({ filterText, setFilterText, filterMissingBarcode, setFilterMissingBarcode, filterMissingRef, setFilterMissingRef, filterCostDiff, setFilterCostDiff }) {
+    const isMobile = useIsMobile();
     const active = filterMissingBarcode || filterMissingRef || filterCostDiff || filterText;
 
     const chipStyle = (on, warn) => ({
-        padding: '6px 12px', fontSize: '12px', fontWeight: 'bold',
-        borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap',
+        padding: isMobile ? '10px 12px' : '6px 12px',
+        fontSize: '12px', fontWeight: 'bold',
+        borderRadius: '8px', cursor: 'pointer', whiteSpace: 'nowrap',
+        minHeight: isMobile ? 40 : undefined,
         border: `1px solid ${on ? (warn ? C.warning : C.primary) : C.border}`,
         backgroundColor: on ? (warn ? C.warningBg : '#EEF2FF') : C.white,
         color: on ? (warn ? C.warning : C.primary) : C.gray
     });
 
     return (
-        <div style={{ display: 'flex', gap: '8px', padding: '10px 16px', borderTop: `1px solid ${C.border}`, backgroundColor: '#FAFAFA', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '8px', padding: isMobile ? '10px 12px' : '10px 16px', borderTop: `1px solid ${C.border}`, backgroundColor: '#FAFAFA', flexWrap: 'wrap', alignItems: 'center' }}>
             <input
                 type="text"
-                placeholder="🔍 Filtrar por código, descripción o nombre Odoo..."
+                placeholder={isMobile ? '🔍 Buscar…' : '🔍 Filtrar por código, descripción o nombre Odoo...'}
                 value={filterText}
                 onChange={(e) => setFilterText(e.target.value)}
-                style={{ flex: 1, minWidth: '200px', padding: '7px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '13px' }}
+                style={{ flex: '1 1 100%', minWidth: 0, padding: isMobile ? '10px 12px' : '7px 12px', border: `1px solid ${C.border}`, borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box' }}
             />
             <button onClick={() => setFilterMissingBarcode(!filterMissingBarcode)} style={chipStyle(filterMissingBarcode, false)} title="Solo sin EAN en Odoo">
                 📷 Sin EAN
@@ -2126,6 +2433,7 @@ export default function IngresoPreview() {
     const [whatsAppItem, setWhatsAppItem]         = useState(null);
     const { user } = useAuth();
     const [reactivating, setReactivating] = useState(null);
+    const [reponiendo, setReponiendo] = useState(null);
     const [creating, setCreating]         = useState(null);
     const [createModal, setCreateModal]   = useState(null);
 
@@ -2319,12 +2627,25 @@ export default function IngresoPreview() {
         try {
             const res = await api.post(`/ingreso/${ingresoId}/items/${itemId}/reactivate`, { odoo_product_id: odooProductId });
             if (res.success) {
-                setSuccess('Producto reactivado en Odoo');
+                setSuccess('Producto reactivado en Odoo. Si estaba en Reposición, lo ves destacado para marcarlo «Ya llegó».');
                 setItems(prev => prev.map(i => i.id === itemId ? { ...i, odoo_active: true } : i));
             } else setError(res.error || 'Error reactivando');
         } catch (err) { setError(err.message); }
         finally { setReactivating(null); }
     }, [ingresoId]);
+
+    const handleReponer = useCallback(async (item) => {
+        if (!item?.odoo_product_id) return;
+        setReponiendo(item.id);
+        try {
+            const res = await api.post('/reposicion', { odoo_id: item.odoo_product_id });
+            if (res.success) {
+                const como = res.data?.origen === 'archivado' ? 'agotado' : 'queda poco';
+                setSuccess(`«${item.odoo_product_name || item.descripcion}» entró a Reposición como «${como}».`);
+            } else setError(res.error || 'No se pudo marcar para reponer');
+        } catch (err) { setError(err.message); }
+        finally { setReponiendo(null); }
+    }, []);
 
     const handleCreateOdoo = useCallback((itemId) => {
         const item = items.find(i => i.id === itemId);
@@ -2628,7 +2949,8 @@ export default function IngresoPreview() {
     const cardProps = {
         ingreso, onItemUpdate: handleItemUpdate,
         onReject: handleReject, onReactivate: handleReactivate,
-        reactivating, onLinked: handleLinked, onCreated: handleCreateOdoo,
+        reactivating, onReponer: handleReponer, reponiendo,
+        onLinked: handleLinked, onCreated: handleCreateOdoo,
         creating, lastScannedId,
         preventaMatchMap,
         costoEnvio,
@@ -2651,7 +2973,7 @@ export default function IngresoPreview() {
     const currentItems = activeTab === 'activos' ? filteredActivos : activeTab === 'inactivos' ? filteredInactivos : activeTab === 'nuevos' ? filteredNuevos : rechazados;
 
     return (
-        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: isMobile ? '12px' : '24px', backgroundColor: C.bg }}>
+        <div style={{ maxWidth: '1200px', margin: isMobile ? '-22px -28px 0' : '0 auto', padding: isMobile ? '0 0 96px' : '24px', backgroundColor: C.bg }}>
             <ScanToast toast={scanToast} />
             {showPartnerModal && <PartnerModal onConfirm={handleConfirm} onCancel={() => setShowPartnerModal(false)} />}
             {showGenerateOCModal && <PartnerModal onConfirm={handleGenerateOC} onCancel={() => setShowGenerateOCModal(false)} titulo="Generar OC en Odoo" subtitulo="Seleccioná el proveedor para crear la orden de compra." />}
@@ -2704,19 +3026,33 @@ export default function IngresoPreview() {
             )}
 
             {/* Header */}
-            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: isMobile ? 12 : 20, gap: 12, padding: isMobile ? '12px 12px 0' : 0 }}>
                 <div>
-                    <h1 style={{ color: C.primary, fontSize: '20px', margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        📋 Ingreso #{ingreso.id}
-                        {ingreso.estado === 'confirmado' && (
-                            <span style={{ fontSize: '12px', fontWeight: 'bold', padding: '3px 8px', borderRadius: '3px', backgroundColor: C.successBg, color: C.success }}>
-                                CONFIRMADO
-                            </span>
-                        )}
-                    </h1>
-                    <div style={{ fontSize: '13px', color: C.gray, display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                    {!isMobile && (
+                        <h1 style={{ color: C.primary, fontSize: '20px', margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            📋 Ingreso #{ingreso.id}
+                            {ingreso.estado === 'confirmado' && (
+                                <span style={{ fontSize: '12px', fontWeight: 'bold', padding: '3px 8px', borderRadius: '3px', backgroundColor: C.successBg, color: C.success }}>
+                                    CONFIRMADO
+                                </span>
+                            )}
+                        </h1>
+                    )}
+                    {isMobile && (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: C.primary }}>
+                                #{ingreso.id} {ingreso.supplier_name || ''}
+                            </div>
+                            {ingreso.estado === 'confirmado' && (
+                                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, backgroundColor: C.successBg, color: C.success }}>
+                                    CONFIRMADO
+                                </span>
+                            )}
+                        </div>
+                    )}
+                    <div style={{ fontSize: isMobile ? 13 : 13, color: C.gray, display: 'flex', gap: isMobile ? '8px 12px' : 16, flexWrap: 'wrap' }}>
                         <span><strong>{ingreso.comprobante_tipo?.toUpperCase()}</strong>{ingreso.comprobante_numero ? ` · ${ingreso.comprobante_numero}` : ''}</span>
-                        {ingreso.supplier_name && <span>🏭 {ingreso.supplier_name}</span>}
+                        {!isMobile && ingreso.supplier_name && <span>🏭 {ingreso.supplier_name}</span>}
                         <span>💰 {fmtARS(ingreso.total_monto)}</span>
                         <span>📅 {new Date(ingreso.created_at).toLocaleDateString('es-AR')}</span>
                         {ingreso.odoo_purchase_order_id && <span style={{ color: C.success }}>🔗 OC Neggo #{ingreso.odoo_purchase_order_id}</span>}
@@ -2725,22 +3061,24 @@ export default function IngresoPreview() {
                             <span style={{ color: '#E65100', fontSize: '12px' }}>⚠️ Sin OC en Odoo</span>
                         )}
                     </div>
-                    <div style={{ fontSize: '11px', color: C.gray, marginTop: '4px' }}>
-                        💡 Lector activo — escanear fuera de un campo incrementa la cantidad recibida
-                    </div>
+                    {!isMobile && (
+                        <div style={{ fontSize: '11px', color: C.gray, marginTop: '4px' }}>
+                            💡 Lector activo — escanear fuera de un campo incrementa la cantidad recibida
+                        </div>
+                    )}
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-start', width: isMobile ? '100%' : 'auto' }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'flex-start', width: isMobile ? '100%' : 'auto' }}>
                     {ingreso.supplier_name && (
-                        <div style={{ display: 'flex', gap: '12px', backgroundColor: C.white, borderRadius: '6px', padding: '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', fontSize: '13px' }}>
-                            <div><div style={{ color: C.gray, fontSize: '11px' }}>DESCUENTO</div><div style={{ fontWeight: 'bold', fontSize: '16px' }}>{ingreso.default_discount || 0}%</div></div>
-                            <div style={{ width: '1px', backgroundColor: C.border }} />
-                            <div><div style={{ color: C.gray, fontSize: '11px' }}>MARKUP</div><div style={{ fontWeight: 'bold', fontSize: '16px' }}>{ingreso.default_markup || 0}%</div></div>
+                        <div style={{ display: 'flex', gap: 12, backgroundColor: C.white, borderRadius: 8, padding: isMobile ? '10px 12px' : '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', fontSize: 13, flex: isMobile ? 1 : undefined }}>
+                            <div><div style={{ color: C.gray, fontSize: 11 }}>DESCUENTO</div><div style={{ fontWeight: 'bold', fontSize: 16 }}>{ingreso.default_discount || 0}%</div></div>
+                            <div style={{ width: 1, backgroundColor: C.border }} />
+                            <div><div style={{ color: C.gray, fontSize: 11 }}>MARKUP</div><div style={{ fontWeight: 'bold', fontSize: 16 }}>{ingreso.default_markup || 0}%</div></div>
                         </div>
                     )}
 
                     {/* Costo de envío */}
-                    <div style={{ backgroundColor: C.white, borderRadius: '6px', padding: '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', minWidth: '160px' }}>
+                    <div style={{ backgroundColor: C.white, borderRadius: 8, padding: isMobile ? '10px 12px' : '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', minWidth: isMobile ? 0 : 160, flex: isMobile ? 1 : undefined }}>
                         <div style={{ color: C.gray, fontSize: '11px', marginBottom: '4px' }}>🚚 COSTO ENVÍO</div>
                         {ingreso.estado === 'pending' ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -2763,7 +3101,7 @@ export default function IngresoPreview() {
                         )}
                     </div>
                     {itemsControlables > 0 && (
-                        <div style={{ backgroundColor: C.white, borderRadius: '6px', padding: '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', minWidth: '160px' }}>
+                        <div style={{ backgroundColor: C.white, borderRadius: 8, padding: isMobile ? '10px 12px' : '10px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', minWidth: isMobile ? 0 : 160, flex: isMobile ? '1 1 100%' : undefined }}>
                             <div style={{ color: C.gray, fontSize: '11px', marginBottom: '4px' }}>RECEPCIÓN FÍSICA</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <div style={{ flex: 1, backgroundColor: C.border, borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
@@ -2785,15 +3123,17 @@ export default function IngresoPreview() {
                             backgroundColor: syncingOdoo ? '#ccc' : C.white,
                             color: syncingOdoo ? C.gray : C.primary,
                             border: `1px solid ${syncingOdoo ? '#ccc' : C.primary}`,
-                            borderRadius: '6px', padding: '10px 14px',
-                            fontSize: '12px', fontWeight: 'bold',
+                            borderRadius: 8, padding: isMobile ? '10px 12px' : '10px 14px',
+                            fontSize: 12, fontWeight: 'bold',
                             cursor: syncingOdoo ? 'not-allowed' : 'pointer',
                             boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
-                            whiteSpace: 'nowrap'
+                            display: 'flex', flexDirection: isMobile ? 'row' : 'column', alignItems: 'center', gap: isMobile ? 8 : 2,
+                            whiteSpace: 'nowrap',
+                            minHeight: isMobile ? 44 : undefined,
+                            width: isMobile ? '100%' : undefined,
                         }}
                     >
-                        <span style={{ fontSize: '16px' }}>{syncingOdoo ? '⏳' : '🔄'}</span>
+                        <span style={{ fontSize: 16 }}>{syncingOdoo ? '⏳' : '🔄'}</span>
                         <span>{syncingOdoo ? 'Sincronizando...' : 'Sync Odoo'}</span>
                     </button>
                 </div>
@@ -2814,20 +3154,26 @@ export default function IngresoPreview() {
             )}
 
             {/* Panel tabs + contenido */}
-            <div style={{ backgroundColor: C.white, borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', marginBottom: '16px' }}>
+            <div style={{ backgroundColor: C.white, borderRadius: isMobile ? 0 : 8, boxShadow: isMobile ? 'none' : '0 2px 4px rgba(0,0,0,0.1)', marginBottom: 16 }}>
                 {/* Tabs */}
-                <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, overflowX: 'auto' }}>
+                <div style={{
+                    display: 'flex', borderBottom: `1px solid ${C.border}`, overflowX: 'auto',
+                    position: isMobile ? 'sticky' : 'static', top: 0, zIndex: 5, backgroundColor: C.white,
+                    WebkitOverflowScrolling: 'touch',
+                }}>
                     {TABS.map(tab => (
                         <button
                             key={tab.key}
                             onClick={() => setActiveTab(tab.key)}
                             style={{
-                                padding: '14px 20px', border: 'none',
+                                padding: isMobile ? '12px 14px' : '14px 20px',
+                                border: 'none',
                                 borderBottom: activeTab === tab.key ? `3px solid ${tab.color}` : '3px solid transparent',
                                 background: 'none', cursor: 'pointer',
                                 fontWeight: activeTab === tab.key ? 'bold' : 'normal',
                                 color: activeTab === tab.key ? tab.color : C.gray,
-                                fontSize: '14px', whiteSpace: 'nowrap', transition: 'all 0.15s'
+                                fontSize: isMobile ? 13 : 14, whiteSpace: 'nowrap', transition: 'all 0.15s',
+                                minHeight: 44, flex: isMobile ? '1 0 auto' : undefined,
                             }}
                         >
                             {tab.label}
@@ -2852,8 +3198,8 @@ export default function IngresoPreview() {
                     </div>
                 )}
 
-                {/* Barra de progreso por tab (activos/inactivos) */}
-                {(activeTab === 'activos' || activeTab === 'inactivos') && currentItems.length > 0 && (
+                {/* Barra de progreso por tab (activos/inactivos). En celular ya está en el header. */}
+                {!isMobile && (activeTab === 'activos' || activeTab === 'inactivos') && currentItems.length > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 16px', borderTop: `1px solid ${C.border}`, fontSize: '12px', color: C.gray, backgroundColor: '#FAFAFA' }}>
                         <span>Recepción:</span>
                         {(() => {
@@ -3130,31 +3476,46 @@ export default function IngresoPreview() {
 
             {/* Footer */}
             {ingreso.estado === 'pending' && (
-                <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '16px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: '10px', alignItems: isMobile ? 'stretch' : 'center', flexWrap: 'wrap' }}>
-                    <button
-                        onClick={handleConfirmClick}
-                        disabled={confirming || !canConfirm}
-                        style={{ backgroundColor: confirming || !canConfirm ? '#ccc' : C.primary, color: C.white, border: 'none', padding: '14px 28px', borderRadius: '6px', fontSize: '15px', fontWeight: 'bold', cursor: confirming || !canConfirm ? 'not-allowed' : 'pointer' }}
-                    >
-                        {confirming ? '⏳ Confirmando...' : '✓ Confirmar e importar'}
-                    </button>
-                    {hasDuplicateCodes && (
-                        <button
-                            onClick={handleMergeDuplicates}
-                            disabled={mergingDupes}
-                            title="Fusiona artículos con el mismo código sumando cantidades y unidades recibidas"
-                            style={{ backgroundColor: mergingDupes ? '#ccc' : '#E65100', color: C.white, border: 'none', padding: '12px 20px', borderRadius: '6px', fontSize: '14px', fontWeight: 'bold', cursor: mergingDupes ? 'not-allowed' : 'pointer' }}
-                        >
-                            {mergingDupes ? '⏳ Fusionando...' : '⚡ Fusionar duplicados'}
-                        </button>
+                <div style={isMobile ? {
+                    position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30,
+                    backgroundColor: C.white, padding: '10px 12px calc(10px + env(safe-area-inset-bottom))',
+                    borderTop: `1px solid ${C.border}`,
+                    boxShadow: '0 -8px 24px rgba(28,28,26,0.12)',
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                } : {
+                    backgroundColor: C.white, borderRadius: 8, padding: 16,
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                    display: 'flex', flexDirection: 'row', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+                }}>
+                    {isMobile && pendingCount > 0 && (
+                        <span style={{ fontSize: 12, color: C.warning }}>⚠️ {pendingCount} sin vincular en Nuevos</span>
                     )}
-                    <button onClick={() => navigate('/ingreso')} style={{ backgroundColor: C.bg, color: C.text, border: `1px solid ${C.border}`, padding: isMobile ? '12px 20px' : '12px 20px', borderRadius: '6px', fontSize: '14px', cursor: 'pointer', textAlign: 'center' }}>
-                        Volver
-                    </button>
-                    {pendingCount > 0 && (
+                    <div style={{ display: 'flex', gap: 8, width: isMobile ? '100%' : 'auto', flexWrap: 'wrap' }}>
+                        <button
+                            onClick={handleConfirmClick}
+                            disabled={confirming || !canConfirm}
+                            style={{ backgroundColor: confirming || !canConfirm ? '#ccc' : C.primary, color: C.white, border: 'none', padding: '14px 20px', borderRadius: 8, fontSize: 15, fontWeight: 'bold', cursor: confirming || !canConfirm ? 'not-allowed' : 'pointer', flex: isMobile ? 1 : undefined, minHeight: 48 }}
+                        >
+                            {confirming ? '⏳ Confirmando...' : isMobile ? '✓ Confirmar' : '✓ Confirmar e importar'}
+                        </button>
+                        {hasDuplicateCodes && (
+                            <button
+                                onClick={handleMergeDuplicates}
+                                disabled={mergingDupes}
+                                title="Fusiona artículos con el mismo código sumando cantidades y unidades recibidas"
+                                style={{ backgroundColor: mergingDupes ? '#ccc' : '#E65100', color: C.white, border: 'none', padding: isMobile ? '14px 12px' : '12px 20px', borderRadius: 8, fontSize: 14, fontWeight: 'bold', cursor: mergingDupes ? 'not-allowed' : 'pointer' }}
+                            >
+                                {mergingDupes ? '⏳' : isMobile ? 'Fusionar' : '⚡ Fusionar duplicados'}
+                            </button>
+                        )}
+                        <button onClick={() => navigate('/ingreso')} style={{ backgroundColor: C.bg, color: C.text, border: `1px solid ${C.border}`, padding: isMobile ? '14px 16px' : '12px 20px', borderRadius: 8, fontSize: 14, cursor: 'pointer', textAlign: 'center', minHeight: isMobile ? 48 : undefined }}>
+                            Volver
+                        </button>
+                    </div>
+                    {!isMobile && pendingCount > 0 && (
                         <span style={{ fontSize: '13px', color: C.warning }}>⚠️ {pendingCount} ítem(s) sin resolver en "Nuevos".</span>
                     )}
-                    {canConfirm && itemsRecibidos < itemsControlables && (
+                    {!isMobile && canConfirm && itemsRecibidos < itemsControlables && (
                         <span style={{ fontSize: '13px', color: C.gray }}>💡 Recibiste {itemsRecibidos}/{itemsControlables} ítems físicamente. Podés confirmar igual.</span>
                     )}
                 </div>

@@ -4,18 +4,23 @@
 // GET    /api/reposicion/barcode?code=
 // GET    /api/reposicion/proveedores
 // GET    /api/reposicion/proveedor?nombre=           — catálogo + cola con métricas
+// GET    /api/reposicion/ordenes?dias=7&refrescar=1  — ventas y POS de Neggo: pendientes y revisadas
+// POST   /api/reposicion/ordenes/revisar             — { origen: venta|pos, odoo_order_id, order_name? }
+// POST   /api/reposicion/ordenes/reabrir             — { origen, odoo_order_id }
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
 // POST   /api/reposicion/archivar                    — { odoo_id } archiva en Odoo y encola
 // POST   /api/reposicion/activar                     — { odoo_id } desarchiva y cierra la cola
 // POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
+// DELETE /api/reposicion/producto/:odooId            — saca de la cola un pendiente marcado por error
 
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const reposicion = require('../services/reposicionService');
+const ordenes = require('../services/reposicionOrdenesService');
 
 router.use(authenticate, requireRole('admin', 'operador'));
 
@@ -70,6 +75,39 @@ router.get('/proveedor', async (req, res) => {
     }
 });
 
+router.get('/ordenes', async (req, res) => {
+    try {
+        return ok(res, await ordenes.listar({ dias: req.query.dias, refrescar: req.query.refrescar === '1' }));
+    } catch (err) {
+        console.error('❌ Error listando órdenes para reposición:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+router.post('/ordenes/revisar', async (req, res) => {
+    try {
+        const data = await ordenes.marcarRevisada({
+            origen: req.body.origen,
+            odooOrderId: req.body.odoo_order_id,
+            orderName: req.body.order_name,
+        }, req.user.id);
+        console.log(`✅ Reposición: orden ${req.body.order_name || data.odoo_order_id} (${data.origen}) revisada por usuario ${req.user.id}`);
+        return ok(res, data);
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error terminando orden de reposición:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/ordenes/reabrir', async (req, res) => {
+    try {
+        return ok(res, await ordenes.reabrir({ origen: req.body.origen, odooOrderId: req.body.odoo_order_id }));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error reabriendo orden de reposición:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
 router.post('/', async (req, res) => {
     const odooId = parseInt(req.body.odoo_id, 10);
     if (!Number.isInteger(odooId)) return fail(res, 'odoo_id es requerido', 400);
@@ -106,6 +144,19 @@ router.post('/activar', async (req, res) => {
         return ok(res, item);
     } catch (err) {
         if (!err.statusCode) console.error('❌ Error activando producto:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.delete('/producto/:odooId', async (req, res) => {
+    const odooId = parseInt(req.params.odooId, 10);
+    if (!Number.isInteger(odooId)) return fail(res, 'odoo_id inválido', 400);
+    try {
+        const item = await reposicion.quitarDeCola(odooId);
+        console.log(`✅ Reposición: "${item.name}" quitado de la cola por usuario ${req.user.id}`);
+        return ok(res, item);
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error quitando de la cola:', err.message);
         return fail(res, err.message, err.statusCode || 500);
     }
 });

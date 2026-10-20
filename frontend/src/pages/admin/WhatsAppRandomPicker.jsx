@@ -82,6 +82,15 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
         setBusy('');
     }
 
+    async function reponer(product) {
+        setBusy(`p:${product.odoo_id}`); onError(null);
+        const res = await api.post('/reposicion', { odoo_id: product.odoo_id });
+        setBusy('');
+        if (!res.success) { onError(res.error || 'No se pudo marcar para reponer'); return; }
+        const como = res.data?.origen === 'archivado' ? 'agotado' : 'queda poco';
+        onNotice(`«${product.name}» entró a Reposición como «${como}».`);
+    }
+
     async function archive() {
         const { category, product } = toArchive;
         setToArchive(null);
@@ -90,7 +99,9 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
         if (!res.success) { setBusy(''); onError(res.error); return; }
         await replace(category, product.odoo_id);
         setBusy('');
-        onNotice(`"${product.name}" archivado en Odoo.`);
+        onNotice(company === 'neggo' && res.data?.en_cola
+            ? `«${product.name}» se archivó en Odoo y fue a Reposición como agotado.`
+            : `«${product.name}» archivado en Odoo.`);
     }
 
     async function sendNow(category, product) {
@@ -230,6 +241,11 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
                                         <Button size="sm" variant="ghost" onClick={() => swap(c.category, p)} disabled={working} title="Cambiar por otro al azar">
                                             Cambiar
                                         </Button>
+                                        {company === 'neggo' && (
+                                            <Button size="sm" variant="primary" onClick={() => reponer(p)} disabled={working} title="Queda poco: entra a la cola de Reposición">
+                                                Reponer
+                                            </Button>
+                                        )}
                                         <Button size="sm" variant="danger" onClick={() => setToArchive({ category: c.category, product: p })} disabled={working}>
                                             Archivar
                                         </Button>
@@ -248,7 +264,11 @@ export default function WhatsAppRandomPicker({ groupJid, groupSubject, intervalS
                 danger
                 title="Archivar en Odoo"
                 confirmLabel="Archivar"
-                message={toArchive ? `"${toArchive.product.name}" se archiva en Odoo: deja de estar a la venta y no vuelve a salir en los sorteos. Se reemplaza por otro de la misma categoría.` : ''}
+                message={toArchive
+                    ? (company === 'neggo'
+                        ? `«${toArchive.product.name}» se archiva en Odoo (no queda stock) y entra a Reposición como agotado. En el sorteo se reemplaza por otro de la misma categoría.`
+                        : `«${toArchive.product.name}» se archiva en Odoo Preventas: deja de estar a la venta y no vuelve a salir en los sorteos. Se reemplaza por otro de la misma categoría.`)
+                    : ''}
             />
         </Card>
     );

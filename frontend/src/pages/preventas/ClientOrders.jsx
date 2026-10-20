@@ -40,7 +40,7 @@ function getProductSku(p, source) {
 }
 
 // ─── ProductCard ─────────────────────────────────────────────────────────────────
-function ProductCard({ p, source, onAdd, adding, onSearchFocus, onArchive, pricelistPrice }) {
+function ProductCard({ p, source, onAdd, adding, onSearchFocus, onArchive, onReponer, pricelistPrice }) {
     const { tokens: t } = useTheme();
     const [qty, setQty] = useState('1');
     const defaultPrice = (pricelistPrice != null) ? pricelistPrice : getProductPrice(p, source);
@@ -101,19 +101,34 @@ function ProductCard({ p, source, onAdd, adding, onSearchFocus, onArchive, price
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[1], flexShrink: 0 }}>
                 {isNeggo && (
-                    <button
-                        onClick={() => onArchive?.(p)}
-                        title="Archivar: no aparece más en búsquedas"
-                        style={{
-                            width: 26, height: 26, borderRadius: t.radius.sm,
-                            background: 'none', border: `1px solid ${t.color.border}`,
-                            color: t.color.textFaint, cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            flexShrink: 0,
-                        }}
-                    >
-                        <Icon.Archive size={13} />
-                    </button>
+                    <>
+                        <button
+                            onClick={() => onReponer?.(p)}
+                            title="Reponer: queda poco, va a la cola de Reposición"
+                            style={{
+                                width: 26, height: 26, borderRadius: t.radius.sm,
+                                background: 'none', border: `1px solid ${t.color.border}`,
+                                color: t.color.primary, cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                flexShrink: 0,
+                            }}
+                        >
+                            <Icon.Plus size={13} />
+                        </button>
+                        <button
+                            onClick={() => onArchive?.(p)}
+                            title="Archivar: se agotó, va a Reposición"
+                            style={{
+                                width: 26, height: 26, borderRadius: t.radius.sm,
+                                background: 'none', border: `1px solid ${t.color.border}`,
+                                color: t.color.textFaint, cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                flexShrink: 0,
+                            }}
+                        >
+                            <Icon.Archive size={13} />
+                        </button>
+                    </>
                 )}
                 <input
                     type="text"
@@ -316,6 +331,8 @@ export default function ClientOrders() {
     const [savingNotes, setSavingNotes] = useState(false);
     const [updatingItem, setUpdatingItem] = useState(null);
     const [confirming, setConfirming] = useState(false);
+    const [toArchive, setToArchive] = useState(null);
+    const [archiving, setArchiving] = useState(false);
 
     const [pricelists, setPricelists] = useState([]);
     const [selectedPricelist, setSelectedPricelist] = useState(null);
@@ -402,11 +419,28 @@ export default function ClientOrders() {
         } else showToast(res.error || 'Error al agregar', 'error');
     }
 
-    async function archiveProduct(product) {
+    async function reponerProduct(product) {
+        const res = await api.post('/reposicion', { odoo_id: product.odoo_id });
+        if (res.success) {
+            const como = res.data?.origen === 'archivado' ? 'agotado' : 'queda poco';
+            showToast(`«${product.name}» entró a Reposición como «${como}».`, 'success');
+        } else {
+            showToast(res.error || 'No se pudo marcar para reponer', 'error');
+        }
+    }
+
+    async function archiveProduct() {
+        const product = toArchive;
+        if (!product) return;
+        setArchiving(true);
         const res = await api.patch(`/products/odoo/${product.odoo_id}/archive`, { company: 'neggo', archived: true });
+        setArchiving(false);
+        setToArchive(null);
         if (res.success) {
             setProductResults(prev => prev.filter(p => p.odoo_id !== product.odoo_id));
-            showToast(`"${product.name}" archivado`, 'success');
+            showToast(res.data?.en_cola
+                ? `«${product.name}» se archivó y fue a Reposición como agotado.`
+                : `«${product.name}» archivado.`, 'success');
         } else {
             showToast(res.error || 'Error al archivar', 'error');
         }
@@ -761,7 +795,8 @@ ${detailModal.notes ? `<div class="section"><div class="notes-box">${detailModal
                                             onAdd={addItem}
                                             adding={addingProduct === key}
                                             onSearchFocus={() => searchInputRef.current?.focus()}
-                                            onArchive={productSource === 'neggo' ? archiveProduct : undefined}
+                                            onArchive={productSource === 'neggo' ? setToArchive : undefined}
+                                            onReponer={productSource === 'neggo' ? reponerProduct : undefined}
                                             pricelistPrice={pricelistPrice}
                                         />
                                     );
@@ -969,6 +1004,15 @@ ${detailModal.notes ? `<div class="section"><div class="notes-box">${detailModal
                 title="Eliminar pedido"
                 message={`¿Eliminás el pedido de "${detailModal?.client_name}"? Se cancelarán las órdenes en Odoo si ya fueron enviadas.`}
                 confirmLabel={deletingOrder ? 'Eliminando…' : 'Eliminar'}
+                danger
+            />
+            <ConfirmDialog
+                isOpen={!!toArchive}
+                onClose={() => setToArchive(null)}
+                onConfirm={archiveProduct}
+                title="Archivar en Odoo"
+                message={`«${toArchive?.name || ''}» se apaga en Odoo porque no queda stock y entra a Reposición como agotado.`}
+                confirmLabel={archiving ? 'Archivando…' : 'Sí, archivar'}
                 danger
             />
         </div>

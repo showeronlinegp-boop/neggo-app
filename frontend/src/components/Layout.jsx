@@ -19,6 +19,7 @@ const routeTitles = {
     '/ingreso':                      'Ingreso de Mercadería',
     '/reposicion':                   'Reposición',
     '/reposicion/recorrida':         'Recorrida de depósito',
+    '/pedidos/armado':               'Armado y control',
     '/preventas/pedidos':            'Pedidos',
     '/preventas/ordenes':            'Órdenes a proveedores',
     '/preventas/catalogos':          'Catálogos',
@@ -39,6 +40,7 @@ const NAV_ITEMS = [
     { icon: Icon.Bot,             label: 'Scraping',               path: '/scraping',              roles: ['admin'] },
     { icon: Icon.PackageDown,     label: 'Ingreso de Mercadería',  path: '/ingreso',               roles: ['admin', 'operador'] },
     { icon: Icon.Refresh,         label: 'Reposición',             path: '/reposicion',            roles: ['admin', 'operador'] },
+    { icon: Icon.ScanBarcode,     label: 'Armado y control',       path: '/pedidos/armado',        roles: ['admin', 'operador'] },
     {
         icon: Icon.Package, label: 'Productos',
         roles: ['admin', 'operador'],
@@ -245,7 +247,9 @@ export default function Layout() {
     }, [logout, navigate]);
 
     const pageTitle = routeTitles[location.pathname]
-        ?? (location.pathname.startsWith('/proveedores/') ? 'Reglas del proveedor' : 'Neggo');
+        ?? (location.pathname.startsWith('/pedidos/armado') ? 'Armado y control'
+            : location.pathname.startsWith('/ingreso/') ? 'Ingreso de Mercadería'
+            : location.pathname.startsWith('/proveedores/') ? 'Reglas del proveedor' : 'Neggo');
 
     const displayName = user?.displayName || user?.display_name || 'Usuario';
     const initials = displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();

@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir selenium==4.18.1 beautifulsoup4
 COPY package.json ./
 RUN npm install --omit=dev
 
+# CACHEBUST cambia el layer de código sin rehacer npm install
+ARG CACHEBUST=1
+RUN echo "cachebust=$CACHEBUST"
 COPY . .
 
 RUN mkdir -p /app/storage/catalogs /app/storage/photos
