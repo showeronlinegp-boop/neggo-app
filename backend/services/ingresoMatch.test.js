@@ -99,7 +99,8 @@ function testSource() {
     const route = fs.readFileSync(path.join(__dirname, '../routes/ingreso.js'), 'utf8');
     assert.ok(!service.includes('LIKE UPPER($3)'));
     assert.ok(!route.includes('nombre_fuzzy'));
-    assert.ok(service.includes("matchLevel !== 'fuzzy_name'"));
+    assert.ok(service.includes('!MATCH_LEVELS_TO_CONFIRM.includes(matchLevel)'));
+    assert.ok(route.includes('!ingresoService.MATCH_LEVELS_TO_CONFIRM.includes(rm.match_level)'));
     assert.ok(route.includes('persistPurchaseOrderIds'));
     console.log('fuente ok');
 }
