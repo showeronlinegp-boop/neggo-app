@@ -2086,12 +2086,14 @@ export default function IngresoPreview() {
         }).catch(() => {});
     }, []);
 
-    // Re-match en background: una sola vez tras la carga, solo si hay pendientes.
+    // Re-match en background: una sola vez tras la carga, si hay pendientes o
+    // vínculos hechos solo por descripción de compra que nadie tildó.
     useEffect(() => {
         if (rematchDone.current || loading || !ingreso) return;
-        const hasPending = items.some(i =>
-            (i.estado_item === 'pending' || i.estado_item === 'no_match') && i.codigo
-        );
+        const hasPending = items.some(i => i.codigo && (
+            i.estado_item === 'pending' || i.estado_item === 'no_match'
+            || (i.match_level === 'desc_purchase' && !i.checked)
+        ));
         if (!hasPending) return;
         rematchDone.current = true;
         ingresoAPI.rematch(ingresoId).then(res => {
