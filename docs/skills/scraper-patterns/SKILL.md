@@ -84,6 +84,14 @@ class BaseScraper {
 - **Selectores**: `div.caja_producto`, `#descrip h1` (nombre relleno con `___`), `#texto` (Codigo/Rubro), `strong.caja_precio_noimptk`
 - **SKU**: código normalizado → `PREBB{codigo}` coincide con el external_id de Precompras
 
+### ZLE Store (SPA con API RPC, scraper_key `zle`)
+- **Tipo**: SPA React; todo sale de `POST https://api.zlestore.com/<caso de uso>` con JSON (header `Origin: https://zlestore.com`)
+- **Listado**: `getVariantSearchResult {keyword:""}` devuelve todo `/search` de una (una variante por producto)
+- **Detalle** ("Ver detalles"): `findProductByIdUsers {slug: productSlug}` → todas las variantes, `categories` y el código interno (`id`)
+- **Scraper**: `zle_scraper.py` con urllib, 4 hilos, checkpoints por tandas de 100 (`Productos X-Y`)
+- **SKU**: el de la variante sin el prefijo `ZLE-` de la tienda (`ZLE-LPG-10BL` → `PREZLLPG10BL`, igual que en Precompras); disponible = `stock > 0`
+- **Precios**: sin login la API devuelve `unitPrice`/`bulkPrice` en null
+
 ### Neggo-Odoo (Self-scraping)
 - **Tipo**: Scrapeo del propio shop de Odoo (neggo.odoo.com/shop)
 - **Selectores Odoo**: `div.o_wsale_product_grid_wrapper`, `.o_wsale_products_item_title a`, `.oe_currency_value`
