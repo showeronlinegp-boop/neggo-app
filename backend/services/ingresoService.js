@@ -215,6 +215,43 @@ function nameMatchDecision(descripcion, productName) {
     return null;
 }
 
+// Referencia interna sin el prefijo de proveedor: "MG-BR8003021" → "BR8003021".
+// Sirve cuando el producto se cargó en Odoo con el prefijo de otro proveedor.
+// Devuelve null si la referencia no arranca con ninguno de los prefijos.
+function refWithoutSupplierPrefix(internalRef, prefixes) {
+    const ref = String(internalRef || '').replace(/[-\s]/g, '').toUpperCase();
+    for (const raw of prefixes) {
+        const pref = String(raw || '').replace(/[-\s]/g, '').toUpperCase();
+        if (pref && ref.length > pref.length && ref.startsWith(pref)) return ref.slice(pref.length);
+    }
+    return null;
+}
+
+// Índice código-sin-prefijo → productos que lo tienen.
+function buildRefWithoutPrefixIndex(products, prefixes) {
+    const index = new Map();
+    for (const p of products) {
+        const key = refWithoutSupplierPrefix(p.internal_ref, prefixes);
+        if (!key) continue;
+        if (!index.has(key)) index.set(key, []);
+        index.get(key).push(p);
+    }
+    return index;
+}
+
+// Busca el código en el índice. Solo vincula si hay un único producto (activo,
+// o si no hay activos, uno solo inactivo) y el código es suficientemente largo
+// para no confundir "0001" de un proveedor con el de otro.
+const MIN_CODE_LEN_OTHER_PREFIX = 5;
+function matchByRefWithoutPrefix(index, codigo) {
+    const code = String(codigo || '').replace(/[-\s]/g, '').toUpperCase();
+    if (code.length < MIN_CODE_LEN_OTHER_PREFIX) return null;
+    const candidates = index.get(code) || [];
+    const activos = candidates.filter(p => p.active !== false);
+    const elegibles = activos.length > 0 ? activos : candidates;
+    return elegibles.length === 1 ? elegibles[0] : null;
+}
+
 // Reparte una cantidad de preventa entre renglones del mismo código,
 // sin pasar la cantidad de cada renglón. El sobrante no se asigna.
 function allocatePreventaQty(rows, requestedQty) {
@@ -348,6 +385,14 @@ async function matchItems(items, supplierId = null) {
         if (rows.length > 0) supplierPrefix = rows[0].prefix;
     }
 
+    // Referencias sin prefijo de proveedor (cualquiera), para el nivel 4
+    const { rows: prefixRows } = await pool.query(
+        `SELECT DISTINCT prefix FROM suppliers WHERE prefix IS NOT NULL AND prefix <> ''`
+    );
+    // Prefijos más largos primero: "MG" no debe comerse parte de un "MGX"
+    const allPrefixes = prefixRows.map(r => r.prefix).sort((a, b) => b.length - a.length);
+    const byRefSinPrefijo = buildRefWithoutPrefixIndex(odooCache, allPrefixes);
+
     const enriched = [];
 
     for (const item of items) {
@@ -436,6 +481,14 @@ async function matchItems(items, supplierId = null) {
                     null;
 
                 if (matched) { confidence = 0.95; matchLevel = 'ref_prefix'; }
+            }
+
+            // ---- Nivel 4: internal_ref con el prefijo de OTRO proveedor ----
+            //   codigo="BR8003021" + proveedor CY → encuentra "MG-BR8003021"
+            // Pasa cuando el producto se dio de alta con otro proveedor o con el prefijo equivocado.
+            if (!matched && codigoValido) {
+                matched = matchByRefWithoutPrefix(byRefSinPrefijo, item.codigo);
+                if (matched) { confidence = 0.9; matchLevel = 'ref_other_prefix'; }
             }
 
             // ---- Nivel 5: barcode ----
@@ -1127,6 +1180,9 @@ module.exports = {
     confirmIngreso,
     findPreventasProductId,
     nameMatchDecision,
+    refWithoutSupplierPrefix,
+    buildRefWithoutPrefixIndex,
+    matchByRefWithoutPrefix,
     allocatePreventaQty,
     capPreventaShares,
     distributePreventaQty,

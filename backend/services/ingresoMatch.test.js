@@ -7,6 +7,9 @@ const path = require('path');
 const { Client, Pool } = require('pg');
 const {
     nameMatchDecision,
+    refWithoutSupplierPrefix,
+    buildRefWithoutPrefixIndex,
+    matchByRefWithoutPrefix,
     allocatePreventaQty,
     capPreventaShares,
     distributePreventaQty,
@@ -29,6 +32,34 @@ function testDecision() {
 
     assert.strictEqual(nameMatchDecision('tornillo', 'heladera no frost'), null);
     console.log('decision ok');
+}
+
+function testRefOtroProveedor() {
+    const prefixes = ['MG', 'CY', 'FX'];
+    assert.strictEqual(refWithoutSupplierPrefix('MG-BR8003021', prefixes), 'BR8003021');
+    assert.strictEqual(refWithoutSupplierPrefix('MGCL0005', prefixes), 'CL0005');
+    assert.strictEqual(refWithoutSupplierPrefix('XX123', prefixes), null);
+
+    const products = [
+        { odoo_id: 1, internal_ref: 'MG-BR8003021', active: true },
+        { odoo_id: 2, internal_ref: 'MG-0001', active: true },
+        { odoo_id: 3, internal_ref: 'FX-AB12345', active: true },
+        { odoo_id: 4, internal_ref: 'CY-AB12345', active: true },
+        { odoo_id: 5, internal_ref: 'MG-ZZ99999', active: false },
+        { odoo_id: 6, internal_ref: 'FX-ZZ99999', active: true },
+    ];
+    const index = buildRefWithoutPrefixIndex(products, prefixes);
+    // Código de factura de un proveedor → producto cargado con prefijo de otro
+    assert.strictEqual(matchByRefWithoutPrefix(index, 'BR8003021').odoo_id, 1);
+    assert.strictEqual(matchByRefWithoutPrefix(index, 'br-8003021').odoo_id, 1);
+    // Código corto: no se arriesga
+    assert.strictEqual(matchByRefWithoutPrefix(index, '0001'), null);
+    // Dos productos activos con el mismo código: queda para una persona
+    assert.strictEqual(matchByRefWithoutPrefix(index, 'AB12345'), null);
+    // El activo gana al archivado
+    assert.strictEqual(matchByRefWithoutPrefix(index, 'ZZ99999').odoo_id, 6);
+    assert.strictEqual(matchByRefWithoutPrefix(index, 'NOEXISTE1'), null);
+    console.log('ref otro proveedor ok');
 }
 
 function testAllocation() {
@@ -129,6 +160,7 @@ async function testPersistence(pool) {
 
 async function main() {
     testDecision();
+    testRefOtroProveedor();
     testAllocation();
     testSource();
     const pool = await recreateDb();
