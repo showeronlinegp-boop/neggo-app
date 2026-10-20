@@ -40,15 +40,21 @@ const DARK_TEXT = '#333333';
 const GRAY_TEXT = '#666666';
 const LINE_GRAY = '#DADADA';
 
-// ── Logo path (en el volumen del backend) ──────────────────────────────────────
-const LOGO_PATH    = path.join(__dirname, '..', '..', 'volumes', 'storage', 'neggo_logo.png');
+// Logo en el volumen montado en el contenedor (/app/storage). Si no está,
+// el header usa el texto "neggo".
+const STORAGE_ROOT = process.env.STORAGE_PATH || path.join(__dirname, '..', 'storage');
+const LOGO_PATH    = path.join(STORAGE_ROOT, 'neggo_logo.png');
 const STORAGE_DIR  = path.join(__dirname, '..', 'storage', 'catalogs');
 const PRODUCTS_PER_PAGE = 4;
 
-// ── Formato de precio argentino: $1.234,56 → pasa a entero → $1.234 ───────────
+// Entero con punto de miles ($1.234). No usa toLocaleString: en node:20-alpine
+// el locale es-AR no está instalado y el precio sale con coma de miles.
 function formatPrice(amount) {
-    const n = Math.ceil(amount);
-    return '$' + n.toLocaleString('es-AR');
+    const n = Math.ceil(Number(amount));
+    const safe = Number.isFinite(n) ? n : 0;
+    const sign = safe < 0 ? '-' : '';
+    const grouped = String(Math.abs(safe)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return `${sign}$${grouped}`;
 }
 
 // ── Descarga de imagen ─────────────────────────────────────────────────────────
@@ -240,6 +246,7 @@ async function getProductsByDestCategory(destCategory, type = 'preventas') {
             ON scr.supplier_id = sp.supplier_id
             AND scr.source_category = sp.source_category
             AND scr.active = true
+            AND COALESCE(scr.ignored, false) = false
             AND scr.${destCol} = $1
         WHERE sp.available = true
             AND sp.raw_price IS NOT NULL
@@ -393,6 +400,7 @@ async function generateAllCatalogs({ type = 'preventas', createdBy }) {
         FROM supplier_category_rules scr
         JOIN suppliers s ON s.id = scr.supplier_id AND s.active = true AND s.is_published = true
         WHERE scr.active = true
+          AND COALESCE(scr.ignored, false) = false
           AND scr.${destCol} IS NOT NULL
         ORDER BY 1 ASC
     `);

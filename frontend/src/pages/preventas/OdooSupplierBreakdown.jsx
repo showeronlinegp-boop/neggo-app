@@ -24,7 +24,14 @@ async function downloadPDF(supplier) {
             total_qty:     supplier.total_qty,
         }),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+        let message = 'No se pudo generar el PDF';
+        try {
+            const body = await res.json();
+            if (body?.error) message = body.error;
+        } catch { /* la respuesta no era JSON */ }
+        throw new Error(message);
+    }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -141,7 +148,7 @@ export default function OdooSupplierBreakdown() {
                     {filtered.map(supplier => {
                         const key        = supplier.supplier_name;
                         const isOpen     = !!expanded[key];
-                        const isUnmapped = supplier.supplier_name === 'Sin proveedor asignado';
+                        const isUnmapped = supplier.supplier_name === 'Sin proveedor';
                         return (
                             <Card key={key} padding={false} style={{ border: isUnmapped ? `1px solid ${t.color.warn}66` : undefined }}>
                                 {/* Cabecera del proveedor */}
@@ -165,8 +172,14 @@ export default function OdooSupplierBreakdown() {
                                                 disabled={pdfLoading === key}
                                                 onClick={async () => {
                                                     setPdfLoading(key);
-                                                    await downloadPDF(supplier);
-                                                    setPdfLoading(null);
+                                                    setError(null);
+                                                    try {
+                                                        await downloadPDF(supplier);
+                                                    } catch (err) {
+                                                        setError(err.message || 'No se pudo generar el PDF');
+                                                    } finally {
+                                                        setPdfLoading(null);
+                                                    }
                                                 }}
                                             >
                                                 {pdfLoading === key ? 'Generando…' : 'PDF'}

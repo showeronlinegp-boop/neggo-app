@@ -6,6 +6,13 @@ const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { addItemToOrder, addOdooItemToOrder, generateSupplierOrders, sendOrderToOdoo, getShoppingList } = require('../services/preventasService');
+const {
+    SIN_PROVEEDOR,
+    formatEntero,
+    formatMoneyAR,
+    formatFechaAR,
+    groupQuotationsBySupplier,
+} = require('../services/supplierBreakdown');
 
 // =============================================
 // Helper: re-sincroniza las líneas de los sale.orders en Odoo
@@ -768,8 +775,8 @@ router.get('/odoo-quotations', authenticate, async (req, res) => {
 });
 
 // GET /api/preventas/odoo-quotations/by-supplier
-// Agrupa las líneas de cotizaciones Odoo Preventas por proveedor local (via product_mappings).
-// Productos sin mapping aparecen bajo "Sin proveedor asignado".
+// Agrupa por el proveedor local del mapping. Si no hay mapping, usa vendor_name
+// de Odoo. Lo que no resuelve queda en "Sin proveedor".
 router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
     try {
         const odooService = require('../services/odooService');
@@ -777,13 +784,13 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
 
         if (quotations.length === 0) return ok(res, []);
 
-        // Recopilar todos los product_id únicos
         const productIds = [...new Set(
-            quotations.flatMap(q => q.lines.map(l => l.product_id).filter(Boolean))
+            quotations.flatMap(q => (q.lines || []).map(l => l.product_id).filter(Boolean))
         )];
 
-        // Mapear product_id → vendor_name, image_url (con fallback a Neggo) y standard_price
         const productCacheMap = {};
+        const localSupplierByProductId = {};
+
         if (productIds.length > 0) {
             const { rows } = await pool.query(
                 `SELECT
@@ -808,68 +815,57 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
                     standard_price: row.standard_price || null,
                 };
             }
-        }
 
-        // Agrupar líneas por vendor_name (proveedor Odoo del producto)
-        const bySupplier = {};
+            // Mapping directo del producto Preventas.
+            const { rows: mapped } = await pool.query(
+                `SELECT DISTINCT ON (pm.odoo_product_id)
+                        pm.odoo_product_id,
+                        s.name AS supplier_name
+                 FROM product_mappings pm
+                 JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+                 JOIN suppliers s ON s.id = sp.supplier_id AND s.active = true
+                 WHERE pm.active = true
+                   AND pm.odoo_company = 'preventas'
+                   AND pm.odoo_product_id = ANY($1::int[])
+                 ORDER BY pm.odoo_product_id, pm.match_confidence DESC NULLS LAST, pm.id DESC`,
+                [productIds]
+            );
+            for (const row of mapped) {
+                localSupplierByProductId[row.odoo_product_id] = row.supplier_name;
+            }
 
-        for (const quotation of quotations) {
-            for (const line of quotation.lines) {
-                const cache      = line.product_id ? (productCacheMap[line.product_id] || null) : null;
-                const vendorName = cache?.vendor_name || null;
-                const key        = vendorName || '__sin_proveedor__';
-                const name       = vendorName || 'Sin proveedor asignado';
-
-                if (!bySupplier[key]) {
-                    bySupplier[key] = { supplier_name: name, products: {} };
+            // Respaldo: el mismo artículo mapeado del lado Neggo (referencia PRE + ref).
+            const { rows: twins } = await pool.query(
+                `SELECT DISTINCT ON (opc_p.odoo_id)
+                        opc_p.odoo_id,
+                        s.name AS supplier_name
+                 FROM odoo_products_cache opc_p
+                 JOIN odoo_products_cache opc_n
+                     ON opc_n.company = 'neggo'
+                    AND opc_p.internal_ref IS NOT NULL
+                    AND REPLACE(REPLACE(UPPER(COALESCE(opc_p.internal_ref,'')),'-',''),' ','')
+                        = CONCAT('PRE', REPLACE(REPLACE(UPPER(COALESCE(opc_n.internal_ref,'')),'-',''),' ',''))
+                 JOIN product_mappings pm
+                     ON pm.active = true
+                    AND pm.odoo_company = 'neggo'
+                    AND pm.odoo_product_id = opc_n.odoo_id
+                 JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+                 JOIN suppliers s ON s.id = sp.supplier_id AND s.active = true
+                 WHERE opc_p.company = 'preventas'
+                   AND opc_p.odoo_id = ANY($1::int[])
+                 ORDER BY opc_p.odoo_id, pm.match_confidence DESC NULLS LAST, pm.id DESC`,
+                [productIds]
+            );
+            for (const row of twins) {
+                if (!localSupplierByProductId[row.odoo_id]) {
+                    localSupplierByProductId[row.odoo_id] = row.supplier_name;
                 }
-
-                const productKey = String(line.product_id || line.product_name);
-                if (!bySupplier[key].products[productKey]) {
-                    bySupplier[key].products[productKey] = {
-                        product_id:   line.product_id,
-                        product_name: line.product_name,
-                        external_id:  line.external_id,
-                        image_url:    cache?.image_url      || null,
-                        unit_cost:    cache?.standard_price || null,
-                        total_qty:    0,
-                        quotations:   [],
-                    };
-                }
-
-                bySupplier[key].products[productKey].total_qty += line.quantity;
-                bySupplier[key].products[productKey].quotations.push({
-                    quotation_id:   quotation.id,
-                    quotation_name: quotation.name,
-                    client:         quotation.client,
-                    date:           quotation.date,
-                    qty:            line.quantity,
-                    unit_price:     line.unit_price,
-                });
             }
         }
 
-        // Convertir a array ordenado (sin proveedor al final)
-        const result = Object.values(bySupplier).map(s => {
-            const products = Object.values(s.products).sort((a, b) => a.product_name.localeCompare(b.product_name, 'es'));
-            const totalCostRaw = products.reduce((sum, p) => {
-                return p.unit_cost != null ? sum + (parseFloat(p.unit_cost) * p.total_qty) : sum;
-            }, 0);
-            const hasCost = products.some(p => p.unit_cost != null);
-            return {
-                supplier_name:  s.supplier_name,
-                products,
-                total_products: products.length,
-                total_qty:      products.reduce((sum, p) => sum + p.total_qty, 0),
-                total_cost:     hasCost ? Math.round(totalCostRaw * 100) / 100 : null,
-            };
-        }).sort((a, b) => {
-            if (a.supplier_name === 'Sin proveedor asignado') return 1;
-            if (b.supplier_name === 'Sin proveedor asignado') return -1;
-            return a.supplier_name.localeCompare(b.supplier_name, 'es');
-        });
-
-        console.log(`📦 Breakdown por proveedor: ${result.length} proveedores, ${quotations.length} cotizaciones`);
+        const result = groupQuotationsBySupplier(quotations, productCacheMap, localSupplierByProductId);
+        const sin = result.find(s => s.supplier_name === SIN_PROVEEDOR);
+        console.log(`📦 Breakdown por proveedor: ${result.length} proveedores, ${quotations.length} cotizaciones, sin proveedor: ${sin ? sin.total_products : 0}`);
         ok(res, result);
     } catch (err) {
         console.error('❌ Error al generar breakdown por proveedor:', err.message);
@@ -896,11 +892,7 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
     try {
         if (!CHROME_WS) throw new Error('CHROME_WS_ENDPOINT no configurado');
 
-        const fmtARS = n => n != null
-            ? new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n)
-            : '—';
-
-        const dateStr = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        const dateStr = formatFechaAR(new Date());
 
         // Devuelve una data URL base64 para incrustar la imagen en el HTML.
         // Soporta dos fuentes:
@@ -971,9 +963,9 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
     <div style="font-size:7pt;color:#6b6a64;margin-top:3px;font-family:monospace;">${p.external_id || '—'}</div>
     ${quotations ? `<div style="font-size:6.5pt;color:#9a988f;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${quotations}</div>` : ''}
   </td>
-  <td style="padding:7px 8px;width:60px;text-align:right;vertical-align:middle;font-weight:700;font-size:9pt;color:#1c1c1a;font-variant-numeric:tabular-nums;white-space:nowrap;">${p.total_qty}</td>
-  <td style="padding:7px 8px;width:105px;text-align:right;vertical-align:middle;font-size:8pt;color:#6b6a64;font-variant-numeric:tabular-nums;white-space:nowrap;">${fmtARS(p.unit_cost)}</td>
-  <td style="padding:7px 8px;width:105px;text-align:right;vertical-align:middle;font-weight:700;font-size:8.5pt;color:#1c1c1a;font-variant-numeric:tabular-nums;white-space:nowrap;">${subtotal != null ? fmtARS(subtotal) : '—'}</td>
+  <td style="padding:7px 8px;width:60px;text-align:right;vertical-align:middle;font-weight:700;font-size:9pt;color:#1c1c1a;font-variant-numeric:tabular-nums;white-space:nowrap;">${formatEntero(p.total_qty)}</td>
+  <td style="padding:7px 8px;width:105px;text-align:right;vertical-align:middle;font-size:8pt;color:#6b6a64;font-variant-numeric:tabular-nums;white-space:nowrap;">${formatMoneyAR(p.unit_cost)}</td>
+  <td style="padding:7px 8px;width:105px;text-align:right;vertical-align:middle;font-weight:700;font-size:8.5pt;color:#1c1c1a;font-variant-numeric:tabular-nums;white-space:nowrap;">${subtotal != null ? formatMoneyAR(subtotal) : '—'}</td>
 </tr>`;
         }).join('\n');
 
@@ -1002,7 +994,7 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
 <!-- Proveedor -->
 <div style="padding:14px 32px 0;">
   <div style="font-size:14pt;font-weight:700;color:#1c1c1a;letter-spacing:0.2px;">${supplier_name.toUpperCase()}</div>
-  <div style="font-size:9.5pt;color:#6b6a64;margin-top:5px;">${products.length} producto${products.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${(total_qty || 0).toLocaleString('es-AR')} unidades</div>
+  <div style="font-size:9.5pt;color:#6b6a64;margin-top:5px;">${products.length} producto${products.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${formatEntero(total_qty || 0)} unidades</div>
 </div>
 <div style="height:2px;background:#e25a1c;margin:12px 32px 0;"></div>
 
@@ -1035,7 +1027,7 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
 <div style="display:flex;justify-content:flex-end;padding:14px 32px 0;">
   <div style="background:#1f3a68;color:#fff;padding:8px 18px;display:flex;gap:28px;align-items:center;border-radius:3px;min-width:200px;justify-content:space-between;">
     <span style="font-size:8pt;letter-spacing:0.05em;">TOTAL</span>
-    <span style="font-size:11pt;font-weight:700;font-variant-numeric:tabular-nums;">${fmtARS(total_cost ?? grandTotal)}</span>
+    <span style="font-size:11pt;font-weight:700;font-variant-numeric:tabular-nums;">${formatMoneyAR(total_cost ?? grandTotal)}</span>
   </div>
 </div>
 
