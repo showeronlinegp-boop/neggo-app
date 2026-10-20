@@ -28,9 +28,13 @@ const SCHEMA_036 = fs.readFileSync(
 const SCHEMA_037 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '037_pedido_envios_cotizacion.sql'), 'utf8'
 );
+const SCHEMA_038 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '038_pedido_envios_pago.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
+const SOLAPAS = new Set(['pedidos', 'esperando_pago']);
 const MOTIVOS = new Set(['archivado', 'reponer', 'faltante']);
 
 const SELECT_ENVIO = `
@@ -38,12 +42,14 @@ const SELECT_ENVIO = `
            ua.display_name AS assembled_by_name,
            uc.display_name AS checked_by_name,
            us.display_name AS saldado_by_name,
-           uq.display_name AS cotizacion_enviada_by_name
+           uq.display_name AS cotizacion_enviada_by_name,
+           up.display_name AS pago_recibido_by_name
       FROM pedido_envios e
       LEFT JOIN users ua ON ua.id = e.assembled_by
       LEFT JOIN users uc ON uc.id = e.checked_by
       LEFT JOIN users us ON us.id = e.saldado_by
       LEFT JOIN users uq ON uq.id = e.cotizacion_enviada_by
+      LEFT JOIN users up ON up.id = e.pago_recibido_by
 `;
 
 function httpError(message, statusCode) {
@@ -684,6 +690,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_035);
     await db.query(SCHEMA_036);
     await db.query(SCHEMA_037);
+    await db.query(SCHEMA_038);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -762,53 +769,134 @@ async function upsertItems(client, envioId, companyKey, lines, { freezeQty = fal
     }
 }
 
-async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
-    const company = companyKeyOf(companyKey);
-    const estados = tab === 'controlar'
-        ? ['armado', 'controlando']
-        : tab === 'hechos'
-            ? ['saldado']
-            : ['pendiente', 'armando'];
-    const like = `%${String(q || '').trim()}%`;
-    const soloEnviadas = tab === 'armar';
-    const { rows } = await pool.query(
-        `${SELECT_ENVIO}
-          WHERE e.company_key = $1
-            AND e.estado = ANY($2::text[])
-            AND (
-                $3 = '%%'
-                OR e.odoo_order_name ILIKE $3
-                OR e.partner_name ILIKE $3
-            )
-            AND (
-                NOT $4
-                OR (
-                    COALESCE(e.invoice_status, '') <> 'invoiced'
-                    AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
-                )
-            )
-          ORDER BY e.date_order DESC NULLS LAST, e.id DESC
-          LIMIT 200`,
-        [company, estados, like, soloEnviadas]
+function companiesDe(value) {
+    const k = String(value || 'ambas').toLowerCase();
+    if (k === 'ambas') return [...COMPANIES];
+    return [companyKeyOf(k)];
+}
+
+// WHERE del listado sin el filtro de estado (así sirve también para los conteos).
+// Solapa "pedidos": lo que no tiene cotización enviada (más los pagados si se piden).
+// Solapa "esperando_pago": cotización enviada y pago todavía no recibido.
+function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null, incluirPagados = false }) {
+    const params = [companies];
+    const where = ['e.company_key = ANY($1::text[])'];
+    const texto = String(q || '').trim();
+    if (texto) {
+        params.push(`%${texto}%`);
+        where.push(`(e.odoo_order_name ILIKE $${params.length} OR e.partner_name ILIKE $${params.length})`);
+    }
+    const nDias = parseInt(dias, 10);
+    if (Number.isFinite(nDias) && nDias > 0) {
+        params.push(nDias);
+        where.push(`e.date_order >= NOW() - ($${params.length}::int * INTERVAL '1 day')`);
+    }
+    // Para armar: solo cotizaciones enviadas en Odoo, no las facturadas
+    where.push(`(e.estado NOT IN ('pendiente', 'armando') OR (
+        COALESCE(e.invoice_status, '') <> 'invoiced'
+        AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
+    ))`);
+    if (solapa === 'esperando_pago') {
+        where.push('e.cotizacion_enviada_at IS NOT NULL AND e.pago_recibido_at IS NULL');
+    } else if (incluirPagados) {
+        where.push('(e.cotizacion_enviada_at IS NULL OR e.pago_recibido_at IS NOT NULL)');
+    } else {
+        where.push('e.cotizacion_enviada_at IS NULL');
+    }
+    return { where, params };
+}
+
+function ordenListado(orden, solapa) {
+    // En "Esperando pago" la fecha que manda es la del envío de la cotización
+    const fecha = solapa === 'esperando_pago' ? 'x.cotizacion_enviada_at' : 'x.date_order';
+    const ordenes = {
+        viejos: `${fecha} ASC NULLS LAST, x.id ASC`,
+        nuevos: `${fecha} DESC NULLS LAST, x.id DESC`,
+        monto: 'x.amount_total DESC NULLS LAST, x.id ASC',
+        unidades: 'qty_pedida DESC, x.id ASC',
+    };
+    return ordenes[orden] || ordenes.viejos;
+}
+
+async function listar({
+    solapa = 'pedidos',
+    companyKey = 'ambas',
+    estado = 'todos',
+    q = '',
+    dias = null,
+    orden = 'viejos',
+    incluirPagados = false,
+    offset = 0,
+    limit = 100,
+} = {}) {
+    const sol = SOLAPAS.has(solapa) ? solapa : 'pedidos';
+    const est = ESTADOS.includes(estado) ? estado : 'todos';
+    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+    const off = Math.max(parseInt(offset, 10) || 0, 0);
+    const base = { companies: companiesDe(companyKey), q, dias, incluirPagados };
+    const { where, params } = condicionesListado({ ...base, solapa: sol });
+
+    // Conteos por estado para los filtros
+    const { rows: porEstado } = await pool.query(
+        `SELECT e.estado, COUNT(*)::int AS n FROM pedido_envios e
+          WHERE ${where.join(' AND ')} GROUP BY e.estado`,
+        params
     );
-    if (rows.length === 0) return [];
-    const ids = rows.map((r) => r.id);
-    const { rows: items } = await pool.query(
-        `SELECT envio_id,
-                COUNT(*)::int AS n_items,
-                COALESCE(SUM(qty_pedida), 0) AS qty_pedida,
-                COALESCE(SUM(qty_armada), 0) AS qty_armada,
-                COALESCE(SUM(qty_controlada), 0) AS qty_controlada
-           FROM pedido_envio_items
-          WHERE envio_id = ANY($1::int[])
-          GROUP BY envio_id`,
-        [ids]
-    );
-    const byId = new Map(items.map((i) => [i.envio_id, i]));
-    return rows.map((r) => {
-        const s = byId.get(r.id) || { n_items: 0, qty_pedida: 0, qty_armada: 0, qty_controlada: 0 };
-        return { ...r, ...s, tab: tabDeEstado(r.estado) };
+    const conteos = { todos: 0 };
+    ESTADOS.forEach((s) => { conteos[s] = 0; });
+    porEstado.forEach((r) => {
+        conteos[r.estado] = r.n;
+        conteos.todos += r.n;
     });
+
+    // Total de la otra solapa (para el número de la solapa)
+    const otraSolapa = sol === 'pedidos' ? 'esperando_pago' : 'pedidos';
+    const otra = condicionesListado({ ...base, solapa: otraSolapa });
+    const { rows: [{ n: nOtra }] } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pedido_envios e WHERE ${otra.where.join(' AND ')}`,
+        otra.params
+    );
+
+    const listaWhere = [...where];
+    const listaParams = [...params];
+    if (est !== 'todos') {
+        listaParams.push(est);
+        listaWhere.push(`e.estado = $${listaParams.length}`);
+    }
+    listaParams.push(lim, off);
+    const { rows } = await pool.query(
+        `WITH s AS (
+            SELECT envio_id,
+                   COUNT(*)::int AS n_items,
+                   COALESCE(SUM(qty_pedida), 0) AS qty_pedida,
+                   COALESCE(SUM(qty_armada), 0) AS qty_armada,
+                   COALESCE(SUM(qty_controlada), 0) AS qty_controlada
+              FROM pedido_envio_items
+             GROUP BY envio_id
+        )
+        SELECT x.*,
+               COALESCE(s.n_items, 0) AS n_items,
+               COALESCE(s.qty_pedida, 0) AS qty_pedida,
+               COALESCE(s.qty_armada, 0) AS qty_armada,
+               COALESCE(s.qty_controlada, 0) AS qty_controlada
+          FROM (${SELECT_ENVIO} WHERE ${listaWhere.join(' AND ')}) x
+          LEFT JOIN s ON s.envio_id = x.id
+         ORDER BY ${ordenListado(orden, sol)}
+         LIMIT $${listaParams.length - 1} OFFSET $${listaParams.length}`,
+        listaParams
+    );
+
+    return {
+        items: rows.map((r) => ({ ...r, tab: tabDeEstado(r.estado) })),
+        conteos,
+        total: est === 'todos' ? conteos.todos : conteos[est],
+        solapas: {
+            pedidos: sol === 'pedidos' ? conteos.todos : nOtra,
+            esperando_pago: sol === 'esperando_pago' ? conteos.todos : nOtra,
+        },
+        offset: off,
+        limit: lim,
+    };
 }
 
 async function obtener(id, { syncOdoo = false } = {}) {
@@ -1031,26 +1119,61 @@ async function cambiarEstado(id, estado, userId) {
     return obtener(id);
 }
 
-// Marca/desmarca que la cotización ya se le mandó al cliente (solo en la app, no toca Odoo)
-async function marcarCotizacionEnviada(id, enviada, userId) {
-    const { rows: [row] } = await pool.query(
-        `UPDATE pedido_envios
-            SET cotizacion_enviada_at = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_at, NOW()) END,
-                cotizacion_enviada_by = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_by, $3) END,
-                updated_at = NOW()
-          WHERE id = $1
-          RETURNING id`,
-        [id, Boolean(enviada), userId]
-    );
-    if (!row) throw httpError('Pedido no encontrado', 404);
-    await logActividad(userId, enviada ? 'COTIZACION_ENVIADA' : 'COTIZACION_NO_ENVIADA', id, {});
+async function marcasCotizacionPago(id) {
     const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
     return {
         id: envio.id,
+        estado: envio.estado,
         cotizacion_enviada_at: envio.cotizacion_enviada_at,
         cotizacion_enviada_by: envio.cotizacion_enviada_by,
         cotizacion_enviada_by_name: envio.cotizacion_enviada_by_name,
+        pago_recibido_at: envio.pago_recibido_at,
+        pago_recibido_by: envio.pago_recibido_by,
+        pago_recibido_by_name: envio.pago_recibido_by_name,
     };
+}
+
+// Marca/desmarca que la cotización ya se le mandó al cliente (solo en la app, no toca Odoo).
+// Solo con el pedido controlado (saldado). Desmarcar también borra el pago recibido.
+async function marcarCotizacionEnviada(id, enviada, userId) {
+    const { rows: [actual] } = await pool.query('SELECT estado FROM pedido_envios WHERE id = $1', [id]);
+    if (!actual) throw httpError('Pedido no encontrado', 404);
+    if (enviada && actual.estado !== 'saldado') {
+        throw httpError('La cotización se marca como enviada cuando el pedido ya está controlado', 409);
+    }
+    await pool.query(
+        `UPDATE pedido_envios
+            SET cotizacion_enviada_at = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_at, NOW()) END,
+                cotizacion_enviada_by = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_by, $3) END,
+                pago_recibido_at = CASE WHEN $2 THEN pago_recibido_at END,
+                pago_recibido_by = CASE WHEN $2 THEN pago_recibido_by END,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [id, Boolean(enviada), userId]
+    );
+    await logActividad(userId, enviada ? 'COTIZACION_ENVIADA' : 'COTIZACION_NO_ENVIADA', id, {});
+    return marcasCotizacionPago(id);
+}
+
+// Marca/desmarca que el cliente ya pagó (solo en la app, no toca Odoo)
+async function marcarPagoRecibido(id, recibido, userId) {
+    const { rows: [actual] } = await pool.query(
+        'SELECT cotizacion_enviada_at FROM pedido_envios WHERE id = $1', [id]
+    );
+    if (!actual) throw httpError('Pedido no encontrado', 404);
+    if (recibido && !actual.cotizacion_enviada_at) {
+        throw httpError('Primero marcá la cotización como enviada', 409);
+    }
+    await pool.query(
+        `UPDATE pedido_envios
+            SET pago_recibido_at = CASE WHEN $2 THEN COALESCE(pago_recibido_at, NOW()) END,
+                pago_recibido_by = CASE WHEN $2 THEN COALESCE(pago_recibido_by, $3) END,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [id, Boolean(recibido), userId]
+    );
+    await logActividad(userId, recibido ? 'PAGO_RECIBIDO' : 'PAGO_NO_RECIBIDO', id, {});
+    return marcasCotizacionPago(id);
 }
 
 async function setQty(itemId, campo, qty, userId) {
@@ -1312,6 +1435,9 @@ module.exports = {
     syncDesdeOdoo,
     cambiarEstado,
     marcarCotizacionEnviada,
+    marcarPagoRecibido,
+    condicionesListado,
+    ordenListado,
     setQty,
     escanear,
     marcarFaltante,
