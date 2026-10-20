@@ -28,6 +28,9 @@ const SCHEMA_036 = fs.readFileSync(
 const SCHEMA_037 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '037_pedido_envios_cotizacion.sql'), 'utf8'
 );
+const SCHEMA_039 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '039_pedido_envios_factura_pos.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
@@ -169,9 +172,15 @@ function ordenFacturada(odoo) {
     return (odoo.lines || []).some((l) => num(l.qty_invoiced) > 0);
 }
 
-// Para armar: cotización enviada, todavía no facturada. Las sale confirmadas/facturadas no.
+// Ya tiene factura o se cobró en el POS: se resolvió por otro lado, no se arma acá.
+function ordenCobradaAparte(odoo) {
+    if (!odoo) return false;
+    return ordenFacturada(odoo) || num(odoo.invoice_count) > 0 || num(odoo.pos_order_count) > 0;
+}
+
+// Para armar: cotización enviada, sin factura ni POS. Las sale confirmadas/facturadas no.
 function esCotizacionParaArmar(odoo) {
-    return !!odoo && odoo.state === 'sent' && !ordenFacturada(odoo);
+    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo);
 }
 
 function odooNecesitaConfirmar(state) {
@@ -684,6 +693,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_035);
     await db.query(SCHEMA_036);
     await db.query(SCHEMA_037);
+    await db.query(SCHEMA_039);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -784,6 +794,8 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
                 NOT $4
                 OR (
                     COALESCE(e.invoice_status, '') <> 'invoiced'
+                    AND COALESCE(e.odoo_invoice_count, 0) = 0
+                    AND COALESCE(e.odoo_pos_count, 0) = 0
                     AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
                 )
             )
@@ -848,17 +860,23 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const { rows: locales } = await pool.query(
         `SELECT odoo_sale_order_id FROM pedido_envios
           WHERE company_key = $1 AND estado IN ('pendiente', 'armando')
-          ORDER BY date_order DESC NULLS LAST
-          LIMIT 80`,
+            AND odoo_sale_order_id IS NOT NULL
+          ORDER BY date_order DESC NULLS LAST`,
         [company]
     );
-    const idsLocales = locales.map((r) => r.odoo_sale_order_id).filter(Boolean);
+    const idsTodos = locales.map((r) => r.odoo_sale_order_id);
+    // Los 80 más nuevos con líneas; del resto alcanza con el encabezado (factura / POS / estado)
+    const idsLocales = idsTodos.slice(0, 80);
     const vivos = idsLocales.length
         ? await odooService.getSaleOrdersWithLines(company, { ids: idsLocales, days: null, limit: idsLocales.length })
         : [];
     const porId = new Map();
     for (const order of [...enviadas, ...vivos]) porId.set(order.id, order);
     const orders = [...porId.values()];
+    const cabeceras = await odooService.getSaleOrderHeaders(
+        company,
+        idsTodos.filter((id) => !porId.has(id))
+    );
 
     let creados = 0;
     let actualizados = 0;
@@ -883,14 +901,15 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
                          partner_id, partner_name, date_order, amount_total,
-                         odoo_state, invoice_status
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
                         order.partner_id, order.client,
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
+                        num(order.invoice_count), num(order.pos_order_count),
                     ]
                 );
                 envioId = row.id;
@@ -905,12 +924,15 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             amount_total = $6,
                             odoo_state = $7,
                             invoice_status = $8,
+                            odoo_invoice_count = $9,
+                            odoo_pos_count = $10,
                             updated_at = NOW()
                       WHERE id = $1`,
                     [
                         existente.id, order.name, order.partner_id, order.client,
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
+                        num(order.invoice_count), num(order.pos_order_count),
                     ]
                 );
                 envioId = existente.id;
@@ -934,6 +956,20 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 });
             }
         }
+        for (const cab of cabeceras) {
+            const { rowCount } = await client.query(
+                `UPDATE pedido_envios
+                    SET odoo_state = $3,
+                        invoice_status = $4,
+                        odoo_invoice_count = $5,
+                        odoo_pos_count = $6,
+                        updated_at = NOW()
+                  WHERE company_key = $1 AND odoo_sale_order_id = $2
+                    AND estado IN ('pendiente', 'armando')`,
+                [company, cab.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count]
+            );
+            actualizados += rowCount;
+        }
         await client.query('COMMIT');
     } catch (err) {
         await client.query('ROLLBACK');
@@ -941,8 +977,9 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     } finally {
         client.release();
     }
-    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos: orders.length });
-    return { creados, actualizados, leidos: orders.length };
+    const leidos = orders.length + cabeceras.length;
+    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos });
+    return { creados, actualizados, leidos };
 }
 
 async function cambiarEstado(id, estado, userId) {
@@ -1296,6 +1333,7 @@ module.exports = {
     qtyCampoDeFase,
     refPendientes,
     ordenFacturada,
+    ordenCobradaAparte,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,

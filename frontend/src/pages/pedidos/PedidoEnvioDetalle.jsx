@@ -15,6 +15,8 @@ const SOPORTA_CAMERA = typeof window !== 'undefined'
     && 'BarcodeDetector' in window
     && navigator.mediaDevices?.getUserMedia;
 
+const fmtARS = (v) => `$${Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 const ESTADO = {
     pendiente:   { label: 'Para armar',     tone: 'muted' },
     armando:     { label: 'Armando',        tone: 'accent' },
@@ -491,8 +493,15 @@ export default function PedidoEnvioDetalle() {
                                         </div>
                                     )}
                                 </div>
-                                <div style={{ fontWeight: t.font.weight.semibold, ...t.numericStyle, color: completo ? t.color.success : t.color.text }}>
-                                    {actual}/{pedida}
+                                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                    <div style={{ fontWeight: t.font.weight.semibold, ...t.numericStyle, color: completo ? t.color.success : t.color.text }}>
+                                        {actual}/{pedida}
+                                    </div>
+                                    {it.price_unit != null && (
+                                        <div title="Precio de venta (unitario)" style={{ fontSize: 12, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
+                                            {fmtARS(it.price_unit)}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
