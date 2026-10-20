@@ -163,15 +163,21 @@ def scrape():
                     break
 
                 emitidos = 0
+                sin_foto_o_precio = 0
                 for item in items:
                     if not item.get('is_in_stock', True) or not item.get('name'):
                         continue
                     product = to_product(item, category_name)
+                    # Sin foto o sin precio no sirve para catálogo ni WhatsApp: no se guarda
+                    if not product['image_url'] or not product['raw_price'] or product['raw_price'] <= 0:
+                        sin_foto_o_precio += 1
+                        continue
                     # Emitir producto inmediatamente via NDJSON
                     print(json.dumps({'type': 'product', **product}), flush=True)
                     emitidos += 1
                 cat_count += emitidos
-                print(f'  ✅ {emitidos} productos (página {page}/{total_pages or "?"})', file=sys.stderr)
+                aviso = f' — {sin_foto_o_precio} sin foto o sin precio, salteados' if sin_foto_o_precio else ''
+                print(f'  ✅ {emitidos} productos (página {page}/{total_pages or "?"}){aviso}', file=sys.stderr)
 
                 # Checkpoint de página: esta página está completamente procesada
                 print(json.dumps({'type': 'page_checkpoint', 'category': category_name, 'page': page, 'per_page': PER_PAGE}), flush=True)
