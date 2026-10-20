@@ -88,6 +88,7 @@ class PythonScraper extends BaseScraper {
 
             // Capturar timestamp ANTES de iniciar upserts para luego marcar no disponibles
             const runStartedAt = new Date();
+            this.runStartedAt = runStartedAt;
 
             let result;
             try {

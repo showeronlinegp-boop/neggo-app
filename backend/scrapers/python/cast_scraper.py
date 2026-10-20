@@ -13,6 +13,7 @@ import time
 import os
 import re
 import signal
+import html
 import urllib.request
 import urllib.error
 
@@ -109,7 +110,8 @@ def to_product(item, category_name):
 
     return {
         'sku': (item.get('sku') or '').strip() or make_sku_from_slug(item.get('slug')),
-        'name': (item.get('name') or '').strip(),
+        # La API devuelve el nombre con entidades HTML ("12&#8243;" → "12″")
+        'name': html.unescape(item.get('name') or '').strip(),
         'raw_price': regular,
         'offer_price': offer,
         'image_url': image_url,
