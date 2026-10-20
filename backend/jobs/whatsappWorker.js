@@ -8,24 +8,18 @@ let timer = null;
 let busy = false;
 
 async function loadOdooImage(message) {
-    const { callOdoo, getCompanyIds } = require('../config/odoo');
-    const ids = await getCompanyIds();
-    const companyId = ids[message.company];
-    if (!companyId || !message.image_template_id) {
+    if (!message.image_template_id) {
         throw new Error('El producto no tiene foto en Odoo');
     }
-    const data = await callOdoo(
-        'product.template',
-        'read',
-        [[message.image_template_id]],
-        {
-            fields: ['image_512', 'image_128'],
-            context: { allowed_company_ids: [companyId] },
-        }
-    );
-    const base64 = data?.[0]?.image_512 || data?.[0]?.image_128;
-    if (!base64) throw new Error('Odoo no devolvió la foto');
-    return { base64, mimetype: 'image/jpeg' };
+    const { getOdooImage } = require('../services/odooImageService');
+    const img = await getOdooImage({
+        kind: 'template',
+        company: message.company === 'preventas' ? 'preventas' : 'neggo',
+        id: message.image_template_id,
+        size: '512',
+    });
+    if (!img?.buffer) throw new Error('Odoo no devolvió la foto');
+    return { base64: img.buffer.toString('base64'), mimetype: img.contentType || 'image/jpeg' };
 }
 
 function startWhatsappWorker(pool) {

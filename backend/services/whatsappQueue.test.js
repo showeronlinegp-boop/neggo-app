@@ -81,8 +81,34 @@ function testEvolutionParse() {
     console.log('evolution parse ok');
 }
 
+function testPgAdmin() {
+    if (process.env.WA_TEST_PGHOST) {
+        return {
+            host: process.env.WA_TEST_PGHOST,
+            port: Number(process.env.WA_TEST_PGPORT || 5432),
+            user: process.env.WA_TEST_PGUSER || 'neggo',
+            password: process.env.WA_TEST_PGPASSWORD || process.env.POSTGRES_PASSWORD || 'neggo_pass',
+            database: 'postgres',
+        };
+    }
+    return { host: '/var/run/postgresql', database: 'postgres' };
+}
+
+function testPgPool() {
+    if (process.env.WA_TEST_PGHOST) {
+        return {
+            host: process.env.WA_TEST_PGHOST,
+            port: Number(process.env.WA_TEST_PGPORT || 5432),
+            user: process.env.WA_TEST_PGUSER || 'neggo',
+            password: process.env.WA_TEST_PGPASSWORD || process.env.POSTGRES_PASSWORD || 'neggo_pass',
+            database: 'neggo_wa_test',
+        };
+    }
+    return { connectionString: 'postgresql://ubuntu@/neggo_wa_test?host=/var/run/postgresql' };
+}
+
 async function recreateDb() {
-    const admin = new Client({ host: '/var/run/postgresql', database: 'postgres' });
+    const admin = new Client(testPgAdmin());
     await admin.connect();
     await admin.query(`
         SELECT pg_terminate_backend(pid)
@@ -92,9 +118,7 @@ async function recreateDb() {
     await admin.query('DROP DATABASE IF EXISTS neggo_wa_test');
     await admin.query('CREATE DATABASE neggo_wa_test');
     await admin.end();
-    const pool = new Pool({
-        connectionString: 'postgresql://ubuntu@/neggo_wa_test?host=/var/run/postgresql',
-    });
+    const pool = new Pool(testPgPool());
     await pool.query(`
         CREATE TABLE users (id SERIAL PRIMARY KEY);
         CREATE TABLE client_pricelists (
@@ -332,6 +356,79 @@ async function testQueue(pool) {
         }),
         /JID/
     );
+
+    await pool.query(`
+        UPDATE whatsapp_batches SET status = 'cancelada'
+        WHERE destino = 'estado' AND status IN ('programada', 'en_curso', 'pausada')
+    `);
+    const oneStatus = {
+        odoo_id: 11,
+        company: 'preventas',
+        name: 'Plato hondo',
+        price_amount: 3045,
+        price_label: '$3.045',
+        caption: 'Plato hondo\n$3.045',
+        template_id: 502,
+    };
+    const timeoutStatus = await queue.createBatch(pool, {
+        company: 'preventas',
+        destino: 'estado',
+        products: [oneStatus],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-06T00:00',
+        maxAttempts: 3,
+    });
+    let statusTimeoutCalls = 0;
+    const tTimeout = new Date('2020-01-06T03:00:00.000Z');
+    const timeoutTick = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
+        sendImage: async () => { throw new Error('un estado no se manda al grupo'); },
+        sendStatus: async () => {
+            statusTimeoutCalls += 1;
+            throw new Error('Evolution API no responde (The operation was aborted due to timeout)');
+        },
+    }, tTimeout);
+    assert.strictEqual(timeoutTick.action, 'error');
+    assert.strictEqual(statusTimeoutCalls, 1);
+    const afterTimeout = await stateOf(pool, timeoutStatus.batch.id);
+    assert.strictEqual(afterTimeout.length, 1);
+    assert.strictEqual(afterTimeout[0].status, 'error');
+    assert.strictEqual(afterTimeout[0].attempts, 1);
+    const noRetry = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
+        sendImage: async () => { throw new Error('no'); },
+        sendStatus: async () => {
+            statusTimeoutCalls += 1;
+            return 'should-not-run';
+        },
+    }, new Date(tTimeout.getTime() + 90_000));
+    assert.strictEqual(noRetry.action, 'idle');
+    assert.strictEqual(statusTimeoutCalls, 1);
+
+    const stuckStatus = await queue.createBatch(pool, {
+        company: 'preventas',
+        destino: 'estado',
+        products: [{ ...oneStatus, odoo_id: 10, name: 'Vaso largo', caption: 'Vaso largo\n$1.523' }],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-08T00:00',
+        maxAttempts: 3,
+    });
+    await pool.query(`
+        UPDATE whatsapp_messages
+        SET status = 'enviando', attempts = 1, updated_at = $2
+        WHERE batch_id = $1
+    `, [stuckStatus.batch.id, new Date(tTimeout.getTime() - 3 * 60_000)]);
+    await pool.query(`UPDATE whatsapp_batches SET status = 'en_curso' WHERE id = $1`, [stuckStatus.batch.id]);
+    let stuckCalls = 0;
+    const recoveredStatus = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
+        sendImage: async () => 'no',
+        sendStatus: async () => { stuckCalls += 1; return 'dup'; },
+    }, tTimeout);
+    assert.strictEqual(recoveredStatus.action, 'idle');
+    assert.strictEqual(stuckCalls, 0);
+    const stuckRows = await stateOf(pool, stuckStatus.batch.id);
+    assert.strictEqual(stuckRows[0].status, 'error');
 
     const logs = await pool.query('SELECT COUNT(*)::int AS n FROM whatsapp_logs');
     assert.ok(logs.rows[0].n > 0);

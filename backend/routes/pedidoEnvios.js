@@ -2,7 +2,8 @@
 // GET    /api/pedido-envios?tab=armar|controlar|hechos&company=neggo&q=
 // GET    /api/pedido-envios/:id
 // POST   /api/pedido-envios/sync                 { company? }
-// POST   /api/pedido-envios/:id/estado           { estado }
+// POST   /api/pedido-envios/:id/estado           { estado }  // armando: confirma Odoo + ata envío 1
+// POST   /api/pedido-envios/:id/cotizacion-enviada  { enviada: bool }  (solo en la app)
 // PATCH  /api/pedido-envios/items/:itemId        { qty_armada? | qty_controlada? }
 // POST   /api/pedido-envios/:id/escanear         { code }
 // POST   /api/pedido-envios/items/:itemId/faltante  { motivo: archivado|reponer|faltante }
@@ -54,7 +55,11 @@ router.get('/:id/preview', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
     try {
-        return ok(res, await servicio.obtener(parseInt(req.params.id, 10)));
+        const data = await servicio.obtener(parseInt(req.params.id, 10), { syncOdoo: true });
+        if (data.odoo_sync_error) {
+            console.warn(`⚠️ Pedido ${data.odoo_order_name} armando sin envío 1: ${data.odoo_sync_error}`);
+        }
+        return ok(res, data);
     } catch (err) {
         return sendErr(res, err, 'Error obteniendo pedido');
     }
@@ -62,13 +67,33 @@ router.get('/:id', async (req, res) => {
 
 router.post('/:id/estado', async (req, res) => {
     try {
-        return ok(res, await servicio.cambiarEstado(
+        const data = await servicio.cambiarEstado(
             parseInt(req.params.id, 10),
             req.body?.estado,
             req.user.id
-        ));
+        );
+        if (req.body?.estado === 'armando' && data.odoo_picking_name) {
+            console.log(`✅ Pedido ${data.odoo_order_name} armando · envío ${data.odoo_picking_name} (${data.odoo_picking_state || 'abierto'})`);
+        }
+        if (req.body?.estado === 'armado' && data.odoo_picking_name) {
+            console.log(`✅ Pedido ${data.odoo_order_name} armado · envío ${data.odoo_picking_name} ${data.odoo_picking_state || ''}`
+                + (data.odoo_picking_backorder_name ? ` · faltantes ${data.odoo_picking_backorder_name}` : ''));
+        }
+        return ok(res, data);
     } catch (err) {
         return sendErr(res, err, 'Error cambiando estado del pedido');
+    }
+});
+
+router.post('/:id/cotizacion-enviada', async (req, res) => {
+    try {
+        return ok(res, await servicio.marcarCotizacionEnviada(
+            parseInt(req.params.id, 10),
+            req.body?.enviada !== false,
+            req.user.id
+        ));
+    } catch (err) {
+        return sendErr(res, err, 'Error marcando cotización enviada');
     }
 });
 

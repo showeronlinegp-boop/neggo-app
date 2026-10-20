@@ -7,7 +7,7 @@ import * as Icon from './icons';
 export function urlFotoGrande(url) {
     if (!url) return url;
     if (!/^\/api\/products\/odoo-image\//.test(url)) return url;
-    return `${url}${url.includes('?') ? '&' : '?'}size=1024`;
+    return `${url}${url.includes('?') ? '&' : '?'}size=1024&fresh=1`;
 }
 
 // Visor de foto a pantalla completa. Se puede abrir encima de otro Modal: Escape y el

@@ -570,6 +570,288 @@ async function confirmSaleOrder(odooOrderId, companyKey) {
     console.log(`✅ Sale order ${odooOrderId} confirmada en Odoo [${companyKey}]`);
 }
 
+async function getSaleOrderHeader(odooOrderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'sale.order',
+        'read',
+        [[odooOrderId], ['id', 'name', 'state', 'invoice_status', 'picking_ids']],
+        withCompany(companyId)
+    );
+    const row = rows?.[0];
+    if (!row) return null;
+    return {
+        id: row.id,
+        name: row.name,
+        state: row.state,
+        invoice_status: row.invoice_status || null,
+        picking_ids: Array.isArray(row.picking_ids) ? row.picking_ids : [],
+    };
+}
+
+function mapPickingRow(row) {
+    if (!row || row.id == null) return null;
+    return {
+        id: row.id,
+        name: row.name || null,
+        state: row.state || null,
+        picking_type_code: row.picking_type_code || null,
+        origin: row.origin || null,
+        backorder_id: Array.isArray(row.backorder_id) ? row.backorder_id[0] : (row.backorder_id || null),
+    };
+}
+
+function pickingEsEnvio1(row) {
+    if (!row || row.state === 'cancel') return false;
+    const code = row.picking_type_code;
+    return !code || code === 'outgoing' || code === 'internal';
+}
+
+function esAccionWizard(result) {
+    return !!(result && typeof result === 'object' && result.type === 'ir.actions.act_window' && result.res_model);
+}
+
+/**
+ * Primer transfer de la orden (envío 1). En depósito 2 pasos (pick_ship)
+ * Odoo crea Recolectar (internal) al confirmar; el outgoing aparece después
+ * de validar el pick. No crea pickings: solo lee el que Odoo armó.
+ */
+async function getFirstOutgoingPicking(odooOrderId, companyKey, orderName = null) {
+    const companyId = await resolveCompanyId(companyKey);
+    const header = await getSaleOrderHeader(odooOrderId, companyKey);
+    const name = orderName || header?.name || null;
+    const fields = ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id'];
+    const kwargs = withCompany(companyId, { fields, order: 'id asc', limit: 40 });
+
+    let rows = [];
+    try {
+        rows = await callOdoo(
+            'stock.picking',
+            'search_read',
+            [[['sale_id', '=', odooOrderId], ['state', '!=', 'cancel']]],
+            kwargs
+        ) || [];
+    } catch {
+        rows = [];
+    }
+
+    const pickingIds = header?.picking_ids || [];
+    if (!rows.length && pickingIds.length) {
+        rows = await callOdoo(
+            'stock.picking',
+            'search_read',
+            [[['id', 'in', pickingIds], ['state', '!=', 'cancel']]],
+            kwargs
+        ) || [];
+    }
+    if (!rows.length && name) {
+        rows = await callOdoo(
+            'stock.picking',
+            'search_read',
+            [[
+                ['company_id', '=', companyId],
+                ['origin', '=', name],
+                ['state', '!=', 'cancel'],
+            ]],
+            kwargs
+        ) || [];
+    }
+    const sorted = rows.filter(pickingEsEnvio1).slice().sort((a, b) => a.id - b.id);
+    return mapPickingRow(sorted[0]);
+}
+
+async function getPicking(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'stock.picking',
+        'read',
+        [[pickingId], ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id']],
+        withCompany(companyId)
+    );
+    return mapPickingRow(rows?.[0]);
+}
+
+async function getPickingMoves(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'stock.move',
+        'search_read',
+        [[['picking_id', '=', pickingId]]],
+        withCompany(companyId, {
+            fields: ['id', 'product_id', 'product_uom_qty', 'quantity', 'picked', 'state', 'sale_line_id'],
+            order: 'id asc',
+        })
+    ) || [];
+    return rows.map((r) => ({
+        id: r.id,
+        product_id: Array.isArray(r.product_id) ? r.product_id[0] : r.product_id,
+        product_uom_qty: Number(r.product_uom_qty) || 0,
+        quantity: Number(r.quantity) || 0,
+        picked: !!r.picked,
+        state: r.state || null,
+        sale_line_id: Array.isArray(r.sale_line_id) ? r.sale_line_id[0] : (r.sale_line_id || null),
+    }));
+}
+
+async function writePickingMoveQuantities(writes, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    for (const w of writes || []) {
+        if (!Number.isInteger(Number(w.id))) continue;
+        await callOdoo(
+            'stock.move',
+            'write',
+            [[Number(w.id)], { quantity: Number(w.quantity) || 0, picked: true }],
+            withCompany(companyId)
+        );
+    }
+}
+
+function wizardContext(companyId, pickingId, action) {
+    const fromAction = (action && typeof action.context === 'object' && action.context) || {};
+    return {
+        ...fromAction,
+        allowed_company_ids: [companyId],
+        button_validate_picking_ids: [pickingId],
+        default_pick_ids: [[4, pickingId]],
+    };
+}
+
+async function resolverWizardValidate(action, pickingId, companyKey, { createBackorder = true } = {}) {
+    const companyId = await resolveCompanyId(companyKey);
+    const model = action?.res_model;
+    const ctx = wizardContext(companyId, pickingId, action);
+
+    if (model === 'stock.backorder.confirmation') {
+        const wizId = await callOdoo(
+            'stock.backorder.confirmation',
+            'create',
+            [{
+                pick_ids: [[6, 0, [pickingId]]],
+                backorder_confirmation_line_ids: [[0, 0, {
+                    picking_id: pickingId,
+                    to_backorder: !!createBackorder,
+                }]],
+            }],
+            { context: ctx }
+        );
+        const method = createBackorder ? 'process' : 'process_cancel_backorder';
+        return callOdoo('stock.backorder.confirmation', method, [[wizId]], { context: ctx });
+    }
+
+    if (model === 'stock.immediate.transfer') {
+        const wizId = await callOdoo(
+            'stock.immediate.transfer',
+            'create',
+            [{ pick_ids: [[6, 0, [pickingId]]] }],
+            { context: ctx }
+        );
+        return callOdoo('stock.immediate.transfer', 'process', [[wizId]], { context: ctx });
+    }
+
+    throw new Error(
+        `Odoo pidió un asistente (${model || 'desconocido'}) al validar el envío y no lo sé completar.`
+    );
+}
+
+async function getPickingBackorder(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'stock.picking',
+        'search_read',
+        [[['backorder_id', '=', pickingId]]],
+        withCompany(companyId, {
+            fields: ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id'],
+            order: 'id asc',
+            limit: 5,
+        })
+    ) || [];
+    const vivo = rows.find((r) => r.state !== 'cancel') || rows[0];
+    return mapPickingRow(vivo);
+}
+
+/**
+ * Depósito 2 pasos: el envío de salida (outgoing) que sale del picking dado,
+ * siguiendo move_dest_ids. Si hay varios, el primero sin validar. Solo lee.
+ */
+async function getSalidaDePicking(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const moves = await callOdoo(
+        'stock.move',
+        'search_read',
+        [[['picking_id', '=', pickingId]]],
+        withCompany(companyId, { fields: ['id', 'move_dest_ids'] })
+    ) || [];
+    const destIds = [...new Set(moves.flatMap((m) => m.move_dest_ids || []))];
+    if (!destIds.length) return null;
+
+    const dests = await callOdoo(
+        'stock.move',
+        'read',
+        [destIds, ['id', 'picking_id']],
+        withCompany(companyId)
+    ) || [];
+    const pickingIds = [...new Set(dests
+        .map((d) => (Array.isArray(d.picking_id) ? d.picking_id[0] : d.picking_id))
+        .filter(Boolean))];
+    if (!pickingIds.length) return null;
+
+    const rows = await callOdoo(
+        'stock.picking',
+        'search_read',
+        [[['id', 'in', pickingIds], ['picking_type_code', '=', 'outgoing'], ['state', '!=', 'cancel']]],
+        withCompany(companyId, {
+            fields: ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id'],
+            order: 'id asc',
+        })
+    ) || [];
+    const pendiente = rows.find((r) => r.state !== 'done');
+    return mapPickingRow(pendiente || rows[0]);
+}
+
+/**
+ * Valida el envío 1. En Odoo 19 la cantidad hecha es stock.move.quantity
+ * (no quantity_done). Si falta mercadería, Odoo abre stock.backorder.confirmation.
+ * createBackorder=true deja el resto en un backorder; false lo cancela.
+ */
+async function validateSalePicking(pickingId, companyKey, { createBackorder = true } = {}) {
+    const companyId = await resolveCompanyId(companyKey);
+    const kwargs = withCompany(companyId);
+
+    let picking = await getPicking(pickingId, companyKey);
+    if (!picking) throw new Error(`No encontré el envío ${pickingId} en Odoo`);
+    if (picking.state === 'done') {
+        return { alreadyDone: true, picking, backorder: await getPickingBackorder(pickingId, companyKey) };
+    }
+    if (picking.state === 'cancel') {
+        throw new Error(`El envío ${picking.name || pickingId} está cancelado en Odoo`);
+    }
+
+    if (picking.state === 'draft') {
+        await callOdoo('stock.picking', 'action_confirm', [[pickingId]], kwargs);
+        picking = await getPicking(pickingId, companyKey) || picking;
+    }
+    if (picking.state && picking.state !== 'assigned' && picking.state !== 'done') {
+        try {
+            await callOdoo('stock.picking', 'action_assign', [[pickingId]], kwargs);
+        } catch {
+            // sin stock reservable: igual intentamos validar con lo marcado
+        }
+        picking = await getPicking(pickingId, companyKey) || picking;
+    }
+
+    let result = await callOdoo('stock.picking', 'button_validate', [[pickingId]], kwargs);
+    if (esAccionWizard(result)) {
+        result = await resolverWizardValidate(result, pickingId, companyKey, { createBackorder });
+        if (esAccionWizard(result)) {
+            result = await resolverWizardValidate(result, pickingId, companyKey, { createBackorder });
+        }
+    }
+
+    picking = await getPicking(pickingId, companyKey) || picking;
+    const backorder = await getPickingBackorder(pickingId, companyKey);
+    return { alreadyDone: false, picking, backorder, wizardHandled: true, result };
+}
+
 /**
  * Cancela una orden de venta en Odoo.
  * Si la orden está confirmada ('sale'), intenta cancelarla con action_cancel.
@@ -1189,6 +1471,15 @@ module.exports = {
     // Órdenes de compra
     updateSaleOrderLines,
     confirmSaleOrder,
+    getSaleOrderHeader,
+    getFirstOutgoingPicking,
+    getPicking,
+    getPickingMoves,
+    writePickingMoveQuantities,
+    validateSalePicking,
+    getPickingBackorder,
+    getSalidaDePicking,
+    esAccionWizard,
     createPurchaseOrder,
     addLinesToPurchaseOrder,
     confirmPurchaseOrder,

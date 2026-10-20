@@ -15,7 +15,7 @@ const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { detectMime } = require('../services/whatsappMessage');
-const { writeOdooImage } = require('../services/odooImageService');
+const { writeOdooImage, pipeOdooImage } = require('../services/odooImageService');
 const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
 
@@ -105,7 +105,7 @@ router.post('/upload', authenticate, upload.single('file'), async (req, res) => 
 
 // =============================================
 // GET /api/ingreso/odoo-image/:odooId
-// Proxy de imagen de producto Odoo (cached 24h en browser)
+// Foto vigente de Odoo; copia en disco y revalidación por fingerprint.
 // MUST be before /:ingresoId to avoid param conflict
 // =============================================
 
@@ -113,36 +113,7 @@ router.get('/odoo-image/:odooId', async (req, res) => {
     const odooId     = parseInt(req.params.odooId, 10);
     const companyKey = req.query.company === 'preventas' ? 'preventas' : 'neggo';
     if (isNaN(odooId)) return res.status(400).end();
-
-    try {
-        const { callOdoo, getCompanyIds } = require('../config/odoo');
-        const companyIds = await getCompanyIds();
-        const companyId  = companyIds[companyKey];
-        if (!companyId) return res.status(503).end();
-
-        const [product] = await callOdoo(
-            'product.product',
-            'read',
-            [[odooId], ['image_128']],
-            { context: { allowed_company_ids: [companyId] } }
-        );
-
-        if (!product?.image_128) return res.status(404).end();
-
-        const buffer = Buffer.from(product.image_128, 'base64');
-
-        // Detectar formato por magic bytes
-        let contentType = 'image/png';
-        if (buffer[0] === 0xFF && buffer[1] === 0xD8) contentType = 'image/jpeg';
-        else if (buffer[0] === 0x47 && buffer[1] === 0x49) contentType = 'image/gif';
-
-        res.set('Content-Type', contentType);
-        res.set('Cache-Control', 'public, max-age=86400');
-        res.send(buffer);
-    } catch (err) {
-        console.error('❌ Error fetching Odoo image:', err.message);
-        res.status(404).end();
-    }
+    return pipeOdooImage(req, res, { kind: 'product', company: companyKey, id: odooId, size: '128' });
 });
 
 // =============================================

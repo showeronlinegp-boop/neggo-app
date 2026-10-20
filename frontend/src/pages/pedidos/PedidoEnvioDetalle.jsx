@@ -64,6 +64,9 @@ export default function PedidoEnvioDetalle() {
             return;
         }
         setEnvio(res.data);
+        if (res.data?.odoo_sync_error) {
+            setError(res.data.odoo_sync_error);
+        }
         setLoading(false);
     }, [id]);
 
@@ -111,7 +114,8 @@ export default function PedidoEnvioDetalle() {
     }, [id, trabajando]);
 
     useBarcodeScan(escanear, {
-        enabled: envio?.estado === 'armando' || envio?.estado === 'controlando',
+        enabled: envio?.estado === 'controlando'
+            || (envio?.estado === 'armando' && (envio.odoo_state === 'sale' || envio.odoo_state === 'done')),
     });
 
     const iniciarCamara = async () => {
@@ -152,7 +156,20 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(true);
         const res = await api.post(`/pedido-envios/${id}/estado`, { estado });
         setTrabajando(false);
-        aplicar(res);
+        let okMsg = null;
+        if (res.success && estado === 'armando' && res.data?.odoo_picking_name) {
+            okMsg = `Atado al envío 1: ${res.data.odoo_picking_name}. Queda abierto en Odoo.`;
+        }
+        if (res.success && estado === 'armado' && res.data?.odoo_picking_name) {
+            if (res.data.odoo_picking_backorder_name) {
+                okMsg = `Validé ${res.data.odoo_picking_name}. Lo que faltó quedó en ${res.data.odoo_picking_backorder_name}.`;
+            } else if (res.data.odoo_picking_state === 'done') {
+                okMsg = `Validé el envío 1: ${res.data.odoo_picking_name}.`;
+            } else {
+                okMsg = `Armado listo. El envío ${res.data.odoo_picking_name} sigue abierto (no había cantidades para validar).`;
+            }
+        }
+        aplicar(res, okMsg);
     };
 
     const setQtyAbs = async (item, qty, okMsg) => {
@@ -207,8 +224,12 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(true);
         try {
             const res = await api.post(`/pedido-envios/${id}/saldar`);
+            const salida = res.success ? res.data.odoo_salida : null;
             if (!aplicar(res, res.success
-                ? (res.data.backorder_odoo_name
+                ? (salida?.picking
+                    ? `Entrega ${salida.picking.name} validada en Odoo con lo controlado.`
+                        + (salida.backorder ? ` Lo que faltó quedó en ${salida.backorder.name}.` : '')
+                    : res.data.backorder_odoo_name
                     ? `Odoo quedó con lo controlado. Pendientes en ${res.data.backorder_odoo_name}.`
                     : 'Odoo quedó igual a lo controlado. No había pendientes.')
                 : null)) return;
@@ -232,7 +253,8 @@ export default function PedidoEnvioDetalle() {
     }
 
     const est = ESTADO[envio.estado] || ESTADO.pendiente;
-    const editable = envio.estado === 'armando' || envio.estado === 'controlando';
+    const confirmadoEnOdoo = envio.odoo_state === 'sale' || envio.odoo_state === 'done';
+    const editable = (envio.estado === 'armando' && confirmadoEnOdoo) || envio.estado === 'controlando';
     const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
     const preview = envio.preview || { queda: [], pendientes: [], iguales: [] };
     const pad = isMobile ? 12 : 20;
@@ -266,6 +288,19 @@ export default function PedidoEnvioDetalle() {
                     {envio.checked_by_name && (
                         <div style={{ fontSize: 12, color: t.color.textFaint }}>Controló {envio.checked_by_name}</div>
                     )}
+                    {envio.odoo_picking_name && (
+                        <div style={{ fontSize: 12, color: t.color.textFaint, marginTop: 4 }}>
+                            Envío 1: {envio.odoo_picking_name}
+                            {envio.odoo_picking_state === 'done' ? ' · validado'
+                                : envio.odoo_picking_state === 'assigned' ? ' · abierto'
+                                    : envio.odoo_picking_state ? ` · ${envio.odoo_picking_state}` : ' · abierto'}
+                        </div>
+                    )}
+                    {envio.odoo_picking_backorder_name && (
+                        <div style={{ fontSize: 12, color: t.color.warn, marginTop: 4 }}>
+                            Faltantes en Odoo: {envio.odoo_picking_backorder_name}
+                        </div>
+                    )}
                     {envio.backorder_odoo_name && (
                         <div style={{ fontSize: 12, color: t.color.success, marginTop: 4 }}>Pendientes: {envio.backorder_odoo_name}</div>
                     )}
@@ -276,14 +311,20 @@ export default function PedidoEnvioDetalle() {
                 {envio.estado === 'pendiente' && (
                     <Button variant="primary" disabled={trabajando} onClick={() => setEstado('armando')}
                         style={{ height: 48, flex: 1, minWidth: 160 }}>
-                        Empezar a armar
+                        {trabajando ? 'Confirmando en Odoo…' : 'Empezar a armar'}
                     </Button>
                 )}
                 {envio.estado === 'armando' && (
                     <>
-                        <Button variant="success" disabled={trabajando} onClick={() => setEstado('armado')}
+                        {(!confirmadoEnOdoo || !envio.odoo_picking_id || envio.odoo_sync_error) && (
+                            <Button variant="primary" disabled={trabajando} onClick={() => setEstado('armando')}
+                                style={{ height: 48, flex: 1, minWidth: 160 }}>
+                                {trabajando ? 'Confirmando en Odoo…' : 'Confirmar en Odoo y atar envío 1'}
+                            </Button>
+                        )}
+                        <Button variant="success" disabled={trabajando || !confirmadoEnOdoo} onClick={() => setEstado('armado')}
                             style={{ height: 48, flex: 1, minWidth: 160 }} leftIcon={<Icon.Check size={16} />}>
-                            Terminar armado
+                            {trabajando ? 'Validando envío 1…' : 'Terminar armado'}
                         </Button>
                         <Button variant="ghost" disabled={trabajando} onClick={() => setEstado('pendiente')} style={{ height: 48 }}>
                             Volver a pendientes
@@ -374,6 +415,11 @@ export default function PedidoEnvioDetalle() {
             {aviso && (
                 <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.successSoft, color: t.color.success, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
                     {aviso}
+                </div>
+            )}
+            {envio.estado === 'armando' && !confirmadoEnOdoo && (
+                <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.warnSoft, color: t.color.warn, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
+                    Este pedido todavía no está confirmado en Odoo. Confirmalo para poder armarlo.
                 </div>
             )}
             {error && (
@@ -518,7 +564,9 @@ export default function PedidoEnvioDetalle() {
             >
                 <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
                     <p style={{ marginTop: 0 }}>
-                        Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.
+                        {envio.odoo_picking_state === 'done'
+                            ? 'Esto valida la entrega en Odoo con lo que controlaste. Si falta algo, queda en un backorder de la entrega.'
+                            : 'Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.'}
                     </p>
                     {preview.queda.length === 0 && preview.pendientes.length === 0 && (
                         <div style={{ color: t.color.success }}>Controlaste todo. La orden no cambia de cantidades.</div>

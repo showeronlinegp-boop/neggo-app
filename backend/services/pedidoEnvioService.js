@@ -1,8 +1,12 @@
 // Armado y control de pedidos (2-step adentro de Neggo App).
-// Armado → control en la app. Al saldar: la sale.order de Odoo queda con lo
-// controlado (qty, incluso 0; nunca unlink) y, si sobra, un pedido draft con
-// los pendientes. Idempotente: lock + reusar backorder si ya existe.
-// Archivar/reponer reusa reposicionService. No usa updateSaleOrderLines.
+// Al empezar a armar: confirma la sale.order en Odoo (si no está sale/done)
+// y ata el envío 1 (primer picking de la orden: Recolectar en pick_ship,
+// outgoing en ship_only). Lo deja ABIERTO. No crea pickings extra.
+// Al terminar el armado: escribe stock.move.quantity = qty_armada, picked,
+// y valida el envío 1. Si falta mercadería Odoo abre backorder (ask).
+// Armado → control en la app. Al saldar: si el envío 1 ya está done, no
+// reescribe líneas; si no, la sale.order queda con lo controlado y un
+// pedido draft con pendientes. Archivar/reponer reusa reposicionService.
 
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +15,18 @@ const odooService = require('./odooService');
 
 const SCHEMA_032 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '032_pedido_envios.sql'), 'utf8'
+);
+const SCHEMA_034 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '034_pedido_envios_odoo_state.sql'), 'utf8'
+);
+const SCHEMA_035 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '035_pedido_envios_picking.sql'), 'utf8'
+);
+const SCHEMA_036 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '036_pedido_envios_picking_state.sql'), 'utf8'
+);
+const SCHEMA_037 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '037_pedido_envios_cotizacion.sql'), 'utf8'
 );
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
@@ -21,11 +37,13 @@ const SELECT_ENVIO = `
     SELECT e.*,
            ua.display_name AS assembled_by_name,
            uc.display_name AS checked_by_name,
-           us.display_name AS saldado_by_name
+           us.display_name AS saldado_by_name,
+           uq.display_name AS cotizacion_enviada_by_name
       FROM pedido_envios e
       LEFT JOIN users ua ON ua.id = e.assembled_by
       LEFT JOIN users uc ON uc.id = e.checked_by
       LEFT JOIN users us ON us.id = e.saldado_by
+      LEFT JOIN users uq ON uq.id = e.cotizacion_enviada_by
 `;
 
 function httpError(message, statusCode) {
@@ -145,6 +163,422 @@ function refPendientes(orderName) {
     return `Pendientes de ${orderName || ''}`.trim();
 }
 
+function ordenFacturada(odoo) {
+    if (!odoo) return false;
+    if (odoo.invoice_status === 'invoiced') return true;
+    return (odoo.lines || []).some((l) => num(l.qty_invoiced) > 0);
+}
+
+// Para armar: cotización enviada, todavía no facturada. Las sale confirmadas/facturadas no.
+function esCotizacionParaArmar(odoo) {
+    return !!odoo && odoo.state === 'sent' && !ordenFacturada(odoo);
+}
+
+function odooNecesitaConfirmar(state) {
+    const s = String(state || '');
+    return s === 'draft' || s === 'sent';
+}
+
+function odooYaConfirmada(state) {
+    const s = String(state || '');
+    return s === 'sale' || s === 'done';
+}
+
+function armandoRequiereConfirmado(envio) {
+    if (!envio || envio.estado !== 'armando') return { ok: true };
+    if (odooYaConfirmada(envio.odoo_state)) return { ok: true };
+    const nombre = envio.odoo_order_name || 'este pedido';
+    return {
+        ok: false,
+        error: `${nombre} tiene que estar confirmado en Odoo para armarlo`,
+        statusCode: 409,
+    };
+}
+
+function exigirArmandoConfirmado(envio) {
+    const r = armandoRequiereConfirmado(envio);
+    if (!r.ok) throw httpError(r.error, r.statusCode);
+}
+
+function primerPickingSalida(pickings) {
+    const vivos = (pickings || [])
+        .filter((p) => p && Number.isInteger(Number(p.id)))
+        .filter((p) => p.state !== 'cancel')
+        .filter((p) => {
+            const code = p.picking_type_code;
+            return !code || code === 'outgoing' || code === 'internal';
+        })
+        .slice()
+        .sort((a, b) => Number(a.id) - Number(b.id));
+    if (!vivos.length) return null;
+    const first = vivos[0];
+    return {
+        id: Number(first.id),
+        name: first.name || null,
+        state: first.state || null,
+        picking_type_code: first.picking_type_code || null,
+    };
+}
+
+function esWizardBackorder(result) {
+    return !!(result && typeof result === 'object' && result.type === 'ir.actions.act_window'
+        && result.res_model === 'stock.backorder.confirmation');
+}
+
+function hayFaltanteEnMoves(writes) {
+    return (writes || []).some((w) => num(w.quantity) + 0.0001 < num(w.demand));
+}
+
+// qty_armada (o qty_controlada) → stock.move.quantity, matcheando sale_line_id y si no product_id.
+function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
+    const restantesLinea = new Map();
+    const restantesProd = new Map();
+    for (const it of items || []) {
+        const qty = clampQty(it[campo], it.qty_pedida);
+        if (it.odoo_line_id) {
+            restantesLinea.set(it.odoo_line_id, (restantesLinea.get(it.odoo_line_id) || 0) + qty);
+        }
+        if (it.odoo_product_id) {
+            restantesProd.set(it.odoo_product_id, (restantesProd.get(it.odoo_product_id) || 0) + qty);
+        }
+    }
+
+    const writes = [];
+    for (const mv of (moves || []).filter((m) => m && m.state !== 'cancel')) {
+        const demand = Math.max(0, num(mv.product_uom_qty));
+        let take = 0;
+        if (mv.sale_line_id && restantesLinea.has(mv.sale_line_id)) {
+            const hay = restantesLinea.get(mv.sale_line_id);
+            take = Math.min(demand, hay);
+            restantesLinea.set(mv.sale_line_id, hay - take);
+            if (mv.product_id && restantesProd.has(mv.product_id)) {
+                restantesProd.set(mv.product_id, Math.max(0, restantesProd.get(mv.product_id) - take));
+            }
+        } else if (mv.product_id && restantesProd.has(mv.product_id)) {
+            const hay = restantesProd.get(mv.product_id);
+            take = Math.min(demand, hay);
+            restantesProd.set(mv.product_id, hay - take);
+        }
+        writes.push({
+            id: mv.id,
+            quantity: take,
+            demand,
+            sale_line_id: mv.sale_line_id || null,
+            product_id: mv.product_id || null,
+        });
+    }
+    return {
+        writes,
+        hayFaltante: hayFaltanteEnMoves(writes),
+        hayAlgo: writes.some((w) => num(w.quantity) > 0),
+    };
+}
+
+function auditarTerminarArmado({ envio, picking }) {
+    if (!envio) return { ok: false, error: 'Pedido no encontrado', statusCode: 404 };
+    if (envio.estado !== 'armando') {
+        return { ok: false, error: 'Sólo se valida el envío 1 al terminar el armado', statusCode: 409 };
+    }
+    if (!picking?.id && !envio.odoo_picking_id) {
+        return {
+            ok: false,
+            error: 'Este pedido todavía no tiene envío 1 en Odoo. Confirmalo y volvé a terminar el armado.',
+            statusCode: 409,
+        };
+    }
+    if ((picking?.state || envio.odoo_picking_state) === 'cancel') {
+        return {
+            ok: false,
+            error: `El envío 1 ${picking?.name || envio.odoo_picking_name || ''} está cancelado en Odoo`.trim(),
+            statusCode: 409,
+        };
+    }
+    return { ok: true, alreadyDone: (picking?.state || envio.odoo_picking_state) === 'done' };
+}
+
+function auditarEmpezarArmar(odoo) {
+    if (!odoo) return { ok: false, error: 'No encontré la orden en Odoo', statusCode: 404 };
+    if (odoo.state === 'cancel') {
+        return {
+            ok: false,
+            error: `La orden ${odoo.name || ''} en Odoo está cancelada, no se puede armar`.replace(/\s+/g, ' ').trim(),
+            statusCode: 409,
+        };
+    }
+    if (odooNecesitaConfirmar(odoo.state) || odooYaConfirmada(odoo.state)) {
+        return { ok: true, needsConfirm: odooNecesitaConfirmar(odoo.state) };
+    }
+    return {
+        ok: false,
+        error: `La orden ${odoo.name || ''} en Odoo está en estado ${odoo.state}, no se puede armar`,
+        statusCode: 409,
+    };
+}
+
+function errorDesdeOdoo(err, fallback) {
+    if (err?.statusCode) return err;
+    const msg = String(err?.message || '');
+    const red = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|fetch failed|network|socket|HTTP \d|después de \d+ intentos/i.test(msg)
+        || msg.startsWith('HTTP');
+    if (red || !msg) {
+        return httpError('No pude hablar con Odoo. Probá de nuevo en un rato.', 503);
+    }
+    return httpError(`${fallback}: ${msg}`, 502);
+}
+
+async function leerHeaderOdoo(envio) {
+    try {
+        return await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude hablar con Odoo para confirmar el pedido');
+    }
+}
+
+async function buscarEnvio1(envio) {
+    try {
+        const raw = await odooService.getFirstOutgoingPicking(
+            envio.odoo_sale_order_id,
+            envio.company_key,
+            envio.odoo_order_name
+        );
+        return primerPickingSalida(raw ? [raw] : []) || (raw?.id ? {
+            id: Number(raw.id),
+            name: raw.name || null,
+            state: raw.state || null,
+            picking_type_code: raw.picking_type_code || null,
+        } : null);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer el envío 1 en Odoo');
+    }
+}
+
+function esperar(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function confirmarEnOdooParaArmar(envio) {
+    let header = await leerHeaderOdoo(envio);
+    const audit = auditarEmpezarArmar(header);
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
+
+    if (audit.needsConfirm) {
+        try {
+            await odooService.confirmSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        } catch (err) {
+            throw errorDesdeOdoo(err, `Odoo no pudo confirmar ${envio.odoo_order_name || 'el pedido'}`);
+        }
+        header = await leerHeaderOdoo(envio);
+    }
+    if (!odooYaConfirmada(header?.state)) {
+        throw httpError(
+            `Odoo no confirmó ${envio.odoo_order_name || 'el pedido'} (sigue en ${header?.state || 'sin estado'}). No se puede armar.`,
+            409
+        );
+    }
+    if (envio.id) {
+        await persistirOdooPicking(envio.id, {
+            odoo_state: header.state,
+            invoice_status: header.invoice_status || null,
+        });
+    }
+    return header;
+}
+
+async function asegurarConfirmacionYPicking(envio) {
+    if (!envio.odoo_sale_order_id) {
+        throw httpError('Este pedido no tiene orden de Odoo', 400);
+    }
+
+    const header = await confirmarEnOdooParaArmar(envio);
+    const odooState = header.state;
+    const invoiceStatus = header.invoice_status || envio.invoice_status || null;
+
+    if (envio.odoo_picking_id) {
+        return {
+            picking: {
+                id: envio.odoo_picking_id,
+                name: envio.odoo_picking_name || null,
+                state: envio.odoo_picking_state || null,
+            },
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+        };
+    }
+
+    let picking = await buscarEnvio1(envio);
+    if (!picking?.id) {
+        await esperar(500);
+        picking = await buscarEnvio1(envio);
+    }
+    if (!picking?.id) {
+        throw httpError(
+            `Odoo no creó el envío 1 de ${envio.odoo_order_name || 'este pedido'}. Revisá el pedido ahí y volvé a intentar.`,
+            409
+        );
+    }
+
+    return {
+        picking,
+        odoo_state: odooState,
+        invoice_status: invoiceStatus,
+    };
+}
+
+async function persistirOdooPicking(envioId, patch) {
+    if (!patch) return;
+    const sets = ['updated_at = NOW()'];
+    const params = [envioId];
+    if (patch.picking?.id) {
+        params.push(patch.picking.id);
+        sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
+        params.push(patch.picking.name || null);
+        sets.push(`odoo_picking_name = COALESCE(odoo_picking_name, $${params.length})`);
+    }
+    if (patch.picking?.state || patch.odoo_picking_state) {
+        params.push(patch.picking?.state || patch.odoo_picking_state);
+        sets.push(`odoo_picking_state = $${params.length}`);
+    }
+    if (patch.odoo_state) {
+        params.push(patch.odoo_state);
+        sets.push(`odoo_state = $${params.length}`);
+    }
+    if (patch.invoice_status != null) {
+        params.push(patch.invoice_status);
+        sets.push(`invoice_status = $${params.length}`);
+    }
+    if (patch.backorder?.id) {
+        params.push(patch.backorder.id);
+        sets.push(`odoo_picking_backorder_id = COALESCE(odoo_picking_backorder_id, $${params.length})`);
+        params.push(patch.backorder.name || null);
+        sets.push(`odoo_picking_backorder_name = COALESCE(odoo_picking_backorder_name, $${params.length})`);
+    }
+    if (sets.length === 1) return;
+    await pool.query(`UPDATE pedido_envios SET ${sets.join(', ')} WHERE id = $1`, params);
+}
+
+async function validarEnvio1AlTerminar(envio) {
+    let pickingRef = envio.odoo_picking_id
+        ? { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null, state: envio.odoo_picking_state || null }
+        : null;
+    let odooState = envio.odoo_state || null;
+    let invoiceStatus = envio.invoice_status || null;
+
+    if (!pickingRef?.id) {
+        const linked = await asegurarConfirmacionYPicking(envio);
+        pickingRef = linked.picking;
+        odooState = linked.odoo_state;
+        invoiceStatus = linked.invoice_status;
+        await persistirOdooPicking(envio.id, linked);
+    }
+
+    let picking = null;
+    try {
+        picking = await odooService.getPicking(pickingRef.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer el envío 1 en Odoo');
+    }
+
+    const audit = auditarTerminarArmado({ envio, picking: picking || pickingRef });
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
+
+    if (audit.alreadyDone || picking?.state === 'done') {
+        let backorder = null;
+        try {
+            backorder = await odooService.getPickingBackorder(pickingRef.id, envio.company_key);
+        } catch {
+            backorder = null;
+        }
+        return {
+            picking: picking || pickingRef,
+            backorder,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            alreadyDone: true,
+        };
+    }
+
+    let moves = [];
+    try {
+        moves = await odooService.getPickingMoves(pickingRef.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer las líneas del envío 1');
+    }
+
+    const plan = planQtyMovesArmado(moves, envio.items || []);
+    if (!plan.hayAlgo) {
+        return {
+            picking: picking || pickingRef,
+            backorder: null,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            skippedEmpty: true,
+        };
+    }
+
+    try {
+        await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
+        const validated = await odooService.validateSalePicking(pickingRef.id, envio.company_key, {
+            createBackorder: true,
+        });
+        return {
+            picking: validated.picking || picking || pickingRef,
+            backorder: validated.backorder || null,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            alreadyDone: !!validated.alreadyDone,
+            hayFaltante: plan.hayFaltante,
+        };
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo validar el envío 1 de ${envio.odoo_order_name || 'este pedido'}`);
+    }
+}
+
+// Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
+// el armado. Al cerrar el control se valida la entrega (outgoing) con lo
+// controlado; si falta algo Odoo deja el resto en backorder. En 1 paso no hace nada.
+async function validarSalidaAlSaldar(envio) {
+    if (!envio.odoo_picking_id) return null;
+    let salida = null;
+    try {
+        const pick = await odooService.getPicking(envio.odoo_picking_id, envio.company_key);
+        if (!pick || pick.picking_type_code !== 'internal') return null;
+        salida = await odooService.getSalidaDePicking(envio.odoo_picking_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la entrega en Odoo');
+    }
+    if (!salida?.id) return null;
+    if (salida.state === 'done') return { picking: salida, backorder: null, alreadyDone: true };
+
+    let moves = [];
+    try {
+        moves = await odooService.getPickingMoves(salida.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, `No pude leer las líneas de ${salida.name || 'la entrega'}`);
+    }
+    const plan = planQtyMovesArmado(moves, envio.items || [], 'qty_controlada');
+    if (!plan.hayAlgo) {
+        throw httpError(
+            `No hay nada controlado para entregar en ${salida.name || 'la entrega de Odoo'}. Controlá los productos antes de cerrar.`,
+            409
+        );
+    }
+
+    try {
+        await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
+        const validated = await odooService.validateSalePicking(salida.id, envio.company_key, {
+            createBackorder: true,
+        });
+        return {
+            picking: validated.picking || salida,
+            backorder: validated.backorder || null,
+            alreadyDone: !!validated.alreadyDone,
+            hayFaltante: plan.hayFaltante,
+        };
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo validar ${salida.name || 'la entrega'}`);
+    }
+}
+
 function lineasProductoOdoo(odoo) {
     return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l));
 }
@@ -180,9 +614,7 @@ function auditarSaldar({ envio, odoo, plan }) {
     }
 
     const lineas = lineasProductoOdoo(odoo);
-    const facturada = odoo.invoice_status === 'invoiced'
-        || lineas.some((l) => num(l.qty_invoiced) > 0);
-    if (facturada) {
+    if (ordenFacturada(odoo)) {
         return auditarFallo(
             `La orden ${odoo.name} ya está facturada en Odoo. No la tocamos.`
         );
@@ -192,7 +624,7 @@ function auditarSaldar({ envio, odoo, plan }) {
             'Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.'
         );
     }
-    if (odoo.state !== 'sale') {
+    if (odoo.state !== 'sent' && odoo.state !== 'sale') {
         return auditarFallo(
             `La orden ${odoo.name} en Odoo está en estado ${odoo.state}, no se puede saldar`
         );
@@ -248,6 +680,10 @@ function auditarSaldar({ envio, odoo, plan }) {
 
 async function ensureSchema(db = pool) {
     await db.query(SCHEMA_032);
+    await db.query(SCHEMA_034);
+    await db.query(SCHEMA_035);
+    await db.query(SCHEMA_036);
+    await db.query(SCHEMA_037);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -334,6 +770,7 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
             ? ['saldado']
             : ['pendiente', 'armando'];
     const like = `%${String(q || '').trim()}%`;
+    const soloEnviadas = tab === 'armar';
     const { rows } = await pool.query(
         `${SELECT_ENVIO}
           WHERE e.company_key = $1
@@ -343,9 +780,16 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
                 OR e.odoo_order_name ILIKE $3
                 OR e.partner_name ILIKE $3
             )
+            AND (
+                NOT $4
+                OR (
+                    COALESCE(e.invoice_status, '') <> 'invoiced'
+                    AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
+                )
+            )
           ORDER BY e.date_order DESC NULLS LAST, e.id DESC
           LIMIT 200`,
-        [company, estados, like]
+        [company, estados, like, soloEnviadas]
     );
     if (rows.length === 0) return [];
     const ids = rows.map((r) => r.id);
@@ -367,7 +811,7 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
     });
 }
 
-async function obtener(id) {
+async function obtener(id, { syncOdoo = false } = {}) {
     const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
     if (!envio) throw httpError('Pedido no encontrado', 404);
     const { rows: items } = await pool.query(
@@ -379,23 +823,49 @@ async function obtener(id) {
           ORDER BY i.id`,
         [id, envio.company_key]
     );
-    return { ...envio, items, preview: previewSaldar(items) };
+    const base = { ...envio, items, preview: previewSaldar(items) };
+
+    const faltaEnvio1 = base.estado === 'armando'
+        && (!base.odoo_picking_id || !odooYaConfirmada(base.odoo_state));
+    if (!syncOdoo || !faltaEnvio1) return base;
+
+    try {
+        const patch = await asegurarConfirmacionYPicking(base);
+        await persistirOdooPicking(base.id, patch);
+        return obtener(id);
+    } catch (err) {
+        return { ...base, odoo_sync_error: err.message };
+    }
 }
 
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
-    const orders = await odooService.getSaleOrdersWithLines(company, {
-        states: ['sale'],
+    const enviadas = await odooService.getSaleOrdersWithLines(company, {
+        states: ['sent'],
         days: 30,
         limit: 80,
     });
+    const { rows: locales } = await pool.query(
+        `SELECT odoo_sale_order_id FROM pedido_envios
+          WHERE company_key = $1 AND estado IN ('pendiente', 'armando')
+          ORDER BY date_order DESC NULLS LAST
+          LIMIT 80`,
+        [company]
+    );
+    const idsLocales = locales.map((r) => r.odoo_sale_order_id).filter(Boolean);
+    const vivos = idsLocales.length
+        ? await odooService.getSaleOrdersWithLines(company, { ids: idsLocales, days: null, limit: idsLocales.length })
+        : [];
+    const porId = new Map();
+    for (const order of [...enviadas, ...vivos]) porId.set(order.id, order);
+    const orders = [...porId.values()];
+
     let creados = 0;
     let actualizados = 0;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const order of orders) {
-            if (!order.lines.length) continue;
             const { rows: [existente] } = await client.query(
                 `SELECT id, estado FROM pedido_envios
                   WHERE company_key = $1 AND odoo_sale_order_id = $2`,
@@ -403,18 +873,24 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             );
             if (existente && existente.estado === 'saldado') continue;
 
+            const paraArmar = esCotizacionParaArmar(order);
+            if (!existente && (!paraArmar || !order.lines.length)) continue;
+
             let envioId;
+            const soltarArmando = existente?.estado === 'armando' && odooNecesitaConfirmar(order.state);
             if (!existente) {
                 const { rows: [row] } = await client.query(
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
-                         partner_id, partner_name, date_order, amount_total
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                         partner_id, partner_name, date_order, amount_total,
+                         odoo_state, invoice_status
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
                         order.partner_id, order.client,
                         order.date || null, num(order.total),
+                        order.state || null, order.invoice_status || null,
                     ]
                 );
                 envioId = row.id;
@@ -427,16 +903,36 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             partner_name = $4,
                             date_order = $5,
                             amount_total = $6,
+                            odoo_state = $7,
+                            invoice_status = $8,
                             updated_at = NOW()
                       WHERE id = $1`,
-                    [existente.id, order.name, order.partner_id, order.client, order.date || null, num(order.total)]
+                    [
+                        existente.id, order.name, order.partner_id, order.client,
+                        order.date || null, num(order.total),
+                        order.state || null, order.invoice_status || null,
+                    ]
                 );
                 envioId = existente.id;
                 actualizados++;
+                if (soltarArmando) {
+                    await client.query(
+                        `UPDATE pedido_envios
+                            SET estado = 'pendiente',
+                                odoo_picking_id = NULL,
+                                odoo_picking_name = NULL,
+                                odoo_picking_state = NULL,
+                                updated_at = NOW()
+                          WHERE id = $1 AND estado = 'armando'`,
+                        [existente.id]
+                    );
+                }
             }
-            await upsertItems(client, envioId, company, order.lines, {
-                freezeQty: !!(existente && existente.estado !== 'pendiente'),
-            });
+            if (paraArmar) {
+                await upsertItems(client, envioId, company, order.lines, {
+                    freezeQty: !!(existente && existente.estado !== 'pendiente'),
+                });
+            }
         }
         await client.query('COMMIT');
     } catch (err) {
@@ -455,10 +951,26 @@ async function cambiarEstado(id, estado, userId) {
     const actual = envio.estado;
     const ok =
         (actual === 'pendiente' && estado === 'armando')
-        || (actual === 'armando' && (estado === 'armado' || estado === 'pendiente'))
+        || (actual === 'armando' && (estado === 'armado' || estado === 'pendiente' || estado === 'armando'))
         || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
         || (actual === 'controlando' && estado === 'armado');
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
+
+    let odooPatch = null;
+    if (estado === 'armando') {
+        if (!odooYaConfirmada(envio.odoo_state) || !envio.odoo_picking_id) {
+            odooPatch = await asegurarConfirmacionYPicking(envio);
+        }
+        const state = odooPatch?.odoo_state || envio.odoo_state;
+        if (!odooYaConfirmada(state)) {
+            throw httpError(
+                `El pedido ${envio.odoo_order_name || ''} tiene que estar confirmado en Odoo para armarlo`.replace(/\s+/g, ' ').trim(),
+                409
+            );
+        }
+    } else if (estado === 'armado' && actual === 'armando') {
+        odooPatch = await validarEnvio1AlTerminar(envio);
+    }
 
     const sets = ['estado = $2', 'updated_at = NOW()'];
     const params = [id, estado];
@@ -471,6 +983,30 @@ async function cambiarEstado(id, estado, userId) {
     } else if (estado === 'controlando') {
         sets.push('checked_by = $3', 'checked_at = NOW()');
         params.push(userId);
+    }
+    if (odooPatch?.picking?.id) {
+        params.push(odooPatch.picking.id);
+        sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
+        params.push(odooPatch.picking.name || null);
+        sets.push(`odoo_picking_name = COALESCE(odoo_picking_name, $${params.length})`);
+    }
+    if (odooPatch?.picking?.state) {
+        params.push(odooPatch.picking.state);
+        sets.push(`odoo_picking_state = $${params.length}`);
+    }
+    if (odooPatch?.backorder?.id) {
+        params.push(odooPatch.backorder.id);
+        sets.push(`odoo_picking_backorder_id = COALESCE(odoo_picking_backorder_id, $${params.length})`);
+        params.push(odooPatch.backorder.name || null);
+        sets.push(`odoo_picking_backorder_name = COALESCE(odoo_picking_backorder_name, $${params.length})`);
+    }
+    if (odooPatch?.odoo_state) {
+        params.push(odooPatch.odoo_state);
+        sets.push(`odoo_state = $${params.length}`);
+    }
+    if (odooPatch?.invoice_status != null) {
+        params.push(odooPatch.invoice_status);
+        sets.push(`invoice_status = $${params.length}`);
     }
 
     await pool.query(
@@ -485,8 +1021,36 @@ async function cambiarEstado(id, estado, userId) {
         );
     }
 
-    await logActividad(userId, `ESTADO_${estado.toUpperCase()}`, id, { de: actual, a: estado });
+    await logActividad(userId, `ESTADO_${estado.toUpperCase()}`, id, {
+        de: actual,
+        a: estado,
+        odoo_picking: odooPatch?.picking?.name || envio.odoo_picking_name || null,
+        odoo_picking_state: odooPatch?.picking?.state || null,
+        picking_backorder: odooPatch?.backorder?.name || null,
+    });
     return obtener(id);
+}
+
+// Marca/desmarca que la cotización ya se le mandó al cliente (solo en la app, no toca Odoo)
+async function marcarCotizacionEnviada(id, enviada, userId) {
+    const { rows: [row] } = await pool.query(
+        `UPDATE pedido_envios
+            SET cotizacion_enviada_at = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_at, NOW()) END,
+                cotizacion_enviada_by = CASE WHEN $2 THEN COALESCE(cotizacion_enviada_by, $3) END,
+                updated_at = NOW()
+          WHERE id = $1
+          RETURNING id`,
+        [id, Boolean(enviada), userId]
+    );
+    if (!row) throw httpError('Pedido no encontrado', 404);
+    await logActividad(userId, enviada ? 'COTIZACION_ENVIADA' : 'COTIZACION_NO_ENVIADA', id, {});
+    const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
+    return {
+        id: envio.id,
+        cotizacion_enviada_at: envio.cotizacion_enviada_at,
+        cotizacion_enviada_by: envio.cotizacion_enviada_by,
+        cotizacion_enviada_by_name: envio.cotizacion_enviada_by_name,
+    };
 }
 
 async function setQty(itemId, campo, qty, userId) {
@@ -494,13 +1058,14 @@ async function setQty(itemId, campo, qty, userId) {
         throw httpError('Campo de cantidad inválido', 400);
     }
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id
+        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
         [itemId]
     );
     if (!item) throw httpError('Ítem no encontrado', 404);
+    exigirArmandoConfirmado(item);
     if (campo === 'qty_armada' && item.estado !== 'armando') {
         throw httpError('Sólo se arma en la etapa de armado', 409);
     }
@@ -525,6 +1090,7 @@ async function escanear(envioId, code, userId) {
     if (envio.estado !== 'armando' && envio.estado !== 'controlando') {
         throw httpError('Escaneá cuando el pedido está en armado o control', 409);
     }
+    exigirArmandoConfirmado(envio);
     const item = itemPorCodigo(envio.items, code);
     if (!item) throw httpError(`El código ${String(code || '').trim()} no está en este pedido`, 404);
     const actual = num(item[campo]);
@@ -537,13 +1103,14 @@ async function escanear(envioId, code, userId) {
 async function marcarFaltante(itemId, motivo, userId, qty = null) {
     if (!MOTIVOS.has(motivo)) throw httpError('Motivo inválido', 400);
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key
+        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
         [itemId]
     );
     if (!item) throw httpError('Ítem no encontrado', 404);
+    exigirArmandoConfirmado(item);
     if (item.estado !== 'armando' && item.estado !== 'controlando') {
         throw httpError('Sólo se marca faltante durante el armado o el control', 409);
     }
@@ -665,24 +1232,31 @@ async function saldarLocked(id, userId) {
     if (!envio.odoo_sale_order_id) throw httpError('Este pedido no tiene orden de Odoo', 400);
 
     const plan = previewSaldar(envio.items);
-    const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
-        ids: [envio.odoo_sale_order_id],
-        days: null,
-    });
-    const audit = auditarSaldar({ envio, odoo: vivos[0], plan });
-    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
-
-    for (const linea of audit.writes) {
-        await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty, envio.company_key);
-    }
+    const pickingYaValidado = envio.odoo_picking_state === 'done';
 
     let backorder = null;
-    if (plan.pendientes.length > 0) {
-        backorder = await asegurarBackorder(envio, plan);
-    }
+    let salida = null;
+    if (pickingYaValidado) {
+        salida = await validarSalidaAlSaldar(envio);
+    } else {
+        const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
+            ids: [envio.odoo_sale_order_id],
+            days: null,
+        });
+        const audit = auditarSaldar({ envio, odoo: vivos[0], plan });
+        if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
 
-    if (plan.cancela_original && !audit.alreadyCancelled) {
-        await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        for (const linea of audit.writes) {
+            await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty, envio.company_key);
+        }
+
+        if (plan.pendientes.length > 0) {
+            backorder = await asegurarBackorder(envio, plan);
+        }
+
+        if (plan.cancela_original && !audit.alreadyCancelled) {
+            await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        }
     }
 
     await pool.query(
@@ -704,8 +1278,11 @@ async function saldarLocked(id, userId) {
         queda: plan.queda.length,
         pendientes: plan.pendientes.length,
         cancelo: plan.cancela_original,
+        odoo_salida: salida?.picking?.name || null,
+        odoo_salida_backorder: salida?.backorder?.name || null,
     });
-    return obtener(id);
+    const final = await obtener(id);
+    return salida ? { ...final, odoo_salida: salida } : final;
 }
 
 module.exports = {
@@ -718,11 +1295,23 @@ module.exports = {
     previewSaldar,
     qtyCampoDeFase,
     refPendientes,
+    ordenFacturada,
+    esCotizacionParaArmar,
+    odooNecesitaConfirmar,
+    odooYaConfirmada,
+    armandoRequiereConfirmado,
+    primerPickingSalida,
+    planQtyMovesArmado,
+    hayFaltanteEnMoves,
+    esWizardBackorder,
+    auditarTerminarArmado,
+    auditarEmpezarArmar,
     auditarSaldar,
     listar,
     obtener,
     syncDesdeOdoo,
     cambiarEstado,
+    marcarCotizacionEnviada,
     setQty,
     escanear,
     marcarFaltante,
