@@ -12,6 +12,9 @@ const odooService = require('./odooService');
 const SCHEMA_032 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '032_pedido_envios.sql'), 'utf8'
 );
+const SCHEMA_034 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '034_pedido_envios_odoo_state.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
@@ -145,6 +148,17 @@ function refPendientes(orderName) {
     return `Pendientes de ${orderName || ''}`.trim();
 }
 
+function ordenFacturada(odoo) {
+    if (!odoo) return false;
+    if (odoo.invoice_status === 'invoiced') return true;
+    return (odoo.lines || []).some((l) => num(l.qty_invoiced) > 0);
+}
+
+// Para armar: cotización enviada, todavía no facturada. Las sale confirmadas/facturadas no.
+function esCotizacionParaArmar(odoo) {
+    return !!odoo && odoo.state === 'sent' && !ordenFacturada(odoo);
+}
+
 function lineasProductoOdoo(odoo) {
     return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l));
 }
@@ -180,9 +194,7 @@ function auditarSaldar({ envio, odoo, plan }) {
     }
 
     const lineas = lineasProductoOdoo(odoo);
-    const facturada = odoo.invoice_status === 'invoiced'
-        || lineas.some((l) => num(l.qty_invoiced) > 0);
-    if (facturada) {
+    if (ordenFacturada(odoo)) {
         return auditarFallo(
             `La orden ${odoo.name} ya está facturada en Odoo. No la tocamos.`
         );
@@ -192,7 +204,7 @@ function auditarSaldar({ envio, odoo, plan }) {
             'Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.'
         );
     }
-    if (odoo.state !== 'sale') {
+    if (odoo.state !== 'sent' && odoo.state !== 'sale') {
         return auditarFallo(
             `La orden ${odoo.name} en Odoo está en estado ${odoo.state}, no se puede saldar`
         );
@@ -248,6 +260,7 @@ function auditarSaldar({ envio, odoo, plan }) {
 
 async function ensureSchema(db = pool) {
     await db.query(SCHEMA_032);
+    await db.query(SCHEMA_034);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -334,6 +347,7 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
             ? ['saldado']
             : ['pendiente', 'armando'];
     const like = `%${String(q || '').trim()}%`;
+    const soloEnviadas = tab === 'armar';
     const { rows } = await pool.query(
         `${SELECT_ENVIO}
           WHERE e.company_key = $1
@@ -343,9 +357,13 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
                 OR e.odoo_order_name ILIKE $3
                 OR e.partner_name ILIKE $3
             )
+            AND (
+                NOT $4
+                OR (e.odoo_state = 'sent' AND COALESCE(e.invoice_status, '') <> 'invoiced')
+            )
           ORDER BY e.date_order DESC NULLS LAST, e.id DESC
           LIMIT 200`,
-        [company, estados, like]
+        [company, estados, like, soloEnviadas]
     );
     if (rows.length === 0) return [];
     const ids = rows.map((r) => r.id);
@@ -384,18 +402,32 @@ async function obtener(id) {
 
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
-    const orders = await odooService.getSaleOrdersWithLines(company, {
-        states: ['sale'],
+    const enviadas = await odooService.getSaleOrdersWithLines(company, {
+        states: ['sent'],
         days: 30,
         limit: 80,
     });
+    const { rows: locales } = await pool.query(
+        `SELECT odoo_sale_order_id FROM pedido_envios
+          WHERE company_key = $1 AND estado IN ('pendiente', 'armando')
+          ORDER BY date_order DESC NULLS LAST
+          LIMIT 80`,
+        [company]
+    );
+    const idsLocales = locales.map((r) => r.odoo_sale_order_id).filter(Boolean);
+    const vivos = idsLocales.length
+        ? await odooService.getSaleOrdersWithLines(company, { ids: idsLocales, days: null, limit: idsLocales.length })
+        : [];
+    const porId = new Map();
+    for (const order of [...enviadas, ...vivos]) porId.set(order.id, order);
+    const orders = [...porId.values()];
+
     let creados = 0;
     let actualizados = 0;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         for (const order of orders) {
-            if (!order.lines.length) continue;
             const { rows: [existente] } = await client.query(
                 `SELECT id, estado FROM pedido_envios
                   WHERE company_key = $1 AND odoo_sale_order_id = $2`,
@@ -403,18 +435,23 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             );
             if (existente && existente.estado === 'saldado') continue;
 
+            const paraArmar = esCotizacionParaArmar(order);
+            if (!existente && (!paraArmar || !order.lines.length)) continue;
+
             let envioId;
             if (!existente) {
                 const { rows: [row] } = await client.query(
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
-                         partner_id, partner_name, date_order, amount_total
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                         partner_id, partner_name, date_order, amount_total,
+                         odoo_state, invoice_status
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
                         order.partner_id, order.client,
                         order.date || null, num(order.total),
+                        order.state || null, order.invoice_status || null,
                     ]
                 );
                 envioId = row.id;
@@ -427,16 +464,24 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             partner_name = $4,
                             date_order = $5,
                             amount_total = $6,
+                            odoo_state = $7,
+                            invoice_status = $8,
                             updated_at = NOW()
                       WHERE id = $1`,
-                    [existente.id, order.name, order.partner_id, order.client, order.date || null, num(order.total)]
+                    [
+                        existente.id, order.name, order.partner_id, order.client,
+                        order.date || null, num(order.total),
+                        order.state || null, order.invoice_status || null,
+                    ]
                 );
                 envioId = existente.id;
                 actualizados++;
             }
-            await upsertItems(client, envioId, company, order.lines, {
-                freezeQty: !!(existente && existente.estado !== 'pendiente'),
-            });
+            if (paraArmar) {
+                await upsertItems(client, envioId, company, order.lines, {
+                    freezeQty: !!(existente && existente.estado !== 'pendiente'),
+                });
+            }
         }
         await client.query('COMMIT');
     } catch (err) {
@@ -718,6 +763,8 @@ module.exports = {
     previewSaldar,
     qtyCampoDeFase,
     refPendientes,
+    ordenFacturada,
+    esCotizacionParaArmar,
     auditarSaldar,
     listar,
     obtener,

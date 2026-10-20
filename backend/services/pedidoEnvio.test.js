@@ -10,6 +10,8 @@ const {
     previewSaldar,
     qtyCampoDeFase,
     refPendientes,
+    ordenFacturada,
+    esCotizacionParaArmar,
     auditarSaldar,
 } = require('./pedidoEnvioService');
 
@@ -164,6 +166,19 @@ function testAuditarDrift() {
     assert.match(r.error, /cantidad 4/);
 }
 
+function testCotizacionParaArmar() {
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent' })), true);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
+    assert.strictEqual(ordenFacturada(odooOrder({ invoice_status: 'invoiced' })), true);
+    assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
+}
+
+function testAuditarSent() {
+    const r = auditar([item()], odooOrder({ state: 'sent' }));
+    assert.strictEqual(r.ok, true);
+}
+
 function testAuditarFacturada() {
     const porEstado = auditar([item()], odooOrder({ invoice_status: 'invoiced' }));
     assert.strictEqual(porEstado.ok, false);
@@ -249,6 +264,8 @@ testAuditarIgual();
 testAuditarEscribeParcialYCero();
 testAuditarYaAplicado();
 testAuditarDrift();
+testCotizacionParaArmar();
+testAuditarSent();
 testAuditarFacturada();
 testAuditarEntregadaYLocked();
 testAuditarCancelada();

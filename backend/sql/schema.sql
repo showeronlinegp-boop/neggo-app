@@ -528,6 +528,8 @@ CREATE TABLE IF NOT EXISTS pedido_envios (
     partner_name VARCHAR(200),
     date_order TIMESTAMP,
     amount_total NUMERIC(12,2),
+    odoo_state VARCHAR(20),
+    invoice_status VARCHAR(30),
     estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
     assembled_by INTEGER REFERENCES users(id),
     assembled_at TIMESTAMP,

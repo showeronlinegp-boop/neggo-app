@@ -23,7 +23,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 # CACHEBUST cambia el layer de código sin rehacer npm install
-ARG CACHEBUST=1
+ARG CACHEBUST=202610201246
 RUN echo "cachebust=$CACHEBUST"
 COPY . .
 

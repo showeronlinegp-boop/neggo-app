@@ -72,7 +72,7 @@ export default function PedidoEnvios() {
                         Armado y control
                     </h1>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, fontFamily: t.font.family }}>
-                        Armás y controlás acá. Al cerrar, Odoo queda con lo que salió y se arma un pedido con lo que faltó.
+                        Armás las cotizaciones enviadas. Las facturadas no aparecen. Al cerrar, Odoo queda con lo que salió y se arma un pedido con lo que faltó.
                     </div>
                 </div>
                 <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={syncing} onClick={sync}
@@ -142,7 +142,7 @@ export default function PedidoEnvios() {
                             : 'Todavía no saldaste ningún pedido'}
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
-                        Tocá «Traer de Odoo» para bajar las órdenes confirmadas (hasta 80, últimos 30 días).
+                        Tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las facturadas no entran.
                     </div>
                 </Card>
             ) : (
