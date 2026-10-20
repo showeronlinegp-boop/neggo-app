@@ -1,0 +1,2 @@
+# Los scripts corren en containers Linux: siempre LF, aunque se clone en Windows con autocrlf
+*.sh text eol=lf

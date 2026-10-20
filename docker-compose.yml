@@ -40,6 +40,8 @@ services:
       - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
     volumes:
       - ./volumes/storage:/app/storage
+      # Carpeta compartida con db-backup: el botón de Admin deja el pedido acá y lee el estado
+      - ./volumes/backups:/app/backups
     depends_on:
       postgres:
         condition: service_healthy
