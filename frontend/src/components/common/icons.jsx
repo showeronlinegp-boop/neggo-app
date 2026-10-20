@@ -274,6 +274,19 @@ export const Plus = (p) => (
   </Icon>
 );
 
+export const Minus = (p) => (
+  <Icon {...p}>
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </Icon>
+);
+
+export const ArrowLeft = (p) => (
+  <Icon {...p}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </Icon>
+);
+
 export const Camera = (p) => (
   <Icon {...p}>
     <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />

@@ -1,0 +1,569 @@
+// Armado y control de pedidos (2-step adentro de Neggo App).
+// Armado → control en la app. Al saldar: la sale.order de Odoo queda con lo
+// controlado y, si sobra, se crea un pedido draft con los pendientes.
+// Archivar/reponer reusa reposicionService. No usa updateSaleOrderLines.
+
+const fs = require('fs');
+const path = require('path');
+const pool = require('../config/database');
+const odooService = require('./odooService');
+
+const SCHEMA_032 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '032_pedido_envios.sql'), 'utf8'
+);
+
+const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
+const COMPANIES = new Set(['neggo', 'preventas']);
+const MOTIVOS = new Set(['archivado', 'reponer', 'faltante']);
+
+const SELECT_ENVIO = `
+    SELECT e.*,
+           ua.display_name AS assembled_by_name,
+           uc.display_name AS checked_by_name,
+           us.display_name AS saldado_by_name
+      FROM pedido_envios e
+      LEFT JOIN users ua ON ua.id = e.assembled_by
+      LEFT JOIN users uc ON uc.id = e.checked_by
+      LEFT JOIN users us ON us.id = e.saldado_by
+`;
+
+function httpError(message, statusCode) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
+}
+
+function companyKeyOf(value) {
+    const k = String(value || 'neggo').toLowerCase();
+    if (!COMPANIES.has(k)) throw httpError('Empresa inválida: usá neggo o preventas', 400);
+    return k;
+}
+
+function num(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function clampQty(value, max) {
+    const tope = Math.max(0, num(max));
+    const v = Math.round(num(value));
+    if (v < 0) return 0;
+    if (v > tope) return tope;
+    return v;
+}
+
+function tabDeEstado(estado) {
+    if (estado === 'pendiente' || estado === 'armando') return 'armar';
+    if (estado === 'armado' || estado === 'controlando') return 'controlar';
+    return 'hechos';
+}
+
+function normalizarCode(s) {
+    const raw = String(s || '').trim();
+    if (!raw) return '';
+    const sinCeros = raw.replace(/^0+/, '');
+    return sinCeros || raw;
+}
+
+function itemPorCodigo(items, code) {
+    const raw = String(code || '').trim();
+    if (!raw) return null;
+    const n = normalizarCode(raw);
+    return items.find((it) => {
+        const codes = [it.barcode, it.internal_ref]
+            .filter(Boolean)
+            .map((c) => String(c).trim());
+        return codes.includes(raw) || codes.map(normalizarCode).includes(n);
+    }) || null;
+}
+
+function qtyCampoDeFase(estado) {
+    if (estado === 'controlando') return 'qty_controlada';
+    return 'qty_armada';
+}
+
+function previewSaldar(items) {
+    const queda = [];
+    const pendientes = [];
+    const iguales = [];
+    for (const it of items || []) {
+        const pedida = num(it.qty_pedida);
+        const controlada = clampQty(it.qty_controlada, pedida);
+        const resto = Math.round((pedida - controlada) * 100) / 100;
+        if (controlada === pedida) {
+            iguales.push({
+                id: it.id,
+                odoo_line_id: it.odoo_line_id,
+                odoo_product_id: it.odoo_product_id,
+                product_name: it.product_name,
+                qty_pedida: pedida,
+                qty_nueva: controlada,
+            });
+        } else {
+            queda.push({
+                id: it.id,
+                odoo_line_id: it.odoo_line_id,
+                odoo_product_id: it.odoo_product_id,
+                product_name: it.product_name,
+                qty_pedida: pedida,
+                qty_nueva: controlada,
+            });
+        }
+        if (resto > 0) {
+            pendientes.push({
+                id: it.id,
+                odoo_line_id: it.odoo_line_id,
+                odoo_product_id: it.odoo_product_id,
+                product_name: it.product_name,
+                price_unit: num(it.price_unit),
+                qty_pedida: pedida,
+                qty_controlada: controlada,
+                qty_pendiente: resto,
+            });
+        }
+    }
+    return {
+        queda,
+        pendientes,
+        iguales,
+        cancela_original: iguales.length === 0 && queda.every((l) => l.qty_nueva <= 0),
+    };
+}
+
+async function ensureSchema(db = pool) {
+    await db.query(SCHEMA_032);
+}
+
+if (!String(process.argv[1] || '').includes('.test.js')) {
+    ensureSchema().catch((err) => {
+        console.error('❌ Schema pedido_envios:', err.message);
+    });
+}
+
+async function logActividad(userId, action, envioId, metadata) {
+    await pool.query(
+        `INSERT INTO activity_log (user_id, module, action, entity_type, entity_id, metadata)
+         VALUES ($1, 'armado_pedidos', $2, 'pedido_envio', $3, $4)`,
+        [userId || null, action, envioId || null, JSON.stringify(metadata || {})]
+    ).catch((err) => console.error('⚠️ activity log armado:', err.message));
+}
+
+async function cachePorProductos(companyKey, productIds) {
+    const ids = [...new Set((productIds || []).map(Number).filter(Number.isInteger))];
+    if (ids.length === 0) return new Map();
+    const { rows } = await pool.query(
+        `SELECT odoo_id, name, barcode, internal_ref, image_url, active
+           FROM odoo_products_cache
+          WHERE company = $1 AND odoo_id = ANY($2::int[])`,
+        [companyKey, ids]
+    );
+    return new Map(rows.map((r) => [r.odoo_id, r]));
+}
+
+async function upsertItems(client, envioId, companyKey, lines, { freezeQty = false } = {}) {
+    const utiles = (lines || []).filter((l) => {
+        if (num(l.quantity) <= 0) return false;
+        const nombre = String(l.product_name || '');
+        if (/down payment/i.test(nombre)) return false;
+        return true;
+    });
+    const cache = await cachePorProductos(companyKey, utiles.map((l) => l.product_id));
+    const lineIds = [];
+    for (const line of utiles) {
+        const prod = cache.get(line.product_id) || {};
+        lineIds.push(line.id);
+        await client.query(
+            `INSERT INTO pedido_envio_items (
+                 envio_id, odoo_line_id, odoo_product_id, product_name,
+                 barcode, internal_ref, image_url, price_unit, qty_pedida
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             ON CONFLICT (envio_id, odoo_line_id) DO UPDATE SET
+                 odoo_product_id = EXCLUDED.odoo_product_id,
+                 product_name    = EXCLUDED.product_name,
+                 barcode         = COALESCE(EXCLUDED.barcode, pedido_envio_items.barcode),
+                 internal_ref    = COALESCE(EXCLUDED.internal_ref, pedido_envio_items.internal_ref),
+                 image_url       = COALESCE(EXCLUDED.image_url, pedido_envio_items.image_url),
+                 price_unit      = EXCLUDED.price_unit,
+                 qty_pedida      = CASE WHEN $10 THEN pedido_envio_items.qty_pedida ELSE EXCLUDED.qty_pedida END`,
+            [
+                envioId,
+                line.id,
+                line.product_id,
+                line.product_name || prod.name || `Producto ${line.product_id}`,
+                prod.barcode || null,
+                prod.internal_ref || null,
+                prod.image_url || null,
+                num(line.unit_price),
+                num(line.quantity),
+                freezeQty,
+            ]
+        );
+    }
+    if (lineIds.length > 0) {
+        await client.query(
+            `DELETE FROM pedido_envio_items
+              WHERE envio_id = $1 AND NOT (odoo_line_id = ANY($2::int[]))`,
+            [envioId, lineIds]
+        );
+    } else {
+        await client.query('DELETE FROM pedido_envio_items WHERE envio_id = $1', [envioId]);
+    }
+}
+
+async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
+    const company = companyKeyOf(companyKey);
+    const estados = tab === 'controlar'
+        ? ['armado', 'controlando']
+        : tab === 'hechos'
+            ? ['saldado']
+            : ['pendiente', 'armando'];
+    const like = `%${String(q || '').trim()}%`;
+    const { rows } = await pool.query(
+        `${SELECT_ENVIO}
+          WHERE e.company_key = $1
+            AND e.estado = ANY($2::text[])
+            AND (
+                $3 = '%%'
+                OR e.odoo_order_name ILIKE $3
+                OR e.partner_name ILIKE $3
+            )
+          ORDER BY e.date_order DESC NULLS LAST, e.id DESC
+          LIMIT 200`,
+        [company, estados, like]
+    );
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const { rows: items } = await pool.query(
+        `SELECT envio_id,
+                COUNT(*)::int AS n_items,
+                COALESCE(SUM(qty_pedida), 0) AS qty_pedida,
+                COALESCE(SUM(qty_armada), 0) AS qty_armada,
+                COALESCE(SUM(qty_controlada), 0) AS qty_controlada
+           FROM pedido_envio_items
+          WHERE envio_id = ANY($1::int[])
+          GROUP BY envio_id`,
+        [ids]
+    );
+    const byId = new Map(items.map((i) => [i.envio_id, i]));
+    return rows.map((r) => {
+        const s = byId.get(r.id) || { n_items: 0, qty_pedida: 0, qty_armada: 0, qty_controlada: 0 };
+        return { ...r, ...s, tab: tabDeEstado(r.estado) };
+    });
+}
+
+async function obtener(id) {
+    const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
+    if (!envio) throw httpError('Pedido no encontrado', 404);
+    const { rows: items } = await pool.query(
+        `SELECT i.*, opc.active AS product_active
+           FROM pedido_envio_items i
+           LEFT JOIN odoo_products_cache opc
+             ON opc.odoo_id = i.odoo_product_id AND opc.company = $2
+          WHERE i.envio_id = $1
+          ORDER BY i.id`,
+        [id, envio.company_key]
+    );
+    return { ...envio, items, preview: previewSaldar(items) };
+}
+
+async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
+    const company = companyKeyOf(companyKey);
+    const orders = await odooService.getSaleOrdersWithLines(company, {
+        states: ['sale'],
+        days: 30,
+        limit: 80,
+    });
+    let creados = 0;
+    let actualizados = 0;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        for (const order of orders) {
+            if (!order.lines.length) continue;
+            const { rows: [existente] } = await client.query(
+                `SELECT id, estado FROM pedido_envios
+                  WHERE company_key = $1 AND odoo_sale_order_id = $2`,
+                [company, order.id]
+            );
+            if (existente && existente.estado === 'saldado') continue;
+
+            let envioId;
+            if (!existente) {
+                const { rows: [row] } = await client.query(
+                    `INSERT INTO pedido_envios (
+                         company_key, odoo_sale_order_id, odoo_order_name,
+                         partner_id, partner_name, date_order, amount_total
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                     RETURNING id`,
+                    [
+                        company, order.id, order.name,
+                        order.partner_id, order.client,
+                        order.date || null, num(order.total),
+                    ]
+                );
+                envioId = row.id;
+                creados++;
+            } else {
+                await client.query(
+                    `UPDATE pedido_envios
+                        SET odoo_order_name = $2,
+                            partner_id = $3,
+                            partner_name = $4,
+                            date_order = $5,
+                            amount_total = $6,
+                            updated_at = NOW()
+                      WHERE id = $1`,
+                    [existente.id, order.name, order.partner_id, order.client, order.date || null, num(order.total)]
+                );
+                envioId = existente.id;
+                actualizados++;
+            }
+            await upsertItems(client, envioId, company, order.lines, {
+                freezeQty: !!(existente && existente.estado !== 'pendiente'),
+            });
+        }
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos: orders.length });
+    return { creados, actualizados, leidos: orders.length };
+}
+
+async function cambiarEstado(id, estado, userId) {
+    if (!ESTADOS.includes(estado)) throw httpError('Estado inválido', 400);
+    const envio = await obtener(id);
+    const actual = envio.estado;
+    const ok =
+        (actual === 'pendiente' && estado === 'armando')
+        || (actual === 'armando' && (estado === 'armado' || estado === 'pendiente'))
+        || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
+        || (actual === 'controlando' && estado === 'armado');
+    if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
+
+    const sets = ['estado = $2', 'updated_at = NOW()'];
+    const params = [id, estado];
+    if (estado === 'armando') {
+        sets.push('assembled_by = $3', 'assembled_at = COALESCE(assembled_at, NOW())');
+        params.push(userId);
+    } else if (estado === 'armado' && actual === 'armando') {
+        sets.push('assembled_by = COALESCE(assembled_by, $3)', 'assembled_at = COALESCE(assembled_at, NOW())');
+        params.push(userId);
+    } else if (estado === 'controlando') {
+        sets.push('checked_by = $3', 'checked_at = NOW()');
+        params.push(userId);
+    }
+
+    await pool.query(
+        `UPDATE pedido_envios SET ${sets.join(', ')} WHERE id = $1`,
+        params
+    );
+
+    if (estado === 'controlando' && actual === 'armado') {
+        await pool.query(
+            `UPDATE pedido_envio_items SET qty_controlada = 0 WHERE envio_id = $1`,
+            [id]
+        );
+    }
+
+    await logActividad(userId, `ESTADO_${estado.toUpperCase()}`, id, { de: actual, a: estado });
+    return obtener(id);
+}
+
+async function setQty(itemId, campo, qty, userId) {
+    if (campo !== 'qty_armada' && campo !== 'qty_controlada') {
+        throw httpError('Campo de cantidad inválido', 400);
+    }
+    const { rows: [item] } = await pool.query(
+        `SELECT i.*, e.estado, e.id AS envio_id
+           FROM pedido_envio_items i
+           JOIN pedido_envios e ON e.id = i.envio_id
+          WHERE i.id = $1`,
+        [itemId]
+    );
+    if (!item) throw httpError('Ítem no encontrado', 404);
+    if (campo === 'qty_armada' && item.estado !== 'armando') {
+        throw httpError('Sólo se arma en la etapa de armado', 409);
+    }
+    if (campo === 'qty_controlada' && item.estado !== 'controlando') {
+        throw httpError('Sólo se controla en la etapa de control', 409);
+    }
+    const nueva = clampQty(qty, item.qty_pedida);
+    await pool.query(
+        `UPDATE pedido_envio_items SET ${campo} = $2 WHERE id = $1`,
+        [itemId, nueva]
+    );
+    await pool.query('UPDATE pedido_envios SET updated_at = NOW() WHERE id = $1', [item.envio_id]);
+    await logActividad(userId, 'SET_QTY', item.envio_id, {
+        item_id: itemId, campo, qty: nueva, product: item.product_name,
+    });
+    return obtener(item.envio_id);
+}
+
+async function escanear(envioId, code, userId) {
+    const envio = await obtener(envioId);
+    const campo = qtyCampoDeFase(envio.estado);
+    if (envio.estado !== 'armando' && envio.estado !== 'controlando') {
+        throw httpError('Escaneá cuando el pedido está en armado o control', 409);
+    }
+    const item = itemPorCodigo(envio.items, code);
+    if (!item) throw httpError(`El código ${String(code || '').trim()} no está en este pedido`, 404);
+    const actual = num(item[campo]);
+    if (actual >= num(item.qty_pedida)) {
+        throw httpError(`«${item.product_name}» ya está completo`, 409);
+    }
+    return setQty(item.id, campo, actual + 1, userId);
+}
+
+async function marcarFaltante(itemId, motivo, userId, qty = null) {
+    if (!MOTIVOS.has(motivo)) throw httpError('Motivo inválido', 400);
+    const { rows: [item] } = await pool.query(
+        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key
+           FROM pedido_envio_items i
+           JOIN pedido_envios e ON e.id = i.envio_id
+          WHERE i.id = $1`,
+        [itemId]
+    );
+    if (!item) throw httpError('Ítem no encontrado', 404);
+    if (item.estado !== 'armando' && item.estado !== 'controlando') {
+        throw httpError('Sólo se marca faltante durante el armado o el control', 409);
+    }
+    if (!item.odoo_product_id) throw httpError('Este renglón no tiene producto de Odoo', 400);
+
+    const campo = item.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
+    const qtyFinal = qty == null ? num(item[campo]) : clampQty(qty, item.qty_pedida);
+
+    if (item.company_key === 'neggo') {
+        const reposicion = require('./reposicionService');
+        if (motivo === 'archivado') {
+            try {
+                await reposicion.archivarYEncolar(item.odoo_product_id, userId);
+            } catch (err) {
+                if (err.statusCode !== 409) throw err;
+            }
+        } else if (motivo === 'reponer') {
+            try {
+                await reposicion.agregarReponer(item.odoo_product_id, userId, `Pedido ${item.envio_id}`, 'reponer');
+            } catch (err) {
+                if (err.statusCode !== 409) throw err;
+            }
+        }
+    }
+
+    await pool.query(
+        `UPDATE pedido_envio_items
+            SET faltante_motivo = $2,
+                ${campo} = $3
+          WHERE id = $1`,
+        [itemId, motivo, qtyFinal]
+    );
+    await logActividad(userId, 'FALTANTE', item.envio_id, {
+        item_id: itemId, motivo, product: item.product_name, qty: qtyFinal,
+    });
+    return obtener(item.envio_id);
+}
+
+async function preview(id) {
+    const envio = await obtener(id);
+    return { ...previewSaldar(envio.items), envio_id: envio.id, odoo_order_name: envio.odoo_order_name };
+}
+
+async function saldar(id, userId) {
+    const envio = await obtener(id);
+    if (envio.estado !== 'controlando') {
+        throw httpError('El pedido tiene que estar en control para saldarlo', 409);
+    }
+    if (!envio.odoo_sale_order_id) throw httpError('Este pedido no tiene orden de Odoo', 400);
+
+    const plan = previewSaldar(envio.items);
+    const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
+        ids: [envio.odoo_sale_order_id],
+        days: null,
+    });
+    const odoo = vivos[0];
+    if (!odoo) throw httpError('No encontré la orden en Odoo', 404);
+    if (odoo.state !== 'sale') {
+        throw httpError(`La orden ${odoo.name} en Odoo está en estado ${odoo.state}, no se puede saldar`, 409);
+    }
+    const entregado = (odoo.lines || []).some((l) => num(l.qty_delivered) > 0);
+    if (entregado) {
+        throw httpError('Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.', 409);
+    }
+
+    let backorder = null;
+    if (plan.pendientes.length > 0) {
+        if (!envio.partner_id) throw httpError('La orden no tiene cliente en Odoo; no puedo armar los pendientes', 409);
+        backorder = await odooService.createSaleOrder(
+            envio.partner_id,
+            plan.pendientes.map((p) => ({
+                product_id: p.odoo_product_id,
+                name: p.product_name,
+                quantity: p.qty_pendiente,
+                unit_price: p.price_unit,
+            })),
+            envio.company_key,
+            {
+                origin: envio.odoo_order_name,
+                client_order_ref: `Pendientes de ${envio.odoo_order_name}`,
+                note: `Pendientes del control de ${envio.odoo_order_name} en Neggo App.`,
+            }
+        );
+    }
+
+    const aUnlink = plan.queda.filter((l) => l.qty_nueva <= 0).map((l) => l.odoo_line_id);
+    const aEscribir = plan.queda.filter((l) => l.qty_nueva > 0);
+    for (const linea of aEscribir) {
+        await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty_nueva, envio.company_key);
+    }
+    if (aUnlink.length) {
+        await odooService.unlinkSaleOrderLines(aUnlink, envio.company_key);
+    }
+    if (plan.cancela_original) {
+        await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+    }
+
+    await pool.query(
+        `UPDATE pedido_envios
+            SET estado = 'saldado',
+                saldado_at = NOW(),
+                saldado_by = $2,
+                checked_by = COALESCE(checked_by, $2),
+                checked_at = COALESCE(checked_at, NOW()),
+                backorder_odoo_id = $3,
+                backorder_odoo_name = $4,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [id, userId, backorder?.id || null, backorder?.name || null]
+    );
+    await logActividad(userId, 'SALDAR', id, {
+        odoo_order: envio.odoo_order_name,
+        backorder: backorder?.name || null,
+        queda: plan.queda.length,
+        pendientes: plan.pendientes.length,
+        cancelo: plan.cancela_original,
+    });
+    return obtener(id);
+}
+
+module.exports = {
+    ESTADOS,
+    ensureSchema,
+    clampQty,
+    tabDeEstado,
+    normalizarCode,
+    itemPorCodigo,
+    previewSaldar,
+    qtyCampoDeFase,
+    listar,
+    obtener,
+    syncDesdeOdoo,
+    cambiarEstado,
+    setQty,
+    escanear,
+    marcarFaltante,
+    preview,
+    saldar,
+};
