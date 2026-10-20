@@ -241,7 +241,17 @@ function ReceivedCounter({ item, onUpdate, isHighlighted }) {
 // =============================================
 // Modal búsqueda y vinculación (activos + inactivos)
 // =============================================
-function ProductSearchModal({ item, onLink, onCancel }) {
+// Dato chico del ítem (etiqueta arriba, valor abajo) para el recuadro del modal
+function DatoItem({ label, value, color }) {
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: '70px' }}>
+            <span style={{ fontSize: '10px', color: C.gray, textTransform: 'uppercase', letterSpacing: '0.3px' }}>{label}</span>
+            <strong style={{ fontSize: '13px', color: color || C.text, fontVariantNumeric: 'tabular-nums' }}>{value}</strong>
+        </div>
+    );
+}
+
+function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
     const [search, setSearch]     = useState(item?.codigo || '');
     const [results, setResults]   = useState([]);
     const [loading, setLoading]   = useState(false);
@@ -273,6 +283,28 @@ function ProductSearchModal({ item, onLink, onCancel }) {
 
                 <div style={{ backgroundColor: C.infoBg, borderRadius: '4px', padding: '8px 12px', marginBottom: '12px', fontSize: '12px', color: C.blue }}>
                     <strong>Ítem:</strong> {item?.codigo && <code style={{ marginRight: '6px' }}>{item.codigo}</code>}{item?.descripcion}
+                    {costos && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginTop: '8px', paddingTop: '8px', borderTop: `1px solid ${C.border}` }}>
+                            <DatoItem label="Cantidad" value={item?.cantidad ?? '—'} />
+                            <DatoItem label="Precio factura" value={fmtARS(item?.precio_unitario)} />
+                            {/* Pack editable: si viene por pack, divide el precio y recalcula la comparación con Odoo */}
+                            <div style={{ display: 'flex', flexDirection: 'column', minWidth: '70px' }}>
+                                <span style={{ fontSize: '10px', color: C.gray, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Pack ÷</span>
+                                {onPackChange
+                                    ? <PackInput value={costos.packSize} onSave={onPackChange} />
+                                    : <strong style={{ fontSize: '13px', color: C.text, fontVariantNumeric: 'tabular-nums' }}>{costos.packSize}</strong>}
+                            </div>
+                            {costos.packSize > 1 && (
+                                <DatoItem label="Unitario" value={fmtARS(costos.costoUnitario)} />
+                            )}
+                            {costos.effectiveDiscount > 0 && (
+                                <DatoItem label={`Con dto −${costos.effectiveDiscount}%`} value={fmtARS(costos.costoConDescuento)} color={C.success} />
+                            )}
+                            {costos.envioUnitario > 0 && (
+                                <DatoItem label="Costo real (+envío)" value={fmtARS(costos.costoConEnvio)} />
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 <input
@@ -313,8 +345,19 @@ function ProductSearchModal({ item, onLink, onCancel }) {
                                     </div>
                                     {p.internal_ref && <div style={{ fontSize: '11px', color: C.gray }}>Ref: {p.internal_ref}</div>}
                                 </div>
-                                <div style={{ textAlign: 'right', fontSize: '12px', color: C.gray, flexShrink: 0 }}>
-                                    {p.standard_price ? fmtARS(p.standard_price) : '—'}
+                                <div style={{ textAlign: 'right', fontSize: '12px', color: C.gray, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                                    <div>{p.standard_price ? fmtARS(p.standard_price) : '—'}</div>
+                                    {(() => {
+                                        // Diferencia entre el costo de Odoo y el costo de esta factura
+                                        const d = costos ? pctDiff(parseFloat(p.standard_price || 0), costos.costoConEnvio) : null;
+                                        if (d === null) return null;
+                                        const lejos = Math.abs(parseFloat(d)) > 15;
+                                        return (
+                                            <div title="Costo de la factura vs. costo actual en Odoo" style={{ fontSize: '10px', fontWeight: 'bold', color: lejos ? C.warning : C.success }}>
+                                                {parseFloat(d) > 0 ? '+' : ''}{d}%
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
                             </div>
                         ))}
@@ -1110,6 +1153,8 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
             {linkingOpen && (
                 <ProductSearchModal
                     item={item}
+                    costos={{ packSize, costoUnitario, effectiveDiscount, costoConDescuento, envioUnitario, costoConEnvio }}
+                    onPackChange={(v) => onItemUpdate(item.id, { pack_size: v })}
                     onLink={async (product) => {
                         setLinkingOpen(false);
                         await onLinked(item.id, product.odoo_id);
