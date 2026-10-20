@@ -1,111 +1,135 @@
 """
 cast_scraper.py — Cast Mayorista
+Lee el catálogo desde la Store API pública de WooCommerce (/wp-json/wc/store/v1/products):
+JSON sin login ni navegador, con SKU, precios, imagen y stock en una sola respuesta.
 Salida NDJSON por stdout: cada producto es una línea {"type":"product",...}
+Al terminar cada página emite {"type":"page_checkpoint","category":"...","page":N}
 Al finalizar cada categoría emite {"type":"category_done","name":"...","count":N}
-Soporta SKIP_CATEGORIES (JSON list de nombres ya completados, para reanudar).
+Soporta SKIP_CATEGORIES (JSON list de nombres ya completados) y RESUME_CATEGORY/RESUME_PAGE para reanudar.
 """
 import sys
 import json
 import time
-import shutil
 import os
 import re
 import signal
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import WebDriverException
-from bs4 import BeautifulSoup
+import urllib.request
+import urllib.error
 
 # Categorías ya completadas (para reanudar scraping pausado)
 SKIP_CATEGORIES = set(json.loads(os.environ.get('SKIP_CATEGORIES', '[]')))
 # Checkpoint de página: categoría y página donde se pausó
 RESUME_CATEGORY = os.environ.get('RESUME_CATEGORY', '')
 RESUME_PAGE     = int(os.environ.get('RESUME_PAGE', '1'))
+# Tamaño de página con el que se guardó el checkpoint (vacío = scraper web viejo, otra paginación)
+RESUME_PER_PAGE = os.environ.get('RESUME_PER_PAGE', '')
 
-# ─── Configuración de Chromium ────────────────────────────────────────────────
-
-def setup_driver():
-    chromium = os.environ.get('CHROMIUM_BIN') or shutil.which('chromium-browser') or shutil.which('chromium') or '/usr/bin/chromium-browser'
-    chromedriver = os.environ.get('CHROMEDRIVER_BIN') or shutil.which('chromedriver') or '/usr/bin/chromedriver'
-
-    options = Options()
-    options.binary_location = chromium
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-    service = Service(chromedriver)
-    return webdriver.Chrome(service=service, options=options)
+API_URL = 'https://www.castmayorista.com.ar/wp-json/wc/store/v1/products'
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+PER_PAGE = 100
+MAX_PAGE = 50
+TIMEOUT = 120        # la API tarda ~25 s en devolver 100 productos
+REINTENTOS = 3
+PAUSA_ENTRE_PAGINAS = 1.5
 
 # ─── Categorías ────────────────────────────────────────────────────────────────
+# id = term_id de WooCommerce (el filtro incluye subcategorías).
+# 'category' se guarda como source_category: no cambiar, lo usan las reglas de categoría.
 
 CATEGORIES = [
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/vasos-copas/',          'category': 'Vasos y Copas'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/vasos-termicos/',        'category': 'Vasos Termicos'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/relojeria/',             'category': 'Relojeria'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/perfumeria/',            'category': 'Perfumeria'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/peluqueria/',            'category': 'Peluqueria'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/paragua/',               'category': 'Paraguas'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/mochila-y-bolso/',       'category': 'Mochilas y Bolsos'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/mascota/',               'category': 'Mascotas'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/llavero/',               'category': 'Llaveros'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/indumentaria/',          'category': 'Indumentaria'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/ferreteria/',            'category': 'Ferreteria'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/electronica/',           'category': 'Electronica'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/cotillon/',              'category': 'Cotillon'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/cosmetico/',             'category': 'Cosmeticos'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/botellas-todo/',         'category': 'Botellas'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/belleza/',               'category': 'Belleza'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/bazar/',                 'category': 'Bazar'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/almohada-de-viaje/',     'category': 'Almohadas'},
-    {'url': 'https://www.castmayorista.com.ar/categoria-producto/accesorios-p-celular/',  'category': 'Tecnologia'},
+    {'id': 245,  'slug': 'vasos-copas',          'category': 'Vasos y Copas'},
+    {'id': 180,  'slug': 'vasos-termicos',       'category': 'Vasos Termicos'},
+    {'id': 59,   'slug': 'relojeria',            'category': 'Relojeria'},
+    {'id': 44,   'slug': 'perfumeria',           'category': 'Perfumeria'},
+    {'id': 55,   'slug': 'peluqueria',           'category': 'Peluqueria'},
+    {'id': 463,  'slug': 'paragua',              'category': 'Paraguas'},
+    {'id': 84,   'slug': 'mochila-y-bolso',      'category': 'Mochilas y Bolsos'},
+    {'id': 33,   'slug': 'mascota',              'category': 'Mascotas'},
+    {'id': 86,   'slug': 'llavero',              'category': 'Llaveros'},
+    {'id': 22,   'slug': 'indumentaria',         'category': 'Indumentaria'},
+    {'id': 25,   'slug': 'ferreteria',           'category': 'Ferreteria'},
+    {'id': 60,   'slug': 'electronica',          'category': 'Electronica'},
+    {'id': 24,   'slug': 'cotillon',             'category': 'Cotillon'},
+    {'id': 21,   'slug': 'cosmetico',            'category': 'Cosmeticos'},
+    {'id': 398,  'slug': 'botellas-todo',        'category': 'Botellas'},
+    {'id': 27,   'slug': 'belleza',              'category': 'Belleza'},
+    {'id': 19,   'slug': 'bazar',                'category': 'Bazar'},
+    {'id': 20,   'slug': 'jugueteria',           'category': 'Jugueteria'},
+    {'id': 26,   'slug': 'libreria',             'category': 'Libreria'},
+    {'id': 486,  'slug': 'almohada-de-viaje',    'category': 'Almohadas'},
+    {'id': 1122, 'slug': 'accesorios-p-celular', 'category': 'Tecnologia'},
 ]
 
-HOME_URL = 'https://www.castmayorista.com.ar'
-MAX_PAGE = 50
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def clean_price(price_str):
-    """Limpia precio: '$1.234,56' → 1234.56 (formato argentino)"""
-    if not price_str:
+def fetch_page(category_id, page):
+    """Devuelve (productos, total_paginas) de una página de la categoría. Reintenta ante errores de red/5xx."""
+    url = f'{API_URL}?category={category_id}&per_page={PER_PAGE}&page={page}&stock_status=instock'
+    ultimo_error = None
+    for intento in range(1, REINTENTOS + 1):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                total_pages = int(resp.headers.get('X-WP-TotalPages') or 0)
+                return json.loads(resp.read().decode('utf-8')), total_pages
+        except urllib.error.HTTPError as e:
+            # Página fuera de rango: WooCommerce responde 400 → fin de categoría
+            if e.code == 400:
+                return [], 0
+            ultimo_error = f'HTTP {e.code}'
+        except Exception as e:
+            ultimo_error = str(e)
+        print(f'  ⚠️ Intento {intento}/{REINTENTOS} fallido ({ultimo_error})', file=sys.stderr)
+        time.sleep(5 * intento)
+    raise RuntimeError(f'No se pudo leer {url}: {ultimo_error}')
+
+def to_price(minor, minor_unit):
+    """Precio de la API en unidades menores ('477000', 2) → 4770.0"""
+    if minor in (None, ''):
         return None
-    cleaned = price_str.replace('$', '').replace('\xa0', '').replace('\u00a0', '').strip()
-    cleaned = cleaned.replace('.', '').replace(',', '.')
     try:
-        return float(cleaned)
-    except:
+        return int(minor) / (10 ** minor_unit)
+    except (TypeError, ValueError):
         return None
 
-def normalize_sku(code):
-    """Código en mayúsculas solo con caracteres alfanuméricos."""
-    if not code:
-        return None
-    return re.sub(r'[^A-Z0-9]', '', code.upper().strip())
+def make_sku_from_slug(slug):
+    return re.sub(r'[^A-Z0-9]', '', (slug or '').upper())
 
-def make_sku_from_url(url):
-    raw = url.rstrip('/').split('/')[-1]
-    return re.sub(r'[^A-Z0-9]', '', raw.upper())
+def to_product(item, category_name):
+    """Convierte un producto de la Store API al formato que espera upsertProducts."""
+    prices = item.get('prices') or {}
+    minor_unit = int(prices.get('currency_minor_unit') or 0)
+    regular = to_price(prices.get('regular_price'), minor_unit) or to_price(prices.get('price'), minor_unit)
+    sale = to_price(prices.get('sale_price'), minor_unit)
+    # Igual que en la web: precio tachado = raw_price, precio de oferta = offer_price
+    offer = sale if item.get('on_sale') and sale is not None and regular is not None and sale < regular else None
 
-def make_sku_from_name(name):
-    import unicodedata
-    nfkd = unicodedata.normalize('NFD', name.upper())
-    ascii_str = ''.join(c for c in nfkd if not unicodedata.combining(c))
-    return re.sub(r'[^A-Z0-9]', '', ascii_str)[:50]
+    images = item.get('images') or []
+    image_url = (images[0].get('thumbnail') or images[0].get('src')) if images else None
+
+    return {
+        'sku': (item.get('sku') or '').strip() or make_sku_from_slug(item.get('slug')),
+        'name': (item.get('name') or '').strip(),
+        'raw_price': regular,
+        'offer_price': offer,
+        'image_url': image_url,
+        'product_url': item.get('permalink'),
+        'source_category': category_name,
+        'barcode': None,
+        'available': True,
+    }
 
 # ─── Scraper principal ────────────────────────────────────────────────────────
 
-def scrape(driver):
+def scrape():
+    """Recorre todas las categorías. Devuelve la lista de categorías que fallaron."""
     total_categories = len(CATEGORIES)
-    skipped = len(SKIP_CATEGORIES)
+    fallidas = []
 
     if SKIP_CATEGORIES:
-        print(f'⏭️ Reanudando — saltando {skipped} categoría(s) ya completadas', file=sys.stderr)
+        print(f'⏭️ Reanudando — saltando {len(SKIP_CATEGORIES)} categoría(s) ya completadas', file=sys.stderr)
 
     for cat_idx, category_info in enumerate(CATEGORIES):
-        base_url = category_info['url'].rstrip('/')
         category_name = category_info['category']
 
         # Saltar categorías ya completadas (modo reanudar)
@@ -115,156 +139,75 @@ def scrape(driver):
 
         print(f'📦 [{cat_idx+1}/{total_categories}] Categoría: {category_name}', file=sys.stderr)
 
-        # Si es la categoría donde estábamos al pausar, arrancar desde la última página procesada
-        start_page = (RESUME_PAGE + 1) if (RESUME_CATEGORY and category_name == RESUME_CATEGORY) else 1
+        # Si es la categoría donde estábamos al pausar, arrancar desde la página siguiente.
+        # Un checkpoint con otro tamaño de página no sirve: se repite la categoría desde la 1.
+        start_page = 1
+        if RESUME_CATEGORY and category_name == RESUME_CATEGORY:
+            if RESUME_PER_PAGE == str(PER_PAGE):
+                start_page = RESUME_PAGE + 1
+            else:
+                print(f'  ⚠️ Checkpoint de otra paginación (página {RESUME_PAGE}) — se repite la categoría desde la página 1', file=sys.stderr)
         if start_page > 1:
             print(f'  ⏭️ Reanudando desde página {start_page} (última procesada: {RESUME_PAGE})', file=sys.stderr)
 
         page = start_page
-        last_first_name = None
         cat_count = 0
 
-        while page <= MAX_PAGE:
-            target_url = base_url + '/' if page == 1 else f'{base_url}/page/{page}/'
-            print(f'  → Página {page}: {target_url}', file=sys.stderr)
+        try:
+            while page <= MAX_PAGE:
+                print(f'  → Página {page}', file=sys.stderr)
+                items, total_pages = fetch_page(category_info['id'], page)
 
-            try:
-                driver.get(target_url)
-                time.sleep(2)
-            except WebDriverException as e:
-                print(f'  ❌ Error navegando: {e}', file=sys.stderr)
-                break
+                if not items:
+                    print(f'  🛑 Sin productos — fin de categoría', file=sys.stderr)
+                    break
 
-            # Fin de paginación: redirect al home
-            current_url = driver.current_url.rstrip('/')
-            if current_url == HOME_URL:
-                print(f'  🛑 Redirect al home — fin de categoría', file=sys.stderr)
-                break
-            if page > 1 and current_url == base_url:
-                print(f'  🛑 Redirect a página 1 — fin de categoría', file=sys.stderr)
-                break
+                emitidos = 0
+                for item in items:
+                    if not item.get('is_in_stock', True) or not item.get('name'):
+                        continue
+                    product = to_product(item, category_name)
+                    # Emitir producto inmediatamente via NDJSON
+                    print(json.dumps({'type': 'product', **product}), flush=True)
+                    emitidos += 1
+                cat_count += emitidos
+                print(f'  ✅ {emitidos} productos (página {page}/{total_pages or "?"})', file=sys.stderr)
 
-            # Scroll para lazy load de imágenes
-            driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-            time.sleep(1)
+                # Checkpoint de página: esta página está completamente procesada
+                print(json.dumps({'type': 'page_checkpoint', 'category': category_name, 'page': page, 'per_page': PER_PAGE}), flush=True)
 
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            product_lis = soup.find_all('li', class_='product')
-
-            if not product_lis:
-                print(f'  🛑 Sin productos — fin de categoría', file=sys.stderr)
-                break
-
-            # Detección de bucle (mismo primer producto)
-            first_name_tag = product_lis[0].find('h2', class_='woocommerce-loop-product__title')
-            first_name = first_name_tag.text.strip() if first_name_tag else ''
-            if first_name and first_name == last_first_name:
-                print(f'  🛑 Bucle detectado — fin de categoría', file=sys.stderr)
-                break
-            last_first_name = first_name
-
-            # Recolectar datos básicos del listado
-            page_items = []
-            for li in product_lis:
-                if 'outofstock' in li.get('class', []):
-                    continue
-                name_tag = li.find('h2', class_='woocommerce-loop-product__title')
-                name = name_tag.text.strip() if name_tag else None
-                if not name:
-                    continue
-
-                bdi_tags = li.select('span.woocommerce-Price-amount bdi')
-                raw_price_text = bdi_tags[0].text.strip() if bdi_tags else None
-                offer_price_text = bdi_tags[1].text.strip() if len(bdi_tags) >= 2 else None
-
-                link_tag = li.find('a', class_='woocommerce-LoopProduct-link')
-                if not link_tag:
-                    link_tag = li.find('a')
-                product_link = link_tag['href'] if link_tag else None
-
-                img_tag = li.find('img', class_='attachment-woocommerce_thumbnail') or li.find('img')
-                image_url = None
-                if img_tag:
-                    image_url = img_tag.get('data-src') or img_tag.get('src')
-
-                page_items.append({
-                    'name': name,
-                    'raw_price_text': raw_price_text,
-                    'offer_price_text': offer_price_text,
-                    'product_link': product_link,
-                    'image_url': image_url,
-                })
-
-            print(f'  ✅ {len(page_items)} productos — obteniendo SKUs...', file=sys.stderr)
-
-            # Visitar cada producto para obtener SKU
-            for item in page_items:
-                sku = None
-                if item['product_link']:
-                    try:
-                        driver.get(item['product_link'])
-                        time.sleep(0.8)
-                        product_soup = BeautifulSoup(driver.page_source, 'html.parser')
-                        sku_span = product_soup.find('span', class_='sku')
-                        if sku_span:
-                            sku = sku_span.text.strip()
-                    except Exception as e:
-                        print(f'  ⚠️ SKU error: {e}', file=sys.stderr)
-
-                if not sku:
-                    sku = make_sku_from_url(item['product_link']) if item['product_link'] else make_sku_from_name(item['name'])
-
-                product = {
-                    'sku': sku,
-                    'name': item['name'],
-                    'raw_price': clean_price(item['raw_price_text']),
-                    'offer_price': clean_price(item['offer_price_text']),
-                    'image_url': item['image_url'],
-                    'product_url': item['product_link'],
-                    'source_category': category_name,
-                    'barcode': None,
-                    'available': True,
-                }
-                # Emitir producto inmediatamente via NDJSON
-                print(json.dumps({'type': 'product', **product}), flush=True)
-                print(f'    ✔ {sku} | {item["name"][:40]}', file=sys.stderr)
-                cat_count += 1
-
-            # Checkpoint de página: esta página está completamente procesada
-            print(json.dumps({'type': 'page_checkpoint', 'category': category_name, 'page': page}), flush=True)
-
-            page += 1
-            time.sleep(1.5)
+                if total_pages and page >= total_pages:
+                    break
+                page += 1
+                time.sleep(PAUSA_ENTRE_PAGINAS)
+        except RuntimeError as e:
+            # Sin category_done: al reanudar se vuelve a intentar desde el último checkpoint
+            print(f'❌ Categoría "{category_name}" incompleta: {e}', file=sys.stderr)
+            fallidas.append(category_name)
+            continue
 
         # Señal de categoría completada (para checkpoint)
         print(json.dumps({'type': 'category_done', 'name': category_name, 'count': cat_count}), flush=True)
         print(f'✅ Categoría "{category_name}" completada: {cat_count} productos', file=sys.stderr)
 
+    return fallidas
+
 
 if __name__ == '__main__':
-    driver = None
-
     def shutdown(signum, frame):
-        """Cierra el driver limpiamente al recibir SIGTERM/SIGINT."""
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         sys.exit(143)  # 128 + SIGTERM: el backend lo toma como pausa
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
     try:
-        driver = setup_driver()
-        scrape(driver)
+        fallidas = scrape()
     except Exception as e:
         print(f'❌ Error fatal: {e}', file=sys.stderr)
         sys.exit(1)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+
+    # Si alguna categoría quedó a medias, salir con error: el run no queda 'completed'
+    # y no se borran productos que esta vez no se pudieron leer.
+    if fallidas:
+        print(f'❌ Categorías incompletas: {", ".join(fallidas)}', file=sys.stderr)
+        sys.exit(1)

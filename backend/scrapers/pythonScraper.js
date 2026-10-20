@@ -231,11 +231,14 @@ class PythonScraper extends BaseScraper {
                             }
 
                         } else if (event.type === 'page_checkpoint') {
-                            // Guardar checkpoint de página para poder reanudar desde acá
+                            // Guardar checkpoint de página para poder reanudar desde acá.
+                            // per_page (opcional) identifica el tamaño de página que usó el script.
                             if (!this.dryRun && this.runId && this.runId !== 'preview') {
+                                const checkpoint = { category: event.category, page: event.page };
+                                if (event.per_page) checkpoint.per_page = event.per_page;
                                 await this.pool.query(
                                     `UPDATE scraping_runs SET checkpoint = $1 WHERE id = $2`,
-                                    [JSON.stringify({ category: event.category, page: event.page }), this.runId]
+                                    [JSON.stringify(checkpoint), this.runId]
                                 ).catch((err) => {
                                     console.error(`⚠️ Error guardando checkpoint de página: ${err.message}`);
                                 });
