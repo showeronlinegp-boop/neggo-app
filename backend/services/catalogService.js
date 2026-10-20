@@ -40,15 +40,22 @@ const DARK_TEXT = '#333333';
 const GRAY_TEXT = '#666666';
 const LINE_GRAY = '#DADADA';
 
-// ── Logo path (en el volumen del backend) ──────────────────────────────────────
-const LOGO_PATH    = path.join(__dirname, '..', '..', 'volumes', 'storage', 'neggo_logo.png');
+// ── Logo: STORAGE_PATH en Docker (/app/storage) y fallback al repo local ──────
+function resolveLogoPath() {
+    const storageRoot = process.env.STORAGE_PATH || '/app/storage';
+    const fromStorage = path.join(storageRoot, 'neggo_logo.png');
+    if (fs.existsSync(fromStorage)) return fromStorage;
+    return path.join(__dirname, '..', '..', 'volumes', 'storage', 'neggo_logo.png');
+}
 const STORAGE_DIR  = path.join(__dirname, '..', 'storage', 'catalogs');
 const PRODUCTS_PER_PAGE = 4;
 
-// ── Formato de precio argentino: $1.234,56 → pasa a entero → $1.234 ───────────
+// Miles con punto, sin depender del ICU de la imagen (node:20-alpine no trae es-AR).
 function formatPrice(amount) {
-    const n = Math.ceil(amount);
-    return '$' + n.toLocaleString('es-AR');
+    const n = Math.ceil(Number(amount) || 0);
+    const sign = n < 0 ? '-' : '';
+    const body = String(Math.abs(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return sign + '$' + body;
 }
 
 // ── Descarga de imagen ─────────────────────────────────────────────────────────
@@ -97,9 +104,10 @@ function drawHeader(doc, categoryName) {
 
     // Logo o texto de fallback
     let logoOk = false;
-    if (fs.existsSync(LOGO_PATH)) {
+    const logoPath = resolveLogoPath();
+    if (fs.existsSync(logoPath)) {
         try {
-            doc.image(LOGO_PATH, MAR_L, logoTop, {
+            doc.image(logoPath, MAR_L, logoTop, {
                 width: logoW,
                 height: logoH,
                 fit: [logoW, logoH],
@@ -240,6 +248,7 @@ async function getProductsByDestCategory(destCategory, type = 'preventas') {
             ON scr.supplier_id = sp.supplier_id
             AND scr.source_category = sp.source_category
             AND scr.active = true
+            AND scr.ignored = false
             AND scr.${destCol} = $1
         WHERE sp.available = true
             AND sp.raw_price IS NOT NULL
@@ -393,6 +402,7 @@ async function generateAllCatalogs({ type = 'preventas', createdBy }) {
         FROM supplier_category_rules scr
         JOIN suppliers s ON s.id = scr.supplier_id AND s.active = true AND s.is_published = true
         WHERE scr.active = true
+          AND scr.ignored = false
           AND scr.${destCol} IS NOT NULL
         ORDER BY 1 ASC
     `);

@@ -30,12 +30,17 @@ export default function Catalogs() {
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
 
-    useEffect(() => {
-        api.get('/catalogs/categories').then(r => r.success && setCategories(r.data || []));
-        fetchCatalogs();
-    }, []);
-
     useEffect(() => { fetchCatalogs(); }, [page]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setDestCategory('');
+        api.get('/catalogs/categories', { type }).then(r => {
+            if (cancelled) return;
+            if (r.success) setCategories(r.data || []);
+        });
+        return () => { cancelled = true; };
+    }, [type]);
 
     async function fetchCatalogs() {
         setLoading(true);
