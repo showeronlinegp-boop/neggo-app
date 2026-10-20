@@ -251,27 +251,36 @@ function DatoItem({ label, value, color }) {
     );
 }
 
+// Por qué apareció cada resultado en el modal de vinculación
+const MOTIVO_VINCULO = {
+    codigo:          'Mismo código',
+    codigo_parecido: 'Código parecido',
+    nombre:          'Nombre parecido',
+};
+
 function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
-    const [search, setSearch]     = useState(item?.codigo || '');
+    // Vacío = sugerencias armadas con el código y la descripción del ítem
+    const [search, setSearch]     = useState('');
     const [results, setResults]   = useState([]);
     const [loading, setLoading]   = useState(false);
     const [selected, setSelected] = useState(null);
     const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
+    const sugiriendo = search.trim().length < 2;
 
     useEffect(() => {
-        if (!search || search.length < 2) { setResults([]); return; }
+        const params = sugiriendo
+            ? { company: 'neggo', codigo: item?.codigo || '', descripcion: item?.descripcion || '', limit: 20 }
+            : { company: 'neggo', q: search, limit: 20 };
         const t = setTimeout(async () => {
             setLoading(true);
             try {
-                const res = await api.get('/products/odoo', {
-                    company: 'neggo', search, limit: 20, include_inactive: 'true'
-                });
-                if (res.success) setResults(res.data?.products || res.data || []);
+                const res = await api.get('/products/odoo/link-suggestions', params);
+                if (res.success) setResults(res.data || []);
             } catch (_) {}
             finally { setLoading(false); }
-        }, 350);
+        }, sugiriendo ? 0 : 350);
         return () => clearTimeout(t);
-    }, [search]);
+    }, [search, sugiriendo, item?.codigo, item?.descripcion]);
 
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
@@ -310,13 +319,19 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                 <input
                     autoFocus
                     type="text"
-                    placeholder="Buscar por nombre o código interno..."
+                    placeholder="Buscá por código o por palabras del nombre, en cualquier orden..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     style={{ width: '100%', padding: '10px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '14px', boxSizing: 'border-box', marginBottom: '10px' }}
                 />
 
                 {loading && <p style={{ fontSize: '12px', color: C.gray }}>Buscando...</p>}
+
+                {!loading && sugiriendo && results.length > 0 && (
+                    <p style={{ fontSize: '11px', color: C.gray, marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                        Sugerencias para este ítem
+                    </p>
+                )}
 
                 {results.length > 0 && (
                     <div style={{ border: `1px solid ${C.border}`, borderRadius: '4px', maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
@@ -343,7 +358,14 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                                             {p.active ? 'ACTIVO' : 'INACTIVO'}
                                         </span>
                                     </div>
-                                    {p.internal_ref && <div style={{ fontSize: '11px', color: C.gray }}>Ref: {p.internal_ref}</div>}
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '11px', color: C.gray }}>
+                                        {p.internal_ref && <span>Ref: {p.internal_ref}</span>}
+                                        {MOTIVO_VINCULO[p.motivo] && (
+                                            <span style={{ padding: '0 6px', borderRadius: '3px', border: `1px solid ${C.border}` }}>
+                                                {MOTIVO_VINCULO[p.motivo]}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
                                 <div style={{ textAlign: 'right', fontSize: '12px', color: C.gray, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                                     <div>{p.standard_price ? fmtARS(p.standard_price) : '—'}</div>
@@ -364,8 +386,12 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                     </div>
                 )}
 
-                {!loading && search.length >= 2 && results.length === 0 && (
-                    <p style={{ fontSize: '12px', color: C.gray, marginBottom: '14px' }}>Sin resultados para "{search}"</p>
+                {!loading && results.length === 0 && (
+                    <p style={{ fontSize: '12px', color: C.gray, marginBottom: '14px' }}>
+                        {sugiriendo
+                            ? 'No encontramos nada parecido a este ítem. Probá escribiendo otras palabras.'
+                            : `Sin resultados para "${search}"`}
+                    </p>
                 )}
 
                 {selected && (
