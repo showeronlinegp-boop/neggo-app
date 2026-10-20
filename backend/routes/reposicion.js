@@ -14,13 +14,30 @@
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 // DELETE /api/reposicion/producto/:odooId            — saca de la cola un pendiente marcado por error
+// POST   /api/reposicion/foto/:odooId                — multipart "image": carga la foto en Odoo (admin)
 
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const reposicion = require('../services/reposicionService');
 const ordenes = require('../services/reposicionOrdenesService');
+const { detectMime } = require('../services/whatsappMessage');
+const { writeOdooImage } = require('../services/odooImageService');
+
+// Foto de producto — JPG, PNG o WEBP, máximo 5MB
+const uploadImage = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+            return cb(new Error('La foto tiene que ser JPG, PNG o WEBP'));
+        }
+        cb(null, true);
+    }
+});
 
 router.use(authenticate, requireRole('admin', 'operador'));
 
@@ -157,6 +174,35 @@ router.delete('/producto/:odooId', async (req, res) => {
         return ok(res, item);
     } catch (err) {
         if (!err.statusCode) console.error('❌ Error quitando de la cola:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+// Foto para un producto que no tiene (multipart, campo "image"). Escribe en Odoo: solo admin.
+router.post('/foto/:odooId', requireRole('admin'), (req, res, next) => {
+    uploadImage.single('image')(req, res, (err) => {
+        if (err) return fail(res, err.code === 'LIMIT_FILE_SIZE' ? 'La foto no puede pesar más de 5MB' : err.message, 400);
+        next();
+    });
+}, async (req, res) => {
+    const odooId = parseInt(req.params.odooId, 10);
+    if (!Number.isInteger(odooId)) return fail(res, 'odoo_id inválido', 400);
+    try {
+        if (!req.file) return fail(res, 'Elegí una foto', 400);
+        // El tipo real se mira por los primeros bytes, no por la extensión
+        if (!detectMime(req.file.buffer)) return fail(res, 'El archivo no es una foto válida', 400);
+
+        const { rows } = await pool.query(
+            `SELECT name FROM odoo_products_cache WHERE odoo_id = $1 AND company = 'neggo'`,
+            [odooId]
+        );
+        if (rows.length === 0) return fail(res, 'Producto no encontrado en Neggo', 404);
+
+        const result = await writeOdooImage(odooId, req.file.buffer.toString('base64'));
+        console.log(`✅ Reposición: foto cargada en Odoo para "${rows[0].name}" (${odooId}) por usuario ${req.user.id}`);
+        return ok(res, result);
+    } catch (err) {
+        console.error('❌ Error cargando foto desde reposición:', err.message);
         return fail(res, err.message, err.statusCode || 500);
     }
 });

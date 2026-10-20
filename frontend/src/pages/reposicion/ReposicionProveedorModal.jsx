@@ -125,8 +125,39 @@ function MetaProducto({ p, extra, t }) {
     );
 }
 
-// Miniatura que abre la foto en grande; sin foto queda como estaba
-function MiniaturaTocable({ p, size, onVerFoto, t }) {
+// Miniatura que abre la foto en grande; sin foto, si se puede, es el botón para cargarla
+function MiniaturaTocable({ p, size, onVerFoto, onSubirFoto, subiendoFoto, t }) {
+    if (!p.image_url && onSubirFoto) {
+        const subiendo = subiendoFoto === p.odoo_id;
+        return (
+            <label
+                aria-label={`Cargar foto de ${p.name}`}
+                title="Cargar foto en Odoo"
+                style={{
+                    width: size, height: size, flexShrink: 0, boxSizing: 'border-box',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
+                    borderRadius: t.radius.sm, border: `1px dashed ${t.color.borderStrong}`,
+                    background: t.color.surface2, color: t.color.primary,
+                    cursor: subiendo ? 'default' : 'pointer', opacity: subiendo ? 0.6 : 1,
+                    fontFamily: t.font.family, fontSize: 9, fontWeight: t.font.weight.semibold,
+                }}
+            >
+                {subiendo ? '…' : (
+                    <>
+                        <Icon.Camera size={Math.round(size * 0.38)} />
+                        {size >= 48 && <span>Foto</span>}
+                    </>
+                )}
+                <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    disabled={subiendo}
+                    style={{ display: 'none' }}
+                    onChange={e => { onSubirFoto(p, e.target.files?.[0]); e.target.value = ''; }}
+                />
+            </label>
+        );
+    }
     if (!p.image_url) return <ProductThumb imageUrl={p.image_url} size={size} />;
     return (
         <button
@@ -144,8 +175,9 @@ function MiniaturaTocable({ p, size, onVerFoto, t }) {
     );
 }
 
-function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, onVerFoto, extra, isMobile, t }) {
+function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, onVerFoto, onSubirFoto, subiendoFoto, extra, isMobile, t }) {
     const acciones = { p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onPublicar, t };
+    const mini = { p, onVerFoto, onSubirFoto, subiendoFoto, t };
 
     if (isMobile) {
         return (
@@ -155,7 +187,7 @@ function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onP
                 borderTop: `1px solid ${t.color.border}`,
             }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <MiniaturaTocable p={p} size={52} onVerFoto={onVerFoto} t={t} />
+                    <MiniaturaTocable {...mini} size={52} />
                     <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                         <div title={p.name} style={{
                             fontSize: t.font.size.base, fontWeight: t.font.weight.semibold, color: t.color.text,
@@ -176,7 +208,7 @@ function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onP
             display: 'flex', alignItems: 'center', gap: t.space[3],
             padding: '8px 4px', borderTop: `1px solid ${t.color.border}`,
         }}>
-            <MiniaturaTocable p={p} size={36} onVerFoto={onVerFoto} t={t} />
+            <MiniaturaTocable {...mini} size={36} />
             <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                 <div title={p.name} style={{
                     fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text,
@@ -287,6 +319,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
     const [trabajando, setTrabajando] = useState(null);
     const [confirmar, setConfirmar] = useState(null);
     const [foto, setFoto] = useState(null);
+    const [subiendoFoto, setSubiendoFoto] = useState(null);
     const cerrarFoto = useCallback(() => setFoto(null), []);
     const [publicando, setPublicando] = useState(null);
     const [avisoWa, setAvisoWa] = useState(null);
@@ -391,6 +424,21 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onAgregado(res.data);
     };
 
+    const subirFoto = async (p, file) => {
+        if (!file) return;
+        setSubiendoFoto(p.odoo_id);
+        const form = new FormData();
+        form.append('image', file);
+        const res = await api.post(`/reposicion/foto/${p.odoo_id}`, form);
+        setSubiendoFoto(null);
+        if (!res.success) { onError(res.error || 'No se pudo cargar la foto en Odoo'); return; }
+        // Cache-buster: la URL del template puede ser la misma que antes de tener foto
+        const imageUrl = res.data?.image_url ? `${res.data.image_url}?v=${Date.now()}` : null;
+        if (!imageUrl) return;
+        const ponerFoto = (lista) => lista.map(x => x.odoo_id === p.odoo_id ? { ...x, image_url: imageUrl, has_image: true } : x);
+        setDetalle(prev => prev && { ...prev, activos: ponerFoto(prev.activos), archivados: ponerFoto(prev.archivados) });
+    };
+
     const activos = detalle?.activos || [];
     const archivados = detalle?.archivados || [];
     const propsFila = {
@@ -402,6 +450,9 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
         onVerFoto: setFoto,
         // Publicar en WhatsApp es solo para admin (igual que Admin → WhatsApp).
         onPublicar: user?.role === 'admin' ? (p) => { setAvisoWa(null); setPublicando(p); } : null,
+        // Cargar foto escribe en Odoo: solo admin
+        onSubirFoto: user?.role === 'admin' ? subirFoto : null,
+        subiendoFoto,
         isMobile,
         t,
     };
