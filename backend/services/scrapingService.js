@@ -255,6 +255,8 @@ async function executeRun(db, run) {
                     ...original,
                     SKIP_CATEGORIES: JSON.stringify(completed),
                     ...(checkpoint ? { RESUME_CATEGORY: checkpoint.category, RESUME_PAGE: String(checkpoint.page) } : {}),
+                    // Sin per_page el checkpoint es de un script viejo: el script decide si lo respeta
+                    ...(checkpoint?.per_page ? { RESUME_PER_PAGE: String(checkpoint.per_page) } : {}),
                 }),
             });
             // Arrastrar las categorías ya hechas para que una nueva pausa siga acumulando

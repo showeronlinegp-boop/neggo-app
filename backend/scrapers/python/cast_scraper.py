@@ -21,6 +21,8 @@ SKIP_CATEGORIES = set(json.loads(os.environ.get('SKIP_CATEGORIES', '[]')))
 # Checkpoint de página: categoría y página donde se pausó
 RESUME_CATEGORY = os.environ.get('RESUME_CATEGORY', '')
 RESUME_PAGE     = int(os.environ.get('RESUME_PAGE', '1'))
+# Tamaño de página con el que se guardó el checkpoint (vacío = scraper web viejo, otra paginación)
+RESUME_PER_PAGE = os.environ.get('RESUME_PER_PAGE', '')
 
 API_URL = 'https://www.castmayorista.com.ar/wp-json/wc/store/v1/products'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -137,8 +139,14 @@ def scrape():
 
         print(f'📦 [{cat_idx+1}/{total_categories}] Categoría: {category_name}', file=sys.stderr)
 
-        # Si es la categoría donde estábamos al pausar, arrancar desde la página siguiente
-        start_page = (RESUME_PAGE + 1) if (RESUME_CATEGORY and category_name == RESUME_CATEGORY) else 1
+        # Si es la categoría donde estábamos al pausar, arrancar desde la página siguiente.
+        # Un checkpoint con otro tamaño de página no sirve: se repite la categoría desde la 1.
+        start_page = 1
+        if RESUME_CATEGORY and category_name == RESUME_CATEGORY:
+            if RESUME_PER_PAGE == str(PER_PAGE):
+                start_page = RESUME_PAGE + 1
+            else:
+                print(f'  ⚠️ Checkpoint de otra paginación (página {RESUME_PAGE}) — se repite la categoría desde la página 1', file=sys.stderr)
         if start_page > 1:
             print(f'  ⏭️ Reanudando desde página {start_page} (última procesada: {RESUME_PAGE})', file=sys.stderr)
 
@@ -166,7 +174,7 @@ def scrape():
                 print(f'  ✅ {emitidos} productos (página {page}/{total_pages or "?"})', file=sys.stderr)
 
                 # Checkpoint de página: esta página está completamente procesada
-                print(json.dumps({'type': 'page_checkpoint', 'category': category_name, 'page': page}), flush=True)
+                print(json.dumps({'type': 'page_checkpoint', 'category': category_name, 'page': page, 'per_page': PER_PAGE}), flush=True)
 
                 if total_pages and page >= total_pages:
                     break
