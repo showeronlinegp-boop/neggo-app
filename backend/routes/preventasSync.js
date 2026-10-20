@@ -41,7 +41,7 @@ router.get('/products', authenticate, async (req, res) => {
 // - Sin IDs (grupo completo): background — devuelve { running: true } de inmediato
 router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
     try {
-        const { ids = [], odoo_ids = [], grupo, estado, supplierId } = req.body;
+        const { ids = [], odoo_ids = [], grupo, estado, supplierId, confirmar } = req.body;
         if (!Array.isArray(ids) || !Array.isArray(odoo_ids)) {
             return fail(res, 'ids y odoo_ids deben ser arrays');
         }
@@ -70,8 +70,13 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
             return ok(res, { running: true, bulk: true });
         }
 
+        // Lo que requiere revisión solo se confirma de a un producto, nunca en lote
+        if (confirmar === true && ids.length + odoo_ids.length !== 1) {
+            return fail(res, 'Los productos a revisar se confirman de a uno');
+        }
+
         // IDs específicos: síncrono
-        return ok(res, await applyChanges(pool, ids, odoo_ids, { grupo, estado, supplierId }));
+        return ok(res, await applyChanges(pool, ids, odoo_ids, { grupo, estado, supplierId }, { confirmar: confirmar === true }));
     } catch (err) {
         console.error('❌ apply preventas-sync:', err.message);
         return fail(res, err.message, 500);
