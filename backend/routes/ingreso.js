@@ -14,6 +14,12 @@ const ingresoService = require('../services/ingresoService');
 const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
+const { detectMime } = require('../services/whatsappMessage');
+const { findByIds } = require('../services/whatsappRandom');
+const whatsappQueue = require('../services/whatsappQueue');
+
+// Primera línea de las publicaciones de WhatsApp que salen desde un ingreso
+const WHATSAPP_INGRESO_HEADER = '🆕 NUEVO INGRESO';
 
 // Multer config — máximo 5MB
 const upload = multer({
@@ -22,6 +28,18 @@ const upload = multer({
     fileFilter: (req, file, cb) => {
         if (!file.originalname.toLowerCase().endsWith('.csv')) {
             return cb(new Error('Solo archivos CSV permitidos'));
+        }
+        cb(null, true);
+    }
+});
+
+// Foto de producto — JPG, PNG o WEBP, máximo 5MB
+const uploadImage = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+            return cb(new Error('La foto tiene que ser JPG, PNG o WEBP'));
         }
         cb(null, true);
     }
@@ -165,6 +183,7 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
                     opc.web_categ_name    AS odoo_web_categ_name,
                     opc.vendor_name       AS odoo_vendor_name,
                     opc.template_id       AS odoo_template_id,
+                    opc.has_image         AS odoo_has_image,
                     sp.image_url          AS supplier_image_url,
                     sp.name               AS supplier_product_name_matched,
                     sp.sku                AS supplier_sku
@@ -294,6 +313,7 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
                     opc.web_categ_name    AS odoo_web_categ_name,
                     opc.vendor_name       AS odoo_vendor_name,
                     opc.template_id       AS odoo_template_id,
+                    opc.has_image         AS odoo_has_image,
                     sp.image_url          AS supplier_image_url,
                     sp.name               AS supplier_product_name_matched,
                     sp.sku                AS supplier_sku
@@ -1134,26 +1154,145 @@ router.post('/:ingresoId/items/:itemId/upload-supplier-photo', authenticate, req
             return fail(res, `No se pudo descargar la imagen (${imgResponse.status})`, 502);
         }
 
-        const arrayBuffer = await imgResponse.arrayBuffer();
-        const base64      = Buffer.from(arrayBuffer).toString('base64');
+        const buffer = Buffer.from(await imgResponse.arrayBuffer());
+        if (!detectMime(buffer)) {
+            return fail(res, 'Lo que devolvió el proveedor no es una foto', 502);
+        }
 
-        // Subir a Odoo como image_1920 (Odoo genera los thumbnails automáticamente)
-        const { callOdoo, getCompanyIds } = require('../config/odoo');
-        const companyIds = await getCompanyIds();
-        const companyId  = companyIds.neggo;
-        if (!companyId) return fail(res, 'Company Neggo no encontrada', 503);
-
-        await callOdoo(
-            'product.product', 'write',
-            [[odoo_product_id], { image_1920: base64 }],
-            { context: { allowed_company_ids: [companyId] } }
-        );
-
+        const result = await writeOdooImage(odoo_product_id, buffer.toString('base64'));
         console.log(`✅ Foto del proveedor subida a Odoo para producto ${odoo_product_id}`);
-        return ok(res, { message: 'Imagen subida correctamente a Odoo' });
+        return ok(res, { message: 'Imagen subida correctamente a Odoo', ...result });
     } catch (err) {
         console.error('❌ Error subiendo foto a Odoo:', err);
-        return fail(res, err.message, 500);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+/**
+ * Sube la foto a un producto de Odoo Neggo (image_1920: Odoo arma las miniaturas)
+ * y actualiza el cache local, así WhatsApp y el catálogo la ven sin esperar el sync.
+ */
+async function writeOdooImage(odooProductId, base64) {
+    const { callOdoo, getCompanyIds } = require('../config/odoo');
+    const companyIds = await getCompanyIds();
+    const companyId  = companyIds.neggo;
+    if (!companyId) {
+        const err = new Error('Company Neggo no encontrada');
+        err.statusCode = 503;
+        throw err;
+    }
+    const ctx = { context: { allowed_company_ids: [companyId] } };
+
+    await callOdoo('product.product', 'write', [[odooProductId], { image_1920: base64 }], ctx);
+    const [product] = await callOdoo('product.product', 'read', [[odooProductId], ['product_tmpl_id']], ctx);
+    const templateId = product?.product_tmpl_id?.[0] || null;
+
+    await pool.query(
+        `UPDATE odoo_products_cache
+         SET has_image   = true,
+             template_id = COALESCE($2, template_id),
+             image_url   = CASE WHEN COALESCE($2, template_id) IS NOT NULL
+                                THEN '/api/products/odoo-image/neggo/' || COALESCE($2, template_id)
+                                ELSE image_url END
+         WHERE odoo_id = $1 AND company = 'neggo'`,
+        [odooProductId, templateId]
+    );
+    return { template_id: templateId };
+}
+
+// =============================================
+// POST /api/ingreso/:ingresoId/items/:itemId/photo
+// Carga o reemplaza la foto del producto Odoo con un archivo (multipart, campo "image")
+// =============================================
+
+router.post('/:ingresoId/items/:itemId/photo', authenticate, requireRole('admin'), (req, res, next) => {
+    uploadImage.single('image')(req, res, (err) => {
+        if (err) return fail(res, err.code === 'LIMIT_FILE_SIZE' ? 'La foto no puede pesar más de 5MB' : err.message, 400);
+        next();
+    });
+}, async (req, res) => {
+    const { ingresoId, itemId } = req.params;
+
+    try {
+        if (!req.file) return fail(res, 'Elegí una foto', 400);
+        // El tipo real se mira por los primeros bytes, no por la extensión
+        if (!detectMime(req.file.buffer)) return fail(res, 'El archivo no es una foto válida', 400);
+
+        const { rows } = await pool.query(
+            `SELECT odoo_product_id, COALESCE(odoo_company, 'neggo') AS odoo_company
+             FROM ingreso_items WHERE id = $1 AND ingreso_id = $2`,
+            [itemId, ingresoId]
+        );
+        if (rows.length === 0) return fail(res, 'Item no encontrado', 404);
+        const { odoo_product_id, odoo_company } = rows[0];
+        if (!odoo_product_id) return fail(res, 'El ítem no tiene producto de Odoo vinculado', 400);
+        if (odoo_company !== 'neggo') return fail(res, 'Solo se cargan fotos a productos de Neggo', 400);
+
+        const result = await writeOdooImage(odoo_product_id, req.file.buffer.toString('base64'));
+        console.log(`✅ Foto cargada en Odoo para producto ${odoo_product_id} (ingreso ${ingresoId}, ítem ${itemId})`);
+        return ok(res, { message: 'Foto guardada en Odoo', ...result });
+    } catch (err) {
+        console.error('❌ Error cargando foto en Odoo:', err);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+// =============================================
+// POST /api/ingreso/:ingresoId/whatsapp
+// Programa una tanda de WhatsApp con productos del ingreso que tienen foto y precio.
+// Body: { item_ids: [...], scheduled_at: 'AAAA-MM-DDTHH:mm' (hora Argentina) | send_now: true,
+//         interval_seconds? }
+// La tanda entra a la misma cola y listado que el resto de las publicaciones.
+// =============================================
+
+router.post('/:ingresoId/whatsapp', authenticate, requireRole('admin'), async (req, res) => {
+    const { ingresoId } = req.params;
+    const itemIds = Array.isArray(req.body.item_ids)
+        ? req.body.item_ids.map(Number).filter(Number.isInteger)
+        : [];
+    if (itemIds.length === 0) return fail(res, 'Elegí al menos un producto', 400);
+
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, odoo_product_id FROM ingreso_items
+             WHERE ingreso_id = $1 AND id = ANY($2::int[])
+               AND odoo_product_id IS NOT NULL
+               AND COALESCE(odoo_company, 'neggo') = 'neggo'
+             ORDER BY id`,
+            [ingresoId, itemIds]
+        );
+        // findByIds vuelve a validar foto, precio y producto activo con el cache
+        const odooIds  = [...new Set(rows.map(r => r.odoo_product_id))];
+        const products = await findByIds(pool, 'neggo', odooIds);
+        if (products.length === 0) {
+            return fail(res, 'Ninguno de los productos elegidos tiene foto y precio de venta en Odoo', 400);
+        }
+
+        const settings = await whatsappQueue.getSettings(pool);
+        const { batch, total } = await whatsappQueue.createBatch(pool, {
+            company:         'neggo',
+            category:        `Ingreso #${ingresoId}`,
+            products:        products.map(p => ({ ...p, caption: `${WHATSAPP_INGRESO_HEADER}\n${p.caption}` })),
+            groupJid:        req.body.group_jid || settings.group_jid,
+            groupSubject:    req.body.group_subject || settings.group_subject,
+            intervalSeconds: req.body.interval_seconds || settings.interval_seconds,
+            scheduledAt:     req.body.scheduled_at,
+            sendNow:         req.body.send_now === true,
+            maxAttempts:     process.env.WHATSAPP_MAX_ATTEMPTS,
+            createdBy:       req.user.id,
+        });
+
+        const publicados = new Set(products.map(p => p.odoo_id));
+        const omitidos = itemIds.filter(id => {
+            const row = rows.find(r => r.id === id);
+            return !row || !publicados.has(row.odoo_product_id);
+        });
+
+        console.log(`✅ Tanda de WhatsApp ${batch.id} programada desde ingreso ${ingresoId}: ${total} productos`);
+        return ok(res, { id: batch.id, total, scheduled_at: batch.scheduled_at, omitidos }, 201);
+    } catch (err) {
+        console.error('❌ Error programando WhatsApp desde ingreso:', err.message);
+        return fail(res, err.message, 400);
     }
 });
 
