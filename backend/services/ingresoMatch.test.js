@@ -7,6 +7,7 @@ const path = require('path');
 const { Client, Pool } = require('pg');
 const {
     nameMatchDecision,
+    MATCH_LEVELS_TO_CONFIRM,
     refWithoutSupplierPrefix,
     buildRefWithoutPrefixIndex,
     matchByRefWithoutPrefix,
@@ -59,6 +60,8 @@ function testRefOtroProveedor() {
     // El activo gana al archivado
     assert.strictEqual(matchByRefWithoutPrefix(index, 'ZZ99999').odoo_id, 6);
     assert.strictEqual(matchByRefWithoutPrefix(index, 'NOEXISTE1'), null);
+    // Es de otro proveedor: lo confirma una persona
+    assert.ok(MATCH_LEVELS_TO_CONFIRM.includes('ref_other_prefix'));
     console.log('ref otro proveedor ok');
 }
 

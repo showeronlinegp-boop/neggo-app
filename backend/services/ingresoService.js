@@ -195,6 +195,10 @@ function similarity(a, b) {
     return 1 - prev[lb] / Math.max(la, lb);
 }
 
+// Niveles que sugieren un producto pero quedan 'pending' hasta que una persona confirme:
+// un nombre parecido, o una referencia que en Odoo tiene el prefijo de otro proveedor.
+const MATCH_LEVELS_TO_CONFIRM = ['fuzzy_name', 'ref_other_prefix'];
+
 // Un parecido de nombre no se auto-confirma. Sí se confirma si el nombre
 // normalizado es el mismo (mayúsculas, acentos y espacios).
 function nameMatchDecision(descripcion, productName) {
@@ -486,6 +490,7 @@ async function matchItems(items, supplierId = null) {
             // ---- Nivel 4: internal_ref con el prefijo de OTRO proveedor ----
             //   codigo="BR8003021" + proveedor CY → encuentra "MG-BR8003021"
             // Pasa cuando el producto se dio de alta con otro proveedor o con el prefijo equivocado.
+            // Queda 'pending': confirmarlo le cambia costo y stock a un producto de otro proveedor.
             if (!matched && codigoValido) {
                 matched = matchByRefWithoutPrefix(byRefSinPrefijo, item.codigo);
                 if (matched) { confidence = 0.9; matchLevel = 'ref_other_prefix'; }
@@ -554,7 +559,7 @@ async function matchItems(items, supplierId = null) {
             confidence_match:  confidence,
             match_level:       matchLevel,
             error_match:       errorMsg,
-            estado_item:       matched && matchLevel !== 'fuzzy_name' ? 'matched' : 'pending',
+            estado_item:       matched && !MATCH_LEVELS_TO_CONFIRM.includes(matchLevel) ? 'matched' : 'pending',
             precio_odoo_anterior: matched ? parseFloat(matched.standard_price || 0) : null,
             precio_odoo_lista:    matched ? parseFloat(matched.list_price    || 0) : null,
             supplier_product_id:   null,
@@ -1180,6 +1185,7 @@ module.exports = {
     confirmIngreso,
     findPreventasProductId,
     nameMatchDecision,
+    MATCH_LEVELS_TO_CONFIRM,
     refWithoutSupplierPrefix,
     buildRefWithoutPrefixIndex,
     matchByRefWithoutPrefix,
