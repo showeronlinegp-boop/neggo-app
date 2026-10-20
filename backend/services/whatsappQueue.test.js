@@ -5,7 +5,7 @@ const assert = require('assert');
 const { Client, Pool } = require('pg');
 const { formatMoneyAR, catalogSalePrice, buildCaption } = require('./whatsappPrice');
 const { calculatePrices } = require('./rulesEngine');
-const { extractQr, normalizeGroups, instanceName } = require('./evolutionClient');
+const { extractQr, normalizeGroups, instanceName, statusDataUri } = require('./evolutionClient');
 const products = require('./whatsappProducts');
 const queue = require('./whatsappQueue');
 
@@ -68,6 +68,10 @@ function testEvolutionParse() {
     process.env.EVOLUTION_STATUS_INSTANCE = 'neggo-estados';
     assert.strictEqual(instanceName('grupo'), 'neggo');
     assert.strictEqual(instanceName('estado'), 'neggo-estados');
+    // Evolution toma content como URL: el base64 tiene que ir como data URI
+    assert.strictEqual(statusDataUri('AAAA', 'image/png'), 'data:image/png;base64,AAAA');
+    assert.strictEqual(statusDataUri('AAAA'), 'data:image/jpeg;base64,AAAA');
+    assert.strictEqual(statusDataUri('data:image/webp;base64,BBBB', 'image/png'), 'data:image/webp;base64,BBBB');
     process.env.EVOLUTION_STATUS_INSTANCE = 'neggo';
     assert.throws(() => instanceName('estado'), /distinta/);
     if (prevGroup == null) delete process.env.EVOLUTION_INSTANCE;

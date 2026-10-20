@@ -143,7 +143,8 @@ services:
       - DATABASE_SAVE_DATA_INSTANCE=true
       - DATABASE_SAVE_DATA_NEW_MESSAGE=false
       - DATABASE_SAVE_MESSAGE_UPDATE=false
-      - DATABASE_SAVE_DATA_CONTACTS=false
+      # Los estados se mandan a todos los contactos guardados: sin esto Evolution responde "Contacts not found"
+      - DATABASE_SAVE_DATA_CONTACTS=true
       - DATABASE_SAVE_DATA_CHATS=false
       - DATABASE_SAVE_DATA_LABELS=false
       - DATABASE_SAVE_DATA_HISTORIC=false
