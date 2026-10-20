@@ -5,7 +5,7 @@ const assert = require('assert');
 const { Client, Pool } = require('pg');
 const { formatMoneyAR, catalogSalePrice, buildCaption } = require('./whatsappPrice');
 const { calculatePrices } = require('./rulesEngine');
-const { extractQr, normalizeGroups } = require('./evolutionClient');
+const { extractQr, normalizeGroups, instanceName } = require('./evolutionClient');
 const products = require('./whatsappProducts');
 const queue = require('./whatsappQueue');
 
@@ -62,6 +62,18 @@ function testEvolutionParse() {
         { id: '549111@s.whatsapp.net', subject: 'Privado' },
     ]);
     assert.deepStrictEqual(groups, [{ jid: '120363001@g.us', subject: 'Ofertas', size: 12 }]);
+    const prevGroup = process.env.EVOLUTION_INSTANCE;
+    const prevStatus = process.env.EVOLUTION_STATUS_INSTANCE;
+    process.env.EVOLUTION_INSTANCE = 'neggo';
+    process.env.EVOLUTION_STATUS_INSTANCE = 'neggo-estados';
+    assert.strictEqual(instanceName('grupo'), 'neggo');
+    assert.strictEqual(instanceName('estado'), 'neggo-estados');
+    process.env.EVOLUTION_STATUS_INSTANCE = 'neggo';
+    assert.throws(() => instanceName('estado'), /distinta/);
+    if (prevGroup == null) delete process.env.EVOLUTION_INSTANCE;
+    else process.env.EVOLUTION_INSTANCE = prevGroup;
+    if (prevStatus == null) delete process.env.EVOLUTION_STATUS_INSTANCE;
+    else process.env.EVOLUTION_STATUS_INSTANCE = prevStatus;
     console.log('evolution parse ok');
 }
 
@@ -287,6 +299,35 @@ async function testQueue(pool) {
     const finalRows = await stateOf(pool, cancel.batch.id);
     assert.strictEqual(finalRows[1].status, 'enviado');
     assert.strictEqual(finalRows[1].attempts, 2);
+
+    const statusBatch = await queue.createBatch(pool, {
+        company: 'preventas',
+        destino: 'estado',
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-04T00:00',
+        maxAttempts: 3,
+    });
+    assert.strictEqual(statusBatch.batch.destino, 'estado');
+    assert.strictEqual(statusBatch.batch.group_jid, queue.STATUS_JID);
+    const posted = [];
+    const statusTick = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
+        sendImage: async () => { throw new Error('un estado no se manda al grupo'); },
+        sendStatus: async (payload) => { posted.push(payload); return 'status-1'; },
+    }, new Date('2020-01-04T03:00:00.000Z'));
+    assert.strictEqual(statusTick.action, 'enviado');
+    assert.strictEqual(posted.length, 1);
+    assert.match(posted[0].caption, /Plato hondo/);
+    assert.match(posted[0].caption, /\$3\.045/);
+    await assert.rejects(
+        () => queue.createBatch(pool, {
+            company: 'preventas',
+            destino: 'grupo',
+            intervalSeconds: 90,
+            scheduledAt: '2020-01-05T00:00',
+        }),
+        /JID/
+    );
 
     const logs = await pool.query('SELECT COUNT(*)::int AS n FROM whatsapp_logs');
     assert.ok(logs.rows[0].n > 0);
