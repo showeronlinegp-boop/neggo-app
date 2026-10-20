@@ -1,9 +1,12 @@
 // Armado y control de pedidos
-// GET    /api/pedido-envios?tab=armar|controlar|hechos&company=neggo&q=
+// GET    /api/pedido-envios?solapa=pedidos|esperando_pago&company=neggo|preventas|ambas
+//            &estado=todos|pendiente|armando|armado|controlando|saldado&q=&dias=&orden=viejos|nuevos|monto|unidades
+//            &pagados=1&offset=
 // GET    /api/pedido-envios/:id
 // POST   /api/pedido-envios/sync                 { company? }
 // POST   /api/pedido-envios/:id/estado           { estado }  // armando: confirma Odoo + ata envío 1
-// POST   /api/pedido-envios/:id/cotizacion-enviada  { enviada: bool }  (solo en la app)
+// POST   /api/pedido-envios/:id/cotizacion-enviada  { enviada: bool }  (solo en la app, pedido saldado)
+// POST   /api/pedido-envios/:id/pago-recibido    { recibido: bool }  (solo en la app)
 // PATCH  /api/pedido-envios/items/:itemId        { qty_armada? | qty_controlada? }
 // POST   /api/pedido-envios/:id/escanear         { code }
 // POST   /api/pedido-envios/items/:itemId/faltante  { motivo: archivado|reponer|faltante }
@@ -25,11 +28,15 @@ function sendErr(res, err, fallback) {
 
 router.get('/', async (req, res) => {
     try {
-        const tab = ['armar', 'controlar', 'hechos'].includes(req.query.tab) ? req.query.tab : 'armar';
         return ok(res, await servicio.listar({
-            tab,
+            solapa: req.query.solapa,
             companyKey: req.query.company,
+            estado: req.query.estado,
             q: req.query.q,
+            dias: req.query.dias,
+            orden: req.query.orden,
+            incluirPagados: req.query.pagados === '1' || req.query.pagados === 'true',
+            offset: req.query.offset,
         }));
     } catch (err) {
         return sendErr(res, err, 'Error listando pedidos para armar');
@@ -94,6 +101,18 @@ router.post('/:id/cotizacion-enviada', async (req, res) => {
         ));
     } catch (err) {
         return sendErr(res, err, 'Error marcando cotización enviada');
+    }
+});
+
+router.post('/:id/pago-recibido', async (req, res) => {
+    try {
+        return ok(res, await servicio.marcarPagoRecibido(
+            parseInt(req.params.id, 10),
+            req.body?.recibido !== false,
+            req.user.id
+        ));
+    } catch (err) {
+        return sendErr(res, err, 'Error marcando pago recibido');
     }
 });
 

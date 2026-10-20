@@ -22,6 +22,8 @@ const {
     auditarTerminarArmado,
     auditarEmpezarArmar,
     auditarSaldar,
+    condicionesListado,
+    ordenListado,
 } = require('./pedidoEnvioService');
 
 function testClamp() {
@@ -38,6 +40,27 @@ function testTabs() {
     assert.strictEqual(tabDeEstado('armado'), 'controlar');
     assert.strictEqual(tabDeEstado('controlando'), 'controlar');
     assert.strictEqual(tabDeEstado('saldado'), 'hechos');
+}
+
+function testListado() {
+    const companies = ['neggo', 'preventas'];
+    const pedidos = condicionesListado({ companies });
+    assert.deepStrictEqual(pedidos.params, [companies]);
+    assert.ok(pedidos.where.includes('e.cotizacion_enviada_at IS NULL'));
+
+    const esperando = condicionesListado({ companies, solapa: 'esperando_pago', q: 'S04', dias: '7' });
+    assert.deepStrictEqual(esperando.params, [companies, '%S04%', 7]);
+    assert.ok(esperando.where.includes('e.cotizacion_enviada_at IS NOT NULL AND e.pago_recibido_at IS NULL'));
+
+    const conPagados = condicionesListado({ companies, incluirPagados: true });
+    assert.ok(conPagados.where.includes('(e.cotizacion_enviada_at IS NULL OR e.pago_recibido_at IS NOT NULL)'));
+
+    // Días inválidos no filtran
+    assert.strictEqual(condicionesListado({ companies, dias: 'x' }).params.length, 1);
+
+    assert.ok(ordenListado(undefined, 'pedidos').startsWith('x.date_order ASC'));
+    assert.ok(ordenListado('nuevos', 'pedidos').startsWith('x.date_order DESC'));
+    assert.ok(ordenListado('viejos', 'esperando_pago').startsWith('x.cotizacion_enviada_at ASC'));
 }
 
 function testBarcode() {
@@ -446,6 +469,7 @@ function testAuditarSinOdoo() {
 
 testClamp();
 testTabs();
+testListado();
 testBarcode();
 testPreviewCompleto();
 testPreviewParcial();
