@@ -11,6 +11,7 @@ function getModule(path) {
     if (path.includes('/alerts')) return 'alerts';
     if (path.includes('/preventas')) return 'preventas';
     if (path.includes('/catalogs')) return 'catalogs';
+    if (path.includes('/reposicion')) return 'reposicion';
     return 'general';
 }
 

@@ -206,6 +206,17 @@ router.patch('/odoo/:odooId/archive', authenticate, async (req, res) => {
         );
         if (!rows.length) return fail(res, 'Producto no encontrado en cache', 404);
 
+        // Reposición: el sync no ve este cambio porque el cache ya quedó actualizado acá
+        if (company === 'neggo') {
+            const reposicion = require('../services/reposicionService');
+            try {
+                if (archived) await reposicion.registrarArchivados([odooId], { createdBy: req.user.id });
+                else await reposicion.resolverReactivados([odooId], { resolvedBy: req.user.id });
+            } catch (err) {
+                console.error(`⚠️ Reposición: no se pudo actualizar la cola para ${odooId}: ${err.message}`);
+            }
+        }
+
         const action = archived ? 'archivado' : 'restaurado';
         console.log(`✅ Producto ${rows[0].name} (odoo_id=${odooId}) ${action} en Odoo y cache local`);
         ok(res, rows[0]);
