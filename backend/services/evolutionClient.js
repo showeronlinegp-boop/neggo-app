@@ -1,5 +1,7 @@
 // Cliente HTTP de Evolution API v2. La clave va en el header apikey y nunca se loguea.
 
+const { assertSendable } = require('./whatsappMessage');
+
 const DEFAULT_TIMEOUT_MS = 20000;
 const SEND_TIMEOUT_MS = 60000;
 
@@ -39,9 +41,11 @@ function normalizeGroups(payload) {
     const list = Array.isArray(payload) ? payload : (payload?.groups || payload?.data || []);
     if (!Array.isArray(list)) return [];
     return list
+        // La comunidad "madre" no acepta mensajes (WhatsApp responde 420): se publica en su grupo de avisos.
+        .filter((g) => !g.isCommunity)
         .map((g) => ({
             jid: g.id || g.jid || g.remoteJid || null,
-            subject: g.subject || g.name || g.id || 'Grupo',
+            subject: `${g.subject || g.name || g.id || 'Grupo'}${g.isCommunityAnnounce ? ' (avisos de la comunidad)' : ''}`,
             size: Number.isFinite(Number(g.size)) ? Number(g.size) : null,
         }))
         .filter((g) => typeof g.jid === 'string' && g.jid.endsWith('@g.us'));
@@ -128,21 +132,23 @@ async function fetchGroups() {
     return normalizeGroups(payload);
 }
 
-async function sendImage({ number, caption, base64, fileName, mimetype }) {
+async function sendImage({ number, caption, base64, fileName }) {
     const { instance } = config();
-    if (!number || !caption || !base64) {
-        throw new EvolutionError('Faltan destino, texto o foto para enviar');
+    if (!number) {
+        throw new EvolutionError('Falta el destino para enviar');
     }
+    // Último control antes de salir: texto con contenido y foto válida.
+    const ready = assertSendable({ caption, base64 });
     const payload = await request(`/message/sendMedia/${encodeURIComponent(instance)}`, {
         method: 'POST',
         timeoutMs: SEND_TIMEOUT_MS,
         body: {
             number,
             mediatype: 'image',
-            mimetype: mimetype || 'image/jpeg',
-            caption,
-            media: base64,
-            fileName: fileName || 'producto.jpg',
+            mimetype: ready.mimetype,
+            caption: ready.caption,
+            media: ready.base64,
+            fileName: fileName || `producto.${ready.mimetype.split('/')[1]}`,
         },
     });
     return payload?.key?.id || payload?.id || null;

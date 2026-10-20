@@ -8,23 +8,9 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
-
-function defaultSchedule() {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-    const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function fmtWhen(iso) {
-    if (!iso) return '—';
-    return new Date(iso).toLocaleString('es-AR', {
-        timeZone: 'America/Argentina/Buenos_Aires',
-        day: '2-digit', month: '2-digit', year: 'numeric',
-        hour: '2-digit', minute: '2-digit',
-    });
-}
+import WhatsAppRandomPicker from './WhatsAppRandomPicker';
+import WhatsAppQueue from './WhatsAppQueue';
+import { defaultSchedule, fmtWhen } from './whatsappUtils';
 
 const STATUS_TONE = {
     programada: 'muted',
@@ -59,6 +45,7 @@ export default function WhatsAppPublish() {
     const [busy, setBusy] = useState('');
     const [error, setError] = useState(null);
     const [notice, setNotice] = useState(null);
+    const [queueKey, setQueueKey] = useState(0);
 
     const loadStatus = useCallback(async () => {
         const res = await api.get('/whatsapp/status');
@@ -168,6 +155,12 @@ export default function WhatsAppPublish() {
         setNotice(`Tanda #${res.data.id} programada con ${res.data.total} productos.`);
         setOpenId(res.data.id);
         loadBatches();
+        setQueueKey((k) => k + 1);
+    }
+
+    function onRandomScheduled() {
+        loadBatches();
+        setQueueKey((k) => k + 1);
     }
 
     async function act(id, name) {
@@ -176,6 +169,7 @@ export default function WhatsAppPublish() {
         if (!res.success) { setError(res.error); return; }
         if (openId === id) setDetail(res.data);
         loadBatches();
+        setQueueKey((k) => k + 1);
     }
 
     const label = { fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 6 };
@@ -247,8 +241,19 @@ export default function WhatsAppPublish() {
                 )}
             </Card>
 
+            <WhatsAppRandomPicker
+                groupJid={groupJid}
+                groupSubject={groups.find((g) => g.jid === groupJid)?.subject || status?.settings?.group_subject}
+                intervalSeconds={intervalSeconds}
+                onScheduled={onRandomScheduled}
+                onError={setError}
+                onNotice={setNotice}
+            />
+
+            <WhatsAppQueue refreshKey={queueKey} />
+
             <Card>
-                <h2 style={sectionTitle}>Armar tanda</h2>
+                <h2 style={sectionTitle}>Armar tanda con filtros</h2>
                 <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, marginTop: 6 }}>
                     Entra solo un producto de Odoo con foto y con precio de catálogo (lista del proveedor × 1,015 × markup de la empresa). La lista de cliente filtra proveedores y no cambia ese precio. La hora es de Argentina.
                 </p>
