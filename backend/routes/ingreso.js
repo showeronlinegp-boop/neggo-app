@@ -2523,8 +2523,9 @@ router.delete('/:ingresoId', authenticate, requireRole('admin'), async (req, res
 
 // =============================================
 // POST /api/ingreso/:ingresoId/rematch
-// Re-match en background para ítems pending.
-// Devuelve solo los ítems que consiguieron nuevo match (con JOIN data).
+// Re-match en background para ítems pending, y para los que vinculó solo la
+// descripción de compra sin que nadie los tilde (mientras no haya OC).
+// Devuelve solo los ítems que cambiaron (con JOIN data).
 // =============================================
 
 router.post('/:ingresoId/rematch', authenticate, async (req, res) => {
@@ -2532,20 +2533,25 @@ router.post('/:ingresoId/rematch', authenticate, async (req, res) => {
 
     try {
         const ingresoResult = await pool.query(
-            `SELECT supplier_id FROM ingreso_mercaderia WHERE id = $1`,
+            `SELECT supplier_id, odoo_purchase_order_id, odoo_purchase_order_id_preventas
+             FROM ingreso_mercaderia WHERE id = $1`,
             [ingresoId]
         );
         if (!ingresoResult.rows.length) return fail(res, 'Ingreso no encontrado', 404);
 
-        const { supplier_id } = ingresoResult.rows[0];
+        const { supplier_id, odoo_purchase_order_id, odoo_purchase_order_id_preventas } = ingresoResult.rows[0];
+        const sinOc = !odoo_purchase_order_id && !odoo_purchase_order_id_preventas;
 
         const pendingResult = await pool.query(
-            `SELECT id, codigo, descripcion, cantidad, precio_unitario, subtotal
+            `SELECT id, codigo, descripcion, cantidad, precio_unitario, subtotal,
+                    odoo_product_id AS prev_odoo_product_id, match_level AS prev_match_level
              FROM ingreso_items
              WHERE ingreso_id = $1
-               AND (estado_item = 'pending' OR estado_item = 'no_match')
+               AND (estado_item = 'pending' OR estado_item = 'no_match'
+                    OR ($2 AND estado_item = 'matched' AND match_level = 'desc_purchase'
+                        AND checked IS NOT TRUE))
                AND codigo IS NOT NULL AND codigo <> ''`,
-            [ingresoId]
+            [ingresoId, sinOc]
         );
 
         if (pendingResult.rows.length === 0) return ok(res, []);
@@ -2557,6 +2563,30 @@ router.post('/:ingresoId/rematch', authenticate, async (req, res) => {
 
         const updated = [];
         for (const rm of rematched) {
+            if (rm.prev_match_level === 'desc_purchase') {
+                // Sigue igual: no hay nada que tocar
+                if (rm.odoo_product_id === rm.prev_odoo_product_id) continue;
+                // La descripción genérica ya no alcanza: se desvincula para que una persona elija
+                if (!rm.odoo_product_id) {
+                    await pool.query(
+                        `UPDATE ingreso_items
+                         SET odoo_product_id = NULL, odoo_product_name = NULL,
+                             estado_item = 'pending', odoo_active = NULL,
+                             confidence_match = 0, match_level = NULL, error_match = $1,
+                             precio_odoo_anterior = NULL, precio_odoo_lista = NULL
+                         WHERE id = $2`,
+                        [rm.error_match, rm.id]
+                    );
+                    updated.push({
+                        id: rm.id, odoo_product_id: null, odoo_product_name: null,
+                        estado_item: 'pending', odoo_active: null, confidence_match: 0,
+                        match_level: null, error_match: rm.error_match,
+                        precio_odoo_anterior: null, precio_odoo_lista: null,
+                        odoo_barcode: null, odoo_internal_ref: null, odoo_list_price: null,
+                    });
+                    continue;
+                }
+            }
             if (!rm.odoo_product_id) continue;
             // Lo dudoso (ej. un parecido de nombre) queda pendiente hasta que una persona lo confirme.
             const auto = rm.estado_item === 'matched'

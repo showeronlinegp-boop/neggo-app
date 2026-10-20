@@ -251,27 +251,36 @@ function DatoItem({ label, value, color }) {
     );
 }
 
+// Por qué apareció cada resultado en el modal de vinculación
+const MOTIVO_VINCULO = {
+    codigo:          'Mismo código',
+    codigo_parecido: 'Código parecido',
+    nombre:          'Nombre parecido',
+};
+
 function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
-    const [search, setSearch]     = useState(item?.codigo || '');
+    // Vacío = sugerencias armadas con el código y la descripción del ítem
+    const [search, setSearch]     = useState('');
     const [results, setResults]   = useState([]);
     const [loading, setLoading]   = useState(false);
     const [selected, setSelected] = useState(null);
     const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
+    const sugiriendo = search.trim().length < 2;
 
     useEffect(() => {
-        if (!search || search.length < 2) { setResults([]); return; }
+        const params = sugiriendo
+            ? { company: 'neggo', codigo: item?.codigo || '', descripcion: item?.descripcion || '', limit: 20 }
+            : { company: 'neggo', q: search, limit: 20 };
         const t = setTimeout(async () => {
             setLoading(true);
             try {
-                const res = await api.get('/products/odoo', {
-                    company: 'neggo', search, limit: 20, include_inactive: 'true'
-                });
-                if (res.success) setResults(res.data?.products || res.data || []);
+                const res = await api.get('/products/odoo/link-suggestions', params);
+                if (res.success) setResults(res.data || []);
             } catch (_) {}
             finally { setLoading(false); }
-        }, 350);
+        }, sugiriendo ? 0 : 350);
         return () => clearTimeout(t);
-    }, [search]);
+    }, [search, sugiriendo, item?.codigo, item?.descripcion]);
 
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
@@ -310,13 +319,19 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                 <input
                     autoFocus
                     type="text"
-                    placeholder="Buscar por nombre o código interno..."
+                    placeholder="Buscá por código o por palabras del nombre, en cualquier orden..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     style={{ width: '100%', padding: '10px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '14px', boxSizing: 'border-box', marginBottom: '10px' }}
                 />
 
                 {loading && <p style={{ fontSize: '12px', color: C.gray }}>Buscando...</p>}
+
+                {!loading && sugiriendo && results.length > 0 && (
+                    <p style={{ fontSize: '11px', color: C.gray, marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                        Sugerencias para este ítem
+                    </p>
+                )}
 
                 {results.length > 0 && (
                     <div style={{ border: `1px solid ${C.border}`, borderRadius: '4px', maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
@@ -343,7 +358,14 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                                             {p.active ? 'ACTIVO' : 'INACTIVO'}
                                         </span>
                                     </div>
-                                    {p.internal_ref && <div style={{ fontSize: '11px', color: C.gray }}>Ref: {p.internal_ref}</div>}
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '11px', color: C.gray }}>
+                                        {p.internal_ref && <span>Ref: {p.internal_ref}</span>}
+                                        {MOTIVO_VINCULO[p.motivo] && (
+                                            <span style={{ padding: '0 6px', borderRadius: '3px', border: `1px solid ${C.border}` }}>
+                                                {MOTIVO_VINCULO[p.motivo]}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
                                 <div style={{ textAlign: 'right', fontSize: '12px', color: C.gray, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                                     <div>{p.standard_price ? fmtARS(p.standard_price) : '—'}</div>
@@ -364,8 +386,12 @@ function ProductSearchModal({ item, costos, onPackChange, onLink, onCancel }) {
                     </div>
                 )}
 
-                {!loading && search.length >= 2 && results.length === 0 && (
-                    <p style={{ fontSize: '12px', color: C.gray, marginBottom: '14px' }}>Sin resultados para "{search}"</p>
+                {!loading && results.length === 0 && (
+                    <p style={{ fontSize: '12px', color: C.gray, marginBottom: '14px' }}>
+                        {sugiriendo
+                            ? 'No encontramos nada parecido a este ítem. Probá escribiendo otras palabras.'
+                            : `Sin resultados para "${search}"`}
+                    </p>
                 )}
 
                 {selected && (
@@ -400,6 +426,77 @@ function calcPrecioLista(costoUnitario, discountOverride, defaultDiscount, marku
     const markup   = markupOverride   !== null && markupOverride   !== undefined ? parseFloat(markupOverride)   : (defaultMarkup   || 0);
     const costo    = discount > 0 ? costoUnitario * (1 - discount / 100) : costoUnitario;
     return markup > 0 ? Math.ceil(costo * (1 + markup / 100)) : null;
+}
+
+// =============================================
+// Columna derecha de un ítem sin vincular: las primeras sugerencias del
+// modal de vinculación, para vincular con un clic. Si no hay, no se muestra.
+// =============================================
+const MAX_SUGERENCIAS_TARJETA = 3;
+
+function SugerenciasVinculo({ item, excluirOdooId, isMobile, onLink }) {
+    const [sugerencias, setSugerencias] = useState([]);
+    const [vinculando, setVinculando]   = useState(null);
+
+    useEffect(() => {
+        if (!item.codigo && !item.descripcion) { setSugerencias([]); return; }
+        let vigente = true;
+        api.get('/products/odoo/link-suggestions', {
+            company: 'neggo', codigo: item.codigo || '', descripcion: item.descripcion || '',
+            limit: MAX_SUGERENCIAS_TARJETA + 1,
+        })
+            .then(res => {
+                if (!vigente || !res.success) return;
+                // El parecido que ya se ofrece para confirmar no se repite acá
+                const lista = (res.data || []).filter(p => p.odoo_id !== excluirOdooId);
+                setSugerencias(lista.slice(0, MAX_SUGERENCIAS_TARJETA));
+            })
+            .catch(() => {});
+        return () => { vigente = false; };
+    }, [item.codigo, item.descripcion, excluirOdooId]);
+
+    if (sugerencias.length === 0) return null;
+
+    const vincular = async (p) => {
+        setVinculando(p.odoo_id);
+        try { await onLink(p); } finally { setVinculando(null); }
+    };
+
+    return (
+        <div style={{ flex: isMobile ? 'none' : 1, padding: '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
+            <p style={{ fontSize: '10px', color: C.gray, margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                ¿Es alguno de estos?
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {sugerencias.map(p => (
+                    <div key={p.odoo_id} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 8px', border: `1px solid ${C.border}`, borderRadius: '6px', backgroundColor: C.white }}>
+                        <OdooImage odooId={p.odoo_id} size={36} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div title={p.name} style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {p.name}
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '10px', color: C.gray, flexWrap: 'wrap' }}>
+                                {p.internal_ref && <code style={{ fontFamily: 'monospace' }}>{p.internal_ref}</code>}
+                                {MOTIVO_VINCULO[p.motivo] && <span>· {MOTIVO_VINCULO[p.motivo]}</span>}
+                                {!p.active && <span style={{ color: C.error, fontWeight: 'bold' }}>· INACTIVO</span>}
+                                {parseFloat(p.standard_price) > 0 && (
+                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>· Costo {fmtARS(p.standard_price)}</span>
+                                )}
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => vincular(p)}
+                            disabled={vinculando !== null}
+                            title="Vincular este ítem a este producto"
+                            style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.white, color: C.secondary, cursor: vinculando !== null ? 'default' : 'pointer', flexShrink: 0 }}
+                        >
+                            {vinculando === p.odoo_id ? '⏳' : 'Vincular'}
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
 }
 
 // =============================================
@@ -696,8 +793,11 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                     </div>
                 )}
 
-                {/* Precio factura + Pack */}
+                {/* Cantidad + Precio factura + Pack */}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '12px', color: C.gray }}>
+                        Cant.: <strong style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{item.cantidad}</strong>
+                    </span>
                     <span style={{ fontSize: '12px', color: C.gray }}>
                         Precio: <strong style={{ color: C.text }}>{fmtARS(item.precio_unitario)}</strong>
                     </span>
@@ -845,6 +945,16 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                     </div>
                 )}
             </div>
+
+            {/* COLUMNA DERECHA para nuevos: sugerencias de vinculación */}
+            {isNew && !isRejected && (
+                <SugerenciasVinculo
+                    item={item}
+                    excluirOdooId={item.match_level === 'fuzzy_name' ? item.odoo_product_id : null}
+                    isMobile={isMobile}
+                    onLink={(p) => onLinked(item.id, p.odoo_id)}
+                />
+            )}
 
             {/* FLECHA separadora */}
             {isMatched && !isMobile && (
@@ -2086,12 +2196,14 @@ export default function IngresoPreview() {
         }).catch(() => {});
     }, []);
 
-    // Re-match en background: una sola vez tras la carga, solo si hay pendientes.
+    // Re-match en background: una sola vez tras la carga, si hay pendientes o
+    // vínculos hechos solo por descripción de compra que nadie tildó.
     useEffect(() => {
         if (rematchDone.current || loading || !ingreso) return;
-        const hasPending = items.some(i =>
-            (i.estado_item === 'pending' || i.estado_item === 'no_match') && i.codigo
-        );
+        const hasPending = items.some(i => i.codigo && (
+            i.estado_item === 'pending' || i.estado_item === 'no_match'
+            || (i.match_level === 'desc_purchase' && !i.checked)
+        ));
         if (!hasPending) return;
         rematchDone.current = true;
         ingresoAPI.rematch(ingresoId).then(res => {

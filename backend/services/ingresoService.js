@@ -256,6 +256,38 @@ function matchByRefWithoutPrefix(index, codigo) {
     return elegibles.length === 1 ? elegibles[0] : null;
 }
 
+// Índice descripción de compra normalizada → productos que la tienen.
+function buildDescPurchaseIndex(products) {
+    const index = new Map();
+    for (const p of products) {
+        const key = normalize(p.description_purchase);
+        if (!key) continue;
+        if (!index.has(key)) index.set(key, []);
+        index.get(key).push(p);
+    }
+    return index;
+}
+
+// La referencia del producto contradice el código de la factura: el producto
+// tiene referencia y no es ese código (ni con ni sin prefijo de proveedor).
+function refContradictsCode(internalRef, codigo, prefixes) {
+    const ref = String(internalRef || '').replace(/[-\s]/g, '').toUpperCase();
+    const code = String(codigo || '').replace(/[-\s]/g, '').toUpperCase();
+    if (!ref || !code) return false;
+    if (ref === code) return false;
+    return refWithoutSupplierPrefix(ref, prefixes) !== code;
+}
+
+// Vincula por descripción de compra solo si la descripción es de un único
+// producto y su referencia no contradice el código. Una descripción genérica
+// ("BROCHES") no alcanza para elegir producto (nota de prueba #35).
+function matchByDescPurchase(index, descripcion, codigo, prefixes) {
+    const candidates = index.get(normalize(descripcion)) || [];
+    if (candidates.length !== 1) return null;
+    const p = candidates[0];
+    return refContradictsCode(p.internal_ref, codigo, prefixes) ? null : p;
+}
+
 // Reparte una cantidad de preventa entre renglones del mismo código,
 // sin pasar la cantidad de cada renglón. El sobrante no se asigna.
 function allocatePreventaQty(rows, requestedQty) {
@@ -368,7 +400,6 @@ async function matchItems(items, supplierId = null) {
     const byRef          = new Map(); // internal_ref exacto (con guiones)
     const byRefNorm      = new Map(); // internal_ref normalizado (sin guiones/espacios)
     const byBcode        = new Map();
-    const byDescPurchase = new Map();
     for (const p of odooCache) {
         if (p.internal_ref) {
             byRef.set(p.internal_ref.toUpperCase(), p);
@@ -376,8 +407,8 @@ async function matchItems(items, supplierId = null) {
             if (!byRefNorm.has(normKey)) byRefNorm.set(normKey, p);
         }
         if (p.barcode)              byBcode.set(p.barcode, p);
-        if (p.description_purchase) byDescPurchase.set(normalize(p.description_purchase), p);
     }
+    const byDescPurchase = buildDescPurchaseIndex(odooCache);
 
     // Si hay supplierId, obtener el prefijo del proveedor
     let supplierPrefix = null;
@@ -504,8 +535,9 @@ async function matchItems(items, supplierId = null) {
 
             // ---- Nivel 6: description_purchase (descripción de compra en Odoo) ----
             if (!matched && item.descripcion) {
-                const normDesc = normalize(item.descripcion);
-                matched = byDescPurchase.get(normDesc) || null;
+                matched = matchByDescPurchase(
+                    byDescPurchase, item.descripcion, codigoValido ? item.codigo : null, allPrefixes
+                );
                 if (matched) { confidence = 0.85; matchLevel = 'desc_purchase'; }
             }
 
@@ -1189,6 +1221,8 @@ module.exports = {
     refWithoutSupplierPrefix,
     buildRefWithoutPrefixIndex,
     matchByRefWithoutPrefix,
+    buildDescPurchaseIndex,
+    matchByDescPurchase,
     allocatePreventaQty,
     capPreventaShares,
     distributePreventaQty,

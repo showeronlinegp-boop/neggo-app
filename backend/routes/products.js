@@ -1,5 +1,6 @@
 // Rutas de productos — Agente 03 + Agente 06
 // GET  /api/products/odoo                      — lee del cache local
+// GET  /api/products/odoo/link-suggestions     — candidatos para vincular un ítem de factura
 // POST /api/products/odoo/sync                 — fuerza sync inmediato (solo admin)
 // GET  /api/products/supplier                  — lista supplier_products con filtros
 // GET  /api/products/supplier/:id/price-history — historial de precios paginado
@@ -10,6 +11,7 @@ const pool = require('../config/database');
 const { syncOdooProducts } = require('../jobs/odooSync');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
+const linkSuggestionService = require('../services/linkSuggestionService');
 
 // =============================================
 // POST /api/products/odoo/sync
@@ -172,6 +174,32 @@ router.get('/odoo', authenticate, async (req, res) => {
             success: false,
             error: 'Error al obtener productos del cache'
         });
+    }
+});
+
+// =============================================
+// GET /api/products/odoo/link-suggestions
+// Candidatos para vincular un ítem de factura (activos e inactivos).
+// Sin q: sugiere por código, código parecido y parecido de nombre.
+// Con q: busca todas las palabras escritas, en cualquier orden.
+// Query: company, codigo, descripcion, q, limit
+// =============================================
+
+router.get('/odoo/link-suggestions', authenticate, async (req, res) => {
+    const { company = 'neggo', codigo = '', descripcion = '', q = '' } = req.query;
+    if (!['neggo', 'preventas'].includes(company)) {
+        return fail(res, 'company debe ser "neggo" o "preventas"');
+    }
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+
+    try {
+        const rows = q.trim()
+            ? await linkSuggestionService.searchByText({ company, q, limit })
+            : await linkSuggestionService.suggestForItem({ company, codigo, descripcion, limit });
+        return ok(res, rows);
+    } catch (err) {
+        console.error('❌ Error al buscar sugerencias de vinculación:', err.message);
+        return fail(res, 'Error al buscar sugerencias', 500);
     }
 });
 

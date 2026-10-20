@@ -11,6 +11,8 @@ const {
     refWithoutSupplierPrefix,
     buildRefWithoutPrefixIndex,
     matchByRefWithoutPrefix,
+    buildDescPurchaseIndex,
+    matchByDescPurchase,
     allocatePreventaQty,
     capPreventaShares,
     distributePreventaQty,
@@ -64,6 +66,30 @@ function testRefOtroProveedor() {
     assert.ok(!MATCH_LEVELS_TO_CONFIRM.includes('ref_other_prefix'));
     assert.ok(MATCH_LEVELS_TO_CONFIRM.includes('fuzzy_name'));
     console.log('ref otro proveedor ok');
+}
+
+function testDescCompra() {
+    const prefixes = ['MG', 'CY'];
+    const products = [
+        { odoo_id: 1, internal_ref: 'MGBR80031012', description_purchase: 'BROCHES', active: false },
+        { odoo_id: 2, internal_ref: 'MG-BR1375015', description_purchase: null, active: true },
+        { odoo_id: 3, internal_ref: 'CY-AB1234', description_purchase: 'Vaso Térmico', active: true },
+        { odoo_id: 4, internal_ref: null, description_purchase: 'Taza grande', active: true },
+        { odoo_id: 5, internal_ref: 'MG-X1', description_purchase: 'Repetida', active: true },
+        { odoo_id: 6, internal_ref: 'MG-X2', description_purchase: 'repetida', active: true },
+    ];
+    const index = buildDescPurchaseIndex(products);
+    // Caso de la nota #35: descripción genérica con un código que no es el del producto
+    assert.strictEqual(matchByDescPurchase(index, 'BROCHES', 'BR1375015', prefixes), null);
+    // Sin código en la factura, la descripción única alcanza
+    assert.strictEqual(matchByDescPurchase(index, 'broches', null, prefixes).odoo_id, 1);
+    // El código coincide con la referencia sin prefijo
+    assert.strictEqual(matchByDescPurchase(index, 'vaso termico', 'AB1234', prefixes).odoo_id, 3);
+    // Producto sin referencia: no hay nada que contradiga
+    assert.strictEqual(matchByDescPurchase(index, 'Taza grande', 'ZZ1', prefixes).odoo_id, 4);
+    // Dos productos con la misma descripción: no se elige ninguno
+    assert.strictEqual(matchByDescPurchase(index, 'Repetida', null, prefixes), null);
+    console.log('descripción de compra ok');
 }
 
 function testAllocation() {
@@ -166,6 +192,7 @@ async function testPersistence(pool) {
 async function main() {
     testDecision();
     testRefOtroProveedor();
+    testDescCompra();
     testAllocation();
     testSource();
     const pool = await recreateDb();
