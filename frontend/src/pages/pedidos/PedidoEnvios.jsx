@@ -8,6 +8,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Tabs from '../../components/common/Tabs';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 
 const ESTADO = {
@@ -61,6 +62,25 @@ export default function PedidoEnvios() {
             return;
         }
         setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, ...res.data } : x)));
+    };
+
+    // Eliminar un pedido que no se va a hacer: lo cancela en Odoo
+    const [eliminando, setEliminando] = useState(null);
+    const [cancelando, setCancelando] = useState(false);
+    const eliminar = async () => {
+        const it = eliminando;
+        if (!it || cancelando) return;
+        setCancelando(true);
+        setError(null);
+        const res = await api.post(`/pedido-envios/${it.id}/cancelar`);
+        setCancelando(false);
+        setEliminando(null);
+        if (!res.success) {
+            setError(res.error || 'No se pudo eliminar el pedido');
+            return;
+        }
+        setItems((prev) => prev.filter((x) => x.id !== it.id));
+        setAviso(`${it.odoo_order_name} eliminado: quedó cancelado en Odoo.`);
     };
 
     const sync = async () => {
@@ -217,6 +237,23 @@ export default function PedidoEnvios() {
                                 {enviada ? <Icon.Check size={14} /> : <Icon.FileText size={14} />}
                                 {isMobile ? (enviada ? 'Enviada' : 'Cotización') : (enviada ? 'Cotización enviada' : 'Marcar cotización enviada')}
                             </button>
+                            {tab === 'armar' && (
+                                <button
+                                    type="button"
+                                    aria-label={`Eliminar ${it.odoo_order_name}`}
+                                    title="Eliminar pedido (se cancela en Odoo)"
+                                    disabled={cancelando}
+                                    onClick={() => setEliminando(it)}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                                        width: 36, height: 36, padding: 0,
+                                        border: `1px solid ${t.color.borderStrong}`, background: t.color.surface,
+                                        color: t.color.danger, borderRadius: t.radius.full, cursor: 'pointer',
+                                    }}
+                                >
+                                    <Icon.Trash2 size={16} />
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 aria-label="Abrir pedido"
@@ -234,6 +271,18 @@ export default function PedidoEnvios() {
                     })}
                 </Card>
             )}
+
+            <ConfirmDialog
+                isOpen={!!eliminando}
+                onClose={() => { if (!cancelando) setEliminando(null); }}
+                onConfirm={eliminar}
+                title="Eliminar pedido"
+                message={cancelando
+                    ? 'Cancelando en Odoo…'
+                    : `¿Eliminás ${eliminando?.odoo_order_name} de ${eliminando?.partner_name || 'sin cliente'}? Se cancela la orden en Odoo y sale de esta lista.`}
+                confirmLabel={cancelando ? 'Eliminando…' : 'Eliminar pedido'}
+                danger
+            />
         </div>
     );
 }

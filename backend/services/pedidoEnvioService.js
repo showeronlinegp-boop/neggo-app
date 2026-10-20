@@ -324,6 +324,41 @@ function auditarEmpezarArmar(odoo) {
     };
 }
 
+// Eliminar una orden que no se va a hacer = cancelar la sale.order en Odoo.
+// Sólo mientras está para armar, sin facturar y con el envío 1 sin validar.
+function auditarCancelarEstado(envio) {
+    if (!envio) return { ok: false, error: 'Pedido no encontrado', statusCode: 404 };
+    if (envio.estado === 'pendiente' || envio.estado === 'armando') return { ok: true };
+    return {
+        ok: false,
+        error: `${envio.odoo_order_name || 'El pedido'} ya está ${envio.estado}, sólo se eliminan pedidos para armar`,
+        statusCode: 409,
+    };
+}
+
+function auditarCancelarOrden({ envio, odoo }) {
+    const porEstado = auditarCancelarEstado(envio);
+    if (!porEstado.ok) return porEstado;
+    if (!odoo) return { ok: false, error: 'No encontré la orden en Odoo', statusCode: 404 };
+    const nombre = odoo.name || envio.odoo_order_name || '';
+    if (odoo.state === 'cancel') return { ok: true, alreadyCancelled: true };
+    if (odoo.invoice_status === 'invoiced') {
+        return { ok: false, error: `${nombre} ya está facturada en Odoo, no se puede eliminar`, statusCode: 409 };
+    }
+    if (odoo.state === 'done') {
+        return { ok: false, error: `${nombre} está bloqueada en Odoo, no se puede eliminar`, statusCode: 409 };
+    }
+    if (envio.odoo_picking_state === 'done') {
+        return {
+            ok: false,
+            error: `El envío ${envio.odoo_picking_name || ''} de ${nombre} ya está validado en Odoo, no se puede eliminar`
+                .replace(/\s+/g, ' '),
+            statusCode: 409,
+        };
+    }
+    return { ok: true, alreadyCancelled: false };
+}
+
 function errorDesdeOdoo(err, fallback) {
     if (err?.statusCode) return err;
     const msg = String(err?.message || '');
@@ -892,6 +927,8 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             if (existente && existente.estado === 'saldado') continue;
 
             const paraArmar = esCotizacionParaArmar(order);
+            // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización enviada
+            if (existente?.estado === 'cancelado' && !paraArmar) continue;
             if (!existente && (!paraArmar || !order.lines.length)) continue;
 
             let envioId;
@@ -937,6 +974,13 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 );
                 envioId = existente.id;
                 actualizados++;
+                if (existente.estado === 'cancelado') {
+                    await client.query(
+                        `UPDATE pedido_envios SET estado = 'pendiente', updated_at = NOW()
+                          WHERE id = $1 AND estado = 'cancelado'`,
+                        [existente.id]
+                    );
+                }
                 if (soltarArmando) {
                     await client.query(
                         `UPDATE pedido_envios
@@ -1088,6 +1132,45 @@ async function marcarCotizacionEnviada(id, enviada, userId) {
         cotizacion_enviada_by: envio.cotizacion_enviada_by,
         cotizacion_enviada_by_name: envio.cotizacion_enviada_by_name,
     };
+}
+
+async function cancelarOrden(id, userId) {
+    const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
+    const porEstado = auditarCancelarEstado(envio);
+    if (!porEstado.ok) throw httpError(porEstado.error, porEstado.statusCode);
+
+    let odoo;
+    try {
+        odoo = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la orden en Odoo');
+    }
+    const audit = auditarCancelarOrden({ envio, odoo });
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode);
+
+    if (!audit.alreadyCancelled) {
+        try {
+            await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        } catch (err) {
+            throw errorDesdeOdoo(err, 'Odoo no dejó cancelar la orden');
+        }
+    }
+
+    await pool.query(
+        `UPDATE pedido_envios
+            SET estado = 'cancelado',
+                odoo_state = 'cancel',
+                updated_at = NOW()
+          WHERE id = $1`,
+        [id]
+    );
+    await logActividad(userId, 'CANCELAR_ORDEN', id, {
+        odoo_sale_order_id: envio.odoo_sale_order_id,
+        odoo_order_name: envio.odoo_order_name,
+        estado_previo: envio.estado,
+        ya_cancelada: audit.alreadyCancelled,
+    });
+    return { id, odoo_order_name: envio.odoo_order_name, estado: 'cancelado', ya_cancelada: audit.alreadyCancelled };
 }
 
 async function setQty(itemId, campo, qty, userId) {
@@ -1345,11 +1428,13 @@ module.exports = {
     auditarTerminarArmado,
     auditarEmpezarArmar,
     auditarSaldar,
+    auditarCancelarOrden,
     listar,
     obtener,
     syncDesdeOdoo,
     cambiarEstado,
     marcarCotizacionEnviada,
+    cancelarOrden,
     setQty,
     escanear,
     marcarFaltante,
