@@ -30,12 +30,22 @@ export default function Catalogs() {
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
 
-    useEffect(() => {
-        api.get('/catalogs/categories').then(r => r.success && setCategories(r.data || []));
-        fetchCatalogs();
-    }, []);
+    useEffect(() => { fetchCatalogs(); }, []);
 
     useEffect(() => { fetchCatalogs(); }, [page]);
+
+    // Preventas y Neggo no comparten categorías: hay que volver a pedirlas
+    // al cambiar el tipo, y soltar una categoría que no exista en el otro.
+    useEffect(() => {
+        let cancelled = false;
+        api.get('/catalogs/categories', { type }).then(r => {
+            if (cancelled || !r.success) return;
+            const list = r.data || [];
+            setCategories(list);
+            setDestCategory(prev => (list.includes(prev) ? prev : ''));
+        });
+        return () => { cancelled = true; };
+    }, [type]);
 
     async function fetchCatalogs() {
         setLoading(true);

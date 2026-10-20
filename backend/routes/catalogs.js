@@ -20,6 +20,7 @@ router.get('/categories', authenticate, async (req, res) => {
             FROM supplier_category_rules scr
             JOIN suppliers s ON s.id = scr.supplier_id AND s.active = true
             WHERE scr.active = true
+              AND COALESCE(scr.ignored, false) = false
               AND scr.${destCol} IS NOT NULL
             ORDER BY 1 ASC
         `);
