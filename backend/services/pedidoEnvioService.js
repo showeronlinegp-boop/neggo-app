@@ -31,6 +31,9 @@ const SCHEMA_037 = fs.readFileSync(
 const SCHEMA_038 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '038_pedido_envios_pago.sql'), 'utf8'
 );
+const SCHEMA_039 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '039_pedido_envios_factura_pos.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
@@ -175,9 +178,15 @@ function ordenFacturada(odoo) {
     return (odoo.lines || []).some((l) => num(l.qty_invoiced) > 0);
 }
 
-// Para armar: cotización enviada, todavía no facturada. Las sale confirmadas/facturadas no.
+// Ya tiene factura o se cobró en el POS: se resolvió por otro lado, no se arma acá.
+function ordenCobradaAparte(odoo) {
+    if (!odoo) return false;
+    return ordenFacturada(odoo) || num(odoo.invoice_count) > 0 || num(odoo.pos_order_count) > 0;
+}
+
+// Para armar: cotización enviada, sin factura ni POS. Las sale confirmadas/facturadas no.
 function esCotizacionParaArmar(odoo) {
-    return !!odoo && odoo.state === 'sent' && !ordenFacturada(odoo);
+    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo);
 }
 
 function odooNecesitaConfirmar(state) {
@@ -319,6 +328,41 @@ function auditarEmpezarArmar(odoo) {
         error: `La orden ${odoo.name || ''} en Odoo está en estado ${odoo.state}, no se puede armar`,
         statusCode: 409,
     };
+}
+
+// Eliminar una orden que no se va a hacer = cancelar la sale.order en Odoo.
+// Sólo mientras está para armar, sin facturar y con el envío 1 sin validar.
+function auditarCancelarEstado(envio) {
+    if (!envio) return { ok: false, error: 'Pedido no encontrado', statusCode: 404 };
+    if (envio.estado === 'pendiente' || envio.estado === 'armando') return { ok: true };
+    return {
+        ok: false,
+        error: `${envio.odoo_order_name || 'El pedido'} ya está ${envio.estado}, sólo se eliminan pedidos para armar`,
+        statusCode: 409,
+    };
+}
+
+function auditarCancelarOrden({ envio, odoo }) {
+    const porEstado = auditarCancelarEstado(envio);
+    if (!porEstado.ok) return porEstado;
+    if (!odoo) return { ok: false, error: 'No encontré la orden en Odoo', statusCode: 404 };
+    const nombre = odoo.name || envio.odoo_order_name || '';
+    if (odoo.state === 'cancel') return { ok: true, alreadyCancelled: true };
+    if (odoo.invoice_status === 'invoiced') {
+        return { ok: false, error: `${nombre} ya está facturada en Odoo, no se puede eliminar`, statusCode: 409 };
+    }
+    if (odoo.state === 'done') {
+        return { ok: false, error: `${nombre} está bloqueada en Odoo, no se puede eliminar`, statusCode: 409 };
+    }
+    if (envio.odoo_picking_state === 'done') {
+        return {
+            ok: false,
+            error: `El envío ${envio.odoo_picking_name || ''} de ${nombre} ya está validado en Odoo, no se puede eliminar`
+                .replace(/\s+/g, ' '),
+            statusCode: 409,
+        };
+    }
+    return { ok: true, alreadyCancelled: false };
 }
 
 function errorDesdeOdoo(err, fallback) {
@@ -691,6 +735,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_036);
     await db.query(SCHEMA_037);
     await db.query(SCHEMA_038);
+    await db.query(SCHEMA_039);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -780,7 +825,8 @@ function companiesDe(value) {
 // Solapa "esperando_pago": cotización enviada y pago todavía no recibido.
 function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null, incluirPagados = false }) {
     const params = [companies];
-    const where = ['e.company_key = ANY($1::text[])'];
+    // Los cancelados (pedido que no se hace) no se listan
+    const where = ['e.company_key = ANY($1::text[])', "e.estado <> 'cancelado'"];
     const texto = String(q || '').trim();
     if (texto) {
         params.push(`%${texto}%`);
@@ -791,9 +837,11 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
         params.push(nDias);
         where.push(`e.date_order >= NOW() - ($${params.length}::int * INTERVAL '1 day')`);
     }
-    // Para armar: solo cotizaciones enviadas en Odoo, no las facturadas
+    // Para armar: solo cotizaciones enviadas en Odoo, sin factura ni cobro en el POS
     where.push(`(e.estado NOT IN ('pendiente', 'armando') OR (
         COALESCE(e.invoice_status, '') <> 'invoiced'
+        AND COALESCE(e.odoo_invoice_count, 0) = 0
+        AND COALESCE(e.odoo_pos_count, 0) = 0
         AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
     ))`);
     if (solapa === 'esperando_pago') {
@@ -936,17 +984,23 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const { rows: locales } = await pool.query(
         `SELECT odoo_sale_order_id FROM pedido_envios
           WHERE company_key = $1 AND estado IN ('pendiente', 'armando')
-          ORDER BY date_order DESC NULLS LAST
-          LIMIT 80`,
+            AND odoo_sale_order_id IS NOT NULL
+          ORDER BY date_order DESC NULLS LAST`,
         [company]
     );
-    const idsLocales = locales.map((r) => r.odoo_sale_order_id).filter(Boolean);
+    const idsTodos = locales.map((r) => r.odoo_sale_order_id);
+    // Los 80 más nuevos con líneas; del resto alcanza con el encabezado (factura / POS / estado)
+    const idsLocales = idsTodos.slice(0, 80);
     const vivos = idsLocales.length
         ? await odooService.getSaleOrdersWithLines(company, { ids: idsLocales, days: null, limit: idsLocales.length })
         : [];
     const porId = new Map();
     for (const order of [...enviadas, ...vivos]) porId.set(order.id, order);
     const orders = [...porId.values()];
+    const cabeceras = await odooService.getSaleOrderHeaders(
+        company,
+        idsTodos.filter((id) => !porId.has(id))
+    );
 
     let creados = 0;
     let actualizados = 0;
@@ -962,6 +1016,8 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             if (existente && existente.estado === 'saldado') continue;
 
             const paraArmar = esCotizacionParaArmar(order);
+            // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización enviada
+            if (existente?.estado === 'cancelado' && !paraArmar) continue;
             if (!existente && (!paraArmar || !order.lines.length)) continue;
 
             let envioId;
@@ -971,14 +1027,15 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
                          partner_id, partner_name, date_order, amount_total,
-                         odoo_state, invoice_status
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
                         order.partner_id, order.client,
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
+                        num(order.invoice_count), num(order.pos_order_count),
                     ]
                 );
                 envioId = row.id;
@@ -993,16 +1050,26 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             amount_total = $6,
                             odoo_state = $7,
                             invoice_status = $8,
+                            odoo_invoice_count = $9,
+                            odoo_pos_count = $10,
                             updated_at = NOW()
                       WHERE id = $1`,
                     [
                         existente.id, order.name, order.partner_id, order.client,
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
+                        num(order.invoice_count), num(order.pos_order_count),
                     ]
                 );
                 envioId = existente.id;
                 actualizados++;
+                if (existente.estado === 'cancelado') {
+                    await client.query(
+                        `UPDATE pedido_envios SET estado = 'pendiente', updated_at = NOW()
+                          WHERE id = $1 AND estado = 'cancelado'`,
+                        [existente.id]
+                    );
+                }
                 if (soltarArmando) {
                     await client.query(
                         `UPDATE pedido_envios
@@ -1022,6 +1089,20 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 });
             }
         }
+        for (const cab of cabeceras) {
+            const { rowCount } = await client.query(
+                `UPDATE pedido_envios
+                    SET odoo_state = $3,
+                        invoice_status = $4,
+                        odoo_invoice_count = $5,
+                        odoo_pos_count = $6,
+                        updated_at = NOW()
+                  WHERE company_key = $1 AND odoo_sale_order_id = $2
+                    AND estado IN ('pendiente', 'armando')`,
+                [company, cab.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count]
+            );
+            actualizados += rowCount;
+        }
         await client.query('COMMIT');
     } catch (err) {
         await client.query('ROLLBACK');
@@ -1029,8 +1110,9 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     } finally {
         client.release();
     }
-    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos: orders.length });
-    return { creados, actualizados, leidos: orders.length };
+    const leidos = orders.length + cabeceras.length;
+    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos });
+    return { creados, actualizados, leidos };
 }
 
 async function cambiarEstado(id, estado, userId) {
@@ -1174,6 +1256,45 @@ async function marcarPagoRecibido(id, recibido, userId) {
     );
     await logActividad(userId, recibido ? 'PAGO_RECIBIDO' : 'PAGO_NO_RECIBIDO', id, {});
     return marcasCotizacionPago(id);
+}
+
+async function cancelarOrden(id, userId) {
+    const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
+    const porEstado = auditarCancelarEstado(envio);
+    if (!porEstado.ok) throw httpError(porEstado.error, porEstado.statusCode);
+
+    let odoo;
+    try {
+        odoo = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la orden en Odoo');
+    }
+    const audit = auditarCancelarOrden({ envio, odoo });
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode);
+
+    if (!audit.alreadyCancelled) {
+        try {
+            await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        } catch (err) {
+            throw errorDesdeOdoo(err, 'Odoo no dejó cancelar la orden');
+        }
+    }
+
+    await pool.query(
+        `UPDATE pedido_envios
+            SET estado = 'cancelado',
+                odoo_state = 'cancel',
+                updated_at = NOW()
+          WHERE id = $1`,
+        [id]
+    );
+    await logActividad(userId, 'CANCELAR_ORDEN', id, {
+        odoo_sale_order_id: envio.odoo_sale_order_id,
+        odoo_order_name: envio.odoo_order_name,
+        estado_previo: envio.estado,
+        ya_cancelada: audit.alreadyCancelled,
+    });
+    return { id, odoo_order_name: envio.odoo_order_name, estado: 'cancelado', ya_cancelada: audit.alreadyCancelled };
 }
 
 async function setQty(itemId, campo, qty, userId) {
@@ -1419,6 +1540,7 @@ module.exports = {
     qtyCampoDeFase,
     refPendientes,
     ordenFacturada,
+    ordenCobradaAparte,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -1430,6 +1552,7 @@ module.exports = {
     auditarTerminarArmado,
     auditarEmpezarArmar,
     auditarSaldar,
+    auditarCancelarOrden,
     listar,
     obtener,
     syncDesdeOdoo,
@@ -1438,6 +1561,7 @@ module.exports = {
     marcarPagoRecibido,
     condicionesListado,
     ordenListado,
+    cancelarOrden,
     setQty,
     escanear,
     marcarFaltante,

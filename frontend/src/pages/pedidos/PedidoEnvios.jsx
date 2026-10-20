@@ -9,6 +9,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Tabs from '../../components/common/Tabs';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 
 // "Controlado" = pedido saldado (el control ya terminó)
@@ -178,6 +179,47 @@ export default function PedidoEnvios() {
         cargar();
     };
 
+    // Eliminar un pedido que no se va a hacer: lo cancela en Odoo
+    const [eliminando, setEliminando] = useState(null);
+    const [cancelando, setCancelando] = useState(false);
+    const eliminar = async () => {
+        const it = eliminando;
+        if (!it || cancelando) return;
+        setCancelando(true);
+        setError(null);
+        const res = await api.post(`/pedido-envios/${it.id}/cancelar`);
+        setCancelando(false);
+        setEliminando(null);
+        if (!res.success) {
+            setError(res.error || 'No se pudo eliminar el pedido');
+            return;
+        }
+        setAviso(`${it.odoo_order_name} eliminado: quedó cancelado en Odoo.`);
+        cargar();
+    };
+
+    // Solo se elimina lo que todavía no se terminó de armar
+    const botonEliminar = (it) => {
+        if (it.estado !== 'pendiente' && it.estado !== 'armando') return null;
+        return (
+            <button
+                type="button"
+                aria-label={`Eliminar ${it.odoo_order_name}`}
+                title="Eliminar pedido (se cancela en Odoo)"
+                disabled={cancelando}
+                onClick={(e) => { e.stopPropagation(); setEliminando(it); }}
+                style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    width: 36, height: 36, padding: 0,
+                    border: `1px solid ${t.color.borderStrong}`, background: t.color.surface,
+                    color: t.color.danger, borderRadius: t.radius.full, cursor: 'pointer',
+                }}
+            >
+                <Icon.Trash2 size={16} />
+            </button>
+        );
+    };
+
     const items = data.items || [];
     const conteos = data.conteos || {};
     const controladosSel = items.filter((it) => sel.has(it.id) && it.estado === 'saldado').map((it) => it.id);
@@ -258,7 +300,7 @@ export default function PedidoEnvios() {
         );
     };
 
-    const COLS_PEDIDOS = '40px 130px minmax(0, 1fr) 140px 160px 110px 200px 32px';
+    const COLS_PEDIDOS = '40px 130px minmax(0, 1fr) 140px 160px 110px 244px 32px';
     const COLS_PAGO = '130px minmax(0, 1fr) 200px 120px 110px 250px';
     const header = (cols, labels) => (
         <div style={{
@@ -315,6 +357,7 @@ export default function PedidoEnvios() {
                                 style={{ width: 18, height: 18, accentColor: t.color.primary }} />
                         </label>
                         {botonCotizacion(it)}
+                        {botonEliminar(it)}
                     </div>
                 </div>
             );
@@ -358,7 +401,7 @@ export default function PedidoEnvios() {
                 <span style={{ textAlign: 'right', paddingRight: 16, fontSize: t.font.size.base, fontWeight: t.font.weight.medium, color: t.color.text, ...t.numericStyle }}>
                     {fmtAR(it.amount_total)}
                 </span>
-                <div>{botonCotizacion(it)}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{botonCotizacion(it)}{botonEliminar(it)}</div>
                 <span style={{ display: 'flex', justifyContent: 'center', color: t.color.textFaint }}><Icon.ChevronRight size={18} /></span>
             </div>
         );
@@ -584,7 +627,7 @@ export default function PedidoEnvios() {
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
                         {solapa === 'pedidos'
-                            ? 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días).'
+                            ? 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar las cotizaciones enviadas (hasta 80, últimos 30 días). Las que ya tienen factura o se cobraron en el POS no entran.'
                             : 'Cuando un pedido controlado tenga la cotización enviada, aparece acá.'}
                     </div>
                 </Card>
@@ -626,6 +669,18 @@ export default function PedidoEnvios() {
                     )}
                 </div>
             )}
+
+            <ConfirmDialog
+                isOpen={!!eliminando}
+                onClose={() => { if (!cancelando) setEliminando(null); }}
+                onConfirm={eliminar}
+                title="Eliminar pedido"
+                message={cancelando
+                    ? 'Cancelando en Odoo…'
+                    : `¿Eliminás ${eliminando?.odoo_order_name} de ${eliminando?.partner_name || 'sin cliente'}? Se cancela la orden en Odoo y sale de esta lista.`}
+                confirmLabel={cancelando ? 'Eliminando…' : 'Eliminar pedido'}
+                danger
+            />
         </div>
     );
 }

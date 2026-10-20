@@ -15,6 +15,8 @@ const SOPORTA_CAMERA = typeof window !== 'undefined'
     && 'BarcodeDetector' in window
     && navigator.mediaDevices?.getUserMedia;
 
+const fmtARS = (v) => `$${Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 const ESTADO = {
     pendiente:   { label: 'Para armar',     tone: 'muted' },
     armando:     { label: 'Armando',        tone: 'accent' },
@@ -55,6 +57,7 @@ export default function PedidoEnvioDetalle() {
     const [soloFaltan, setSoloFaltan] = useState(false);
     const [faltanteOpen, setFaltanteOpen] = useState(null);
     const [faltanteQty, setFaltanteQty] = useState(0);
+    const [terminarOpen, setTerminarOpen] = useState(false);
 
     const cargar = useCallback(async () => {
         const res = await api.get(`/pedido-envios/${id}`);
@@ -170,6 +173,21 @@ export default function PedidoEnvioDetalle() {
             }
         }
         aplicar(res, okMsg);
+    };
+
+    // Como Odoo: si falta algo, preguntar antes de validar el envío 1
+    const pedirTerminarArmado = () => {
+        const incompletos = (envio.items || []).filter((it) => qtyDe(it, envio.estado) < (Number(it.qty_pedida) || 0));
+        if (incompletos.length) {
+            setTerminarOpen(true);
+            return;
+        }
+        setEstado('armado');
+    };
+
+    const confirmarTerminarArmado = async () => {
+        setTerminarOpen(false);
+        await setEstado('armado');
     };
 
     const setQtyAbs = async (item, qty, okMsg) => {
@@ -322,7 +340,7 @@ export default function PedidoEnvioDetalle() {
                                 {trabajando ? 'Confirmando en Odoo…' : 'Confirmar en Odoo y atar envío 1'}
                             </Button>
                         )}
-                        <Button variant="success" disabled={trabajando || !confirmadoEnOdoo} onClick={() => setEstado('armado')}
+                        <Button variant="success" disabled={trabajando || !confirmadoEnOdoo} onClick={pedirTerminarArmado}
                             style={{ height: 48, flex: 1, minWidth: 160 }} leftIcon={<Icon.Check size={16} />}>
                             {trabajando ? 'Validando envío 1…' : 'Terminar armado'}
                         </Button>
@@ -491,8 +509,15 @@ export default function PedidoEnvioDetalle() {
                                         </div>
                                     )}
                                 </div>
-                                <div style={{ fontWeight: t.font.weight.semibold, ...t.numericStyle, color: completo ? t.color.success : t.color.text }}>
-                                    {actual}/{pedida}
+                                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                    <div style={{ fontWeight: t.font.weight.semibold, ...t.numericStyle, color: completo ? t.color.success : t.color.text }}>
+                                        {actual}/{pedida}
+                                    </div>
+                                    {it.price_unit != null && (
+                                        <div title="Precio de venta (unitario)" style={{ fontSize: 12, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
+                                            {fmtARS(it.price_unit)}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
@@ -591,6 +616,48 @@ export default function PedidoEnvioDetalle() {
                             No controlaste nada: se cancela la orden original en Odoo y todo pasa al pedido de pendientes.
                         </div>
                     )}
+                </div>
+            </Modal>
+
+            <Modal
+                isOpen={terminarOpen}
+                onClose={() => setTerminarOpen(false)}
+                title="¿Terminar con faltantes?"
+                subtitle={`${envio.odoo_order_name} no está completo`}
+                fullScreen={isMobile}
+                footer={(
+                    <>
+                        <Button variant="ghost" onClick={() => setTerminarOpen(false)} disabled={trabajando}>Volver a revisar</Button>
+                        <Button variant="success" onClick={confirmarTerminarArmado} disabled={trabajando}>
+                            Sí, terminar así
+                        </Button>
+                    </>
+                )}
+            >
+                <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
+                    <p style={{ marginTop: 0 }}>¿Seguro que no hay estos productos?</p>
+                    {(envio.items || [])
+                        .filter((it) => qtyDe(it, envio.estado) < (Number(it.qty_pedida) || 0))
+                        .map((it) => {
+                            const pedida = Number(it.qty_pedida) || 0;
+                            const actual = qtyDe(it, envio.estado);
+                            return (
+                                <div key={it.id} style={{
+                                    display: 'flex', justifyContent: 'space-between', gap: 12,
+                                    padding: '8px 0', borderTop: `1px solid ${t.color.border}`,
+                                }}>
+                                    <span>{it.product_name}</span>
+                                    <span style={{ ...t.numericStyle, color: t.color.warn, flexShrink: 0 }}>
+                                        {actual}/{pedida} · faltan {pedida - actual}
+                                    </span>
+                                </div>
+                            );
+                        })}
+                    <p style={{ marginBottom: 0, color: t.color.textMuted }}>
+                        {(envio.items || []).some((it) => qtyDe(it, envio.estado) > 0)
+                            ? 'Odoo valida el envío 1 con lo que armaste: eso pasa a control de salida y lo que falta queda en otro envío, pendiente de armar.'
+                            : 'No armaste nada: el envío 1 queda abierto en Odoo, sin validar.'}
+                    </p>
                 </div>
             </Modal>
 

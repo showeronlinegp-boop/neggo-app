@@ -116,6 +116,17 @@ router.post('/:id/pago-recibido', async (req, res) => {
     }
 });
 
+// Pedido que no se va a hacer: cancela la sale.order en Odoo
+router.post('/:id/cancelar', async (req, res) => {
+    try {
+        const data = await servicio.cancelarOrden(parseInt(req.params.id, 10), req.user.id);
+        console.log(`✅ Pedido ${data.odoo_order_name} cancelado${data.ya_cancelada ? ' (ya estaba cancelado en Odoo)' : ' en Odoo'}`);
+        return ok(res, data);
+    } catch (err) {
+        return sendErr(res, err, 'Error cancelando el pedido');
+    }
+});
+
 router.post('/:id/escanear', async (req, res) => {
     try {
         return ok(res, await servicio.escanear(
