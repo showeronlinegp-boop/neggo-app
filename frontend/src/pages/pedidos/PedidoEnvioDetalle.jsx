@@ -31,6 +31,15 @@ function qtyDe(item, estado) {
         : Number(item.qty_armada) || 0;
 }
 
+// Hasta cuánto se cuenta. Con el envío 1 validado, el control es sobre lo armado:
+// el resto quedó en el backorder del envío 1, pendiente de armar.
+function topeDe(item, envio) {
+    const pedida = Number(item.qty_pedida) || 0;
+    const controlEnvio1 = (envio.estado === 'controlando' || envio.estado === 'saldado')
+        && envio.odoo_picking_state === 'done';
+    return controlEnvio1 ? Math.min(pedida, Number(item.qty_armada) || 0) : pedida;
+}
+
 export default function PedidoEnvioDetalle() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -192,8 +201,7 @@ export default function PedidoEnvioDetalle() {
 
     const setQtyAbs = async (item, qty, okMsg) => {
         const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
-        const pedida = Number(item.qty_pedida) || 0;
-        const nueva = Math.max(0, Math.min(pedida, qty));
+        const nueva = Math.max(0, Math.min(topeDe(item, envio), qty));
         if (nueva === (Number(item[campo]) || 0)) return;
         setTrabajando(true);
         const res = await api.patch(`/pedido-envios/items/${item.id}`, { [campo]: nueva });
@@ -208,7 +216,7 @@ export default function PedidoEnvioDetalle() {
 
     const marcarTodo = (item) => setQtyAbs(
         item,
-        Number(item.qty_pedida) || 0,
+        topeDe(item, envio),
         `Marqué que llegó todo: ${item.product_name}`,
     );
 
@@ -450,8 +458,10 @@ export default function PedidoEnvioDetalle() {
                 {(() => {
                     const q = busqueda.trim().toLowerCase();
                     const lista = (envio.items || []).filter((it) => {
-                        const pedida = Number(it.qty_pedida) || 0;
+                        const pedida = topeDe(it, envio);
                         const actual = qtyDe(it, envio.estado);
+                        // Lo que no se armó no se controla: va abajo, en pendientes de armar
+                        if (pedida <= 0 && (Number(it.qty_pedida) || 0) > 0) return false;
                         if (soloFaltan && !(actual < pedida)) return false;
                         if (!q) return true;
                         const blob = `${it.product_name || ''} ${it.barcode || ''} ${it.internal_ref || ''}`.toLowerCase();
@@ -465,7 +475,7 @@ export default function PedidoEnvioDetalle() {
                         );
                     }
                     return lista.map((it) => {
-                    const pedida = Number(it.qty_pedida) || 0;
+                    const pedida = topeDe(it, envio);
                     const actual = qtyDe(it, envio.estado);
                     const completo = actual >= pedida && pedida > 0;
                     return (
@@ -505,7 +515,7 @@ export default function PedidoEnvioDetalle() {
                                     )}
                                     {envio.estado === 'controlando' && (
                                         <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 4 }}>
-                                            Armado: {Number(it.qty_armada) || 0} / {pedida}
+                                            Armado: {Number(it.qty_armada) || 0} / {Number(it.qty_pedida) || 0}
                                         </div>
                                     )}
                                 </div>
@@ -571,6 +581,36 @@ export default function PedidoEnvioDetalle() {
                     });
                 })()}
             </div>
+
+            {(() => {
+                const pendArmar = (envio.estado === 'controlando' || envio.estado === 'saldado')
+                    && envio.odoo_picking_state === 'done'
+                    ? (envio.items || []).filter((it) => topeDe(it, envio) < (Number(it.qty_pedida) || 0))
+                    : [];
+                if (!pendArmar.length) return null;
+                return (
+                    <div style={{ marginTop: 16, border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, overflow: 'hidden', background: t.color.surface }}>
+                        <div style={{ padding: '10px 12px', background: t.color.warnSoft, color: t.color.warn, fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold }}>
+                            Pendiente de armar{envio.odoo_picking_backorder_name ? ` · ${envio.odoo_picking_backorder_name}` : ''}
+                        </div>
+                        {pendArmar.map((it) => {
+                            const falta = (Number(it.qty_pedida) || 0) - topeDe(it, envio);
+                            return (
+                                <div key={it.id} style={{ padding: 12, borderTop: `1px solid ${t.color.border}`, display: 'flex', gap: 10, alignItems: 'center' }}>
+                                    <ProductThumb imageUrl={it.image_url} size={40} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ color: t.color.text, fontSize: t.font.size.sm }}>{it.product_name}</div>
+                                        <div style={{ fontFamily: t.font.mono, fontSize: 12, color: t.color.textMuted, marginTop: 2 }}>
+                                            {it.internal_ref || it.barcode || 'sin código'}
+                                        </div>
+                                    </div>
+                                    <div style={{ fontWeight: t.font.weight.semibold, color: t.color.warn, ...t.numericStyle }}>× {falta}</div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                );
+            })()}
 
             <Modal
                 isOpen={saldarOpen}
@@ -727,8 +767,8 @@ export default function PedidoEnvioDetalle() {
                                     {faltanteQty}
                                 </div>
                                 <Button size="sm" variant="secondary"
-                                    disabled={faltanteQty >= (Number(faltanteOpen.item.qty_pedida) || 0)}
-                                    onClick={() => setFaltanteQty((n) => Math.min(Number(faltanteOpen.item.qty_pedida) || 0, n + 1))}
+                                    disabled={faltanteQty >= topeDe(faltanteOpen.item, envio)}
+                                    onClick={() => setFaltanteQty((n) => Math.min(topeDe(faltanteOpen.item, envio), n + 1))}
                                     style={{ width: 48, height: 48, padding: 0 }}>
                                     <Icon.Plus size={18} />
                                 </Button>

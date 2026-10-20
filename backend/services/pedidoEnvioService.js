@@ -110,6 +110,16 @@ function qtyCampoDeFase(estado) {
     return 'qty_armada';
 }
 
+// Hasta cuánto se puede cargar en la fase. Con el envío 1 validado, en el control
+// sólo se cuenta lo armado: lo demás quedó en el backorder del envío 1 (pendiente de armar).
+function topeDeFase(item, estado, pickingState) {
+    const pedida = num(item.qty_pedida);
+    if (estado === 'controlando' && pickingState === 'done') {
+        return Math.min(pedida, Math.max(0, num(item.qty_armada)));
+    }
+    return pedida;
+}
+
 function previewSaldar(items) {
     const queda = [];
     const pendientes = [];
@@ -1302,7 +1312,7 @@ async function setQty(itemId, campo, qty, userId) {
         throw httpError('Campo de cantidad inválido', 400);
     }
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name
+        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name, e.odoo_picking_state
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
@@ -1316,7 +1326,7 @@ async function setQty(itemId, campo, qty, userId) {
     if (campo === 'qty_controlada' && item.estado !== 'controlando') {
         throw httpError('Sólo se controla en la etapa de control', 409);
     }
-    const nueva = clampQty(qty, item.qty_pedida);
+    const nueva = clampQty(qty, topeDeFase(item, item.estado, item.odoo_picking_state));
     await pool.query(
         `UPDATE pedido_envio_items SET ${campo} = $2 WHERE id = $1`,
         [itemId, nueva]
@@ -1338,7 +1348,11 @@ async function escanear(envioId, code, userId) {
     const item = itemPorCodigo(envio.items, code);
     if (!item) throw httpError(`El código ${String(code || '').trim()} no está en este pedido`, 404);
     const actual = num(item[campo]);
-    if (actual >= num(item.qty_pedida)) {
+    const tope = topeDeFase(item, envio.estado, envio.odoo_picking_state);
+    if (tope <= 0) {
+        throw httpError(`«${item.product_name}» no se armó: está pendiente de armar`, 409);
+    }
+    if (actual >= tope) {
         throw httpError(`«${item.product_name}» ya está completo`, 409);
     }
     return setQty(item.id, campo, actual + 1, userId);
@@ -1347,7 +1361,7 @@ async function escanear(envioId, code, userId) {
 async function marcarFaltante(itemId, motivo, userId, qty = null) {
     if (!MOTIVOS.has(motivo)) throw httpError('Motivo inválido', 400);
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name
+        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name, e.odoo_picking_state
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
@@ -1361,7 +1375,9 @@ async function marcarFaltante(itemId, motivo, userId, qty = null) {
     if (!item.odoo_product_id) throw httpError('Este renglón no tiene producto de Odoo', 400);
 
     const campo = item.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
-    const qtyFinal = qty == null ? num(item[campo]) : clampQty(qty, item.qty_pedida);
+    const qtyFinal = qty == null
+        ? num(item[campo])
+        : clampQty(qty, topeDeFase(item, item.estado, item.odoo_picking_state));
 
     if (item.company_key === 'neggo') {
         const reposicion = require('./reposicionService');
@@ -1538,6 +1554,7 @@ module.exports = {
     itemPorCodigo,
     previewSaldar,
     qtyCampoDeFase,
+    topeDeFase,
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,

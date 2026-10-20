@@ -9,6 +9,7 @@ const {
     itemPorCodigo,
     previewSaldar,
     qtyCampoDeFase,
+    topeDeFase,
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
@@ -112,6 +113,12 @@ function testPreviewNadaControlado() {
 function testFaseQty() {
     assert.strictEqual(qtyCampoDeFase('armando'), 'qty_armada');
     assert.strictEqual(qtyCampoDeFase('controlando'), 'qty_controlada');
+    // Con el envío 1 validado, en el control el tope es lo armado
+    const it = { qty_pedida: 3, qty_armada: 1 };
+    assert.strictEqual(topeDeFase(it, 'controlando', 'done'), 1);
+    assert.strictEqual(topeDeFase({ qty_pedida: 1, qty_armada: 0 }, 'controlando', 'done'), 0);
+    assert.strictEqual(topeDeFase(it, 'controlando', 'assigned'), 3);
+    assert.strictEqual(topeDeFase(it, 'armando', 'done'), 3);
 }
 
 function item(over = {}) {
