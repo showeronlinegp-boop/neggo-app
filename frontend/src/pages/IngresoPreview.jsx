@@ -548,6 +548,14 @@ function SugerenciasVinculo({ item, excluirOdooId, isMobile, onLink }) {
 // =============================================
 // Tarjeta de ítem
 // =============================================
+// Compara nombres de proveedor ignorando mayúsculas, acentos y signos ("PAN LIN S.A." ≈ "Pan Lin")
+const normalizarProveedor = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const esMismoProveedor = (a, b) => {
+    const na = normalizarProveedor(a);
+    const nb = normalizarProveedor(b);
+    return !!na && !!nb && (na.includes(nb) || nb.includes(na));
+};
+
 function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
     const isMobile = useIsMobile();
     const [linkingOpen, setLinkingOpen] = useState(false);
@@ -1539,7 +1547,25 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                         <span style={{ fontSize: '10px', color: C.gray, width: '34px', flexShrink: 0 }}>Prov</span>
                                         {item.odoo_vendor_name ? (
-                                            <span style={{ fontSize: '11px', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.odoo_vendor_name}</span>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: 1, minWidth: 0 }}>
+                                                <span style={{ fontSize: '11px', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.odoo_vendor_name}</span>
+                                                {/* Otro proveedor en Odoo: ofrecer dejar el del ingreso como principal */}
+                                                {onAssignSupplier && ingreso.supplier_name && !esMismoProveedor(item.odoo_vendor_name, ingreso.supplier_name) && (
+                                                    <button
+                                                        onClick={async () => {
+                                                            setAssigningSupplier(true);
+                                                            try { await onAssignSupplier(item.id); }
+                                                            catch (_) {}
+                                                            finally { setAssigningSupplier(false); }
+                                                        }}
+                                                        disabled={assigningSupplier}
+                                                        title={`Dejar "${ingreso.supplier_name}" como proveedor principal en Odoo ("${item.odoo_vendor_name}" queda como alternativo)`}
+                                                        style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '3px', border: `1px solid ${C.blue}`, backgroundColor: 'transparent', color: C.blue, cursor: assigningSupplier ? 'not-allowed' : 'pointer', opacity: assigningSupplier ? 0.5 : 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px', marginLeft: 'auto' }}
+                                                    >
+                                                        {assigningSupplier ? '⏳' : `+ ${ingreso.supplier_name}`}
+                                                    </button>
+                                                )}
+                                            </div>
                                         ) : (
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: 1 }}>
                                                 <span style={{ fontSize: '11px', color: C.gray, fontStyle: 'italic' }}>Sin proveedor</span>

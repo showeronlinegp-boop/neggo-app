@@ -1253,7 +1253,7 @@ router.post('/:ingresoId/whatsapp', authenticate, requireRole('admin'), async (r
 // =============================================
 // POST /api/ingreso/:ingresoId/items/:itemId/assign-supplier
 // Asigna el proveedor del comprobante como supplierinfo en Odoo Neggo (product.supplierinfo)
-// Solo aplica cuando el producto no tiene proveedor registrado en Odoo
+// Si el producto ya tiene otros proveedores, lo deja primero (principal) y los demás quedan como alternativos
 // =============================================
 
 router.post('/:ingresoId/items/:itemId/assign-supplier', authenticate, requireRole('admin'), async (req, res) => {
@@ -1316,12 +1316,28 @@ router.post('/:ingresoId/items/:itemId/assign-supplier', authenticate, requireRo
             { fields: ['id'], context: ctx }
         );
 
+        // Proveedores actuales del producto: el sync toma como principal el de menor sequence
+        const otros = await callOdoo('product.supplierinfo', 'search_read',
+            [[['product_tmpl_id', '=', templateId]]],
+            { fields: ['id', 'partner_id', 'sequence'], context: ctx.context }
+        );
+        const ownIds    = new Set(existing.map(e => e.id));
+        const ajenos    = otros.filter(o => !ownIds.has(o.id));
+        // Sequence estrictamente menor que la de los demás para quedar primero
+        const sequence  = ajenos.length ? Math.min(...ajenos.map(o => o.sequence ?? 1)) - 1 : 1;
+
         const yaExistia = existing.length > 0;
         if (!yaExistia) {
             await callOdoo('product.supplierinfo', 'create',
-                [{ product_tmpl_id: templateId, partner_id: partnerId, price: 0, min_qty: 0, company_id: companyId }],
+                [{ product_tmpl_id: templateId, partner_id: partnerId, price: 0, min_qty: 0, company_id: companyId, sequence }],
                 ctx
             );
+        } else if (ajenos.length) {
+            await callOdoo('product.supplierinfo', 'write', [existing.map(e => e.id), { sequence }], ctx);
+        }
+        if (ajenos.length) {
+            const alternativos = [...new Set(ajenos.map(o => o.partner_id?.[1]).filter(Boolean))].join(', ');
+            console.log(`📦 Producto Odoo ${item.odoo_product_id}: "${partnerName}" pasa a principal; alternativos: ${alternativos}`);
         }
 
         // Actualizar vendor_name en cache local
