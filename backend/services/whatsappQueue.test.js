@@ -217,6 +217,7 @@ async function testQueue(pool) {
         groupJid: '120363001@g.us',
         groupSubject: 'Ofertas',
         intervalSeconds: 90,
+        random: () => 0.5,
         scheduledAt: '2020-01-01T00:00',
         maxAttempts: 3,
     });
@@ -242,6 +243,7 @@ async function testQueue(pool) {
         destCategory: 'Bazar',
         groupJid: '120363001@g.us',
         intervalSeconds: 90,
+        random: () => 0.5,
         scheduledAt: '2020-01-02T00:00',
         maxAttempts: 3,
     });
@@ -262,6 +264,7 @@ async function testQueue(pool) {
         company: 'preventas',
         groupJid: '120363001@g.us',
         intervalSeconds: 90,
+        random: () => 0.5,
         scheduledAt: '2020-01-03T00:00',
         maxAttempts: 3,
     });
@@ -310,13 +313,32 @@ function testEstimate() {
     ]);
     const fresh = queue.estimateDepartures([msg(1, '2020-01-05T12:00:00.000Z')], null, now);
     assert.strictEqual(fresh[0].eta, now.toISOString());
+    // Con espera propia por mensaje, la estimación la respeta en vez del intervalo fijo.
+    const jittered = queue.estimateDepartures([
+        msg(1, '2020-01-05T12:03:00.000Z', { gap_seconds: 61 }),
+        msg(2, '2020-01-05T12:04:00.000Z', { gap_seconds: 117 }),
+    ], '2020-01-05T12:29:13.000Z', now);
+    assert.deepStrictEqual(jittered.map((m) => m.eta), ['2020-01-05T12:30:14.000Z', '2020-01-05T12:32:11.000Z']);
     console.log('estimacion ok');
+}
+
+// Las esperas varían ±35 % alrededor del intervalo, en segundos enteros y nunca menos de 10 (con 90 s: 59 a 121).
+function testJitter() {
+    assert.deepStrictEqual(queue.jitterGaps(3, 90, () => 0.5), [90, 90, 90]);
+    assert.deepStrictEqual(queue.jitterGaps(2, 90, () => 0), [59, 59]);
+    assert.deepStrictEqual(queue.jitterGaps(1, 90, () => 0.999999), [121]);
+    assert.deepStrictEqual(queue.jitterGaps(1, 10, () => 0), [10]);
+    const gaps = queue.jitterGaps(200, 90);
+    assert.ok(gaps.every((g) => Number.isInteger(g) && g >= 59 && g <= 121));
+    assert.ok(new Set(gaps).size > 10);
+    console.log('variacion ok');
 }
 
 async function main() {
     testPrice();
     testEvolutionParse();
     testEstimate();
+    testJitter();
     const pool = await recreateDb();
     try {
         const ids = await seed(pool);

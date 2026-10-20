@@ -228,7 +228,7 @@ export default function WhatsAppPublish() {
                         />
                     </div>
                     <div style={{ width: 140 }}>
-                        <div style={label}>Segundos entre mensajes</div>
+                        <div style={label}>Segundos entre mensajes (promedio, varía ±35 %)</div>
                         <Input type="number" min="10" max="3600" value={intervalSeconds} onChange={(e) => setIntervalSeconds(e.target.value)} />
                     </div>
                     <Button onClick={loadGroups} disabled={busy === 'groups'}>Listar grupos</Button>
@@ -356,7 +356,7 @@ export default function WhatsAppPublish() {
                 {detail && (
                     <div style={{ padding: t.space[5], borderTop: `1px solid ${t.color.border}` }}>
                         <strong>Tanda #{detail.id}</strong>
-                        <span style={{ color: t.color.textMuted }}> · {detail.group_subject || detail.group_jid} · cada {detail.interval_seconds} s</span>
+                        <span style={{ color: t.color.textMuted }}> · {detail.group_subject || detail.group_jid} · cada {detail.interval_seconds} s en promedio</span>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: t.space[4], marginTop: t.space[3] }}>
                             <div>
                                 {(detail.messages || []).slice(0, 12).map((m) => (

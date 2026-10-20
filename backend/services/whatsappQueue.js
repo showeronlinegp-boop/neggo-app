@@ -19,6 +19,19 @@ function clampInterval(value, fallback = 90) {
     return n;
 }
 
+// Para que no salgan con una separación exacta, cada espera varía ±35 % del intervalo,
+// en segundos sueltos. El promedio queda en el intervalo elegido. Nunca menos de 10 s.
+const JITTER = 0.35;
+
+function jitterGaps(count, interval, random = Math.random) {
+    const gaps = [];
+    for (let i = 0; i < count; i++) {
+        const factor = 1 - JITTER + 2 * JITTER * random();
+        gaps.push(Math.max(10, Math.round(interval * factor)));
+    }
+    return gaps;
+}
+
 function clampAttempts(value) {
     const n = Number(value);
     if (!Number.isInteger(n) || n < 1) return 3;
@@ -123,29 +136,34 @@ async function createBatch(pool, input) {
             offset,
         ]);
         const batch = batchRes.rows[0];
+        // gaps[i] es la espera antes del mensaje i; la última sobra y separa la tanda siguiente.
+        const gaps = jitterGaps(products.length + 1, interval, input.random);
+        let offsetSeconds = 0;
         for (let i = 0; i < products.length; i++) {
             const p = products[i];
+            if (i > 0) offsetSeconds += gaps[i];
             await client.query(`
                 INSERT INTO whatsapp_messages (
                     batch_id, position, odoo_id, company, product_name,
                     price_amount, price_label, caption, image_template_id,
-                    group_jid, max_attempts, scheduled_at
+                    group_jid, max_attempts, gap_seconds, scheduled_at
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                    $12::timestamptz + ($2::int * $13::int) * INTERVAL '1 second'
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13::timestamptz + $14::int * INTERVAL '1 second'
                 )
             `, [
                 batch.id, i, p.odoo_id, p.company, p.name,
                 p.price_amount, p.price_label, p.caption, p.template_id,
-                groupJid, maxAttempts, batch.scheduled_at, interval,
+                groupJid, maxAttempts, gaps[i], batch.scheduled_at, offsetSeconds,
             ]);
         }
+        const durationSeconds = offsetSeconds + gaps[products.length];
         await logEvent(client, {
             batchId: batch.id,
-            message: `Tanda creada con ${products.length} productos. Un mensaje cada ${interval} s.`,
+            message: `Tanda creada con ${products.length} productos. Un mensaje cada ${interval} s en promedio, con variación.`,
         });
         await client.query('COMMIT');
-        return { batch, total: products.length, sample: products.slice(0, 8) };
+        return { batch, total: products.length, durationSeconds, sample: products.slice(0, 8) };
     } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -208,7 +226,7 @@ function estimateDepartures(messages, lastAttemptAt, now) {
     let prev = lastAttemptAt ? new Date(lastAttemptAt).getTime() : null;
     return messages.map((m) => {
         if (m.batch_status === 'pausada' || m.status === 'enviando') return { ...m, eta: null };
-        const afterPrev = prev == null ? 0 : prev + m.interval_seconds * 1000;
+        const afterPrev = prev == null ? 0 : prev + (m.gap_seconds ?? m.interval_seconds) * 1000;
         const eta = Math.max(new Date(m.scheduled_at).getTime(), afterPrev, now.getTime());
         prev = eta;
         return { ...m, eta: new Date(eta).toISOString() };
@@ -220,7 +238,7 @@ async function listQueue(pool, now = new Date()) {
     const { rows } = await pool.query(`
         SELECT m.id, m.batch_id, m.position, m.odoo_id, m.company, m.product_name,
                m.price_label, m.image_template_id, m.status, m.attempts, m.last_error,
-               m.scheduled_at, b.status AS batch_status, b.category, b.interval_seconds,
+               m.scheduled_at, m.gap_seconds, b.status AS batch_status, b.category, b.interval_seconds,
                COALESCE(b.group_subject, b.group_jid) AS group_name
         FROM whatsapp_messages m
         JOIN whatsapp_batches b ON b.id = m.batch_id
@@ -320,7 +338,8 @@ async function claimNext(pool, now) {
                   SELECT 1 FROM whatsapp_messages recent
                   WHERE recent.id <> m.id
                     AND recent.attempts > 0
-                    AND recent.updated_at > $1::timestamptz - (b.interval_seconds * INTERVAL '1 second')
+                    AND recent.updated_at > $1::timestamptz
+                        - (COALESCE(m.gap_seconds, b.interval_seconds) * INTERVAL '1 second')
               )
             ORDER BY m.scheduled_at, m.position
             LIMIT 1
@@ -382,7 +401,7 @@ async function markFailed(pool, message, errorText, now) {
             last_error = $3,
             scheduled_at = CASE
                 WHEN m.attempts >= m.max_attempts THEN m.scheduled_at
-                ELSE $2::timestamptz + (b.interval_seconds * INTERVAL '1 second')
+                ELSE $2::timestamptz + (COALESCE(m.gap_seconds, b.interval_seconds) * INTERVAL '1 second')
             END,
             updated_at = $2
         FROM whatsapp_batches b
@@ -445,6 +464,7 @@ module.exports = {
     listBatches,
     listQueue,
     estimateDepartures,
+    jitterGaps,
     getBatch,
     pauseBatch,
     resumeBatch,

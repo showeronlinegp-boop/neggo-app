@@ -74,7 +74,7 @@ export default function WhatsAppQueue({ refreshKey }) {
             {nextDelay > LATE_MS && (
                 <p style={{ margin: 0, padding: `0 ${t.space[5]}px ${t.space[3]}px`, color: t.color.textMuted, fontSize: t.font.size.sm }}>
                     <Badge tone="warn">Atrasada {Math.round(nextDelay / 60_000)} min</Badge>{' '}
-                    Igual salen de a una, cada {next.interval_seconds} s: no se mandan todas juntas. «Sale» muestra la hora estimada.
+                    Igual salen de a una, con su espera entre foto y foto: no se mandan todas juntas. «Sale» muestra la hora estimada.
                 </p>
             )}
             <div style={{ overflowX: 'auto' }}>
@@ -105,7 +105,7 @@ export default function WhatsAppQueue({ refreshKey }) {
                                 <td style={td}>{m.category || '—'}</td>
                                 <td style={td}>{m.group_name}</td>
                                 <td style={{ ...td, ...t.numericStyle, whiteSpace: 'nowrap' }}>
-                                    <div>{fmtWhen(m.eta || m.scheduled_at)}</div>
+                                    <div>{fmtWhen(m.eta || m.scheduled_at, { seconds: true })}</div>
                                     {delayMs(m) > LATE_MS && (
                                         <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
                                             programada {fmtWhen(m.scheduled_at)}
