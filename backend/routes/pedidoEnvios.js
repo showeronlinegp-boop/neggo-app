@@ -2,7 +2,7 @@
 // GET    /api/pedido-envios?tab=armar|controlar|hechos&company=neggo&q=
 // GET    /api/pedido-envios/:id
 // POST   /api/pedido-envios/sync                 { company? }
-// POST   /api/pedido-envios/:id/estado           { estado }
+// POST   /api/pedido-envios/:id/estado           { estado }  // armando: confirma Odoo + ata envío 1
 // PATCH  /api/pedido-envios/items/:itemId        { qty_armada? | qty_controlada? }
 // POST   /api/pedido-envios/:id/escanear         { code }
 // POST   /api/pedido-envios/items/:itemId/faltante  { motivo: archivado|reponer|faltante }

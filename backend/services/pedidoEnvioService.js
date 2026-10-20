@@ -1,4 +1,6 @@
 // Armado y control de pedidos (2-step adentro de Neggo App).
+// Al empezar a armar: confirma la sale.order en Odoo (si no está sale/done)
+// y ata el envío 1 (primer stock.picking outgoing). No crea pickings extra.
 // Armado → control en la app. Al saldar: la sale.order de Odoo queda con lo
 // controlado (qty, incluso 0; nunca unlink) y, si sobra, un pedido draft con
 // los pendientes. Idempotente: lock + reusar backorder si ya existe.
@@ -14,6 +16,9 @@ const SCHEMA_032 = fs.readFileSync(
 );
 const SCHEMA_034 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '034_pedido_envios_odoo_state.sql'), 'utf8'
+);
+const SCHEMA_035 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '035_pedido_envios_picking.sql'), 'utf8'
 );
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
@@ -159,6 +164,125 @@ function esCotizacionParaArmar(odoo) {
     return !!odoo && odoo.state === 'sent' && !ordenFacturada(odoo);
 }
 
+function odooNecesitaConfirmar(state) {
+    const s = String(state || '');
+    return s === 'draft' || s === 'sent';
+}
+
+function odooYaConfirmada(state) {
+    const s = String(state || '');
+    return s === 'sale' || s === 'done';
+}
+
+function primerPickingSalida(pickings) {
+    const outgoing = (pickings || [])
+        .filter((p) => p && Number.isInteger(Number(p.id)))
+        .filter((p) => !p.picking_type_code || p.picking_type_code === 'outgoing')
+        .slice()
+        .sort((a, b) => Number(a.id) - Number(b.id));
+    if (!outgoing.length) return null;
+    const first = outgoing[0];
+    return { id: Number(first.id), name: first.name || null };
+}
+
+function auditarEmpezarArmar(odoo) {
+    if (!odoo) return { ok: false, error: 'No encontré la orden en Odoo', statusCode: 404 };
+    if (odoo.state === 'cancel') {
+        return {
+            ok: false,
+            error: `La orden ${odoo.name || ''} en Odoo está cancelada, no se puede armar`.replace(/\s+/g, ' ').trim(),
+            statusCode: 409,
+        };
+    }
+    if (odooNecesitaConfirmar(odoo.state) || odooYaConfirmada(odoo.state)) {
+        return { ok: true, needsConfirm: odooNecesitaConfirmar(odoo.state) };
+    }
+    return {
+        ok: false,
+        error: `La orden ${odoo.name || ''} en Odoo está en estado ${odoo.state}, no se puede armar`,
+        statusCode: 409,
+    };
+}
+
+function errorDesdeOdoo(err, fallback) {
+    if (err?.statusCode) return err;
+    const msg = String(err?.message || '');
+    const red = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|fetch failed|network|socket|HTTP \d|después de \d+ intentos/i.test(msg)
+        || msg.startsWith('HTTP');
+    if (red || !msg) {
+        return httpError('No pude hablar con Odoo. Probá de nuevo en un rato.', 503);
+    }
+    return httpError(`${fallback}: ${msg}`, 502);
+}
+
+async function leerHeaderOdoo(envio) {
+    try {
+        return await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude hablar con Odoo para confirmar el pedido');
+    }
+}
+
+async function buscarEnvio1(envio) {
+    try {
+        const raw = await odooService.getFirstOutgoingPicking(
+            envio.odoo_sale_order_id,
+            envio.company_key,
+            envio.odoo_order_name
+        );
+        return primerPickingSalida(raw ? [raw] : []);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer el envío 1 en Odoo');
+    }
+}
+
+function esperar(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function asegurarConfirmacionYPicking(envio) {
+    if (!envio.odoo_sale_order_id) {
+        throw httpError('Este pedido no tiene orden de Odoo', 400);
+    }
+
+    const header = await leerHeaderOdoo(envio);
+    const audit = auditarEmpezarArmar(header);
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
+
+    if (audit.needsConfirm) {
+        try {
+            await odooService.confirmSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        } catch (err) {
+            throw errorDesdeOdoo(err, `Odoo no pudo confirmar ${envio.odoo_order_name || 'el pedido'}`);
+        }
+    }
+
+    const odooState = audit.needsConfirm ? 'sale' : (header.state || envio.odoo_state || null);
+    const invoiceStatus = header.invoice_status || envio.invoice_status || null;
+
+    if (envio.odoo_picking_id) {
+        return {
+            picking: { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null },
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+        };
+    }
+
+    let picking = await buscarEnvio1(envio);
+    if (!picking?.id && audit.needsConfirm) {
+        await esperar(500);
+        picking = await buscarEnvio1(envio);
+    }
+    if (!picking?.id) {
+        throw httpError(
+            `Odoo no creó el envío 1 de ${envio.odoo_order_name || 'este pedido'}. Revisá el pedido ahí y volvé a intentar.`,
+            409
+        );
+    }
+
+    return { picking, odoo_state: odooState, invoice_status: invoiceStatus };
+}
+
 function lineasProductoOdoo(odoo) {
     return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l));
 }
@@ -261,6 +385,7 @@ function auditarSaldar({ envio, odoo, plan }) {
 async function ensureSchema(db = pool) {
     await db.query(SCHEMA_032);
     await db.query(SCHEMA_034);
+    await db.query(SCHEMA_035);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -359,7 +484,10 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
             )
             AND (
                 NOT $4
-                OR (e.odoo_state = 'sent' AND COALESCE(e.invoice_status, '') <> 'invoiced')
+                OR (
+                    COALESCE(e.invoice_status, '') <> 'invoiced'
+                    AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
+                )
             )
           ORDER BY e.date_order DESC NULLS LAST, e.id DESC
           LIMIT 200`,
@@ -500,10 +628,15 @@ async function cambiarEstado(id, estado, userId) {
     const actual = envio.estado;
     const ok =
         (actual === 'pendiente' && estado === 'armando')
-        || (actual === 'armando' && (estado === 'armado' || estado === 'pendiente'))
+        || (actual === 'armando' && (estado === 'armado' || estado === 'pendiente' || estado === 'armando'))
         || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
         || (actual === 'controlando' && estado === 'armado');
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
+
+    let odooPatch = null;
+    if (estado === 'armando' && (actual === 'pendiente' || !envio.odoo_picking_id)) {
+        odooPatch = await asegurarConfirmacionYPicking(envio);
+    }
 
     const sets = ['estado = $2', 'updated_at = NOW()'];
     const params = [id, estado];
@@ -516,6 +649,20 @@ async function cambiarEstado(id, estado, userId) {
     } else if (estado === 'controlando') {
         sets.push('checked_by = $3', 'checked_at = NOW()');
         params.push(userId);
+    }
+    if (odooPatch?.picking?.id) {
+        params.push(odooPatch.picking.id);
+        sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
+        params.push(odooPatch.picking.name || null);
+        sets.push(`odoo_picking_name = COALESCE(odoo_picking_name, $${params.length})`);
+    }
+    if (odooPatch?.odoo_state) {
+        params.push(odooPatch.odoo_state);
+        sets.push(`odoo_state = $${params.length}`);
+    }
+    if (odooPatch?.invoice_status != null) {
+        params.push(odooPatch.invoice_status);
+        sets.push(`invoice_status = $${params.length}`);
     }
 
     await pool.query(
@@ -765,6 +912,10 @@ module.exports = {
     refPendientes,
     ordenFacturada,
     esCotizacionParaArmar,
+    odooNecesitaConfirmar,
+    odooYaConfirmada,
+    primerPickingSalida,
+    auditarEmpezarArmar,
     auditarSaldar,
     listar,
     obtener,

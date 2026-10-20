@@ -570,6 +570,73 @@ async function confirmSaleOrder(odooOrderId, companyKey) {
     console.log(`✅ Sale order ${odooOrderId} confirmada en Odoo [${companyKey}]`);
 }
 
+async function getSaleOrderHeader(odooOrderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'sale.order',
+        'read',
+        [[odooOrderId], ['id', 'name', 'state', 'invoice_status', 'picking_ids']],
+        withCompany(companyId)
+    );
+    const row = rows?.[0];
+    if (!row) return null;
+    return {
+        id: row.id,
+        name: row.name,
+        state: row.state,
+        invoice_status: row.invoice_status || null,
+        picking_ids: Array.isArray(row.picking_ids) ? row.picking_ids : [],
+    };
+}
+
+function mapPickingRow(row) {
+    if (!row || row.id == null) return null;
+    return {
+        id: row.id,
+        name: row.name || null,
+        state: row.state || null,
+        picking_type_code: row.picking_type_code || null,
+        origin: row.origin || null,
+    };
+}
+
+/**
+ * Primer stock.picking de salida (envío 1) de una sale.order.
+ * No crea pickings: solo lee el que Odoo arma al confirmar.
+ */
+async function getFirstOutgoingPicking(odooOrderId, companyKey, orderName = null) {
+    const companyId = await resolveCompanyId(companyKey);
+    const header = await getSaleOrderHeader(odooOrderId, companyKey);
+    const name = orderName || header?.name || null;
+    const fields = ['id', 'name', 'state', 'picking_type_code', 'origin'];
+    const kwargs = withCompany(companyId, { fields, order: 'id asc', limit: 20 });
+
+    let rows = [];
+    const pickingIds = header?.picking_ids || [];
+    if (pickingIds.length) {
+        rows = await callOdoo(
+            'stock.picking',
+            'search_read',
+            [[['id', 'in', pickingIds], ['picking_type_code', '=', 'outgoing']]],
+            kwargs
+        ) || [];
+    }
+    if (!rows.length && name) {
+        rows = await callOdoo(
+            'stock.picking',
+            'search_read',
+            [[
+                ['company_id', '=', companyId],
+                ['picking_type_code', '=', 'outgoing'],
+                ['origin', '=', name],
+            ]],
+            kwargs
+        ) || [];
+    }
+    const sorted = rows.slice().sort((a, b) => a.id - b.id);
+    return mapPickingRow(sorted[0]);
+}
+
 /**
  * Cancela una orden de venta en Odoo.
  * Si la orden está confirmada ('sale'), intenta cancelarla con action_cancel.
@@ -1189,6 +1256,8 @@ module.exports = {
     // Órdenes de compra
     updateSaleOrderLines,
     confirmSaleOrder,
+    getSaleOrderHeader,
+    getFirstOutgoingPicking,
     createPurchaseOrder,
     addLinesToPurchaseOrder,
     confirmPurchaseOrder,
