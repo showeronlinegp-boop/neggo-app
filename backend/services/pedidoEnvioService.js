@@ -1,6 +1,7 @@
 // Armado y control de pedidos (2-step adentro de Neggo App).
 // Armado → control en la app. Al saldar: la sale.order de Odoo queda con lo
-// controlado y, si sobra, se crea un pedido draft con los pendientes.
+// controlado (qty, incluso 0; nunca unlink) y, si sobra, un pedido draft con
+// los pendientes. Idempotente: lock + reusar backorder si ya existe.
 // Archivar/reponer reusa reposicionService. No usa updateSaleOrderLines.
 
 const fs = require('fs');
@@ -162,6 +163,16 @@ function objetivoPorItem(item, plan) {
 // Compara el envío local contra la sale.order viva. Sin I/O.
 function auditarSaldar({ envio, odoo, plan }) {
     if (!odoo) return auditarFallo('No encontré la orden en Odoo', 404);
+
+    if (odoo.state === 'cancel') {
+        if (plan.cancela_original) {
+            return { ok: true, alreadyCancelled: true, writes: [] };
+        }
+        return auditarFallo(
+            `La orden ${odoo.name} en Odoo está en estado cancel, no se puede saldar`
+        );
+    }
+
     if (odoo.locked) {
         return auditarFallo(
             `La orden ${odoo.name} está bloqueada en Odoo. Desbloqueala ahí y volvé a saldar.`
@@ -179,15 +190,6 @@ function auditarSaldar({ envio, odoo, plan }) {
     if (lineas.some((l) => num(l.qty_delivered) > 0)) {
         return auditarFallo(
             'Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.'
-        );
-    }
-
-    if (odoo.state === 'cancel') {
-        if (plan.cancela_original) {
-            return { ok: true, alreadyCancelled: true, writes: [] };
-        }
-        return auditarFallo(
-            `La orden ${odoo.name} en Odoo está en estado cancel, no se puede saldar`
         );
     }
     if (odoo.state !== 'sale') {
