@@ -40,6 +40,7 @@ export default function PedidoEnvioDetalle() {
     const rafRef = useRef(null);
     const ultimoCode = useRef('');
     const ultimoAt = useRef(0);
+    const saldarEnVuelo = useRef(false);
 
     const [envio, setEnvio] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -201,15 +202,21 @@ export default function PedidoEnvioDetalle() {
     };
 
     const confirmarSaldar = async () => {
+        if (saldarEnVuelo.current) return;
+        saldarEnVuelo.current = true;
         setTrabajando(true);
-        const res = await api.post(`/pedido-envios/${id}/saldar`);
-        setTrabajando(false);
-        if (!aplicar(res, res.success
-            ? (res.data.backorder_odoo_name
-                ? `Odoo quedó con lo controlado. Pendientes en ${res.data.backorder_odoo_name}.`
-                : 'Odoo quedó igual a lo controlado. No había pendientes.')
-            : null)) return;
-        setSaldarOpen(false);
+        try {
+            const res = await api.post(`/pedido-envios/${id}/saldar`);
+            if (!aplicar(res, res.success
+                ? (res.data.backorder_odoo_name
+                    ? `Odoo quedó con lo controlado. Pendientes en ${res.data.backorder_odoo_name}.`
+                    : 'Odoo quedó igual a lo controlado. No había pendientes.')
+                : null)) return;
+            setSaldarOpen(false);
+        } finally {
+            saldarEnVuelo.current = false;
+            setTrabajando(false);
+        }
     };
 
     if (loading) {

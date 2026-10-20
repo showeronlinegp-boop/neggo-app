@@ -570,12 +570,20 @@ async function confirmSaleOrder(odooOrderId, companyKey) {
 async function cancelSaleOrder(odooOrderId, companyKey) {
     const companyId = await resolveCompanyId(companyKey);
 
-    await callOdoo(
+    const result = await callOdoo(
         'sale.order',
         'action_cancel',
         [[odooOrderId]],
-        withCompany(companyId)
+        withCompany(companyId, { context: { disable_cancel_warning: true } })
     );
+
+    // Odoo 17/18 devolvía el wizard. En 19 action_cancel cancela directo.
+    // Si vuelve un act_window, no se canceló: fallar en vez de seguir.
+    if (result && typeof result === 'object' && result.type === 'ir.actions.act_window') {
+        throw new Error(
+            'Odoo pidió un asistente para cancelar; la orden no se canceló.'
+        );
+    }
 
     console.log(`✅ Sale order ${odooOrderId} cancelada en Odoo [${companyKey}]`);
     return true;
@@ -1043,6 +1051,7 @@ async function getSaleOrdersWithLines(companyKey, {
             fields: [
                 'id', 'name', 'partner_id', 'date_order', 'amount_total',
                 'amount_untaxed', 'state', 'order_line', 'origin', 'client_order_ref',
+                'invoice_status', 'locked',
             ],
             order: 'date_order desc',
             limit: pageSize,
@@ -1057,7 +1066,7 @@ async function getSaleOrdersWithLines(companyKey, {
         ? await readByIds(
             'sale.order.line',
             allLineIds,
-            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'price_unit', 'price_subtotal', 'name'],
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'qty_invoiced', 'price_unit', 'price_subtotal', 'name'],
             context
         )
         : [];
@@ -1074,6 +1083,7 @@ async function getSaleOrdersWithLines(companyKey, {
             product_name:  Array.isArray(line.product_id) ? line.product_id[1] : line.name,
             quantity:      Number(line.product_uom_qty) || 0,
             qty_delivered: Number(line.qty_delivered) || 0,
+            qty_invoiced:  Number(line.qty_invoiced) || 0,
             unit_price:    Number(line.price_unit) || 0,
             subtotal:      Number(line.price_subtotal) || 0,
         });
@@ -1090,7 +1100,40 @@ async function getSaleOrdersWithLines(companyKey, {
         state:            o.state,
         origin:           o.origin || null,
         client_order_ref: o.client_order_ref || null,
+        invoice_status:   o.invoice_status || null,
+        locked:           !!o.locked,
         lines:            linesByOrder[o.id] || [],
+    }));
+}
+
+async function findSaleOrdersByOriginRef(companyKey, {
+    origin,
+    clientOrderRef,
+    states = ['draft', 'sent'],
+} = {}) {
+    if (!origin || !clientOrderRef) return [];
+    const companyId = await resolveCompanyId(companyKey);
+    const orders = await callOdoo(
+        'sale.order',
+        'search_read',
+        [[
+            ['company_id', '=', companyId],
+            ['origin', '=', origin],
+            ['client_order_ref', '=', clientOrderRef],
+            ['state', 'in', states],
+        ]],
+        withCompany(companyId, {
+            fields: ['id', 'name', 'state', 'origin', 'client_order_ref'],
+            order: 'id asc',
+            limit: 20,
+        })
+    ) || [];
+    return orders.map((o) => ({
+        id: o.id,
+        name: o.name,
+        state: o.state,
+        origin: o.origin || null,
+        client_order_ref: o.client_order_ref || null,
     }));
 }
 
@@ -1143,6 +1186,7 @@ module.exports = {
     cancelSaleOrder,
     getSaleOrders,
     getSaleOrdersWithLines,
+    findSaleOrdersByOriginRef,
     writeSaleOrderLineQty,
     unlinkSaleOrderLines,
     getPreventasQuotations,
