@@ -697,4 +697,8 @@ CREATE TABLE IF NOT EXISTS client_pricelist_rules (
 CREATE INDEX IF NOT EXISTS idx_pl_active ON client_pricelists(active);
 CREATE INDEX IF NOT EXISTS idx_plr_pricelist ON client_pricelist_rules(pricelist_id);
 CREATE INDEX IF NOT EXISTS idx_plr_supplier ON client_pricelist_rules(supplier_id);
+
+ALTER TABLE preventa_client_orders
+    ADD COLUMN IF NOT EXISTS pricelist_id INTEGER REFERENCES client_pricelists(id);
+
 CREATE INDEX IF NOT EXISTS idx_pco_pricelist ON preventa_client_orders(pricelist_id);
