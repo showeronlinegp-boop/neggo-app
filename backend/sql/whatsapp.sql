@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS whatsapp_messages (
     UNIQUE (batch_id, position)
 );
 
+-- Espera propia de cada mensaje desde el anterior (el intervalo con variación al azar).
+-- NULL en las tandas viejas: usan el intervalo de la tanda.
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS gap_seconds INTEGER;
+
 CREATE INDEX IF NOT EXISTS idx_wa_messages_due
     ON whatsapp_messages(status, scheduled_at);
 

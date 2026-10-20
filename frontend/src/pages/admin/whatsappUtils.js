@@ -10,12 +10,13 @@ export function defaultSchedule() {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function fmtWhen(iso) {
+export function fmtWhen(iso, { seconds = false } = {}) {
     if (!iso) return '—';
     return new Date(iso).toLocaleString('es-AR', {
         timeZone: ART,
         day: '2-digit', month: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit',
+        ...(seconds ? { second: '2-digit' } : {}),
     });
 }
 

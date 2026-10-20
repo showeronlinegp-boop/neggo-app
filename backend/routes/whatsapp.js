@@ -165,7 +165,7 @@ router.post('/batches/random', async (req, res) => {
         const created = [];
         let offset = 0;
         for (const g of prepared) {
-            const { batch, total } = await queue.createBatch(pool, {
+            const { batch, total, durationSeconds } = await queue.createBatch(pool, {
                 company,
                 category: g.category,
                 products: g.products,
@@ -178,7 +178,8 @@ router.post('/batches/random', async (req, res) => {
                 createdBy: req.user.id,
             });
             created.push({ id: batch.id, category: g.category, total, scheduled_at: batch.scheduled_at });
-            offset += total * interval;
+            // Las esperas varían al azar: la tanda siguiente arranca cuando termina esta.
+            offset += durationSeconds;
         }
         return ok(res, created, 201);
     } catch (err) {
