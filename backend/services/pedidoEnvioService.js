@@ -130,6 +130,120 @@ function previewSaldar(items) {
     };
 }
 
+const SALDAR_LOCK = 832019;
+
+function qtyCasiIgual(a, b) {
+    return Math.abs(num(a) - num(b)) < 0.0001;
+}
+
+function esLineaDownPayment(line) {
+    return /down payment/i.test(String(line?.product_name || line?.name || ''));
+}
+
+function refPendientes(orderName) {
+    return `Pendientes de ${orderName || ''}`.trim();
+}
+
+function lineasProductoOdoo(odoo) {
+    return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l));
+}
+
+function auditarFallo(error, statusCode = 409) {
+    return { ok: false, error, statusCode, alreadyCancelled: false, writes: [] };
+}
+
+function objetivoPorItem(item, plan) {
+    const todas = [...(plan.queda || []), ...(plan.iguales || [])];
+    const marcada = todas.find((l) => l.odoo_line_id === item.odoo_line_id);
+    if (marcada) return marcada.qty_nueva;
+    return clampQty(item.qty_controlada, item.qty_pedida);
+}
+
+// Compara el envío local contra la sale.order viva. Sin I/O.
+function auditarSaldar({ envio, odoo, plan }) {
+    if (!odoo) return auditarFallo('No encontré la orden en Odoo', 404);
+    if (odoo.locked) {
+        return auditarFallo(
+            `La orden ${odoo.name} está bloqueada en Odoo. Desbloqueala ahí y volvé a saldar.`
+        );
+    }
+
+    const lineas = lineasProductoOdoo(odoo);
+    const facturada = odoo.invoice_status === 'invoiced'
+        || lineas.some((l) => num(l.qty_invoiced) > 0);
+    if (facturada) {
+        return auditarFallo(
+            `La orden ${odoo.name} ya está facturada en Odoo. No la tocamos.`
+        );
+    }
+    if (lineas.some((l) => num(l.qty_delivered) > 0)) {
+        return auditarFallo(
+            'Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.'
+        );
+    }
+
+    if (odoo.state === 'cancel') {
+        if (plan.cancela_original) {
+            return { ok: true, alreadyCancelled: true, writes: [] };
+        }
+        return auditarFallo(
+            `La orden ${odoo.name} en Odoo está en estado cancel, no se puede saldar`
+        );
+    }
+    if (odoo.state !== 'sale') {
+        return auditarFallo(
+            `La orden ${odoo.name} en Odoo está en estado ${odoo.state}, no se puede saldar`
+        );
+    }
+
+    const items = envio.items || [];
+    const odooById = new Map(lineas.map((l) => [l.id, l]));
+    const localById = new Map(items.map((it) => [it.odoo_line_id, it]));
+
+    for (const it of items) {
+        const o = odooById.get(it.odoo_line_id);
+        if (!o) {
+            return auditarFallo(
+                `En Odoo no está el renglón de «${it.product_name}». Alguien editó la orden después de traerla.`
+            );
+        }
+        if (o.product_id !== it.odoo_product_id) {
+            return auditarFallo(
+                `En Odoo cambió el producto de «${it.product_name}». No escribimos cantidades viejas.`
+            );
+        }
+    }
+    for (const o of lineas) {
+        if (!localById.has(o.id)) {
+            return auditarFallo(
+                `En Odoo hay un renglón que acá no está (${o.product_name}). Alguien editó la orden después de traerla.`
+            );
+        }
+    }
+
+    const writes = [];
+    for (const it of items) {
+        const o = odooById.get(it.odoo_line_id);
+        const target = objetivoPorItem(it, plan);
+        const odooQty = num(o.quantity);
+        const pedida = num(it.qty_pedida);
+        if (qtyCasiIgual(odooQty, target)) continue;
+        if (qtyCasiIgual(odooQty, pedida)) {
+            writes.push({
+                odoo_line_id: it.odoo_line_id,
+                qty: target,
+                product_name: it.product_name,
+            });
+            continue;
+        }
+        return auditarFallo(
+            `Odoo tiene cantidad ${odooQty} en «${it.product_name}», nosotros partimos de ${pedida}. Alguien editó la orden después de traerla.`
+        );
+    }
+
+    return { ok: true, alreadyCancelled: false, writes };
+}
+
 async function ensureSchema(db = pool) {
     await db.query(SCHEMA_032);
 }
@@ -471,8 +585,78 @@ async function preview(id) {
     return { ...previewSaldar(envio.items), envio_id: envio.id, odoo_order_name: envio.odoo_order_name };
 }
 
+async function withSaldarLock(envioId, fn) {
+    const client = await pool.connect();
+    try {
+        await client.query('SELECT pg_advisory_lock($1, $2)', [SALDAR_LOCK, envioId]);
+        return await fn();
+    } finally {
+        await client.query('SELECT pg_advisory_unlock($1, $2)', [SALDAR_LOCK, envioId]).catch(() => {});
+        client.release();
+    }
+}
+
+async function persistBackorder(envioId, backorder) {
+    if (!backorder?.id) return;
+    await pool.query(
+        `UPDATE pedido_envios
+            SET backorder_odoo_id = $2,
+                backorder_odoo_name = $3,
+                updated_at = NOW()
+          WHERE id = $1`,
+        [envioId, backorder.id, backorder.name || null]
+    );
+}
+
+async function asegurarBackorder(envio, plan) {
+    if (envio.backorder_odoo_id) {
+        return { id: envio.backorder_odoo_id, name: envio.backorder_odoo_name };
+    }
+    if (!envio.partner_id) {
+        throw httpError('La orden no tiene cliente en Odoo; no puedo armar los pendientes', 409);
+    }
+
+    const origin = envio.odoo_order_name;
+    const clientOrderRef = refPendientes(envio.odoo_order_name);
+    const existentes = await odooService.findSaleOrdersByOriginRef(envio.company_key, {
+        origin,
+        clientOrderRef,
+        states: ['draft', 'sent'],
+    });
+    if (existentes.length > 0) {
+        const reused = { id: existentes[0].id, name: existentes[0].name };
+        await persistBackorder(envio.id, reused);
+        return reused;
+    }
+
+    const created = await odooService.createSaleOrder(
+        envio.partner_id,
+        plan.pendientes.map((p) => ({
+            product_id: p.odoo_product_id,
+            name: p.product_name,
+            quantity: p.qty_pendiente,
+            unit_price: p.price_unit,
+        })),
+        envio.company_key,
+        {
+            origin,
+            client_order_ref: clientOrderRef,
+            note: `Pendientes del control de ${envio.odoo_order_name} en Neggo App.`,
+        }
+    );
+    await persistBackorder(envio.id, created);
+    return created;
+}
+
 async function saldar(id, userId) {
+    const envioId = Number(id);
+    if (!Number.isInteger(envioId) || envioId <= 0) throw httpError('Pedido inválido', 400);
+    return withSaldarLock(envioId, () => saldarLocked(envioId, userId));
+}
+
+async function saldarLocked(id, userId) {
     const envio = await obtener(id);
+    if (envio.estado === 'saldado') return envio;
     if (envio.estado !== 'controlando') {
         throw httpError('El pedido tiene que estar en control para saldarlo', 409);
     }
@@ -483,45 +667,19 @@ async function saldar(id, userId) {
         ids: [envio.odoo_sale_order_id],
         days: null,
     });
-    const odoo = vivos[0];
-    if (!odoo) throw httpError('No encontré la orden en Odoo', 404);
-    if (odoo.state !== 'sale') {
-        throw httpError(`La orden ${odoo.name} en Odoo está en estado ${odoo.state}, no se puede saldar`, 409);
-    }
-    const entregado = (odoo.lines || []).some((l) => num(l.qty_delivered) > 0);
-    if (entregado) {
-        throw httpError('Esta orden ya tiene cantidad entregada en Odoo. No la tocamos para no romper el stock.', 409);
+    const audit = auditarSaldar({ envio, odoo: vivos[0], plan });
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
+
+    for (const linea of audit.writes) {
+        await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty, envio.company_key);
     }
 
     let backorder = null;
     if (plan.pendientes.length > 0) {
-        if (!envio.partner_id) throw httpError('La orden no tiene cliente en Odoo; no puedo armar los pendientes', 409);
-        backorder = await odooService.createSaleOrder(
-            envio.partner_id,
-            plan.pendientes.map((p) => ({
-                product_id: p.odoo_product_id,
-                name: p.product_name,
-                quantity: p.qty_pendiente,
-                unit_price: p.price_unit,
-            })),
-            envio.company_key,
-            {
-                origin: envio.odoo_order_name,
-                client_order_ref: `Pendientes de ${envio.odoo_order_name}`,
-                note: `Pendientes del control de ${envio.odoo_order_name} en Neggo App.`,
-            }
-        );
+        backorder = await asegurarBackorder(envio, plan);
     }
 
-    const aUnlink = plan.queda.filter((l) => l.qty_nueva <= 0).map((l) => l.odoo_line_id);
-    const aEscribir = plan.queda.filter((l) => l.qty_nueva > 0);
-    for (const linea of aEscribir) {
-        await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty_nueva, envio.company_key);
-    }
-    if (aUnlink.length) {
-        await odooService.unlinkSaleOrderLines(aUnlink, envio.company_key);
-    }
-    if (plan.cancela_original) {
+    if (plan.cancela_original && !audit.alreadyCancelled) {
         await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
     }
 
@@ -532,15 +690,15 @@ async function saldar(id, userId) {
                 saldado_by = $2,
                 checked_by = COALESCE(checked_by, $2),
                 checked_at = COALESCE(checked_at, NOW()),
-                backorder_odoo_id = $3,
-                backorder_odoo_name = $4,
+                backorder_odoo_id = COALESCE($3, backorder_odoo_id),
+                backorder_odoo_name = COALESCE($4, backorder_odoo_name),
                 updated_at = NOW()
           WHERE id = $1`,
         [id, userId, backorder?.id || null, backorder?.name || null]
     );
     await logActividad(userId, 'SALDAR', id, {
         odoo_order: envio.odoo_order_name,
-        backorder: backorder?.name || null,
+        backorder: backorder?.name || envio.backorder_odoo_name || null,
         queda: plan.queda.length,
         pendientes: plan.pendientes.length,
         cancelo: plan.cancela_original,
@@ -557,6 +715,8 @@ module.exports = {
     itemPorCodigo,
     previewSaldar,
     qtyCampoDeFase,
+    refPendientes,
+    auditarSaldar,
     listar,
     obtener,
     syncDesdeOdoo,
