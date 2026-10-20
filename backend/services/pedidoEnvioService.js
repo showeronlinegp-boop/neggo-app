@@ -1,10 +1,12 @@
 // Armado y control de pedidos (2-step adentro de Neggo App).
 // Al empezar a armar: confirma la sale.order en Odoo (si no está sale/done)
-// y ata el envío 1 (primer stock.picking outgoing). No crea pickings extra.
-// Armado → control en la app. Al saldar: la sale.order de Odoo queda con lo
-// controlado (qty, incluso 0; nunca unlink) y, si sobra, un pedido draft con
-// los pendientes. Idempotente: lock + reusar backorder si ya existe.
-// Archivar/reponer reusa reposicionService. No usa updateSaleOrderLines.
+// y ata el envío 1 (primer picking de la orden: Recolectar en pick_ship,
+// outgoing en ship_only). Lo deja ABIERTO. No crea pickings extra.
+// Al terminar el armado: escribe stock.move.quantity = qty_armada, picked,
+// y valida el envío 1. Si falta mercadería Odoo abre backorder (ask).
+// Armado → control en la app. Al saldar: si el envío 1 ya está done, no
+// reescribe líneas; si no, la sale.order queda con lo controlado y un
+// pedido draft con pendientes. Archivar/reponer reusa reposicionService.
 
 const fs = require('fs');
 const path = require('path');
@@ -19,6 +21,9 @@ const SCHEMA_034 = fs.readFileSync(
 );
 const SCHEMA_035 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '035_pedido_envios_picking.sql'), 'utf8'
+);
+const SCHEMA_036 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '036_pedido_envios_picking_state.sql'), 'utf8'
 );
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
@@ -175,14 +180,99 @@ function odooYaConfirmada(state) {
 }
 
 function primerPickingSalida(pickings) {
-    const outgoing = (pickings || [])
+    const vivos = (pickings || [])
         .filter((p) => p && Number.isInteger(Number(p.id)))
-        .filter((p) => !p.picking_type_code || p.picking_type_code === 'outgoing')
+        .filter((p) => p.state !== 'cancel')
+        .filter((p) => {
+            const code = p.picking_type_code;
+            return !code || code === 'outgoing' || code === 'internal';
+        })
         .slice()
         .sort((a, b) => Number(a.id) - Number(b.id));
-    if (!outgoing.length) return null;
-    const first = outgoing[0];
-    return { id: Number(first.id), name: first.name || null };
+    if (!vivos.length) return null;
+    const first = vivos[0];
+    return {
+        id: Number(first.id),
+        name: first.name || null,
+        state: first.state || null,
+        picking_type_code: first.picking_type_code || null,
+    };
+}
+
+function esWizardBackorder(result) {
+    return !!(result && typeof result === 'object' && result.type === 'ir.actions.act_window'
+        && result.res_model === 'stock.backorder.confirmation');
+}
+
+function hayFaltanteEnMoves(writes) {
+    return (writes || []).some((w) => num(w.quantity) + 0.0001 < num(w.demand));
+}
+
+// qty_armada → stock.move.quantity, matcheando sale_line_id y si no product_id.
+function planQtyMovesArmado(moves, items) {
+    const restantesLinea = new Map();
+    const restantesProd = new Map();
+    for (const it of items || []) {
+        const qty = clampQty(it.qty_armada, it.qty_pedida);
+        if (it.odoo_line_id) {
+            restantesLinea.set(it.odoo_line_id, (restantesLinea.get(it.odoo_line_id) || 0) + qty);
+        }
+        if (it.odoo_product_id) {
+            restantesProd.set(it.odoo_product_id, (restantesProd.get(it.odoo_product_id) || 0) + qty);
+        }
+    }
+
+    const writes = [];
+    for (const mv of (moves || []).filter((m) => m && m.state !== 'cancel')) {
+        const demand = Math.max(0, num(mv.product_uom_qty));
+        let take = 0;
+        if (mv.sale_line_id && restantesLinea.has(mv.sale_line_id)) {
+            const hay = restantesLinea.get(mv.sale_line_id);
+            take = Math.min(demand, hay);
+            restantesLinea.set(mv.sale_line_id, hay - take);
+            if (mv.product_id && restantesProd.has(mv.product_id)) {
+                restantesProd.set(mv.product_id, Math.max(0, restantesProd.get(mv.product_id) - take));
+            }
+        } else if (mv.product_id && restantesProd.has(mv.product_id)) {
+            const hay = restantesProd.get(mv.product_id);
+            take = Math.min(demand, hay);
+            restantesProd.set(mv.product_id, hay - take);
+        }
+        writes.push({
+            id: mv.id,
+            quantity: take,
+            demand,
+            sale_line_id: mv.sale_line_id || null,
+            product_id: mv.product_id || null,
+        });
+    }
+    return {
+        writes,
+        hayFaltante: hayFaltanteEnMoves(writes),
+        hayAlgo: writes.some((w) => num(w.quantity) > 0),
+    };
+}
+
+function auditarTerminarArmado({ envio, picking }) {
+    if (!envio) return { ok: false, error: 'Pedido no encontrado', statusCode: 404 };
+    if (envio.estado !== 'armando') {
+        return { ok: false, error: 'Sólo se valida el envío 1 al terminar el armado', statusCode: 409 };
+    }
+    if (!picking?.id && !envio.odoo_picking_id) {
+        return {
+            ok: false,
+            error: 'Este pedido todavía no tiene envío 1 en Odoo. Confirmalo y volvé a terminar el armado.',
+            statusCode: 409,
+        };
+    }
+    if ((picking?.state || envio.odoo_picking_state) === 'cancel') {
+        return {
+            ok: false,
+            error: `El envío 1 ${picking?.name || envio.odoo_picking_name || ''} está cancelado en Odoo`.trim(),
+            statusCode: 409,
+        };
+    }
+    return { ok: true, alreadyDone: (picking?.state || envio.odoo_picking_state) === 'done' };
 }
 
 function auditarEmpezarArmar(odoo) {
@@ -230,7 +320,12 @@ async function buscarEnvio1(envio) {
             envio.company_key,
             envio.odoo_order_name
         );
-        return primerPickingSalida(raw ? [raw] : []);
+        return primerPickingSalida(raw ? [raw] : []) || (raw?.id ? {
+            id: Number(raw.id),
+            name: raw.name || null,
+            state: raw.state || null,
+            picking_type_code: raw.picking_type_code || null,
+        } : null);
     } catch (err) {
         throw errorDesdeOdoo(err, 'No pude leer el envío 1 en Odoo');
     }
@@ -262,7 +357,11 @@ async function asegurarConfirmacionYPicking(envio) {
 
     if (envio.odoo_picking_id) {
         return {
-            picking: { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null },
+            picking: {
+                id: envio.odoo_picking_id,
+                name: envio.odoo_picking_name || null,
+                state: envio.odoo_picking_state || null,
+            },
             odoo_state: odooState,
             invoice_status: invoiceStatus,
         };
@@ -280,7 +379,120 @@ async function asegurarConfirmacionYPicking(envio) {
         );
     }
 
-    return { picking, odoo_state: odooState, invoice_status: invoiceStatus };
+    return {
+        picking,
+        odoo_state: odooState,
+        invoice_status: invoiceStatus,
+    };
+}
+
+async function persistirOdooPicking(envioId, patch) {
+    if (!patch) return;
+    const sets = ['updated_at = NOW()'];
+    const params = [envioId];
+    if (patch.picking?.id) {
+        params.push(patch.picking.id);
+        sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
+        params.push(patch.picking.name || null);
+        sets.push(`odoo_picking_name = COALESCE(odoo_picking_name, $${params.length})`);
+    }
+    if (patch.picking?.state || patch.odoo_picking_state) {
+        params.push(patch.picking?.state || patch.odoo_picking_state);
+        sets.push(`odoo_picking_state = $${params.length}`);
+    }
+    if (patch.odoo_state) {
+        params.push(patch.odoo_state);
+        sets.push(`odoo_state = $${params.length}`);
+    }
+    if (patch.invoice_status != null) {
+        params.push(patch.invoice_status);
+        sets.push(`invoice_status = $${params.length}`);
+    }
+    if (patch.backorder?.id) {
+        params.push(patch.backorder.id);
+        sets.push(`odoo_picking_backorder_id = COALESCE(odoo_picking_backorder_id, $${params.length})`);
+        params.push(patch.backorder.name || null);
+        sets.push(`odoo_picking_backorder_name = COALESCE(odoo_picking_backorder_name, $${params.length})`);
+    }
+    if (sets.length === 1) return;
+    await pool.query(`UPDATE pedido_envios SET ${sets.join(', ')} WHERE id = $1`, params);
+}
+
+async function validarEnvio1AlTerminar(envio) {
+    let pickingRef = envio.odoo_picking_id
+        ? { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null, state: envio.odoo_picking_state || null }
+        : null;
+    let odooState = envio.odoo_state || null;
+    let invoiceStatus = envio.invoice_status || null;
+
+    if (!pickingRef?.id) {
+        const linked = await asegurarConfirmacionYPicking(envio);
+        pickingRef = linked.picking;
+        odooState = linked.odoo_state;
+        invoiceStatus = linked.invoice_status;
+        await persistirOdooPicking(envio.id, linked);
+    }
+
+    let picking = null;
+    try {
+        picking = await odooService.getPicking(pickingRef.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer el envío 1 en Odoo');
+    }
+
+    const audit = auditarTerminarArmado({ envio, picking: picking || pickingRef });
+    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
+
+    if (audit.alreadyDone || picking?.state === 'done') {
+        let backorder = null;
+        try {
+            backorder = await odooService.getPickingBackorder(pickingRef.id, envio.company_key);
+        } catch {
+            backorder = null;
+        }
+        return {
+            picking: picking || pickingRef,
+            backorder,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            alreadyDone: true,
+        };
+    }
+
+    let moves = [];
+    try {
+        moves = await odooService.getPickingMoves(pickingRef.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer las líneas del envío 1');
+    }
+
+    const plan = planQtyMovesArmado(moves, envio.items || []);
+    if (!plan.hayAlgo) {
+        return {
+            picking: picking || pickingRef,
+            backorder: null,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            skippedEmpty: true,
+        };
+    }
+
+    try {
+        await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
+        const validated = await odooService.validateSalePicking(pickingRef.id, envio.company_key, {
+            createBackorder: true,
+        });
+        return {
+            picking: validated.picking || picking || pickingRef,
+            backorder: validated.backorder || null,
+            odoo_state: odooState,
+            invoice_status: invoiceStatus,
+            alreadyDone: !!validated.alreadyDone,
+            hayFaltante: plan.hayFaltante,
+        };
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo validar el envío 1 de ${envio.odoo_order_name || 'este pedido'}`);
+    }
 }
 
 function lineasProductoOdoo(odoo) {
@@ -386,6 +598,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_032);
     await db.query(SCHEMA_034);
     await db.query(SCHEMA_035);
+    await db.query(SCHEMA_036);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -513,7 +726,7 @@ async function listar({ tab = 'armar', companyKey = 'neggo', q = '' } = {}) {
     });
 }
 
-async function obtener(id) {
+async function obtener(id, { syncOdoo = false } = {}) {
     const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
     if (!envio) throw httpError('Pedido no encontrado', 404);
     const { rows: items } = await pool.query(
@@ -525,7 +738,19 @@ async function obtener(id) {
           ORDER BY i.id`,
         [id, envio.company_key]
     );
-    return { ...envio, items, preview: previewSaldar(items) };
+    const base = { ...envio, items, preview: previewSaldar(items) };
+
+    const faltaEnvio1 = base.estado === 'armando'
+        && (!base.odoo_picking_id || odooNecesitaConfirmar(base.odoo_state));
+    if (!syncOdoo || !faltaEnvio1) return base;
+
+    try {
+        const patch = await asegurarConfirmacionYPicking(base);
+        await persistirOdooPicking(base.id, patch);
+        return obtener(id);
+    } catch (err) {
+        return { ...base, odoo_sync_error: err.message };
+    }
 }
 
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
@@ -634,8 +859,10 @@ async function cambiarEstado(id, estado, userId) {
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
 
     let odooPatch = null;
-    if (estado === 'armando' && (actual === 'pendiente' || !envio.odoo_picking_id)) {
+    if (estado === 'armando' && (actual === 'pendiente' || !envio.odoo_picking_id || odooNecesitaConfirmar(envio.odoo_state))) {
         odooPatch = await asegurarConfirmacionYPicking(envio);
+    } else if (estado === 'armado' && actual === 'armando') {
+        odooPatch = await validarEnvio1AlTerminar(envio);
     }
 
     const sets = ['estado = $2', 'updated_at = NOW()'];
@@ -655,6 +882,16 @@ async function cambiarEstado(id, estado, userId) {
         sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
         params.push(odooPatch.picking.name || null);
         sets.push(`odoo_picking_name = COALESCE(odoo_picking_name, $${params.length})`);
+    }
+    if (odooPatch?.picking?.state) {
+        params.push(odooPatch.picking.state);
+        sets.push(`odoo_picking_state = $${params.length}`);
+    }
+    if (odooPatch?.backorder?.id) {
+        params.push(odooPatch.backorder.id);
+        sets.push(`odoo_picking_backorder_id = COALESCE(odoo_picking_backorder_id, $${params.length})`);
+        params.push(odooPatch.backorder.name || null);
+        sets.push(`odoo_picking_backorder_name = COALESCE(odoo_picking_backorder_name, $${params.length})`);
     }
     if (odooPatch?.odoo_state) {
         params.push(odooPatch.odoo_state);
@@ -681,6 +918,8 @@ async function cambiarEstado(id, estado, userId) {
         de: actual,
         a: estado,
         odoo_picking: odooPatch?.picking?.name || envio.odoo_picking_name || null,
+        odoo_picking_state: odooPatch?.picking?.state || null,
+        picking_backorder: odooPatch?.backorder?.name || null,
     });
     return obtener(id);
 }
@@ -861,24 +1100,28 @@ async function saldarLocked(id, userId) {
     if (!envio.odoo_sale_order_id) throw httpError('Este pedido no tiene orden de Odoo', 400);
 
     const plan = previewSaldar(envio.items);
-    const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
-        ids: [envio.odoo_sale_order_id],
-        days: null,
-    });
-    const audit = auditarSaldar({ envio, odoo: vivos[0], plan });
-    if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
-
-    for (const linea of audit.writes) {
-        await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty, envio.company_key);
-    }
+    const pickingYaValidado = envio.odoo_picking_state === 'done';
 
     let backorder = null;
-    if (plan.pendientes.length > 0) {
-        backorder = await asegurarBackorder(envio, plan);
-    }
+    if (!pickingYaValidado) {
+        const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
+            ids: [envio.odoo_sale_order_id],
+            days: null,
+        });
+        const audit = auditarSaldar({ envio, odoo: vivos[0], plan });
+        if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
 
-    if (plan.cancela_original && !audit.alreadyCancelled) {
-        await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        for (const linea of audit.writes) {
+            await odooService.writeSaleOrderLineQty(linea.odoo_line_id, linea.qty, envio.company_key);
+        }
+
+        if (plan.pendientes.length > 0) {
+            backorder = await asegurarBackorder(envio, plan);
+        }
+
+        if (plan.cancela_original && !audit.alreadyCancelled) {
+            await odooService.cancelSaleOrder(envio.odoo_sale_order_id, envio.company_key);
+        }
     }
 
     await pool.query(
@@ -919,6 +1162,10 @@ module.exports = {
     odooNecesitaConfirmar,
     odooYaConfirmada,
     primerPickingSalida,
+    planQtyMovesArmado,
+    hayFaltanteEnMoves,
+    esWizardBackorder,
+    auditarTerminarArmado,
     auditarEmpezarArmar,
     auditarSaldar,
     listar,
