@@ -29,6 +29,7 @@ export default function WhatsAppPublish() {
     const { user } = useAuth();
     const [status, setStatus] = useState(null);
     const [qr, setQr] = useState(null);
+    const [qrStatus, setQrStatus] = useState(null);
     const [groups, setGroups] = useState([]);
     const [groupJid, setGroupJid] = useState('');
     const [intervalSeconds, setIntervalSeconds] = useState('90');
@@ -37,6 +38,7 @@ export default function WhatsAppPublish() {
     const [category, setCategory] = useState('');
     const [destCategory, setDestCategory] = useState('');
     const [pricelistId, setPricelistId] = useState('');
+    const [destino, setDestino] = useState('grupo');
     const [scheduledAt, setScheduledAt] = useState(defaultSchedule);
     const [preview, setPreview] = useState(null);
     const [batches, setBatches] = useState([]);
@@ -92,14 +94,18 @@ export default function WhatsAppPublish() {
     }
 
     const evo = status?.evolution;
+    const evoStatus = status?.evolution_status;
     const connected = evo?.state === 'open';
+    const statusConnected = evoStatus?.state === 'open';
 
-    async function connect() {
-        setBusy('qr'); setError(null);
-        const res = await api.post('/whatsapp/connect');
+    async function connect(which) {
+        const key = which === 'estado' ? 'qr-estado' : 'qr';
+        setBusy(key); setError(null);
+        const res = await api.post('/whatsapp/connect', { destino: which });
         setBusy('');
         if (!res.success) { setError(res.error); return; }
-        setQr(res.data);
+        if (which === 'estado') setQrStatus(res.data);
+        else setQr(res.data);
         loadStatus();
     }
 
@@ -148,11 +154,13 @@ export default function WhatsAppPublish() {
             pricelist_id: pricelistId ? Number(pricelistId) : null,
             scheduled_at: scheduledAt,
             interval_seconds: Number(intervalSeconds),
-            group_jid: groupJid || undefined,
+            destino,
+            group_jid: destino === 'estado' ? undefined : (groupJid || undefined),
         });
         setBusy('');
         if (!res.success) { setError(res.error); return; }
-        setNotice(`Tanda #${res.data.id} programada con ${res.data.total} productos.`);
+        const donde = destino === 'estado' ? 'en los estados' : 'en el grupo';
+        setNotice(`Tanda #${res.data.id} programada ${donde} con ${res.data.total} productos.`);
         setOpenId(res.data.id);
         loadBatches();
         setQueueKey((k) => k + 1);
@@ -184,36 +192,64 @@ export default function WhatsAppPublish() {
                 <Card style={{ background: t.color.successSoft, color: t.color.success }}>{notice}</Card>
             )}
 
-            <Card>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[3], flexWrap: 'wrap' }}>
-                    <div>
-                        <h2 style={sectionTitle}>Instancia</h2>
-                        <p style={{ color: t.color.textMuted, margin: '6px 0 0', fontSize: t.font.size.sm }}>
-                            {evo?.instance || 'neggo'}
-                            {evo?.error ? ` — ${evo.error}` : ''}
-                        </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: t.space[5] }}>
+                <Card>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[3], flexWrap: 'wrap' }}>
+                        <div>
+                            <h2 style={sectionTitle}>Instancia de grupos</h2>
+                            <p style={{ color: t.color.textMuted, margin: '6px 0 0', fontSize: t.font.size.sm }}>
+                                {evo?.instance || 'neggo'}
+                                {evo?.error ? ` — ${evo.error}` : ''}
+                            </p>
+                        </div>
+                        <Badge tone={connected ? 'success' : 'warn'} dot>
+                            {connected ? 'Conectado' : (evo?.state || 'Sin conexión')}
+                        </Badge>
                     </div>
-                    <Badge tone={connected ? 'success' : 'warn'} dot>
-                        {connected ? 'Conectado' : (evo?.state || 'Sin conexión')}
-                    </Badge>
-                </div>
-                <div style={{ display: 'flex', gap: t.space[3], marginTop: t.space[4], flexWrap: 'wrap', alignItems: 'center' }}>
-                    <Button variant="primary" onClick={connect} disabled={busy === 'qr'}>
+                    <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm }}>
+                        Este número publica en el grupo. En el teléfono: WhatsApp → Dispositivos vinculados → Vincular dispositivo.
+                    </p>
+                    <Button variant="primary" onClick={() => connect('grupo')} disabled={busy === 'qr'}>
                         {busy === 'qr' ? 'Generando…' : 'Mostrar QR'}
                     </Button>
-                    <span style={{ color: t.color.textMuted, fontSize: t.font.size.sm }}>
-                        En el teléfono: WhatsApp → Dispositivos vinculados → Vincular dispositivo.
-                    </span>
-                </div>
-                {qr?.base64 && !qr.connected && (
-                    <img
-                        alt="Código QR de WhatsApp"
-                        src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`}
-                        style={{ width: 260, height: 260, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
-                    />
-                )}
-                {qr?.connected && <p style={{ color: t.color.success }}>El número ya está vinculado.</p>}
-            </Card>
+                    {qr?.base64 && !qr.connected && (
+                        <img
+                            alt="Código QR de la instancia de grupos"
+                            src={qr.base64.startsWith('data:') ? qr.base64 : `data:image/png;base64,${qr.base64}`}
+                            style={{ width: 220, height: 220, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
+                        />
+                    )}
+                    {qr?.connected && <p style={{ color: t.color.success }}>El número de grupos ya está vinculado.</p>}
+                </Card>
+                <Card>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[3], flexWrap: 'wrap' }}>
+                        <div>
+                            <h2 style={sectionTitle}>Instancia de estados</h2>
+                            <p style={{ color: t.color.textMuted, margin: '6px 0 0', fontSize: t.font.size.sm }}>
+                                {evoStatus?.instance || 'neggo-estados'}
+                                {evoStatus?.error ? ` — ${evoStatus.error}` : ''}
+                            </p>
+                        </div>
+                        <Badge tone={statusConnected ? 'success' : 'warn'} dot>
+                            {statusConnected ? 'Conectado' : (evoStatus?.state || 'Sin conexión')}
+                        </Badge>
+                    </div>
+                    <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm }}>
+                        Otro número. Los estados salen solo por esta instancia, no por la de los grupos.
+                    </p>
+                    <Button variant="primary" onClick={() => connect('estado')} disabled={busy === 'qr-estado'}>
+                        {busy === 'qr-estado' ? 'Generando…' : 'Mostrar QR'}
+                    </Button>
+                    {qrStatus?.base64 && !qrStatus.connected && (
+                        <img
+                            alt="Código QR de la instancia de estados"
+                            src={qrStatus.base64.startsWith('data:') ? qrStatus.base64 : `data:image/png;base64,${qrStatus.base64}`}
+                            style={{ width: 220, height: 220, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
+                        />
+                    )}
+                    {qrStatus?.connected && <p style={{ color: t.color.success }}>El número de estados ya está vinculado.</p>}
+                </Card>
+            </div>
 
             <Card>
                 <h2 style={sectionTitle}>Grupo e intervalo</h2>
@@ -254,8 +290,14 @@ export default function WhatsAppPublish() {
 
             <Card>
                 <h2 style={sectionTitle}>Armar tanda con filtros</h2>
-                <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, marginTop: 6 }}>
-                    Entra solo un producto de Odoo con foto y con precio de catálogo (lista del proveedor × 1,015 × markup de la empresa). La lista de cliente filtra proveedores y no cambia ese precio. La hora es de Argentina.
+                <div style={{ display: 'flex', gap: t.space[2], marginTop: t.space[3] }}>
+                    <Button variant={destino === 'grupo' ? 'primary' : 'secondary'} onClick={() => setDestino('grupo')}>Grupos</Button>
+                    <Button variant={destino === 'estado' ? 'primary' : 'secondary'} onClick={() => setDestino('estado')}>Estados</Button>
+                </div>
+                <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, marginTop: 10 }}>
+                    {destino === 'estado'
+                        ? 'Cada producto sale como estado de la otra instancia (otro número): foto, nombre y precio de catálogo, uno cada intervalo. Lo ven los contactos de ese WhatsApp, no los del grupo. La hora es de Argentina.'
+                        : 'Entra solo un producto de Odoo con foto y con precio de catálogo (lista del proveedor × 1,015 × markup de la empresa). La lista de cliente filtra proveedores y no cambia ese precio. La hora es de Argentina.'}
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: t.space[3], marginTop: t.space[4] }}>
                     <div>
@@ -296,8 +338,13 @@ export default function WhatsAppPublish() {
                 </div>
                 <div style={{ display: 'flex', gap: t.space[3], marginTop: t.space[4] }}>
                     <Button onClick={runPreview} disabled={busy === 'preview'}>Ver cuántos entran</Button>
-                    <Button variant="primary" leftIcon={<Icon.MessageCircle size={16} />} onClick={schedule} disabled={busy === 'schedule'}>
-                        Programar tanda
+                    <Button
+                        variant="primary"
+                        leftIcon={<Icon.MessageCircle size={16} />}
+                        onClick={schedule}
+                        disabled={busy === 'schedule' || (destino === 'grupo' && !groupJid)}
+                    >
+                        {destino === 'estado' ? 'Programar estados' : 'Programar tanda'}
                     </Button>
                 </div>
                 {preview && (
@@ -320,18 +367,19 @@ export default function WhatsAppPublish() {
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: t.font.family, fontSize: t.font.size.sm }}>
                         <thead>
                             <tr>
-                                {['#', 'Lista', 'Cuándo', 'Progreso', 'Estado', ''].map((h) => (
+                                {['#', 'Dónde', 'Lista', 'Cuándo', 'Progreso', 'Estado', ''].map((h) => (
                                     <th key={h} style={{ textAlign: 'left', padding: '8px 14px', color: t.color.textMuted, fontWeight: t.font.weight.semibold, borderBottom: `1px solid ${t.color.border}` }}>{h}</th>
                                 ))}
                             </tr>
                         </thead>
                         <tbody>
                             {batches.length === 0 && (
-                                <tr><td colSpan={6} style={{ padding: 16, color: t.color.textMuted }}>Todavía no hay tandas.</td></tr>
+                                <tr><td colSpan={7} style={{ padding: 16, color: t.color.textMuted }}>Todavía no hay tandas.</td></tr>
                             )}
                             {batches.map((b) => (
                                 <tr key={b.id} style={{ borderBottom: `1px solid ${t.color.border}` }}>
                                     <td style={{ padding: '10px 14px' }}>{b.id}</td>
+                                    <td style={{ padding: '10px 14px' }}>{b.destino === 'estado' ? 'Estados' : (b.group_subject || 'Grupo')}</td>
                                     <td style={{ padding: '10px 14px', textTransform: 'capitalize' }}>{b.company}</td>
                                     <td style={{ padding: '10px 14px', ...t.numericStyle }}>{fmtWhen(b.scheduled_at)}</td>
                                     <td style={{ padding: '10px 14px', ...t.numericStyle }}>{b.enviados}/{b.total}{b.errores ? ` · ${b.errores} error` : ''}</td>

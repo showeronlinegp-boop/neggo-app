@@ -16,26 +16,38 @@ function maxAttempts() {
     return Math.min(n, 5);
 }
 
+async function describeInstance(which) {
+    let instance = which === 'estado' ? 'neggo-estados' : 'neggo';
+    try {
+        instance = evolution.instanceName(which);
+    } catch (err) {
+        return { reachable: false, state: null, instance, destino: which, error: err.message };
+    }
+    try {
+        return {
+            reachable: true,
+            state: await evolution.connectionState(which),
+            instance,
+            destino: which,
+            error: null,
+        };
+    } catch (err) {
+        return { reachable: false, state: null, instance, destino: which, error: err.message };
+    }
+}
+
 router.get('/status', async (req, res) => {
     try {
         const settings = await queue.getSettings(pool);
-        let evolutionState = { reachable: false, state: null, error: null };
-        try {
-            evolutionState = {
-                reachable: true,
-                state: await evolution.connectionState(),
-                instance: evolution.config().instance,
-                error: null,
-            };
-        } catch (err) {
-            evolutionState = {
-                reachable: false,
-                state: null,
-                instance: process.env.EVOLUTION_INSTANCE || 'neggo',
-                error: err.message,
-            };
-        }
-        return ok(res, { settings, evolution: evolutionState });
+        const [evolutionState, evolutionStatus] = await Promise.all([
+            describeInstance('grupo'),
+            describeInstance('estado'),
+        ]);
+        return ok(res, {
+            settings,
+            evolution: evolutionState,
+            evolution_status: evolutionStatus,
+        });
     } catch (err) {
         return fail(res, err.message, 500);
     }
@@ -43,7 +55,8 @@ router.get('/status', async (req, res) => {
 
 router.post('/connect', async (req, res) => {
     try {
-        const qr = await evolution.connectQr();
+        const which = req.body?.destino === 'estado' ? 'estado' : 'grupo';
+        const qr = await evolution.connectQr(which);
         return ok(res, qr);
     } catch (err) {
         return fail(res, err.message, 502);
@@ -188,6 +201,7 @@ router.post('/batches/random', async (req, res) => {
 });
 
 // Una sola foto, ya. Entra a la cola como tanda de 1 para respetar el intervalo y los reintentos.
+// destino: 'grupo' (default) o 'estado' (sale por el número de estados).
 router.post('/send-now', async (req, res) => {
     try {
         const company = req.body.company === 'neggo' ? 'neggo' : 'preventas';
@@ -198,6 +212,7 @@ router.post('/send-now', async (req, res) => {
             company,
             category: product.categ_name || null,
             products: [product],
+            destino: req.body.destino,
             groupJid: req.body.group_jid || settings.group_jid,
             groupSubject: req.body.group_subject || settings.group_subject,
             intervalSeconds: 10,
@@ -235,6 +250,7 @@ router.post('/batches', async (req, res) => {
             category: req.body.category || null,
             destCategory: req.body.dest_category || null,
             pricelistId: req.body.pricelist_id || null,
+            destino: req.body.destino,
             groupJid: req.body.group_jid || settings.group_jid,
             groupSubject: req.body.group_subject || settings.group_subject,
             intervalSeconds: req.body.interval_seconds || settings.interval_seconds,

@@ -37,6 +37,7 @@ services:
       - EVOLUTION_API_URL=${EVOLUTION_API_URL:-http://evolution:8080}
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-cambiar_esta_clave}
       - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-neggo}
+      - EVOLUTION_STATUS_INSTANCE=${EVOLUTION_STATUS_INSTANCE:-neggo-estados}
       - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
     volumes:
       - ./volumes/storage:/app/storage
@@ -95,8 +96,8 @@ services:
     networks:
       - neggo-net
 
-  # Evolution API v2 (imagen oficial). La sesión de WhatsApp queda en el volumen.
-  # El QR se muestra en la app (admin); el puerto 8080 solo escucha en esta PC.
+  # Evolution API v2 (imagen oficial). Adentro hay dos instancias: grupos y estados.
+  # Cada una vincula otro número. El QR se muestra en la app; el puerto 8080 solo escucha en esta PC.
   evolution:
     image: evoapicloud/evolution-api:v2.3.7
     restart: unless-stopped
@@ -114,7 +115,8 @@ services:
       - DATABASE_SAVE_DATA_INSTANCE=true
       - DATABASE_SAVE_DATA_NEW_MESSAGE=false
       - DATABASE_SAVE_MESSAGE_UPDATE=false
-      - DATABASE_SAVE_DATA_CONTACTS=false
+      # Los estados se mandan a todos los contactos guardados: sin esto Evolution responde "Contacts not found"
+      - DATABASE_SAVE_DATA_CONTACTS=true
       - DATABASE_SAVE_DATA_CHATS=false
       - DATABASE_SAVE_DATA_LABELS=false
       - DATABASE_SAVE_DATA_HISTORIC=false
