@@ -6,6 +6,7 @@
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const pool = require('../config/database');
 const { scheduleRecompute } = require('../services/preventasMatchService');
+const reposicion = require('../services/reposicionService');
 
 const PAGE_SIZE = 200;
 
@@ -432,7 +433,24 @@ async function syncOdooProducts() {
             );
             console.log(`📊 Cache ANTES  [${empresa.key}]: activos=${cacheAntes[0].activos}, inactivos=${cacheAntes[0].inactivos}`);
 
+            // Reposición (solo Neggo): estado activo previo, leído ANTES del upsert que lo pisa
+            let activoAntes = null;
+            if (empresa.key === 'neggo') {
+                const { rows } = await pool.query(
+                    `SELECT odoo_id, active FROM odoo_products_cache WHERE company = 'neggo'`
+                );
+                activoAntes = new Map(rows.map(r => [r.odoo_id, r.active]));
+            }
+
             const upserted = await upsertProducts(products, empresa.key);
+
+            if (activoAntes) {
+                try {
+                    await reposicion.procesarSync(activoAntes, products);
+                } catch (err) {
+                    console.error(`❌ Reposición: no se pudo procesar el sync: ${err.message}`);
+                }
+            }
 
             const { rows: cacheDespues } = await pool.query(
                 `SELECT COUNT(*) FILTER (WHERE active) AS activos,

@@ -383,6 +383,9 @@ async function initDatabase() {
         const { ensureSchema } = require('./services/whatsappQueue');
         await ensureSchema(pool);
 
+        // Cola de reposición (migración 029, idempotente)
+        await require('./services/reposicionService').ensureSchema(pool);
+
         console.log('✅ Base de datos inicializada correctamente');
     } catch (error) {
         console.error('❌ Error inicializando base de datos:', error.message);

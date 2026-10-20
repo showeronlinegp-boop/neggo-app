@@ -17,6 +17,7 @@ const routeTitles = {
     '/scraping':                     'Panel de scraping',
     '/ingreso/new':                  'Ingreso de Mercadería',
     '/ingreso':                      'Ingreso de Mercadería',
+    '/reposicion':                   'Reposición',
     '/preventas/pedidos':            'Pedidos',
     '/preventas/ordenes':            'Órdenes a proveedores',
     '/preventas/catalogos':          'Catálogos',
@@ -36,6 +37,7 @@ const NAV_ITEMS = [
     { icon: Icon.Truck,           label: 'Proveedores',            path: '/proveedores',           roles: ['admin'], unmappedBadge: true },
     { icon: Icon.Bot,             label: 'Scraping',               path: '/scraping',              roles: ['admin'] },
     { icon: Icon.PackageDown,     label: 'Ingreso de Mercadería',  path: '/ingreso',               roles: ['admin', 'operador'] },
+    { icon: Icon.Refresh,         label: 'Reposición',             path: '/reposicion',            roles: ['admin', 'operador'] },
     {
         icon: Icon.Package, label: 'Productos',
         roles: ['admin', 'operador'],

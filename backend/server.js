@@ -87,6 +87,9 @@ app.use('/api/pricelists', require('./routes/pricelists'));
 // Publicación en grupos de WhatsApp (Evolution API)
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
+// Cola de reposición de Neggo (archivados y "queda poco")
+app.use('/api/reposicion', require('./routes/reposicion'));
+
 // Notas de prueba (marcar en pantalla + Claude Code). Sin la flag la ruta no existe → 404,
 // y el frontend esconde la herramienta.
 if (process.env.TEST_NOTES_ENABLED === '1') {
