@@ -35,7 +35,7 @@ function qtyDe(item, estado) {
 // el resto quedó en el backorder del envío 1, pendiente de armar.
 function topeDe(item, envio) {
     const pedida = Number(item.qty_pedida) || 0;
-    const controlEnvio1 = (envio.estado === 'controlando' || envio.estado === 'saldado')
+    const controlEnvio1 = ['armado', 'controlando', 'saldado'].includes(envio.estado)
         && envio.odoo_picking_state === 'done';
     return controlEnvio1 ? Math.min(pedida, Number(item.qty_armada) || 0) : pedida;
 }
@@ -604,7 +604,7 @@ export default function PedidoEnvioDetalle() {
             </div>
 
             {(() => {
-                const pendArmar = (envio.estado === 'controlando' || envio.estado === 'saldado')
+                const pendArmar = ['armado', 'controlando', 'saldado'].includes(envio.estado)
                     && envio.odoo_picking_state === 'done'
                     ? (envio.items || []).filter((it) => topeDe(it, envio) < (Number(it.qty_pedida) || 0))
                     : [];
