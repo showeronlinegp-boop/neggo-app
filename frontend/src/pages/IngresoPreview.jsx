@@ -448,11 +448,12 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
     const isMatched  = item.estado_item === 'matched';
     const isNew      = item.estado_item === 'pending' || item.estado_item === 'no_match';
     const isRejected = item.estado_item === 'rejected';
+    const isFuzzySuggestion = isNew && item.match_level === 'fuzzy_name' && !!item.odoo_product_id;
     const isInactive = isMatched && item.odoo_active === false;
     const isHighlighted = item.id === lastScannedId;
     const isComplete = isMatched && (item.received_qty || 0) >= item.cantidad;
 
-    let borderColor = isHighlighted ? C.blue : isNew ? '#EF9A9A' : isInactive ? '#FFB74D' : isComplete ? C.success : C.border;
+    let borderColor = isHighlighted ? C.blue : isFuzzySuggestion ? '#FFB74D' : isNew ? '#EF9A9A' : isInactive ? '#FFB74D' : isComplete ? C.success : C.border;
     let bgColor     = isHighlighted ? '#EBF5FF' : isComplete ? '#F1F8E9' : C.white;
 
     return (
@@ -724,6 +725,32 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                     </div>
                 )}
 
+                {/* Sugerencia fuzzy: el candidato queda visible y hay que aceptarlo */}
+                {isFuzzySuggestion && (
+                    <div style={{ marginTop: '10px', border: '1px solid #FFB74D', backgroundColor: '#FFF8E1', borderRadius: '6px', padding: '10px 12px' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#E65100', marginBottom: '4px' }}>
+                            SUGERENCIA · {Math.round((item.confidence_match || 0) * 100)}% por nombre
+                        </div>
+                        <p style={{ fontSize: '13px', fontWeight: 'bold', color: C.text, margin: '0 0 8px' }}>
+                            {item.odoo_product_name}
+                        </p>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <button
+                                onClick={() => onItemUpdate(item.id, { estado_item: 'accept_suggestion' })}
+                                style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.success}`, backgroundColor: C.successBg, color: C.success, cursor: 'pointer' }}
+                            >
+                                Aceptar coincidencia
+                            </button>
+                            <button
+                                onClick={() => onItemUpdate(item.id, { odoo_product_id: null })}
+                                style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.error}`, backgroundColor: C.errorBg, color: C.error, cursor: 'pointer' }}
+                            >
+                                No es este
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Acciones para nuevos */}
                 {isNew && !isRejected && (
                     <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -733,13 +760,15 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                         >
                             🔗 Vincular
                         </button>
-                        <button
-                            onClick={() => onCreated(item.id)}
-                            disabled={creating === item.id}
-                            style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${creating === item.id ? '#ccc' : C.primary}`, backgroundColor: creating === item.id ? '#f5f5f5' : C.primary, color: creating === item.id ? '#aaa' : C.white, cursor: creating === item.id ? 'not-allowed' : 'pointer' }}
-                        >
-                            {creating === item.id ? '⏳ Creando...' : '+ Crear en Odoo'}
-                        </button>
+                        {!isFuzzySuggestion && (
+                            <button
+                                onClick={() => onCreated(item.id)}
+                                disabled={creating === item.id}
+                                style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${creating === item.id ? '#ccc' : C.primary}`, backgroundColor: creating === item.id ? '#f5f5f5' : C.primary, color: creating === item.id ? '#aaa' : C.white, cursor: creating === item.id ? 'not-allowed' : 'pointer' }}
+                            >
+                                {creating === item.id ? '⏳ Creando...' : '+ Crear en Odoo'}
+                            </button>
+                        )}
                         {item.error_match && (
                             <span style={{ fontSize: '11px', color: C.error, alignSelf: 'center' }}>{item.error_match}</span>
                         )}
@@ -1393,7 +1422,9 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                                 {search.length < 2 ? 'Escribí al menos 2 caracteres para buscar.' : 'Sin resultados.'}
                             </p>
                         ) : filtradas.map((l, i) => {
-                            const isSel = selected?.line_id === l.line_id ?? selected?.id === l.id;
+                            const isSel = selected?.line_id != null
+                                ? selected.line_id === l.line_id
+                                : selected?.id === l.id;
                             return (
                                 <div key={i} onClick={() => handleSelect(l)}
                                     style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '9px 12px', cursor: 'pointer', borderBottom: `1px solid ${C.border}`, backgroundColor: isSel ? '#EDE7F6' : 'transparent', transition: 'background 0.1s' }}>
@@ -1849,7 +1880,13 @@ export default function IngresoPreview() {
 
     const handleItemUpdate = useCallback(async (itemId, data) => {
         // Optimistic update inmediato
-        setItems(prev => prev.map(i => i.id === itemId ? { ...i, ...data } : i));
+        const optimistic = { ...data };
+        if (data.estado_item === 'accept_suggestion') {
+            optimistic.estado_item = 'matched';
+            optimistic.match_level = 'fuzzy_accepted';
+            optimistic.error_match = null;
+        }
+        setItems(prev => prev.map(i => i.id === itemId ? { ...i, ...optimistic } : i));
         try {
             const res = await ingresoAPI.updateItem(ingresoId, itemId, data);
             if (res.success) {
