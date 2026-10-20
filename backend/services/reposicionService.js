@@ -21,6 +21,9 @@ const SCHEMA_030 = fs.readFileSync(
 const SCHEMA_031 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '031_reposicion_encargado.sql'), 'utf8'
 );
+const SCHEMA_033 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '033_reposicion_ordenes.sql'), 'utf8'
+);
 
 const NO_REPONER_SQL = `LOWER(TRIM(COALESCE(opc.vendor_name, ''))) = 'liquidar'`;
 const VENDOR_SQL = `COALESCE(NULLIF(TRIM(opc.vendor_name), ''), 'Sin proveedor')`;
@@ -78,6 +81,7 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_029);
     await db.query(SCHEMA_030);
     await db.query(SCHEMA_031);
+    await db.query(SCHEMA_033);
 }
 
 function httpError(message, statusCode) {

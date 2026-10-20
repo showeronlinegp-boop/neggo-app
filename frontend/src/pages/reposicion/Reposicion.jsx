@@ -13,6 +13,7 @@ import Modal from '../../components/common/Modal';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
 import ReposicionProveedorModal from './ReposicionProveedorModal';
+import ReposicionOrdenes from './ReposicionOrdenes';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
 // Lista de proveedores + catálogo; de pendientes se pueden encargar (se pidió).
@@ -598,8 +599,12 @@ export default function Reposicion() {
     const [filtroProv, setFiltroProv] = useState('');
     const [proveedorAbierto, setProveedorAbierto] = useState(null);
     const [proveedorDecidir, setProveedorDecidir] = useState(null);
+    const [recargarOrdenes, setRecargarOrdenes] = useState(0);
+    const ordenes = tab === 'ordenes';
 
     const cargarCola = useCallback(async () => {
+        // La pestaña Órdenes carga lo suyo (ReposicionOrdenes)
+        if (tab === 'ordenes') { setLoading(false); return; }
         setLoading(true);
         setError(null);
         const estado = tab === 'resueltos' || tab === 'encargado' ? tab : 'pendiente';
@@ -618,8 +623,9 @@ export default function Reposicion() {
     }, []);
 
     const cargar = useCallback(async () => {
+        if (tab === 'ordenes') setRecargarOrdenes(n => n + 1);
         await Promise.all([cargarCola(), cargarProveedores()]);
-    }, [cargarCola, cargarProveedores]);
+    }, [tab, cargarCola, cargarProveedores]);
 
     useEffect(() => { cargarCola(); }, [cargarCola]);
     useEffect(() => { cargarProveedores(); }, [cargarProveedores]);
@@ -712,7 +718,7 @@ export default function Reposicion() {
                         <>
                             <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{items.length}</span> encargados
                         </>
-                    ) : 'Últimos 200 resueltos'}
+                    ) : ordenes ? 'Ventas y POS de la última semana' : 'Últimos 200 resueltos'}
                 </div>
                 <div style={{ display: 'flex', gap: t.space[2] }}>
                     <Link to="/reposicion/recorrida" style={{ textDecoration: 'none' }}>
@@ -744,7 +750,8 @@ export default function Reposicion() {
                 tabs={[
                     { value: 'pendiente', label: isMobile ? 'Pend.' : 'Pendientes', count: nPend, icon: <Icon.Package size={14} /> },
                     { value: 'encargado', label: isMobile ? 'Encarg.' : 'Encargados', count: nEnc, icon: <Icon.ShoppingCart size={14} /> },
-                    { value: 'resueltos', label: 'Resueltos', icon: <Icon.Check size={14} /> },
+                    { value: 'resueltos', label: isMobile ? 'Resuel.' : 'Resueltos', icon: <Icon.Check size={14} /> },
+                    { value: 'ordenes', label: 'Órdenes', icon: <Icon.ClipboardList size={14} /> },
                 ]}
                 value={tab}
                 onChange={(v) => { setTab(v); setAviso(null); }}
@@ -772,7 +779,15 @@ export default function Reposicion() {
                 </div>
             )}
 
-            {loading ? (
+            {ordenes ? (
+                <ReposicionOrdenes
+                    recargar={recargarOrdenes}
+                    onCambioCola={cargarProveedores}
+                    onAviso={(msg) => { setError(null); setAviso(msg); }}
+                    onError={mostrarError}
+                    isMobile={isMobile}
+                />
+            ) : loading ? (
                 <Card><div style={{ padding: 40, textAlign: 'center', color: t.color.textMuted, fontFamily: t.font.family }}>Cargando…</div></Card>
             ) : items.length === 0 ? (
                 <Card>
