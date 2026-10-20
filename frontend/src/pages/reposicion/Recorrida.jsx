@@ -149,6 +149,22 @@ export default function Recorrida() {
         setProducto(prev => prev ? { ...prev, en_cola: true } : prev);
     };
 
+    // Deshace un «Queda poco» marcado por error
+    const quitarDeCola = async () => {
+        if (!producto) return;
+        setAgregando(true);
+        setError(null);
+        const res = await api.del(`/reposicion/producto/${producto.odoo_id}`);
+        setAgregando(false);
+        if (!res.success) {
+            setError(res.error || 'No se pudo sacar de la cola');
+            return;
+        }
+        setAviso(`«${producto.name}» salió de la cola.`);
+        setHistorial(prev => prev.filter(h => h.odoo_id !== producto.odoo_id));
+        setProducto(prev => prev ? { ...prev, en_cola: false, estado_cola: null } : prev);
+    };
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[5], maxWidth: 640, margin: '0 auto', width: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
@@ -261,8 +277,17 @@ export default function Recorrida() {
                     </div>
                     {producto.es_liquidar ? (
                         <Badge tone="muted">No se repone</Badge>
+                    ) : producto.estado_cola === 'encargado' ? (
+                        <Badge tone="accent" dot>Encargado</Badge>
                     ) : producto.en_cola ? (
-                        <Badge tone="success" dot>En cola</Badge>
+                        <Button
+                            variant="ghost"
+                            leftIcon={<Icon.X size={14} />}
+                            disabled={agregando}
+                            onClick={quitarDeCola}
+                        >
+                            Quitar de la cola
+                        </Button>
                     ) : (
                         <Button
                             variant="primary"

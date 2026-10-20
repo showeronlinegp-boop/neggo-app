@@ -138,7 +138,7 @@ function AccionesCola({ it, tab, trabajando, onCambiar, compact, t }) {
     );
 }
 
-function BuscadorReponer({ onAgregado, onError, isMobile }) {
+function BuscadorReponer({ onAgregado, onQuitado, onError, isMobile }) {
     const { tokens: t } = useTheme();
     const [q, setQ] = useState('');
     const [resultados, setResultados] = useState([]);
@@ -168,6 +168,16 @@ function BuscadorReponer({ onAgregado, onError, isMobile }) {
         if (!res.success) { onError(res.error || 'No se pudo agregar'); return; }
         setResultados(prev => prev.map(r => (r.odoo_id === p.odoo_id ? { ...r, en_cola: true } : r)));
         onAgregado(res.data);
+    };
+
+    // Deshace un «Reponer» marcado por error
+    const quitar = async (p) => {
+        setAgregando(p.odoo_id);
+        const res = await api.del(`/reposicion/producto/${p.odoo_id}`);
+        setAgregando(null);
+        if (!res.success) { onError(res.error || 'No se pudo sacar de la cola'); return; }
+        setResultados(prev => prev.map(r => (r.odoo_id === p.odoo_id ? { ...r, en_cola: false, estado_cola: null } : r)));
+        onQuitado(res.data);
     };
 
     return (
@@ -220,7 +230,15 @@ function BuscadorReponer({ onAgregado, onError, isMobile }) {
                             ) : p.estado_cola === 'encargado' ? (
                                 <Badge tone="accent" dot>Encargado</Badge>
                             ) : p.en_cola ? (
-                                <Badge tone="success" dot>En la cola</Badge>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0 }}>
+                                    <Badge tone="success" dot>En la cola</Badge>
+                                    <Button size="sm" variant="ghost" leftIcon={<Icon.X size={isMobile ? 16 : 13} />}
+                                        disabled={agregando === p.odoo_id} onClick={() => quitar(p)}
+                                        title="Sacarlo de la cola de reposición"
+                                        style={isMobile ? { flex: 1, height: 44 } : undefined}>
+                                        Quitar
+                                    </Button>
+                                </div>
                             ) : (
                                 <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={isMobile ? 16 : 13} />}
                                     disabled={agregando === p.odoo_id} onClick={() => agregar(p)}
@@ -634,6 +652,13 @@ export default function Reposicion() {
         cargarProveedores();
     };
 
+    const alQuitar = (item) => {
+        const archivado = item.origen === 'archivado' ? ' En Odoo sigue archivado.' : '';
+        setAviso(`«${item.name}» salió de la cola.${archivado}`);
+        if (tab === 'pendiente') setItems(prev => prev.filter(i => i.odoo_id !== item.odoo_id));
+        cargarProveedores();
+    };
+
     const etiquetaIngreso = (it) => {
         if (!it.llego_ingreso) return null;
         const nro = it.ingreso_comprobante || `#${it.ingreso_id}`;
@@ -734,7 +759,7 @@ export default function Reposicion() {
                 </div>
             )}
 
-            {pendiente && <BuscadorReponer onAgregado={alAgregar} onError={mostrarError} isMobile={isMobile} />}
+            {pendiente && <BuscadorReponer onAgregado={alAgregar} onQuitado={alQuitar} onError={mostrarError} isMobile={isMobile} />}
 
             {error && (
                 <div style={{ background: t.color.dangerSoft, color: t.color.danger, padding: '12px 16px', borderRadius: t.radius.sm, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
@@ -890,6 +915,7 @@ export default function Reposicion() {
                 vendorName={proveedorAbierto}
                 onClose={() => setProveedorAbierto(null)}
                 onAgregado={alAgregar}
+                onQuitado={alQuitar}
                 onActivado={(prod) => {
                     const extra = prod?.cola_cerrada ? ' Si estaba en la cola, quedó como repuesto.' : '';
                     setAviso(`«${prod.name}» volvió a estar activo en Odoo.${extra}`);

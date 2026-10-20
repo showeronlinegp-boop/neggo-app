@@ -10,6 +10,7 @@
 // POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
+// DELETE /api/reposicion/producto/:odooId            — saca de la cola un pendiente marcado por error
 
 const express = require('express');
 const router = express.Router();
@@ -106,6 +107,19 @@ router.post('/activar', async (req, res) => {
         return ok(res, item);
     } catch (err) {
         if (!err.statusCode) console.error('❌ Error activando producto:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.delete('/producto/:odooId', async (req, res) => {
+    const odooId = parseInt(req.params.odooId, 10);
+    if (!Number.isInteger(odooId)) return fail(res, 'odoo_id inválido', 400);
+    try {
+        const item = await reposicion.quitarDeCola(odooId);
+        console.log(`✅ Reposición: "${item.name}" quitado de la cola por usuario ${req.user.id}`);
+        return ok(res, item);
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error quitando de la cola:', err.message);
         return fail(res, err.message, err.statusCode || 500);
     }
 });
