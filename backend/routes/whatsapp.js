@@ -201,6 +201,7 @@ router.post('/batches/random', async (req, res) => {
 });
 
 // Una sola foto, ya. Entra a la cola como tanda de 1 para respetar el intervalo y los reintentos.
+// destino: 'grupo' (default) o 'estado' (sale por el número de estados).
 router.post('/send-now', async (req, res) => {
     try {
         const company = req.body.company === 'neggo' ? 'neggo' : 'preventas';
@@ -211,6 +212,7 @@ router.post('/send-now', async (req, res) => {
             company,
             category: product.categ_name || null,
             products: [product],
+            destino: req.body.destino,
             groupJid: req.body.group_jid || settings.group_jid,
             groupSubject: req.body.group_subject || settings.group_subject,
             intervalSeconds: 10,
