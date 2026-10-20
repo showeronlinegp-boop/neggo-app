@@ -1,6 +1,8 @@
 node_modules/
 .env
 volumes/pg_data/
+volumes/pg_data.bak/
+volumes/backups/
 volumes/storage/catalogs/*
 volumes/storage/photos/*
 volumes/storage/marketing/*
@@ -10,3 +12,7 @@ backend/storage/
 *.log
 .DS_Store
 Thumbs.db
+
+# Config local de Claude Code (hook de push a master)
+.claude/settings.local.json
+.claude/hooks/master-push.log
