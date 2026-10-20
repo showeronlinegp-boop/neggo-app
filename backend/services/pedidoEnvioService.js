@@ -179,6 +179,22 @@ function odooYaConfirmada(state) {
     return s === 'sale' || s === 'done';
 }
 
+function armandoRequiereConfirmado(envio) {
+    if (!envio || envio.estado !== 'armando') return { ok: true };
+    if (odooYaConfirmada(envio.odoo_state)) return { ok: true };
+    const nombre = envio.odoo_order_name || 'este pedido';
+    return {
+        ok: false,
+        error: `${nombre} tiene que estar confirmado en Odoo para armarlo`,
+        statusCode: 409,
+    };
+}
+
+function exigirArmandoConfirmado(envio) {
+    const r = armandoRequiereConfirmado(envio);
+    if (!r.ok) throw httpError(r.error, r.statusCode);
+}
+
 function primerPickingSalida(pickings) {
     const vivos = (pickings || [])
         .filter((p) => p && Number.isInteger(Number(p.id)))
@@ -208,12 +224,12 @@ function hayFaltanteEnMoves(writes) {
     return (writes || []).some((w) => num(w.quantity) + 0.0001 < num(w.demand));
 }
 
-// qty_armada → stock.move.quantity, matcheando sale_line_id y si no product_id.
-function planQtyMovesArmado(moves, items) {
+// qty_armada (o qty_controlada) → stock.move.quantity, matcheando sale_line_id y si no product_id.
+function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
     const restantesLinea = new Map();
     const restantesProd = new Map();
     for (const it of items || []) {
-        const qty = clampQty(it.qty_armada, it.qty_pedida);
+        const qty = clampQty(it[campo], it.qty_pedida);
         if (it.odoo_line_id) {
             restantesLinea.set(it.odoo_line_id, (restantesLinea.get(it.odoo_line_id) || 0) + qty);
         }
@@ -335,12 +351,8 @@ function esperar(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function asegurarConfirmacionYPicking(envio) {
-    if (!envio.odoo_sale_order_id) {
-        throw httpError('Este pedido no tiene orden de Odoo', 400);
-    }
-
-    const header = await leerHeaderOdoo(envio);
+async function confirmarEnOdooParaArmar(envio) {
+    let header = await leerHeaderOdoo(envio);
     const audit = auditarEmpezarArmar(header);
     if (!audit.ok) throw httpError(audit.error, audit.statusCode || 409);
 
@@ -350,9 +362,30 @@ async function asegurarConfirmacionYPicking(envio) {
         } catch (err) {
             throw errorDesdeOdoo(err, `Odoo no pudo confirmar ${envio.odoo_order_name || 'el pedido'}`);
         }
+        header = await leerHeaderOdoo(envio);
+    }
+    if (!odooYaConfirmada(header?.state)) {
+        throw httpError(
+            `Odoo no confirmó ${envio.odoo_order_name || 'el pedido'} (sigue en ${header?.state || 'sin estado'}). No se puede armar.`,
+            409
+        );
+    }
+    if (envio.id) {
+        await persistirOdooPicking(envio.id, {
+            odoo_state: header.state,
+            invoice_status: header.invoice_status || null,
+        });
+    }
+    return header;
+}
+
+async function asegurarConfirmacionYPicking(envio) {
+    if (!envio.odoo_sale_order_id) {
+        throw httpError('Este pedido no tiene orden de Odoo', 400);
     }
 
-    const odooState = audit.needsConfirm ? 'sale' : (header.state || envio.odoo_state || null);
+    const header = await confirmarEnOdooParaArmar(envio);
+    const odooState = header.state;
     const invoiceStatus = header.invoice_status || envio.invoice_status || null;
 
     if (envio.odoo_picking_id) {
@@ -368,7 +401,7 @@ async function asegurarConfirmacionYPicking(envio) {
     }
 
     let picking = await buscarEnvio1(envio);
-    if (!picking?.id && audit.needsConfirm) {
+    if (!picking?.id) {
         await esperar(500);
         picking = await buscarEnvio1(envio);
     }
@@ -492,6 +525,52 @@ async function validarEnvio1AlTerminar(envio) {
         };
     } catch (err) {
         throw errorDesdeOdoo(err, `Odoo no pudo validar el envío 1 de ${envio.odoo_order_name || 'este pedido'}`);
+    }
+}
+
+// Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
+// el armado. Al cerrar el control se valida la entrega (outgoing) con lo
+// controlado; si falta algo Odoo deja el resto en backorder. En 1 paso no hace nada.
+async function validarSalidaAlSaldar(envio) {
+    if (!envio.odoo_picking_id) return null;
+    let salida = null;
+    try {
+        const pick = await odooService.getPicking(envio.odoo_picking_id, envio.company_key);
+        if (!pick || pick.picking_type_code !== 'internal') return null;
+        salida = await odooService.getSalidaDePicking(envio.odoo_picking_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la entrega en Odoo');
+    }
+    if (!salida?.id) return null;
+    if (salida.state === 'done') return { picking: salida, backorder: null, alreadyDone: true };
+
+    let moves = [];
+    try {
+        moves = await odooService.getPickingMoves(salida.id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, `No pude leer las líneas de ${salida.name || 'la entrega'}`);
+    }
+    const plan = planQtyMovesArmado(moves, envio.items || [], 'qty_controlada');
+    if (!plan.hayAlgo) {
+        throw httpError(
+            `No hay nada controlado para entregar en ${salida.name || 'la entrega de Odoo'}. Controlá los productos antes de cerrar.`,
+            409
+        );
+    }
+
+    try {
+        await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
+        const validated = await odooService.validateSalePicking(salida.id, envio.company_key, {
+            createBackorder: true,
+        });
+        return {
+            picking: validated.picking || salida,
+            backorder: validated.backorder || null,
+            alreadyDone: !!validated.alreadyDone,
+            hayFaltante: plan.hayFaltante,
+        };
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo validar ${salida.name || 'la entrega'}`);
     }
 }
 
@@ -741,7 +820,7 @@ async function obtener(id, { syncOdoo = false } = {}) {
     const base = { ...envio, items, preview: previewSaldar(items) };
 
     const faltaEnvio1 = base.estado === 'armando'
-        && (!base.odoo_picking_id || odooNecesitaConfirmar(base.odoo_state));
+        && (!base.odoo_picking_id || !odooYaConfirmada(base.odoo_state));
     if (!syncOdoo || !faltaEnvio1) return base;
 
     try {
@@ -792,6 +871,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             if (!existente && (!paraArmar || !order.lines.length)) continue;
 
             let envioId;
+            const soltarArmando = existente?.estado === 'armando' && odooNecesitaConfirmar(order.state);
             if (!existente) {
                 const { rows: [row] } = await client.query(
                     `INSERT INTO pedido_envios (
@@ -829,6 +909,18 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 );
                 envioId = existente.id;
                 actualizados++;
+                if (soltarArmando) {
+                    await client.query(
+                        `UPDATE pedido_envios
+                            SET estado = 'pendiente',
+                                odoo_picking_id = NULL,
+                                odoo_picking_name = NULL,
+                                odoo_picking_state = NULL,
+                                updated_at = NOW()
+                          WHERE id = $1 AND estado = 'armando'`,
+                        [existente.id]
+                    );
+                }
             }
             if (paraArmar) {
                 await upsertItems(client, envioId, company, order.lines, {
@@ -859,8 +951,17 @@ async function cambiarEstado(id, estado, userId) {
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
 
     let odooPatch = null;
-    if (estado === 'armando' && (actual === 'pendiente' || !envio.odoo_picking_id || odooNecesitaConfirmar(envio.odoo_state))) {
-        odooPatch = await asegurarConfirmacionYPicking(envio);
+    if (estado === 'armando') {
+        if (!odooYaConfirmada(envio.odoo_state) || !envio.odoo_picking_id) {
+            odooPatch = await asegurarConfirmacionYPicking(envio);
+        }
+        const state = odooPatch?.odoo_state || envio.odoo_state;
+        if (!odooYaConfirmada(state)) {
+            throw httpError(
+                `El pedido ${envio.odoo_order_name || ''} tiene que estar confirmado en Odoo para armarlo`.replace(/\s+/g, ' ').trim(),
+                409
+            );
+        }
     } else if (estado === 'armado' && actual === 'armando') {
         odooPatch = await validarEnvio1AlTerminar(envio);
     }
@@ -929,13 +1030,14 @@ async function setQty(itemId, campo, qty, userId) {
         throw httpError('Campo de cantidad inválido', 400);
     }
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id
+        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
         [itemId]
     );
     if (!item) throw httpError('Ítem no encontrado', 404);
+    exigirArmandoConfirmado(item);
     if (campo === 'qty_armada' && item.estado !== 'armando') {
         throw httpError('Sólo se arma en la etapa de armado', 409);
     }
@@ -960,6 +1062,7 @@ async function escanear(envioId, code, userId) {
     if (envio.estado !== 'armando' && envio.estado !== 'controlando') {
         throw httpError('Escaneá cuando el pedido está en armado o control', 409);
     }
+    exigirArmandoConfirmado(envio);
     const item = itemPorCodigo(envio.items, code);
     if (!item) throw httpError(`El código ${String(code || '').trim()} no está en este pedido`, 404);
     const actual = num(item[campo]);
@@ -972,13 +1075,14 @@ async function escanear(envioId, code, userId) {
 async function marcarFaltante(itemId, motivo, userId, qty = null) {
     if (!MOTIVOS.has(motivo)) throw httpError('Motivo inválido', 400);
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key
+        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
         [itemId]
     );
     if (!item) throw httpError('Ítem no encontrado', 404);
+    exigirArmandoConfirmado(item);
     if (item.estado !== 'armando' && item.estado !== 'controlando') {
         throw httpError('Sólo se marca faltante durante el armado o el control', 409);
     }
@@ -1103,7 +1207,10 @@ async function saldarLocked(id, userId) {
     const pickingYaValidado = envio.odoo_picking_state === 'done';
 
     let backorder = null;
-    if (!pickingYaValidado) {
+    let salida = null;
+    if (pickingYaValidado) {
+        salida = await validarSalidaAlSaldar(envio);
+    } else {
         const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
             ids: [envio.odoo_sale_order_id],
             days: null,
@@ -1143,8 +1250,11 @@ async function saldarLocked(id, userId) {
         queda: plan.queda.length,
         pendientes: plan.pendientes.length,
         cancelo: plan.cancela_original,
+        odoo_salida: salida?.picking?.name || null,
+        odoo_salida_backorder: salida?.backorder?.name || null,
     });
-    return obtener(id);
+    const final = await obtener(id);
+    return salida ? { ...final, odoo_salida: salida } : final;
 }
 
 module.exports = {
@@ -1161,6 +1271,7 @@ module.exports = {
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
+    armandoRequiereConfirmado,
     primerPickingSalida,
     planQtyMovesArmado,
     hayFaltanteEnMoves,

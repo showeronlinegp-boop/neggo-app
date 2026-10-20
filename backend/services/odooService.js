@@ -770,6 +770,45 @@ async function getPickingBackorder(pickingId, companyKey) {
 }
 
 /**
+ * Depósito 2 pasos: el envío de salida (outgoing) que sale del picking dado,
+ * siguiendo move_dest_ids. Si hay varios, el primero sin validar. Solo lee.
+ */
+async function getSalidaDePicking(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const moves = await callOdoo(
+        'stock.move',
+        'search_read',
+        [[['picking_id', '=', pickingId]]],
+        withCompany(companyId, { fields: ['id', 'move_dest_ids'] })
+    ) || [];
+    const destIds = [...new Set(moves.flatMap((m) => m.move_dest_ids || []))];
+    if (!destIds.length) return null;
+
+    const dests = await callOdoo(
+        'stock.move',
+        'read',
+        [destIds, ['id', 'picking_id']],
+        withCompany(companyId)
+    ) || [];
+    const pickingIds = [...new Set(dests
+        .map((d) => (Array.isArray(d.picking_id) ? d.picking_id[0] : d.picking_id))
+        .filter(Boolean))];
+    if (!pickingIds.length) return null;
+
+    const rows = await callOdoo(
+        'stock.picking',
+        'search_read',
+        [[['id', 'in', pickingIds], ['picking_type_code', '=', 'outgoing'], ['state', '!=', 'cancel']]],
+        withCompany(companyId, {
+            fields: ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id'],
+            order: 'id asc',
+        })
+    ) || [];
+    const pendiente = rows.find((r) => r.state !== 'done');
+    return mapPickingRow(pendiente || rows[0]);
+}
+
+/**
  * Valida el envío 1. En Odoo 19 la cantidad hecha es stock.move.quantity
  * (no quantity_done). Si falta mercadería, Odoo abre stock.backorder.confirmation.
  * createBackorder=true deja el resto en un backorder; false lo cancela.
@@ -1439,6 +1478,7 @@ module.exports = {
     writePickingMoveQuantities,
     validateSalePicking,
     getPickingBackorder,
+    getSalidaDePicking,
     esAccionWizard,
     createPurchaseOrder,
     addLinesToPurchaseOrder,

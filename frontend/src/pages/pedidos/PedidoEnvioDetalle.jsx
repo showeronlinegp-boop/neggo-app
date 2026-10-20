@@ -114,7 +114,8 @@ export default function PedidoEnvioDetalle() {
     }, [id, trabajando]);
 
     useBarcodeScan(escanear, {
-        enabled: envio?.estado === 'armando' || envio?.estado === 'controlando',
+        enabled: envio?.estado === 'controlando'
+            || (envio?.estado === 'armando' && (envio.odoo_state === 'sale' || envio.odoo_state === 'done')),
     });
 
     const iniciarCamara = async () => {
@@ -223,8 +224,12 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(true);
         try {
             const res = await api.post(`/pedido-envios/${id}/saldar`);
+            const salida = res.success ? res.data.odoo_salida : null;
             if (!aplicar(res, res.success
-                ? (res.data.backorder_odoo_name
+                ? (salida?.picking
+                    ? `Entrega ${salida.picking.name} validada en Odoo con lo controlado.`
+                        + (salida.backorder ? ` Lo que faltó quedó en ${salida.backorder.name}.` : '')
+                    : res.data.backorder_odoo_name
                     ? `Odoo quedó con lo controlado. Pendientes en ${res.data.backorder_odoo_name}.`
                     : 'Odoo quedó igual a lo controlado. No había pendientes.')
                 : null)) return;
@@ -248,7 +253,8 @@ export default function PedidoEnvioDetalle() {
     }
 
     const est = ESTADO[envio.estado] || ESTADO.pendiente;
-    const editable = envio.estado === 'armando' || envio.estado === 'controlando';
+    const confirmadoEnOdoo = envio.odoo_state === 'sale' || envio.odoo_state === 'done';
+    const editable = (envio.estado === 'armando' && confirmadoEnOdoo) || envio.estado === 'controlando';
     const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
     const preview = envio.preview || { queda: [], pendientes: [], iguales: [] };
     const pad = isMobile ? 12 : 20;
@@ -310,13 +316,13 @@ export default function PedidoEnvioDetalle() {
                 )}
                 {envio.estado === 'armando' && (
                     <>
-                        {(!envio.odoo_picking_id || envio.odoo_sync_error) && (
+                        {(!confirmadoEnOdoo || !envio.odoo_picking_id || envio.odoo_sync_error) && (
                             <Button variant="primary" disabled={trabajando} onClick={() => setEstado('armando')}
                                 style={{ height: 48, flex: 1, minWidth: 160 }}>
                                 {trabajando ? 'Confirmando en Odoo…' : 'Confirmar en Odoo y atar envío 1'}
                             </Button>
                         )}
-                        <Button variant="success" disabled={trabajando} onClick={() => setEstado('armado')}
+                        <Button variant="success" disabled={trabajando || !confirmadoEnOdoo} onClick={() => setEstado('armado')}
                             style={{ height: 48, flex: 1, minWidth: 160 }} leftIcon={<Icon.Check size={16} />}>
                             {trabajando ? 'Validando envío 1…' : 'Terminar armado'}
                         </Button>
@@ -409,6 +415,11 @@ export default function PedidoEnvioDetalle() {
             {aviso && (
                 <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.successSoft, color: t.color.success, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
                     {aviso}
+                </div>
+            )}
+            {envio.estado === 'armando' && !confirmadoEnOdoo && (
+                <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.warnSoft, color: t.color.warn, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
+                    Este pedido todavía no está confirmado en Odoo. Confirmalo para poder armarlo.
                 </div>
             )}
             {error && (
@@ -553,7 +564,9 @@ export default function PedidoEnvioDetalle() {
             >
                 <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
                     <p style={{ marginTop: 0 }}>
-                        Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.
+                        {envio.odoo_picking_state === 'done'
+                            ? 'Esto valida la entrega en Odoo con lo que controlaste. Si falta algo, queda en un backorder de la entrega.'
+                            : 'Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.'}
                     </p>
                     {preview.queda.length === 0 && preview.pendientes.length === 0 && (
                         <div style={{ color: t.color.success }}>Controlaste todo. La orden no cambia de cantidades.</div>

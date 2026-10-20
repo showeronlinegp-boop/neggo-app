@@ -14,6 +14,7 @@ const {
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
+    armandoRequiereConfirmado,
     primerPickingSalida,
     planQtyMovesArmado,
     hayFaltanteEnMoves,
@@ -213,6 +214,14 @@ function testConfirmarAlEmpezar() {
     const sale = auditarEmpezarArmar(odooOrder({ state: 'sale' }));
     assert.strictEqual(sale.ok, true);
     assert.strictEqual(sale.needsConfirm, false);
+
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'pendiente', odoo_state: 'sent' }).ok, true);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'sale' }).ok, true);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'done' }).ok, true);
+    const sinConfirmar = armandoRequiereConfirmado({ estado: 'armando', odoo_state: 'sent', odoo_order_name: 'S0001' });
+    assert.strictEqual(sinConfirmar.ok, false);
+    assert.match(sinConfirmar.error, /confirmado/);
+    assert.strictEqual(armandoRequiereConfirmado({ estado: 'armando', odoo_state: null }).ok, false);
 }
 
 function testPrimerPickingSalida() {
@@ -281,6 +290,15 @@ function testPlanQtyMovesArmado() {
     );
     assert.strictEqual(vacio.hayAlgo, false);
     assert.strictEqual(vacio.hayFaltante, true);
+
+    // Entrega (2 pasos): se usa lo controlado, no lo armado
+    const salida = planQtyMovesArmado(
+        [{ id: 9, sale_line_id: 10, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 5, qty_controlada: 4 }],
+        'qty_controlada'
+    );
+    assert.strictEqual(salida.writes[0].quantity, 4);
+    assert.strictEqual(salida.hayFaltante, true);
 }
 
 function testWizardBackorder() {
