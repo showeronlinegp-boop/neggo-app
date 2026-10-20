@@ -696,8 +696,11 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                     </div>
                 )}
 
-                {/* Precio factura + Pack */}
+                {/* Cantidad + Precio factura + Pack */}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '12px', color: C.gray }}>
+                        Cant.: <strong style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{item.cantidad}</strong>
+                    </span>
                     <span style={{ fontSize: '12px', color: C.gray }}>
                         Precio: <strong style={{ color: C.text }}>{fmtARS(item.precio_unitario)}</strong>
                     </span>
