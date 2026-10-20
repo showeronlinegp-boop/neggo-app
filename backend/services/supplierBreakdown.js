@@ -28,6 +28,21 @@ function formatFechaAR(date) {
     return `${dd}/${mm}/${dt.getFullYear()}`;
 }
 
+/**
+ * Precio para pedirle al proveedor: oferta si hay, si no la lista menos el descuento.
+ * No usa el costo interno de Odoo.
+ * @returns {number|null}
+ */
+function supplierNetCost({ raw_price, offer_price, default_discount } = {}) {
+    const offer = Number(offer_price);
+    if (Number.isFinite(offer) && offer > 0) return Math.round(offer * 100) / 100;
+    const raw = Number(raw_price);
+    if (!Number.isFinite(raw) || raw <= 0) return null;
+    const discount = Number(default_discount) || 0;
+    const net = discount > 0 ? raw * (1 - discount / 100) : raw;
+    return Math.round(net * 100) / 100;
+}
+
 function supplierNameFor(productId, localSupplierByProductId, cacheByProductId) {
     const local = localSupplierByProductId[productId];
     if (local) return local;
@@ -62,7 +77,7 @@ function groupQuotationsBySupplier(quotations, cacheByProductId = {}, localSuppl
                     product_name: line.product_name,
                     external_id:  line.external_id,
                     image_url:    cache?.image_url || null,
-                    unit_cost:    cache?.standard_price ?? null,
+                    unit_cost:    cache?.order_cost ?? cache?.standard_price ?? null,
                     total_qty:    0,
                     quotations:   [],
                 };
@@ -109,4 +124,5 @@ module.exports = {
     formatMoneyAR,
     formatFechaAR,
     groupQuotationsBySupplier,
+    supplierNetCost,
 };

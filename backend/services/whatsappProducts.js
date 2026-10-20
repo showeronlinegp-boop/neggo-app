@@ -23,6 +23,7 @@ function buildFilter(filters) {
         'opc.template_id IS NOT NULL',
         'sp.raw_price IS NOT NULL',
         'sp.raw_price > 0',
+        'sp.available = true',
         'pm.active = true',
         's.active = true',
         'scr.id IS NOT NULL',

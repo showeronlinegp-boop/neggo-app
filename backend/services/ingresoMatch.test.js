@@ -17,7 +17,31 @@ const {
     capPreventaShares,
     distributePreventaQty,
     persistPurchaseOrderIds,
+    listPriceForOdoo,
+    missingPurchaseOrders,
 } = require('./ingresoService');
+
+function testConfirmGuards() {
+    assert.strictEqual(listPriceForOdoo(false, 1800, 2500), 2500);
+    assert.strictEqual(listPriceForOdoo(false, 1800, null), null);
+    assert.strictEqual(listPriceForOdoo(false, 1800, ''), null);
+    assert.strictEqual(listPriceForOdoo(true, 1800, 2500), 1800);
+    assert.strictEqual(listPriceForOdoo(true, null, 2500), null);
+
+    assert.deepStrictEqual(missingPurchaseOrders({
+        partnerId: 4, neggoLineCount: 2, prevLineCount: 0, neggoId: null, prevId: null,
+    }), ['Neggo']);
+    assert.deepStrictEqual(missingPurchaseOrders({
+        partnerId: 4, neggoLineCount: 1, prevLineCount: 1, neggoId: 10, prevId: null,
+    }), ['Preventas']);
+    assert.deepStrictEqual(missingPurchaseOrders({
+        partnerId: null, neggoLineCount: 2, prevLineCount: 1, neggoId: null, prevId: null,
+    }), []);
+    assert.deepStrictEqual(missingPurchaseOrders({
+        partnerId: 4, neggoLineCount: 1, prevLineCount: 1, neggoId: 10, prevId: 11,
+    }), []);
+    console.log('confirm guards ok');
+}
 
 function testDecision() {
     const same = nameMatchDecision('Lámpara de pie', 'lampara   de pie');
@@ -190,6 +214,7 @@ async function testPersistence(pool) {
 }
 
 async function main() {
+    testConfirmGuards();
     testDecision();
     testRefOtroProveedor();
     testDescCompra();

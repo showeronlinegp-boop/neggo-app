@@ -367,7 +367,7 @@ export default function SupplierList() {
                 onClose={() => setConfirmDeactivate(null)}
                 onConfirm={() => handleDeactivate(confirmDeactivate)}
                 title="Desactivar proveedor"
-                message={`¿Desactivás a "${confirmDeactivate?.name}"? Se pausa el scraping y se borran sus productos scrapeados (las reglas quedan). Lo podés reactivar después.`}
+                message={`¿Desactivás a "${confirmDeactivate?.name}"? Se pausa el scraping. Los productos y las reglas quedan. Lo podés reactivar después.`}
                 confirmLabel="Desactivar"
                 danger
             />

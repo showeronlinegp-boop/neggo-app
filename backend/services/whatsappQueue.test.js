@@ -91,7 +91,8 @@ async function recreateDb() {
         );
         CREATE TABLE supplier_products (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, name VARCHAR(500),
-            raw_price NUMERIC, source_category VARCHAR(200)
+            raw_price NUMERIC, source_category VARCHAR(200),
+            available BOOLEAN NOT NULL DEFAULT true
         );
         CREATE TABLE supplier_category_rules (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, source_category VARCHAR(200),
@@ -128,15 +129,16 @@ async function seed(pool) {
     `);
     const sid = sup.rows[0].id;
     const sp = await pool.query(`
-        INSERT INTO supplier_products (supplier_id, name, raw_price, source_category) VALUES
-            ($1, 'Vaso', 1000, 'Bazar'),
-            ($1, 'Plato', 2000, 'Bazar'),
-            ($1, 'Sin foto raw', 500, 'Bazar'),
-            ($1, 'Ignorado', 800, 'Oculto'),
-            ($1, 'Sin precio', NULL, 'Bazar')
+        INSERT INTO supplier_products (supplier_id, name, raw_price, source_category, available) VALUES
+            ($1, 'Vaso', 1000, 'Bazar', true),
+            ($1, 'Plato', 2000, 'Bazar', true),
+            ($1, 'Sin foto raw', 500, 'Bazar', true),
+            ($1, 'Ignorado', 800, 'Oculto', true),
+            ($1, 'Sin precio', NULL, 'Bazar', true),
+            ($1, 'Agotado', 1500, 'Bazar', false)
         RETURNING id
     `, [sid]);
-    const [vaso, plato, sinFoto, ignorado, sinPrecio] = sp.rows.map((r) => r.id);
+    const [vaso, plato, sinFoto, ignorado, sinPrecio, agotado] = sp.rows.map((r) => r.id);
     await pool.query(`
         INSERT INTO supplier_category_rules
             (supplier_id, source_category, dest_category_neggo, dest_category_preventas, ignored)
@@ -153,7 +155,8 @@ async function seed(pool) {
             (12, 'preventas', 'Sin foto', 'Bazar', 503, false, 500),
             (13, 'preventas', 'Sin vinculo', 'Bazar', 504, true, 500),
             (14, 'preventas', 'Regla ignorada', 'Oculto', 505, true, 800),
-            (15, 'preventas', 'Sin precio odoo', 'Bazar', 506, true, 999)
+            (15, 'preventas', 'Sin precio odoo', 'Bazar', 506, true, 999),
+            (16, 'preventas', 'Agotado en proveedor', 'Bazar', 507, true, 1500)
     `);
     await pool.query(`
         INSERT INTO product_mappings (supplier_product_id, odoo_product_id, odoo_company, match_confidence)
@@ -162,8 +165,9 @@ async function seed(pool) {
             ($2, 11, 'preventas', 1),
             ($3, 12, 'preventas', 1),
             ($4, 14, 'preventas', 1),
-            ($5, 15, 'preventas', 1)
-    `, [vaso, plato, sinFoto, ignorado, sinPrecio]);
+            ($5, 15, 'preventas', 1),
+            ($6, 16, 'preventas', 1)
+    `, [vaso, plato, sinFoto, ignorado, sinPrecio, agotado]);
     const list = await pool.query(`INSERT INTO client_pricelists (name) VALUES ('Mayorista') RETURNING id`);
     await pool.query(
         `INSERT INTO client_pricelist_rules (pricelist_id, supplier_id) VALUES ($1, $2)`,
@@ -175,6 +179,7 @@ async function seed(pool) {
 async function testSelection(pool, ids) {
     const all = await products.findPublishable(pool, { company: 'preventas' });
     assert.deepStrictEqual(all.map((p) => p.odoo_id), [11, 10]);
+    assert.ok(!all.some((p) => p.odoo_id === 16));
     assert.deepStrictEqual(all.map((p) => p.price_label), ['$3.045', '$1.523']);
     assert.ok(all.every((p) => !String(p.price_label).includes('99999')));
     const none = await products.findPublishable(pool, { company: 'preventas', category: 'Inexistente' });

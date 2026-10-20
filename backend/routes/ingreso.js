@@ -677,26 +677,37 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
                 const markup    = fi.markup_override !== null ? parseFloat(fi.markup_override) : supplierMarkup;
                 const newListPrice = markup > 0
                     ? Math.ceil(newCostConEnvio * (1 + markup / 100))
-                    : parseFloat(fi.precio_odoo_lista || newCostConEnvio);
+                    : null;
 
                 const costForOdoo  = fi.apply_cost  ? newCostConEnvio : parseFloat(fi.precio_odoo_anterior) || null;
-                const priceForOdoo = fi.apply_price ? newListPrice : parseFloat(fi.precio_odoo_lista    || newListPrice);
+                const priceForOdoo = ingresoService.listPriceForOdoo(fi.apply_price, newListPrice, fi.precio_odoo_lista);
 
                 // No pisar precios si el costo calculado es 0 o desconocido — evita productos con costo=0
                 if (!costForOdoo || costForOdoo <= 0) {
                     console.log(`⚠️ Costo 0 o nulo para producto ${fi.odoo_product_id} — se omite actualización de precios en Odoo`);
                 } else {
                     await odooService.updateProductPrices(fi.odoo_product_id, costForOdoo, priceForOdoo, 'neggo');
-                    // Actualizar cache local para que el reload muestre el nuevo costo sin esperar al sync
-                    await pool.query(
-                        `UPDATE odoo_products_cache SET standard_price = $1, list_price = $2 WHERE odoo_id = $3 AND company = 'neggo'`,
-                        [costForOdoo, priceForOdoo, fi.odoo_product_id]
-                    );
-                    // Actualizar precio_odoo_anterior en ingreso_items para que el panel muestre el valor correcto al recargar
-                    await pool.query(
-                        `UPDATE ingreso_items SET precio_odoo_anterior = $1, precio_odoo_lista = $2 WHERE id = $3`,
-                        [costForOdoo, priceForOdoo, fi.id]
-                    );
+                    // Actualizar cache local para que el reload muestre el nuevo costo sin esperar al sync.
+                    // Sin precio de lista nuevo, no se pisa el que ya estaba.
+                    if (priceForOdoo != null) {
+                        await pool.query(
+                            `UPDATE odoo_products_cache SET standard_price = $1, list_price = $2 WHERE odoo_id = $3 AND company = 'neggo'`,
+                            [costForOdoo, priceForOdoo, fi.odoo_product_id]
+                        );
+                        await pool.query(
+                            `UPDATE ingreso_items SET precio_odoo_anterior = $1, precio_odoo_lista = $2 WHERE id = $3`,
+                            [costForOdoo, priceForOdoo, fi.id]
+                        );
+                    } else {
+                        await pool.query(
+                            `UPDATE odoo_products_cache SET standard_price = $1 WHERE odoo_id = $2 AND company = 'neggo'`,
+                            [costForOdoo, fi.odoo_product_id]
+                        );
+                        await pool.query(
+                            `UPDATE ingreso_items SET precio_odoo_anterior = $1 WHERE id = $2`,
+                            [costForOdoo, fi.id]
+                        );
+                    }
                     odooApplied = { cost: costForOdoo, list_price: priceForOdoo };
                     console.log(`✅ Precios aplicados en tiempo real a Odoo — producto ${fi.odoo_product_id}: costo=${costForOdoo}, lista=${priceForOdoo}`);
                 }
