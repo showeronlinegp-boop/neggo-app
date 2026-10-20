@@ -24,6 +24,14 @@ function clampAttempts(value) {
     return Math.min(n, 5);
 }
 
+const STATUS_JID = 'status@broadcast';
+
+function assertDestino(value) {
+    if (value == null || value === '' || value === 'grupo') return 'grupo';
+    if (value === 'estado') return 'estado';
+    throw new Error('El destino tiene que ser grupo o estado');
+}
+
 function assertGroupJid(jid) {
     const value = String(jid || '').trim();
     if (!/^[\d-]+@g\.us$/.test(value)) {
@@ -83,7 +91,9 @@ async function createBatch(pool, input) {
     if (products.length === 0) {
         throw new Error('No hay productos con foto y precio de catálogo para ese filtro');
     }
-    const groupJid = assertGroupJid(input.groupJid);
+    const destino = assertDestino(input.destino);
+    const groupJid = destino === 'estado' ? STATUS_JID : assertGroupJid(input.groupJid);
+    const groupSubject = destino === 'estado' ? 'Estados' : (input.groupSubject || null);
     const interval = clampInterval(input.intervalSeconds, 90);
     const schedule = assertSchedule(input.scheduledAt);
     const maxAttempts = clampAttempts(input.maxAttempts);
@@ -93,11 +103,11 @@ async function createBatch(pool, input) {
         const batchRes = await client.query(`
             INSERT INTO whatsapp_batches (
                 company, category, dest_category, pricelist_id,
-                group_jid, group_subject, interval_seconds, scheduled_at, created_by
+                destino, group_jid, group_subject, interval_seconds, scheduled_at, created_by
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7,
-                ($8::timestamp AT TIME ZONE '${ART}'),
-                $9
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                ($9::timestamp AT TIME ZONE '${ART}'),
+                $10
             )
             RETURNING *
         `, [
@@ -105,8 +115,9 @@ async function createBatch(pool, input) {
             input.category || null,
             input.destCategory || null,
             input.pricelistId || null,
+            destino,
             groupJid,
-            input.groupSubject || null,
+            groupSubject,
             interval,
             schedule,
             input.createdBy || null,
@@ -131,7 +142,9 @@ async function createBatch(pool, input) {
         }
         await logEvent(client, {
             batchId: batch.id,
-            message: `Tanda creada con ${products.length} productos. Un mensaje cada ${interval} s.`,
+            message: destino === 'estado'
+                ? `Tanda de estados creada con ${products.length} productos. Uno cada ${interval} s.`
+                : `Tanda creada con ${products.length} productos. Un mensaje cada ${interval} s.`,
         });
         await client.query('COMMIT');
         return { batch, total: products.length, sample: products.slice(0, 8) };
@@ -290,7 +303,7 @@ async function claimNext(pool, now) {
             SET status = 'enviando', attempts = attempts + 1, updated_at = $2
             FROM whatsapp_batches b
             WHERE m.id = $1 AND m.status = 'pendiente' AND b.id = m.batch_id
-            RETURNING m.*, b.group_jid AS batch_group_jid, b.interval_seconds
+            RETURNING m.*, b.destino, b.group_jid AS batch_group_jid, b.interval_seconds
         `, [rows[0].id, now]);
         await client.query('COMMIT');
         return upd.rows[0] || null;
@@ -370,13 +383,19 @@ async function tick(pool, deps, now = new Date()) {
         try {
             const media = await deps.loadImage(message);
             if (!media?.base64) throw new Error('Sin foto en Odoo');
-            const evolutionId = await deps.sendImage({
-                number: message.group_jid,
-                caption: message.caption,
-                base64: media.base64,
-                mimetype: media.mimetype || 'image/jpeg',
-                fileName: `producto-${message.odoo_id}.jpg`,
-            });
+            const evolutionId = message.destino === 'estado'
+                ? await deps.sendStatus({
+                    caption: message.caption,
+                    base64: media.base64,
+                    mimetype: media.mimetype || 'image/jpeg',
+                })
+                : await deps.sendImage({
+                    number: message.group_jid,
+                    caption: message.caption,
+                    base64: media.base64,
+                    mimetype: media.mimetype || 'image/jpeg',
+                    fileName: `producto-${message.odoo_id}.jpg`,
+                });
             await markSent(pool, message, evolutionId, now);
             return { action: 'enviado', id: message.id };
         } catch (err) {
@@ -406,5 +425,7 @@ module.exports = {
     tick,
     clampInterval,
     assertGroupJid,
+    assertDestino,
     assertSchedule,
+    STATUS_JID,
 };

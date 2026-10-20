@@ -11,14 +11,29 @@ class EvolutionError extends Error {
     }
 }
 
-function config() {
+function readInstance(envName, fallback) {
+    const instance = process.env[envName] || fallback;
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(instance)) {
+        throw new EvolutionError(`${envName} inválida`);
+    }
+    return instance;
+}
+
+function config(which = 'grupo') {
     const baseUrl = String(process.env.EVOLUTION_API_URL || 'http://evolution:8080').replace(/\/+$/, '');
     const apiKey = process.env.EVOLUTION_API_KEY || '';
-    const instance = process.env.EVOLUTION_INSTANCE || 'neggo';
-    if (!/^[A-Za-z0-9_-]{1,40}$/.test(instance)) {
-        throw new EvolutionError('EVOLUTION_INSTANCE inválida');
+    const groups = readInstance('EVOLUTION_INSTANCE', 'neggo');
+    const status = readInstance('EVOLUTION_STATUS_INSTANCE', 'neggo-estados');
+    if (groups === status) {
+        throw new EvolutionError('La instancia de estados tiene que ser distinta de la de grupos');
     }
-    return { baseUrl, apiKey, instance };
+    const destino = which === 'estado' ? 'estado' : 'grupo';
+    return {
+        baseUrl,
+        apiKey,
+        instance: destino === 'estado' ? status : groups,
+        destino,
+    };
 }
 
 function extractQr(payload) {
@@ -79,17 +94,17 @@ async function request(path, { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT
     return payload;
 }
 
-async function connectionState() {
-    const { instance } = config();
+async function connectionState(which = 'grupo') {
+    const { instance } = config(which);
     const payload = await request(`/instance/connectionState/${encodeURIComponent(instance)}`);
     return connectionStateOf(payload);
 }
 
-async function ensureInstance() {
-    const { instance } = config();
+async function ensureInstance(which = 'grupo') {
+    const { instance } = config(which);
     try {
-        await connectionState();
-        return { created: false };
+        await connectionState(which);
+        return { created: false, instance };
     } catch (err) {
         if (err.status && err.status !== 404) throw err;
     }
@@ -99,24 +114,24 @@ async function ensureInstance() {
             instanceName: instance,
             integration: 'WHATSAPP-BAILEYS',
             qrcode: true,
-            groupsIgnore: false,
+            groupsIgnore: which === 'estado',
             readMessages: false,
             alwaysOnline: false,
         },
     });
-    return { created: true };
+    return { created: true, instance };
 }
 
-async function connectQr() {
-    const { instance } = config();
-    await ensureInstance();
-    const state = await connectionState().catch(() => null);
+async function connectQr(which = 'grupo') {
+    const { instance } = config(which);
+    await ensureInstance(which);
+    const state = await connectionState(which).catch(() => null);
     if (state === 'open') {
-        return { connected: true, state, base64: null, pairingCode: null };
+        return { connected: true, state, instance, base64: null, pairingCode: null };
     }
     const payload = await request(`/instance/connect/${encodeURIComponent(instance)}`);
     const qr = extractQr(payload);
-    return { connected: false, state: state || 'connecting', ...qr };
+    return { connected: false, state: state || 'connecting', instance, ...qr };
 }
 
 async function fetchGroups() {
@@ -148,9 +163,31 @@ async function sendImage({ number, caption, base64, fileName, mimetype }) {
     return payload?.key?.id || payload?.id || null;
 }
 
+async function sendStatus({ caption, base64 }) {
+    const { instance } = config('estado');
+    if (!caption || !base64) {
+        throw new EvolutionError('Faltan texto o foto para el estado');
+    }
+    const payload = await request(`/message/sendStatus/${encodeURIComponent(instance)}`, {
+        method: 'POST',
+        timeoutMs: SEND_TIMEOUT_MS,
+        body: {
+            type: 'image',
+            content: base64,
+            caption,
+            backgroundColor: '#1F3A68',
+            font: 1,
+            allContacts: true,
+            statusJidList: [],
+        },
+    });
+    return payload?.key?.id || payload?.id || null;
+}
+
 module.exports = {
     EvolutionError,
     config,
+    instanceName: (which) => config(which).instance,
     extractQr,
     connectionStateOf,
     normalizeGroups,
@@ -159,4 +196,5 @@ module.exports = {
     connectQr,
     fetchGroups,
     sendImage,
+    sendStatus,
 };

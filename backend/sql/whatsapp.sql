@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_batches (
     category VARCHAR(200),
     dest_category VARCHAR(200),
     pricelist_id INTEGER REFERENCES client_pricelists(id),
-    group_jid VARCHAR(120) NOT NULL,
+    destino VARCHAR(20) NOT NULL DEFAULT 'grupo' CHECK (destino IN ('grupo', 'estado')),
+    group_jid VARCHAR(120),
     group_subject VARCHAR(200),
     interval_seconds INTEGER NOT NULL DEFAULT 90 CHECK (interval_seconds BETWEEN 10 AND 3600),
     scheduled_at TIMESTAMPTZ NOT NULL,
@@ -74,3 +75,12 @@ CREATE TABLE IF NOT EXISTS whatsapp_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_wa_logs_batch ON whatsapp_logs(batch_id, id DESC);
+
+-- Bases que ya tenían la cola solo para grupos.
+ALTER TABLE whatsapp_batches ADD COLUMN IF NOT EXISTS destino VARCHAR(20) NOT NULL DEFAULT 'grupo';
+ALTER TABLE whatsapp_batches ALTER COLUMN group_jid DROP NOT NULL;
+DO $$ BEGIN
+    ALTER TABLE whatsapp_batches
+        ADD CONSTRAINT whatsapp_batches_destino_check CHECK (destino IN ('grupo', 'estado'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
