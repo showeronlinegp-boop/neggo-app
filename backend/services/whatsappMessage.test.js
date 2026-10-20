@@ -117,52 +117,34 @@ function testContactJids() {
     console.log('contactos y errores de evolution ok');
 }
 
-async function testSendStatusUsesContacts() {
+async function testSendStatusMatchesDocs() {
     const prevFetch = global.fetch;
     process.env.EVOLUTION_API_KEY = 'x';
     process.env.EVOLUTION_INSTANCE = 'neggo';
     process.env.EVOLUTION_STATUS_INSTANCE = 'neggo-estados';
     const calls = [];
     global.fetch = async (url, init) => {
-        calls.push({ url: String(url), body: init.body ? JSON.parse(init.body) : null });
-        if (String(url).includes('findContacts')) {
-            return {
-                ok: true,
-                text: async () => JSON.stringify([
-                    { remoteJid: '549111@s.whatsapp.net' },
-                    { remoteJid: '120363@g.us' },
-                ]),
-            };
+        const href = String(url);
+        if (href.includes('findContacts')) {
+            throw new Error('sendStatus no debe consultar la agenda');
         }
+        calls.push({ url: href, body: init.body ? JSON.parse(init.body) : null });
         return { ok: true, text: async () => JSON.stringify({ key: { id: 'st-1' } }) };
     };
     try {
         const id = await evolution.sendStatus({ caption: 'Mate\n$1.500', base64: JPEG });
         assert.strictEqual(id, 'st-1');
-        assert.ok(calls[0].url.includes('findContacts/neggo-estados'));
-        assert.ok(calls[1].url.includes('sendStatus/neggo-estados'));
-        assert.deepStrictEqual(calls[1].body.statusJidList, ['549111@s.whatsapp.net']);
-        assert.strictEqual(calls[1].body.allContacts, false);
-        assert.ok(String(calls[1].body.content).startsWith('data:image/jpeg;base64,'));
+        assert.strictEqual(calls.length, 1);
+        assert.ok(calls[0].url.includes('sendStatus/neggo-estados'));
+        assert.strictEqual(calls[0].body.type, 'image');
+        assert.strictEqual(calls[0].body.allContacts, true);
+        assert.strictEqual(calls[0].body.caption, 'Mate\n$1.500');
+        assert.ok(String(calls[0].body.content).startsWith('data:image/jpeg;base64,'));
+        assert.ok(!Object.prototype.hasOwnProperty.call(calls[0].body, 'statusJidList'));
     } finally {
         global.fetch = prevFetch;
     }
-
-    global.fetch = async (url) => {
-        if (String(url).includes('findContacts')) {
-            return { ok: true, text: async () => '[]' };
-        }
-        throw new Error('no debería mandar el estado');
-    };
-    try {
-        await assert.rejects(
-            evolution.sendStatus({ caption: 'Mate\n$1.500', base64: JPEG }),
-            /no tiene contactos/
-        );
-    } finally {
-        global.fetch = prevFetch;
-    }
-    console.log('sendStatus usa contactos ok');
+    console.log('sendStatus sigue la doc (allContacts, sin agenda) ok');
 }
 
 (async () => {
@@ -172,7 +154,7 @@ async function testSendStatusUsesContacts() {
     testCommunityGroups();
     await testLinks();
     testContactJids();
-    await testSendStatusUsesContacts();
+    await testSendStatusMatchesDocs();
     console.log('✅ whatsappMessage.test ok');
 })().catch((err) => {
     console.error('❌', err);

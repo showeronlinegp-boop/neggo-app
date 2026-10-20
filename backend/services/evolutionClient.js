@@ -237,17 +237,13 @@ function statusDataUri(base64, mimetype) {
     return `data:${mimetype || 'image/jpeg'};base64,${raw}`;
 }
 
-// Evolution v2.3.7 rechaza statusJidList vacío (400 Bad Request) aunque allContacts sea true.
-// Mandamos los contactos de esa instancia, uno a uno.
+// POST /message/sendStatus/{instance} (Evolution v2.3.7).
+// Docs: type + content + caption; allContacts true = a toda la agenda (WhatsApp lo resuelve).
+// El schema (statusMessageSchema) solo exige `type`. statusJidList es opcional; si viene,
+// minItems: 1 — un array vacío da 400. Por eso omitimos la clave, no la rellenamos.
 async function sendStatus({ caption, base64, mimetype }) {
     const { instance } = config('estado');
     const ready = assertSendable({ caption, base64 });
-    const contacts = await findStatusContacts();
-    if (contacts.length === 0) {
-        throw new EvolutionError(
-            'Ese número todavía no tiene contactos en WhatsApp. Sin agenda, no se puede publicar el estado. Abrí WhatsApp en ese teléfono, esperá a que aparezca la agenda y reintentá.'
-        );
-    }
     const payload = await request(`/message/sendStatus/${encodeURIComponent(instance)}`, {
         method: 'POST',
         timeoutMs: SEND_TIMEOUT_MS,
@@ -257,8 +253,7 @@ async function sendStatus({ caption, base64, mimetype }) {
             caption: ready.caption,
             backgroundColor: '#1F3A68',
             font: 1,
-            allContacts: false,
-            statusJidList: contacts,
+            allContacts: true,
         },
     });
     return payload?.key?.id || payload?.id || null;
