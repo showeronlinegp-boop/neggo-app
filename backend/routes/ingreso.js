@@ -2550,7 +2550,7 @@ router.post('/:ingresoId/rematch', authenticate, async (req, res) => {
         const updated = [];
         for (const rm of rematched) {
             if (!rm.odoo_product_id) continue;
-            // Un parecido de nombre o una ref de otro proveedor queda pendiente hasta que una persona lo confirme.
+            // Lo dudoso (ej. un parecido de nombre) queda pendiente hasta que una persona lo confirme.
             const auto = rm.estado_item === 'matched'
                 && !ingresoService.MATCH_LEVELS_TO_CONFIRM.includes(rm.match_level);
 

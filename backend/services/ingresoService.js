@@ -195,9 +195,9 @@ function similarity(a, b) {
     return 1 - prev[lb] / Math.max(la, lb);
 }
 
-// Niveles que sugieren un producto pero quedan 'pending' hasta que una persona confirme:
-// un nombre parecido, o una referencia que en Odoo tiene el prefijo de otro proveedor.
-const MATCH_LEVELS_TO_CONFIRM = ['fuzzy_name', 'ref_other_prefix'];
+// Niveles que sugieren un producto pero quedan 'pending' hasta que una persona confirme.
+// 'ref_other_prefix' se vincula solo: lo decidió el usuario (nota de prueba #26).
+const MATCH_LEVELS_TO_CONFIRM = ['fuzzy_name'];
 
 // Un parecido de nombre no se auto-confirma. Sí se confirma si el nombre
 // normalizado es el mismo (mayúsculas, acentos y espacios).
@@ -490,7 +490,7 @@ async function matchItems(items, supplierId = null) {
             // ---- Nivel 4: internal_ref con el prefijo de OTRO proveedor ----
             //   codigo="BR8003021" + proveedor CY → encuentra "MG-BR8003021"
             // Pasa cuando el producto se dio de alta con otro proveedor o con el prefijo equivocado.
-            // Queda 'pending': confirmarlo le cambia costo y stock a un producto de otro proveedor.
+            // Va después del prefijo propio: primero se une por el proveedor del ingreso.
             if (!matched && codigoValido) {
                 matched = matchByRefWithoutPrefix(byRefSinPrefijo, item.codigo);
                 if (matched) { confidence = 0.9; matchLevel = 'ref_other_prefix'; }

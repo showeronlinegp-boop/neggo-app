@@ -769,19 +769,12 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                 {/* Acciones para nuevos */}
                 {isNew && !isRejected && (
                     <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                        {(item.match_level === 'fuzzy_name' || item.match_level === 'ref_other_prefix') && item.odoo_product_id && (
+                        {item.match_level === 'fuzzy_name' && item.odoo_product_id && (
                             <>
-                                {item.match_level === 'fuzzy_name' ? (
-                                    <span style={{ fontSize: '12px', color: C.text }}>
-                                        Parecido: <strong>{item.odoo_product_name}</strong>
-                                        {item.confidence_match > 0 ? ` (${Math.round(item.confidence_match * 100)}%)` : ''}. Hay que confirmarlo.
-                                    </span>
-                                ) : (
-                                    <span style={{ fontSize: '12px', color: C.text }}>
-                                        Mismo código: <strong>{item.odoo_product_name}</strong>
-                                        {item.odoo_internal_ref ? <> (<span style={{ fontFamily: 'monospace' }}>{item.odoo_internal_ref}</span>)</> : ''}, pero está cargado con el prefijo de otro proveedor. Confirmalo si es el mismo producto.
-                                    </span>
-                                )}
+                                <span style={{ fontSize: '12px', color: C.text }}>
+                                    Parecido: <strong>{item.odoo_product_name}</strong>
+                                    {item.confidence_match > 0 ? ` (${Math.round(item.confidence_match * 100)}%)` : ''}. Hay que confirmarlo.
+                                </span>
                                 <button
                                     onClick={() => onLinked(item.id, item.odoo_product_id)}
                                     style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.success}`, backgroundColor: C.success, color: C.white, cursor: 'pointer' }}
