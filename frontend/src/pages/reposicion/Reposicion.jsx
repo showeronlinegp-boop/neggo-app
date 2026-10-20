@@ -132,7 +132,7 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
     const [error, setError] = useState(null);
     const [qtys, setQtys] = useState({});
     const [selected, setSelected] = useState({});
-    const [generando, setGenerando] = useState(false);
+    const [guardando, setGuardando] = useState(false);
     const [aviso, setAviso] = useState(null);
 
     const cargar = useCallback(async () => {
@@ -156,21 +156,21 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
 
     const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }));
 
-    const generarOc = async () => {
-        const items = (detalle?.items || [])
-            .filter(it => selected[it.id])
-            .map(it => ({ id: it.id, qty_decidida: qtys[it.id] === '' ? undefined : Number(qtys[it.id]) }));
+    const itemsSeleccionados = () => (detalle?.items || [])
+        .filter(it => selected[it.id])
+        .map(it => ({ id: it.id, qty_decidida: qtys[it.id] === '' ? undefined : Number(qtys[it.id]) }));
+
+    const resolver = async (estado) => {
+        const items = itemsSeleccionados();
         if (!items.length) { setError('Seleccioná al menos un producto'); return; }
-        setGenerando(true);
+        setGuardando(true);
         setError(null);
         setAviso(null);
-        const res = await api.post('/reposicion/generar-oc', {
-            vendor_name: vendor,
-            items,
-        });
-        setGenerando(false);
-        if (!res.success) { setError(res.error || 'No se pudo generar la OC'); return; }
-        setAviso(`Borrador de OC #${res.data.odoo_po_id} creado en Odoo (${res.data.lineas} líneas).`);
+        const res = await api.post('/reposicion/resolver', { items, estado });
+        setGuardando(false);
+        if (!res.success) { setError(res.error || 'No se pudo guardar la decisión'); return; }
+        const label = estado === 'repuesto' ? 'repuestos' : 'descartados';
+        setAviso(`${res.data.resueltos} producto(s) marcados como ${label}.`);
         onChanged?.();
         await cargar();
     };
@@ -196,12 +196,20 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                 <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                     <Button variant="ghost" onClick={onClose}>Cerrar</Button>
                     <Button
-                        variant="primary"
-                        leftIcon={<Icon.Truck size={14} />}
-                        disabled={generando || loading || !(detalle?.items?.length)}
-                        onClick={generarOc}
+                        variant="ghost"
+                        leftIcon={<Icon.X size={14} />}
+                        disabled={guardando || loading || !(detalle?.items?.length)}
+                        onClick={() => resolver('descartado')}
                     >
-                        {generando ? 'Generando…' : 'Generar OC en Odoo'}
+                        Descartar
+                    </Button>
+                    <Button
+                        variant="success"
+                        leftIcon={<Icon.Check size={14} />}
+                        disabled={guardando || loading || !(detalle?.items?.length)}
+                        onClick={() => resolver('repuesto')}
+                    >
+                        {guardando ? 'Guardando…' : 'Marcar repuestos'}
                     </Button>
                 </div>
             )}
@@ -230,7 +238,7 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                                 <th style={{ ...th, textAlign: 'right' }}>7d</th>
                                 <th style={{ ...th, textAlign: 'right' }}>30d u.</th>
                                 <th style={{ ...th, textAlign: 'right' }}>Prom/sem</th>
-                                <th style={{ ...th, textAlign: 'right' }}>Pedir</th>
+                                <th style={{ ...th, textAlign: 'right' }}>Cant.</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -287,7 +295,7 @@ function ModalProveedor({ vendor, onClose, onChanged }) {
                         </div>
                     )}
                     <div style={{ marginTop: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal (y al prender la app); no hay cron diario. «Generar OC» crea un borrador en Odoo Neggo.
+                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal (y al prender la app); no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola.
                     </div>
                 </div>
             )}
@@ -418,7 +426,7 @@ export default function Reposicion() {
                             {pendiente && (
                                 <Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }}
                                     onClick={() => setModalVendor(proveedor)}>
-                                    Decidir / OC
+                                    Decidir
                                 </Button>
                             )}
                         </div>
@@ -455,9 +463,6 @@ export default function Reposicion() {
                                                     ? <Badge tone={ORIGEN[it.origen]?.tone} dot>{ORIGEN[it.origen]?.label}</Badge>
                                                     : <Badge tone={ESTADO[it.estado]?.tone} dot>{ESTADO[it.estado]?.label}</Badge>}
                                                 {it.nota && <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 4 }}>{it.nota}</div>}
-                                                {!pendiente && it.odoo_po_id && (
-                                                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 4 }}>OC #{it.odoo_po_id}</div>
-                                                )}
                                             </td>
                                             <td style={{ ...tdStyle, fontSize: t.font.size.xs, color: t.color.textMuted, whiteSpace: 'nowrap', ...t.numericStyle }}>
                                                 {fmtFecha(pendiente ? it.created_at : it.resolved_at)}

@@ -1,7 +1,7 @@
 // Cola de reposición de Neggo.
 // Orígenes: archivado (sync / baja en el sistema), reponer (manual), recorrida (escáner).
 // Neggo no lleva stock en Odoo: archivar = dar de baja el artículo. No hay origen bajo_stock.
-// Solo lee Odoo vía cache; Generar OC sí escribe un borrador de purchase.order.
+// Solo lee Odoo vía cache. No genera OC: no usamos el módulo de compras (por ahora).
 
 const fs = require('fs');
 const path = require('path');
@@ -104,7 +104,7 @@ async function procesarSync(antes, productos) {
 
 const SELECT_ITEM = `
     SELECT ri.id, ri.odoo_id, ri.origen, ri.estado, ri.qty_decidida, ri.qty_sugerida, ri.nota,
-           ri.odoo_po_id, ri.created_at, ri.resolved_at,
+           ri.created_at, ri.resolved_at,
            COALESCE(uc.display_name, uc.username) AS created_by_name,
            COALESCE(ur.display_name, ur.username) AS resolved_by_name,
            opc.name, opc.internal_ref, opc.barcode, opc.image_url, opc.has_image,
@@ -389,92 +389,28 @@ async function detalleProveedor(vendorName) {
 }
 
 /**
- * Genera un borrador de OC en Odoo Neggo para los ítems del proveedor.
- * @param {{ vendorName: string, items: Array<{id:number, qty_decidida?:number}>, partnerId?: number }} opts
+ * Resuelve en lote pendientes como repuesto/descartado (con qty opcional).
+ * No escribe en Odoo: Neggo no usa el módulo de compras por ahora.
  */
-async function generarOc({ vendorName, items, partnerId, userId }) {
+async function resolverLote({ items, estado = 'repuesto' }, userId) {
     if (!items?.length) throw httpError('Seleccioná al menos un producto', 400);
-    const odooService = require('./odooService');
-
-    const ids = items.map(i => parseInt(i.id, 10)).filter(Number.isInteger);
-    const { rows: filas } = await pool.query(
-        `${SELECT_ITEM} WHERE ri.id = ANY($1::int[]) AND ri.estado = 'pendiente'`,
-        [ids]
-    );
-    if (!filas.length) throw httpError('No hay pendientes válidos para generar la OC', 400);
-
-    const vendor = vendorName
-        || filas[0].vendor_name
-        || 'Sin proveedor';
-
-    let partner = partnerId ? parseInt(partnerId, 10) : null;
-    if (!partner) {
-        // Buscar en scrape_config de suppliers locales
-        const { rows: [sup] } = await pool.query(
-            `SELECT (scrape_config->>'odoo_partner_id')::int AS partner_id
-             FROM suppliers
-             WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
-               AND scrape_config ? 'odoo_partner_id'
-             LIMIT 1`,
-            [vendor]
-        );
-        partner = sup?.partner_id || null;
+    if (![...ESTADOS_FINALES].includes(estado)) {
+        throw httpError('Estado inválido: usá repuesto o descartado', 400);
     }
-    if (!partner) {
-        const partners = await odooService.getPartners({ type: 'supplier', search: vendor });
-        const exact = partners.find(p => p.name.trim().toLowerCase() === vendor.trim().toLowerCase());
-        partner = (exact || partners[0])?.id || null;
+    const resolved = [];
+    for (const raw of items) {
+        const id = parseInt(raw.id, 10);
+        if (!Number.isInteger(id)) continue;
+        const item = await cambiarEstado(id, {
+            estado,
+            qtyDecidida: raw.qty_decidida,
+            nota: raw.nota,
+        }, userId);
+        resolved.push(item);
     }
-    if (!partner) {
-        throw httpError(
-            `No encontré el proveedor "${vendor}" en Odoo. Pasá partner_id o vinculalo en Proveedores.`,
-            400
-        );
-    }
-
-    const qtyById = new Map(items.map(i => [parseInt(i.id, 10), i.qty_decidida]));
-    const lines = [];
-    for (const f of filas) {
-        let qty = qtyById.get(f.id);
-        if (qty == null || qty === '') qty = f.qty_decidida;
-        if (qty == null || qty === '') {
-            const m = (await metricasVenta([f.odoo_id])).get(f.odoo_id);
-            const avg = m?.avg_weekly || 0;
-            qty = avg > 0
-                ? Math.max(1, Math.ceil(avg * semanasCobertura()))
-                : Math.max(1, Math.ceil(m?.qty_7d || 1));
-        }
-        qty = parseInt(qty, 10);
-        if (!Number.isInteger(qty) || qty < 1) {
-            throw httpError(`Cantidad inválida para "${f.name}"`, 400);
-        }
-        lines.push({
-            product_id: f.odoo_id,
-            name: f.name || `Producto ${f.odoo_id}`,
-            quantity: qty,
-            unit_price: Number(f.standard_price) || 0,
-        });
-    }
-
-    const poId = await odooService.createPurchaseOrder(partner, lines, 'neggo');
-
-    for (const f of filas) {
-        const line = lines.find(l => l.product_id === f.odoo_id);
-        await pool.query(
-            `UPDATE reposicion_items
-             SET estado = 'repuesto',
-                 qty_decidida = $2,
-                 odoo_po_id = $3,
-                 resolved_at = NOW(),
-                 resolved_by = $4,
-                 nota = COALESCE(nota, $5)
-             WHERE id = $1`,
-            [f.id, line.quantity, poId, userId, `OC Odoo #${poId}`]
-        );
-    }
-
-    console.log(`✅ Reposición: OC borrador ${poId} para "${vendor}" (${lines.length} líneas)`);
-    return { odoo_po_id: poId, partner_id: partner, vendor_name: vendor, lineas: lines.length };
+    if (!resolved.length) throw httpError('No hay pendientes válidos', 400);
+    console.log(`✅ Reposición: ${resolved.length} ítem(s) → ${estado}`);
+    return { resueltos: resolved.length, items: resolved };
 }
 
 module.exports = {
@@ -489,7 +425,7 @@ module.exports = {
     buscarProductos,
     buscarPorBarcode,
     detalleProveedor,
-    generarOc,
+    resolverLote,
     metricasVenta,
     clasificarAbc,
     lunesDe,

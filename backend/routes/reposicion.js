@@ -4,7 +4,7 @@
 // GET    /api/reposicion/barcode?code=
 // GET    /api/reposicion/proveedor?nombre=
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
-// POST   /api/reposicion/generar-oc                  — { vendor_name, items, partner_id? }
+// POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas (sin cron diario)
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 
@@ -69,17 +69,15 @@ router.post('/', async (req, res) => {
     }
 });
 
-router.post('/generar-oc', async (req, res) => {
+router.post('/resolver', async (req, res) => {
     try {
-        const result = await reposicion.generarOc({
-            vendorName: req.body.vendor_name,
+        const result = await reposicion.resolverLote({
             items: req.body.items,
-            partnerId: req.body.partner_id,
-            userId: req.user.id,
-        });
-        return ok(res, result, 201);
+            estado: req.body.estado || 'repuesto',
+        }, req.user.id);
+        return ok(res, result);
     } catch (err) {
-        if (!err.statusCode) console.error('❌ Error generando OC de reposición:', err.message);
+        if (!err.statusCode) console.error('❌ Error resolviendo lote de reposición:', err.message);
         return fail(res, err.message, err.statusCode || 500);
     }
 });

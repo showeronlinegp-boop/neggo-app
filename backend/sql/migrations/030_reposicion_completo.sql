@@ -2,7 +2,8 @@
 --
 -- Extiende la cola de la 029:
 --   - origen 'recorrida' (escáner en depósito)
---   - qty_sugerida (cálculo opcional) y odoo_po_id (OC generada en Odoo)
+--   - qty_sugerida (cálculo opcional)
+--   - odoo_po_id queda por compatibilidad; no se usa (Neggo no usa compras en Odoo)
 --   - product_sales_weekly: ventas en unidades por producto/semana (ritmo + Pareto ABC)
 -- Neggo no lleva stock en Odoo (archivar = baja): no hay origen por qty_available.
 -- 'bajo_stock' queda admitido solo por compatibilidad con filas viejas; el sync no lo crea.
