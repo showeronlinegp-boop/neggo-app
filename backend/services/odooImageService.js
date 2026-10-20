@@ -178,7 +178,9 @@ async function fingerprintFromOdoo(d, model, id, companyId) {
 async function fetchImageFromOdoo(d, { model, id, companyId, size }) {
     const campo = `image_${size}`;
     const ctx = { allowed_company_ids: [companyId] };
-    const [row] = await d.callOdoo(model, 'read', [[id], [campo, 'write_date', 'product_tmpl_id']], { context: ctx });
+    // product_tmpl_id solo existe en product.product: pedirlo al template hace fallar el read.
+    const fields = model === 'product.product' ? [campo, 'write_date', 'product_tmpl_id'] : [campo, 'write_date'];
+    const [row] = await d.callOdoo(model, 'read', [[id], fields], { context: ctx });
     const b64 = row?.[campo];
     if (!b64 || b64 === false) return null;
     const buffer = Buffer.from(b64, 'base64');

@@ -29,6 +29,10 @@ function mockOdoo({ writeDate = '2026-01-01 12:00:00', images = {}, down = false
         if (method === 'read') {
             const id = args[0][0];
             const fields = args[1] || kwargs.fields || [];
+            // Como Odoo real: product.template no tiene product_tmpl_id.
+            if (model === 'product.template' && fields.includes('product_tmpl_id')) {
+                throw new Error("Invalid field 'product_tmpl_id' on 'product.template'");
+            }
             const row = { id, write_date: writeDate, product_tmpl_id: [99, 'T'] };
             for (const f of fields) {
                 if (f.startsWith('image_')) {
