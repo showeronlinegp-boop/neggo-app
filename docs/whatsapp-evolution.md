@@ -20,6 +20,7 @@ openssl rand -hex 16
 EVOLUTION_API_URL=http://evolution:8080
 EVOLUTION_API_KEY=la_clave_que_generaste
 EVOLUTION_INSTANCE=neggo
+EVOLUTION_STATUS_INSTANCE=neggo-estados
 EVOLUTION_SERVER_URL=http://localhost:8080
 WHATSAPP_MAX_ATTEMPTS=3
 ```
@@ -32,19 +33,19 @@ WHATSAPP_MAX_ATTEMPTS=3
 docker compose up -d --build
 ```
 
-Eso inicia Postgres, el backend, nginx, Chrome y Evolution API (`evoapicloud/evolution-api:v2.3.7`). La sesión de WhatsApp se guarda en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
+Eso inicia Postgres, el backend, nginx, Chrome y Evolution API (`evoapicloud/evolution-api:v2.3.7`). En ese servidor hay dos instancias: `neggo` para los grupos y `neggo-estados` para los estados. Cada una es otro número de WhatsApp. Las sesiones se guardan en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
 
 La app queda en http://localhost . Evolution escucha solo en esta PC, en http://localhost:8080 . No hace falta abrir ese puerto: el QR se ve dentro de Neggo.
 
-## 3. Vincular el número
+## 3. Vincular los dos números
 
 1. Entrá a http://localhost con el usuario admin.
 2. En el menú de administración, abrí **WhatsApp**.
-3. Tocá **Mostrar QR**.
-4. En el teléfono: WhatsApp → **Dispositivos vinculados** → **Vincular dispositivo** y escaneá el QR de la pantalla.
-5. Cuando el estado diga **Conectado**, tocá **Listar grupos**, elegí el grupo y **Guardar**.
+3. En **Instancia de grupos**, tocá **Mostrar QR** y escanealo con el teléfono que publica en los grupos: WhatsApp → **Dispositivos vinculados** → **Vincular dispositivo**.
+4. Cuando diga **Conectado**, tocá **Listar grupos**, elegí el grupo y **Guardar**.
+5. En **Instancia de estados**, tocá **Mostrar QR** y escanealo con el otro teléfono, el que publica los estados. No uses el mismo número: WhatsApp no deja dos sesiones iguales y los estados tienen que salir por ese otro número.
 
-Si el QR se vence, tocá **Mostrar QR** de nuevo. Si borrás el volumen de Evolution, hay que escanear otra vez. Reiniciar los contenedores no desvincula el número ni borra la cola.
+Si un QR se vence, volvé a pedirlo en esa misma tarjeta. Si borrás el volumen de Evolution, hay que escanear las dos instancias otra vez. Reiniciar los contenedores no desvincula los números ni borra la cola.
 
 ## 4. Programar una tanda
 
@@ -54,7 +55,11 @@ Si el QR se vence, tocá **Mostrar QR** de nuevo. Si borrás el volumen de Evolu
 4. Elegí fecha y hora (hora de Argentina) y **Programar tanda**.
 5. En la misma pantalla ves enviados, pendientes y errores. **Pausar** frena la cola; **Reanudar** la sigue; **Cancelar** no manda lo que falta. Cada mensaje se reintenta hasta 3 veces y después queda en error, con el motivo en el log.
 
-## 5. Después de actualizar el código
+## 5. Publicar en estados
+
+La cola es la misma, la instancia no. En **Armar tanda**, elegí **Estados**. Cada producto se publica como estado de la instancia `neggo-estados` (foto, nombre y precio de catálogo), uno cada intervalo, y lo ven los contactos de ese otro WhatsApp. No se usa el número de los grupos. Pausar, reanudar y cancelar funcionan igual. Un envío a un grupo y un estado no salen juntos: entre cualquier publicación hay al menos el intervalo de la tanda.
+
+## 6. Después de actualizar el código
 
 ```bash
 docker compose up -d --build backend
