@@ -133,57 +133,71 @@ DRIVE_MOCK="$TMP/drive" \
     "$ROOT/backup-db.sh" > "$TMP/reuse"
 grep -q "Ya hay un dump de hoy" "$TMP/reuse"
 
-# Al prender el servidor: sin marca previa, corre. Con una marca reciente, no.
+# Viernes 15:00, hora Argentina. Si la PC estaba apagada, se hace al prenderla.
 cat > "$TMP/bin/ran-backup" <<'EOF'
 #!/bin/sh
 touch "$RAN"
 EOF
 chmod 755 "$TMP/bin/ran-backup"
+export TZ=America/Argentina/Buenos_Aires
 
+run_due() {
+    rm -f "$TMP/ran"
+    RAN="$TMP/ran" \
+    BACKUP_DIR="$TMP/backups" \
+    DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
+    DRIVE_FOLDER_ID="${DUE_FOLDER-carpeta-prueba}" \
+    BACKUP_NOW="$DUE_NOW" \
+    BACKUP_BIN="$TMP/bin/ran-backup" \
+        "$ROOT/backup-if-due.sh" > "$TMP/due-out"
+}
+
+# Viernes 16/10/2026 14:59: todavía no.
+rm -f "$TMP/backups/.last-success"
+DUE_NOW=$(date -d '2026-10-16 14:59:00' +%s)
+run_due
+test ! -f "$TMP/ran"
+grep -q "Todavía no es viernes a las 15" "$TMP/due-out"
+
+# Viernes 15:00, sin backup previo: corre.
+DUE_NOW=$(date -d '2026-10-16 15:00:00' +%s)
+run_due
+test -f "$TMP/ran"
+grep -q "Es el viernes a las 15" "$TMP/due-out"
+
+# Viernes 16:00 y el de las 15 ya está: no corre de nuevo.
+rm -f "$TMP/ran"
+touch -d '2026-10-16 15:10:00' "$TMP/backups/.last-success"
+DUE_NOW=$(date -d '2026-10-16 16:00:00' +%s)
+run_due
+test ! -f "$TMP/ran"
+grep -q "ya está en Drive" "$TMP/due-out"
+
+# Martes, todavía no hubo ninguno: espera al viernes.
+rm -f "$TMP/backups/.last-success"
+DUE_NOW=$(date -d '2026-10-20 09:00:00' +%s)
+run_due
+test ! -f "$TMP/ran"
+
+# Lunes y el viernes anterior no se hizo: corre al prender la PC.
+touch -d '2026-10-09 15:10:00' "$TMP/backups/.last-success"
+DUE_NOW=$(date -d '2026-10-19 10:00:00' +%s)
+run_due
+test -f "$TMP/ran"
+grep -q "No se hizo el backup del viernes" "$TMP/due-out"
+
+# Lunes y el viernes sí se hizo: espera al próximo.
+touch -d '2026-10-16 15:10:00' "$TMP/backups/.last-success"
+DUE_NOW=$(date -d '2026-10-19 10:00:00' +%s)
+run_due
+test ! -f "$TMP/ran"
+
+# Sin Drive no corre aunque sea viernes a las 15.
 rm -f "$TMP/backups/.last-success" "$TMP/ran"
-RAN="$TMP/ran" \
-BACKUP_DIR="$TMP/backups" \
-DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
-DRIVE_FOLDER_ID=carpeta-prueba \
-BACKUP_EVERY_DAYS=7 \
-BACKUP_BIN="$TMP/bin/ran-backup" \
-    "$ROOT/backup-if-due.sh" > "$TMP/due1"
-test -f "$TMP/ran"
-grep -q "No hay un backup previo" "$TMP/due1"
-
-rm -f "$TMP/ran"
-touch "$TMP/backups/.last-success"
-RAN="$TMP/ran" \
-BACKUP_DIR="$TMP/backups" \
-DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
-DRIVE_FOLDER_ID=carpeta-prueba \
-BACKUP_EVERY_DAYS=7 \
-BACKUP_BIN="$TMP/bin/ran-backup" \
-    "$ROOT/backup-if-due.sh" > "$TMP/due2"
+DUE_FOLDER= \
+DUE_NOW=$(date -d '2026-10-16 15:30:00' +%s)
+run_due
 test ! -f "$TMP/ran"
-grep -q "El próximo es al cumplir" "$TMP/due2"
-
-rm -f "$TMP/ran"
-touch -d '8 days ago' "$TMP/backups/.last-success"
-RAN="$TMP/ran" \
-BACKUP_DIR="$TMP/backups" \
-DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
-DRIVE_FOLDER_ID=carpeta-prueba \
-BACKUP_EVERY_DAYS=7 \
-BACKUP_BIN="$TMP/bin/ran-backup" \
-    "$ROOT/backup-if-due.sh" > "$TMP/due3"
-test -f "$TMP/ran"
-grep -q "Se hace ahora" "$TMP/due3"
-
-rm -f "$TMP/ran" "$TMP/backups/.last-success"
-RAN="$TMP/ran" \
-BACKUP_DIR="$TMP/backups" \
-DRIVE_SA_FILE="$TMP/secrets/drive-sa.json" \
-DRIVE_FOLDER_ID= \
-BACKUP_EVERY_DAYS=7 \
-BACKUP_BIN="$TMP/bin/ran-backup" \
-    "$ROOT/backup-if-due.sh" > "$TMP/due4"
-test ! -f "$TMP/ran"
-grep -q "Drive no está configurado" "$TMP/due4"
+grep -q "Drive no está configurado" "$TMP/due-out"
 
 echo "backup ok"
