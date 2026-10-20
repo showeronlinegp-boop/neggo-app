@@ -61,6 +61,7 @@ export default function PedidoEnvioDetalle() {
     const [manual, setManual] = useState('');
     const [camaraOn, setCamaraOn] = useState(false);
     const [saldarOpen, setSaldarOpen] = useState(false);
+    const [cotizarIds, setCotizarIds] = useState([]);
     const [foto, setFoto] = useState(null);
     const [busqueda, setBusqueda] = useState('');
     const [soloFaltan, setSoloFaltan] = useState(false);
@@ -244,15 +245,35 @@ export default function PedidoEnvioDetalle() {
         setFaltanteOpen(null);
     };
 
+    // Pendientes al cerrar (sin armar o sin controlar): por defecto van todos a la cotización nueva
+    const pendientesDeSaldar = () => (envio?.items || []).filter(
+        (it) => (Number(it.qty_controlada) || 0) < (Number(it.qty_pedida) || 0)
+    );
+
+    const abrirSaldar = () => {
+        setCotizarIds(pendientesDeSaldar().map((it) => it.id));
+        setSaldarOpen(true);
+    };
+
+    const toggleCotizar = (itemId) => setCotizarIds((ids) => (
+        ids.includes(itemId) ? ids.filter((x) => x !== itemId) : [...ids, itemId]
+    ));
+
     const confirmarSaldar = async () => {
         if (saldarEnVuelo.current) return;
         saldarEnVuelo.current = true;
         setTrabajando(true);
         try {
-            const res = await api.post(`/pedido-envios/${id}/saldar`);
+            const conCierre = envio.odoo_picking_state === 'done';
+            const res = await api.post(`/pedido-envios/${id}/saldar`, conCierre ? { pendientes: cotizarIds } : {});
             const salida = res.success ? res.data.odoo_salida : null;
+            const cotizacion = conCierre && res.success && res.data.backorder_odoo_name
+                ? ` Pendientes en la cotización ${res.data.backorder_odoo_name}.`
+                : '';
             if (!aplicar(res, res.success
-                ? (salida?.picking
+                ? (conCierre
+                    ? `${salida?.picking ? `Entrega ${salida.picking.name} validada` : 'Orden cerrada'} con lo entregado.${cotizacion}`
+                    : salida?.picking
                     ? `Entrega ${salida.picking.name} validada en Odoo con lo controlado.`
                         + (salida.backorder ? ` Lo que faltó quedó en ${salida.backorder.name}.` : '')
                     : res.data.backorder_odoo_name
@@ -370,7 +391,7 @@ export default function PedidoEnvioDetalle() {
                 )}
                 {envio.estado === 'controlando' && (
                     <>
-                        <Button variant="success" disabled={trabajando} onClick={() => setSaldarOpen(true)}
+                        <Button variant="success" disabled={trabajando} onClick={abrirSaldar}
                             style={{ height: 48, flex: 1, minWidth: 160 }} leftIcon={<Icon.Check size={16} />}>
                             Cerrar y saldar
                         </Button>
@@ -628,10 +649,58 @@ export default function PedidoEnvioDetalle() {
                 )}
             >
                 <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
+                    {envio.odoo_picking_state === 'done' ? (() => {
+                        const pend = pendientesDeSaldar();
+                        return (
+                            <>
+                                <p style={{ marginTop: 0 }}>
+                                    Esto valida la entrega en Odoo con lo que controlaste y cierra {envio.odoo_order_name} con
+                                    lo entregado: los envíos que quedaron abiertos se cancelan.
+                                </p>
+                                {pend.length === 0 ? (
+                                    <div style={{ color: t.color.success }}>Controlaste todo. No queda nada pendiente.</div>
+                                ) : (
+                                    <>
+                                        <div style={{ fontWeight: t.font.weight.semibold, marginBottom: 6 }}>
+                                            Cotización nueva con los pendientes
+                                        </div>
+                                        <div style={{ fontSize: 12, color: t.color.textMuted, marginBottom: 6 }}>
+                                            Destildá lo que no querés volver a cotizar: eso se descarta.
+                                        </div>
+                                        {pend.map((it) => {
+                                            const falta = (Number(it.qty_pedida) || 0) - (Number(it.qty_controlada) || 0);
+                                            const sinArmar = topeDe(it, envio) < (Number(it.qty_pedida) || 0);
+                                            return (
+                                                <label key={it.id} style={{
+                                                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
+                                                    borderTop: `1px solid ${t.color.border}`, cursor: 'pointer',
+                                                }}>
+                                                    <input type="checkbox" checked={cotizarIds.includes(it.id)}
+                                                        onChange={() => toggleCotizar(it.id)}
+                                                        style={{ width: 20, height: 20, accentColor: t.color.primary }} />
+                                                    <span style={{ flex: 1, minWidth: 0 }}>
+                                                        {it.product_name}
+                                                        <span style={{ display: 'block', fontSize: 12, color: t.color.textMuted }}>
+                                                            {sinArmar ? 'Pendiente de armar' : 'Faltó en el control'}
+                                                        </span>
+                                                    </span>
+                                                    <span style={{ ...t.numericStyle, fontWeight: t.font.weight.semibold }}>× {falta}</span>
+                                                </label>
+                                            );
+                                        })}
+                                        {cotizarIds.length === 0 && (
+                                            <div style={{ marginTop: 8, color: t.color.warn }}>
+                                                No tildaste nada: no se crea cotización y todo lo pendiente se descarta.
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </>
+                        );
+                    })() : (
+                    <>
                     <p style={{ marginTop: 0 }}>
-                        {envio.odoo_picking_state === 'done'
-                            ? 'Esto valida la entrega en Odoo con lo que controlaste. Si falta algo, queda en un backorder de la entrega.'
-                            : 'Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.'}
+                        Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.
                     </p>
                     {preview.queda.length === 0 && preview.pendientes.length === 0 && (
                         <div style={{ color: t.color.success }}>Controlaste todo. La orden no cambia de cantidades.</div>
@@ -655,6 +724,8 @@ export default function PedidoEnvioDetalle() {
                         <div style={{ marginTop: 12, color: t.color.danger }}>
                             No controlaste nada: se cancela la orden original en Odoo y todo pasa al pedido de pendientes.
                         </div>
+                    )}
+                    </>
                     )}
                 </div>
             </Modal>

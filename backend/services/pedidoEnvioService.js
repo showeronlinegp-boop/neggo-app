@@ -596,7 +596,7 @@ async function validarEnvio1AlTerminar(envio) {
 // Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
 // el armado. Al cerrar el control se valida la entrega (outgoing) con lo
 // controlado; si falta algo Odoo deja el resto en backorder. En 1 paso no hace nada.
-async function validarSalidaAlSaldar(envio) {
+async function validarSalidaAlSaldar(envio, { createBackorder = true } = {}) {
     if (!envio.odoo_picking_id) return null;
     let salida = null;
     try {
@@ -626,7 +626,7 @@ async function validarSalidaAlSaldar(envio) {
     try {
         await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
         const validated = await odooService.validateSalePicking(salida.id, envio.company_key, {
-            createBackorder: true,
+            createBackorder,
         });
         return {
             picking: validated.picking || salida,
@@ -1477,13 +1477,49 @@ async function asegurarBackorder(envio, plan) {
     return created;
 }
 
-async function saldar(id, userId) {
-    const envioId = Number(id);
-    if (!Number.isInteger(envioId) || envioId <= 0) throw httpError('Pedido inválido', 400);
-    return withSaldarLock(envioId, () => saldarLocked(envioId, userId));
+// Con el envío 1 validado: la orden original se cierra con lo entregado (en 2 pasos
+// lo controlado; en 1 paso lo armado, que ya salió). Lo que falta se descarta,
+// salvo los ítems elegidos, que van a una cotización nueva. Sin I/O.
+function planCierreConEntregado(items, { dosPasos = true, elegidos = null } = {}) {
+    const entregados = (items || []).map((it) => ({
+        ...it,
+        qty_controlada: dosPasos ? it.qty_controlada : it.qty_armada,
+    }));
+    const plan = previewSaldar(entregados);
+    const set = Array.isArray(elegidos) ? new Set(elegidos.map(Number)) : null;
+    return {
+        lineas: plan.queda.filter((l) => l.odoo_line_id),
+        pendientes: set ? plan.pendientes.filter((p) => set.has(Number(p.id))) : plan.pendientes,
+        descartados: set ? plan.pendientes.filter((p) => !set.has(Number(p.id))) : [],
+    };
 }
 
-async function saldarLocked(id, userId) {
+async function cerrarOriginalConEntregado(envio, salida, elegidos) {
+    const cierre = planCierreConEntregado(envio.items, { dosPasos: !!salida, elegidos });
+    let cancelados = [];
+    try {
+        // Primero los envíos abiertos (recolectar/entrega pendientes), después las cantidades
+        cancelados = await odooService.cancelPendingSalePickings(envio.odoo_sale_order_id, envio.company_key);
+        for (const l of cierre.lineas) {
+            await odooService.writeSaleOrderLineQty(l.odoo_line_id, l.qty_nueva, envio.company_key);
+        }
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo cerrar ${envio.odoo_order_name || 'la orden'} con lo entregado`);
+    }
+    let backorder = null;
+    if (cierre.pendientes.length > 0) {
+        backorder = await asegurarBackorder(envio, { pendientes: cierre.pendientes });
+    }
+    return { cierre, cancelados, backorder };
+}
+
+async function saldar(id, userId, opciones = {}) {
+    const envioId = Number(id);
+    if (!Number.isInteger(envioId) || envioId <= 0) throw httpError('Pedido inválido', 400);
+    return withSaldarLock(envioId, () => saldarLocked(envioId, userId, opciones));
+}
+
+async function saldarLocked(id, userId, { pendientes: elegidos = null } = {}) {
     const envio = await obtener(id);
     if (envio.estado === 'saldado') return envio;
     if (envio.estado !== 'controlando') {
@@ -1496,8 +1532,12 @@ async function saldarLocked(id, userId) {
 
     let backorder = null;
     let salida = null;
+    let cierre = null;
     if (pickingYaValidado) {
-        salida = await validarSalidaAlSaldar(envio);
+        // Sin backorder de la entrega: lo pendiente se cierra abajo
+        salida = await validarSalidaAlSaldar(envio, { createBackorder: false });
+        cierre = await cerrarOriginalConEntregado(envio, salida, elegidos);
+        backorder = cierre.backorder;
     } else {
         const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
             ids: [envio.odoo_sale_order_id],
@@ -1540,6 +1580,8 @@ async function saldarLocked(id, userId) {
         cancelo: plan.cancela_original,
         odoo_salida: salida?.picking?.name || null,
         odoo_salida_backorder: salida?.backorder?.name || null,
+        envios_cancelados: cierre ? cierre.cancelados.map((p) => p.name) : undefined,
+        descartados: cierre ? cierre.cierre.descartados.map((p) => p.product_name) : undefined,
     });
     const final = await obtener(id);
     return salida ? { ...final, odoo_salida: salida } : final;
@@ -1553,6 +1595,7 @@ module.exports = {
     normalizarCode,
     itemPorCodigo,
     previewSaldar,
+    planCierreConEntregado,
     qtyCampoDeFase,
     topeDeFase,
     refPendientes,

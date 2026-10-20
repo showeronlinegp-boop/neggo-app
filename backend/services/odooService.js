@@ -1476,6 +1476,23 @@ async function unlinkSaleOrderLines(lineIds, companyKey) {
     );
 }
 
+/**
+ * Cancela los envíos de la orden que siguen abiertos (backorders de recolectar
+ * y de entrega). Devuelve los que canceló.
+ */
+async function cancelPendingSalePickings(odooOrderId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const rows = await callOdoo(
+        'stock.picking',
+        'search_read',
+        [[['sale_id', '=', odooOrderId], ['state', 'not in', ['done', 'cancel']]]],
+        withCompany(companyId, { fields: ['id', 'name', 'state', 'picking_type_code', 'origin', 'backorder_id'] })
+    ) || [];
+    if (!rows.length) return [];
+    await callOdoo('stock.picking', 'action_cancel', [rows.map((r) => r.id)], withCompany(companyId));
+    return rows.map(mapPickingRow);
+}
+
 module.exports = {
     // Productos
     getProducts,
@@ -1515,6 +1532,7 @@ module.exports = {
     getSaleOrderHeaders,
     findSaleOrdersByOriginRef,
     writeSaleOrderLineQty,
+    cancelPendingSalePickings,
     unlinkSaleOrderLines,
     getPreventasQuotations,
     getWeeklySoldQty,

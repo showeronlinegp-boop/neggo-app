@@ -8,6 +8,7 @@ const {
     normalizarCode,
     itemPorCodigo,
     previewSaldar,
+    planCierreConEntregado,
     qtyCampoDeFase,
     topeDeFase,
     refPendientes,
@@ -108,6 +109,30 @@ function testPreviewNadaControlado() {
     assert.strictEqual(plan.cancela_original, true);
     assert.strictEqual(plan.pendientes[0].qty_pendiente, 5);
     assert.strictEqual(plan.queda[0].qty_nueva, 0);
+}
+
+
+function testCierreConEntregado() {
+    const items = [
+        { id: 1, odoo_line_id: 10, odoo_product_id: 100, product_name: 'Luz', qty_pedida: 2, qty_armada: 2, qty_controlada: 2, price_unit: 5 },
+        { id: 2, odoo_line_id: 11, odoo_product_id: 101, product_name: 'AKG', qty_pedida: 1, qty_armada: 0, qty_controlada: 0, price_unit: 9 },
+        { id: 3, odoo_line_id: 12, odoo_product_id: 102, product_name: 'JS603', qty_pedida: 4, qty_armada: 4, qty_controlada: 3, price_unit: 7 },
+    ];
+    // 2 pasos, sin elegir: todo lo pendiente va a la cotización nueva
+    let c = planCierreConEntregado(items, { dosPasos: true });
+    assert.deepStrictEqual(c.lineas.map((l) => [l.odoo_line_id, l.qty_nueva]), [[11, 0], [12, 3]]);
+    assert.deepStrictEqual(c.pendientes.map((p) => [p.id, p.qty_pendiente]), [[2, 1], [3, 1]]);
+    assert.strictEqual(c.descartados.length, 0);
+    // Elegido sólo el AKG: el JS603 que faltó se descarta
+    c = planCierreConEntregado(items, { dosPasos: true, elegidos: [2] });
+    assert.deepStrictEqual(c.pendientes.map((p) => p.id), [2]);
+    assert.deepStrictEqual(c.descartados.map((p) => p.id), [3]);
+    // Nada elegido: no hay cotización
+    c = planCierreConEntregado(items, { dosPasos: true, elegidos: [] });
+    assert.strictEqual(c.pendientes.length, 0);
+    // 1 paso: lo entregado es lo armado
+    c = planCierreConEntregado(items, { dosPasos: false });
+    assert.deepStrictEqual(c.lineas.map((l) => [l.odoo_line_id, l.qty_nueva]), [[11, 0]]);
 }
 
 function testFaseQty() {
@@ -488,6 +513,7 @@ testPreviewCompleto();
 testPreviewParcial();
 testPreviewNadaControlado();
 testFaseQty();
+testCierreConEntregado();
 testRefPendientes();
 testAuditarIgual();
 testAuditarEscribeParcialYCero();

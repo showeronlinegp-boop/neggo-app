@@ -141,7 +141,9 @@ router.post('/:id/escanear', async (req, res) => {
 
 router.post('/:id/saldar', async (req, res) => {
     try {
-        const data = await servicio.saldar(parseInt(req.params.id, 10), req.user.id);
+        // pendientes: ids de ítems que van a la cotización nueva (sin mandar = todos)
+        const pendientes = Array.isArray(req.body?.pendientes) ? req.body.pendientes : null;
+        const data = await servicio.saldar(parseInt(req.params.id, 10), req.user.id, { pendientes });
         console.log(`✅ Pedido ${data.odoo_order_name} saldado por usuario ${req.user.id}`
             + (data.backorder_odoo_name ? ` · pendientes ${data.backorder_odoo_name}` : ''));
         return ok(res, data);
