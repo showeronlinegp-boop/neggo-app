@@ -410,7 +410,28 @@ async function cambiarEstado(id, { estado, qtyDecidida, nota }, userId) {
     return item;
 }
 
-const ESTADO_COLA_SQL = `(SELECT ri.estado FROM reposicion_items ri
+/**
+ * Saca de la cola un producto marcado por error. Solo si está pendiente:
+ * lo encargado ya se pidió al proveedor y se maneja desde la cola.
+ * No toca Odoo: si estaba archivado, sigue archivado.
+ */
+async function quitarDeCola(odooId) {
+    const { rows: [item] } = await pool.query(
+        `SELECT ri.id, ri.estado, ri.origen, opc.name
+         FROM reposicion_items ri
+         LEFT JOIN odoo_products_cache opc ON opc.odoo_id = ri.odoo_id AND opc.company = ri.company
+         WHERE ri.company = 'neggo' AND ri.odoo_id = $1 AND ri.estado IN ('pendiente', 'encargado')`,
+        [odooId]
+    );
+    if (!item) throw httpError('Ese producto ya no está en la cola', 404);
+    if (item.estado === 'encargado') {
+        throw httpError(`"${item.name || odooId}" ya está encargado: volvelo a pendientes o descartalo desde la cola`, 409);
+    }
+    await pool.query(`DELETE FROM reposicion_items WHERE id = $1`, [item.id]);
+    return { odoo_id: odooId, name: item.name, origen: item.origen };
+}
+
+const ESTADO_COLA_SQL =`(SELECT ri.estado FROM reposicion_items ri
             WHERE ri.odoo_id = opc.odoo_id AND ri.company = 'neggo'
               AND ri.estado IN ('pendiente', 'encargado')
             LIMIT 1)`;
@@ -686,6 +707,7 @@ module.exports = {
     archivarYEncolar,
     activarYResolver,
     cambiarEstado,
+    quitarDeCola,
     buscarProductos,
     buscarPorBarcode,
     listarProveedores,

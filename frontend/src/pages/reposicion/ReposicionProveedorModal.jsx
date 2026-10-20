@@ -22,7 +22,7 @@ const BTN_MOVIL = {
     fontSize: 11,
 };
 
-function Acciones({ p, trabajando, onReponer, onPedirArchivar, onPedirActivar, stacked, t }) {
+function Acciones({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, stacked, t }) {
     const busy = trabajando === p.odoo_id;
     const activo = p.active !== false;
     const estilo = stacked ? BTN_MOVIL : undefined;
@@ -37,7 +37,24 @@ function Acciones({ p, trabajando, onReponer, onPedirArchivar, onPedirActivar, s
             {p.estado_cola === 'encargado' ? (
                 <Badge tone="accent" dot>Encargado</Badge>
             ) : p.en_cola ? (
-                <Badge tone="success" dot>En la cola</Badge>
+                // Si se marcó por error, se puede sacar de la cola
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: t.space[2],
+                    flex: stacked ? 1 : undefined, minWidth: 0,
+                }}>
+                    <Badge tone="success" dot>En la cola</Badge>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        leftIcon={<Icon.X size={icon} />}
+                        disabled={busy}
+                        onClick={() => onQuitar(p)}
+                        title="Sacarlo de la cola de reposición"
+                        style={estilo}
+                    >
+                        Quitar
+                    </Button>
+                </div>
             ) : (
                 <Button
                     size="sm"
@@ -111,8 +128,8 @@ function MiniaturaTocable({ p, size, onVerFoto, t }) {
     );
 }
 
-function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActivar, onVerFoto, extra, isMobile, t }) {
-    const acciones = { p, trabajando, onReponer, onPedirArchivar, onPedirActivar, t };
+function FilaProducto({ p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, onVerFoto, extra, isMobile, t }) {
+    const acciones = { p, trabajando, onReponer, onQuitar, onPedirArchivar, onPedirActivar, t };
 
     if (isMobile) {
         return (
@@ -158,7 +175,7 @@ function FilaProducto({ p, trabajando, onReponer, onPedirArchivar, onPedirActiva
     );
 }
 
-export default function ReposicionProveedorModal({ vendorName, onClose, onAgregado, onActivado, onError }) {
+export default function ReposicionProveedorModal({ vendorName, onClose, onAgregado, onQuitado, onActivado, onError }) {
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
     const [tab, setTab] = useState('activos');
@@ -205,6 +222,16 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
             };
         });
         onAgregado(res.data);
+    };
+
+    const quitar = async (p) => {
+        setTrabajando(p.odoo_id);
+        const res = await api.del(`/reposicion/producto/${p.odoo_id}`);
+        setTrabajando(null);
+        if (!res.success) { onError(res.error || 'No se pudo sacar de la cola'); return; }
+        const sacar = (lista) => lista.map(x => x.odoo_id === p.odoo_id ? { ...x, en_cola: false, estado_cola: null } : x);
+        setDetalle(prev => prev && { ...prev, activos: sacar(prev.activos), archivados: sacar(prev.archivados) });
+        onQuitado?.(res.data);
     };
 
     const confirmarOdoo = async () => {
@@ -262,6 +289,7 @@ export default function ReposicionProveedorModal({ vendorName, onClose, onAgrega
     const propsFila = {
         trabajando,
         onReponer: reponer,
+        onQuitar: quitar,
         onPedirArchivar: (p) => setConfirmar({ tipo: 'archivar', p }),
         onPedirActivar: (p) => setConfirmar({ tipo: 'activar', p }),
         onVerFoto: setFoto,
