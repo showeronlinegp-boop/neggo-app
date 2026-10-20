@@ -91,11 +91,71 @@ async function request(path, { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT
         try { payload = JSON.parse(text); } catch { payload = { raw: text.slice(0, 300) }; }
     }
     if (!response.ok) {
-        const detail = payload?.message || payload?.error || payload?.response?.message || text.slice(0, 300);
-        const msg = Array.isArray(detail) ? detail.join(', ') : String(detail || response.statusText);
+        const msg = detailFromEvolution(payload, text, response.statusText);
         throw new EvolutionError(`Evolution API ${response.status}: ${msg}`, response.status);
     }
     return payload;
+}
+
+function flattenDetail(value) {
+    if (value == null || value === '') return null;
+    if (Array.isArray(value)) {
+        const parts = value.map((x) => (typeof x === 'string' ? x : flattenDetail(x))).filter(Boolean);
+        return parts.length ? parts.join(', ') : null;
+    }
+    if (typeof value === 'object') {
+        return flattenDetail(value.message) || flattenDetail(value.error) || null;
+    }
+    const s = String(value).trim();
+    return s || null;
+}
+
+// Evolution a veces manda { error: "Bad Request", response: { message: ["el motivo"] } }.
+function detailFromEvolution(payload, text, statusText) {
+    const candidates = [
+        payload?.response?.message,
+        payload?.message,
+        payload?.error,
+        payload?.raw,
+        text,
+        statusText,
+    ];
+    let fallback = statusText || 'Error';
+    for (const c of candidates) {
+        const s = flattenDetail(c);
+        if (!s) continue;
+        if (/^bad request$/i.test(s)) {
+            fallback = s;
+            continue;
+        }
+        return s;
+    }
+    return fallback;
+}
+
+function contactJidsFrom(payload) {
+    const list = Array.isArray(payload) ? payload : (payload?.contacts || payload?.data || []);
+    if (!Array.isArray(list)) return [];
+    const jids = [];
+    const seen = new Set();
+    for (const c of list) {
+        const raw = c?.remoteJid || c?.id || null;
+        if (typeof raw !== 'string' || !raw.endsWith('@s.whatsapp.net')) continue;
+        if (seen.has(raw)) continue;
+        seen.add(raw);
+        jids.push(raw);
+    }
+    return jids;
+}
+
+async function findStatusContacts() {
+    const { instance } = config('estado');
+    const payload = await request(`/chat/findContacts/${encodeURIComponent(instance)}`, {
+        method: 'POST',
+        body: { where: {} },
+        timeoutMs: 45000,
+    });
+    return contactJidsFrom(payload);
 }
 
 async function connectionState(which = 'grupo') {
@@ -177,24 +237,28 @@ function statusDataUri(base64, mimetype) {
     return `data:${mimetype || 'image/jpeg'};base64,${raw}`;
 }
 
-// allContacts necesita los contactos guardados en la base de Evolution
-// (DATABASE_SAVE_DATA_CONTACTS=true). Si no hay, Evolution responde "Contacts not found".
+// Evolution v2.3.7 rechaza statusJidList vacío (400 Bad Request) aunque allContacts sea true.
+// Mandamos los contactos de esa instancia, uno a uno.
 async function sendStatus({ caption, base64, mimetype }) {
     const { instance } = config('estado');
-    if (!caption || !base64) {
-        throw new EvolutionError('Faltan texto o foto para el estado');
+    const ready = assertSendable({ caption, base64 });
+    const contacts = await findStatusContacts();
+    if (contacts.length === 0) {
+        throw new EvolutionError(
+            'Ese número todavía no tiene contactos en WhatsApp. Sin agenda, no se puede publicar el estado. Abrí WhatsApp en ese teléfono, esperá a que aparezca la agenda y reintentá.'
+        );
     }
     const payload = await request(`/message/sendStatus/${encodeURIComponent(instance)}`, {
         method: 'POST',
         timeoutMs: SEND_TIMEOUT_MS,
         body: {
             type: 'image',
-            content: statusDataUri(base64, mimetype),
-            caption,
+            content: statusDataUri(ready.base64, ready.mimetype),
+            caption: ready.caption,
             backgroundColor: '#1F3A68',
             font: 1,
-            allContacts: true,
-            statusJidList: [],
+            allContacts: false,
+            statusJidList: contacts,
         },
     });
     return payload?.key?.id || payload?.id || null;
@@ -214,4 +278,6 @@ module.exports = {
     sendImage,
     sendStatus,
     statusDataUri,
+    contactJidsFrom,
+    detailFromEvolution,
 };
