@@ -24,6 +24,7 @@ const {
     auditarTerminarArmado,
     auditarEmpezarArmar,
     auditarSaldar,
+    auditarCancelarOrden,
     condicionesListado,
     ordenListado,
 } = require('./pedidoEnvioService');
@@ -217,6 +218,40 @@ function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', pos_order_count: 1 })), false);
     assert.strictEqual(ordenCobradaAparte(odooOrder({ pos_order_count: 1 })), true);
     assert.strictEqual(ordenCobradaAparte(odooOrder({})), false);
+}
+
+function testAuditarCancelarOrden() {
+    const envio = (extra = {}) => ({ estado: 'pendiente', odoo_order_name: 'S00001', ...extra });
+
+    assert.strictEqual(auditarCancelarOrden({ envio: null, odoo: null }).statusCode, 404);
+
+    const controlando = auditarCancelarOrden({ envio: envio({ estado: 'controlando' }), odoo: { state: 'sale' } });
+    assert.strictEqual(controlando.ok, false);
+    assert.match(controlando.error, /controlando/);
+
+    assert.strictEqual(auditarCancelarOrden({ envio: envio(), odoo: null }).statusCode, 404);
+
+    const sent = auditarCancelarOrden({ envio: envio(), odoo: { name: 'S00001', state: 'sent' } });
+    assert.deepStrictEqual(sent, { ok: true, alreadyCancelled: false });
+
+    const armando = auditarCancelarOrden({ envio: envio({ estado: 'armando' }), odoo: { name: 'S00001', state: 'sale' } });
+    assert.strictEqual(armando.ok, true);
+
+    const yaCancelada = auditarCancelarOrden({ envio: envio(), odoo: { name: 'S00001', state: 'cancel' } });
+    assert.deepStrictEqual(yaCancelada, { ok: true, alreadyCancelled: true });
+
+    const facturada = auditarCancelarOrden({ envio: envio(), odoo: { name: 'S00001', state: 'sale', invoice_status: 'invoiced' } });
+    assert.strictEqual(facturada.ok, false);
+    assert.match(facturada.error, /facturada/);
+
+    assert.strictEqual(auditarCancelarOrden({ envio: envio(), odoo: { name: 'S00001', state: 'done' } }).ok, false);
+
+    const validado = auditarCancelarOrden({
+        envio: envio({ estado: 'armando', odoo_picking_state: 'done', odoo_picking_name: 'WH/OUT/00010' }),
+        odoo: { name: 'S00001', state: 'sale' },
+    });
+    assert.strictEqual(validado.ok, false);
+    assert.match(validado.error, /WH\/OUT\/00010/);
 }
 
 function testConfirmarAlEmpezar() {
@@ -507,4 +542,5 @@ testAuditarCancelada();
 testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
+testAuditarCancelarOrden();
 console.log('ok pedidoEnvio.test.js');
