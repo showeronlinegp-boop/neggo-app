@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
@@ -39,18 +39,21 @@ const ORDENES = [
     { value: 'unidades', label: 'Más unidades' },
 ];
 const DOS_DIAS_MS = 2 * 24 * 60 * 60 * 1000;
+// Sync automático con Odoo mientras la pantalla está abierta
+const SYNC_CADA_MS = 2 * 60 * 1000;
+const SYNC_MIN_MS = 60 * 1000;
 // Estado en Odoo del pedido de pendientes
 const ESTADO_PENDIENTES = {
     draft: { label: 'Cotización', tone: 'muted' },
     sent:  { label: 'Enviada', tone: 'accent' },
 };
 const SUBTITULO = {
-    pedidos: 'Cotización enviada entra acá. Se confirma en Odoo, se arma con el envío 1 y se controla con el envío 2. Si se factura o va al POS, desaparece.',
+    pedidos: 'Cotización enviada u orden de venta nueva entra acá sola. Se confirma en Odoo, se arma con el envío 1 y se controla con el envío 2. Si se factura o va al POS, desaparece.',
     esperando_pago: 'Pedidos controlados a los que ya les mandaste la cotización y esperan el pago.',
     pendientes: 'Lo que no salió en un pedido queda en un pedido de pendientes aparte en Odoo. Cuando lo mandes como cotización, entra a armar.',
 };
 const VACIO = {
-    pedidos: ['No hay pedidos con estos filtros', 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar cotizaciones enviadas. Las que ya tienen factura o fueron al POS no aparecen.'],
+    pedidos: ['No hay pedidos con estos filtros', 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar las cotizaciones enviadas y órdenes de venta nuevas. Las que ya tienen factura o fueron al POS no aparecen.'],
     esperando_pago: ['No hay pedidos esperando pago', 'Cuando un pedido controlado tenga la cotización enviada, aparece acá.'],
     pendientes: ['No hay pendientes', 'Cuando cierres un control con productos que no salieron, el pedido de pendientes aparece acá.'],
 };
@@ -113,6 +116,9 @@ export default function PedidoEnvios() {
     const [sel, setSel] = useState(() => new Set());
     const [error, setError] = useState(null);
     const [aviso, setAviso] = useState(null);
+    const [ultimoSync, setUltimoSync] = useState(null);
+    const syncEnCurso = useRef(false);
+    const masCargados = useRef(false);
 
     useEffect(() => {
         const id = setTimeout(() => setQDebounced(q), 250);
@@ -129,17 +135,26 @@ export default function PedidoEnvios() {
         pagados: solapa === 'pedidos' && pagados ? '1' : '',
     }), [solapa, company, estado, qDebounced, dias, orden, pagados]);
 
-    const cargar = useCallback(async () => {
-        setLoading(true);
-        setError(null);
+    // silencioso: refresco de fondo, sin "Cargando…" y sin perder la selección
+    const cargar = useCallback(async ({ silencioso = false } = {}) => {
+        if (!silencioso) {
+            setLoading(true);
+            setError(null);
+        }
         const res = await api.get('/pedido-envios', params);
-        setLoading(false);
+        if (!silencioso) setLoading(false);
         if (!res.success) {
-            setError(res.error || 'No se pudieron cargar los pedidos');
+            if (!silencioso) setError(res.error || 'No se pudieron cargar los pedidos');
             return;
         }
+        masCargados.current = false;
         setData(res.data);
-        setSel(new Set());
+        if (silencioso) {
+            const ids = new Set((res.data.items || []).map((it) => it.id));
+            setSel((prev) => new Set([...prev].filter((id) => ids.has(id))));
+        } else {
+            setSel(new Set());
+        }
     }, [params]);
 
     useEffect(() => { cargar(); }, [cargar]);
@@ -152,29 +167,70 @@ export default function PedidoEnvios() {
             setError(res.error || 'No se pudieron cargar más pedidos');
             return;
         }
+        masCargados.current = true;
         setData((prev) => ({ ...res.data, items: [...prev.items, ...res.data.items] }));
     };
 
-    const sync = async () => {
+    // Trae de Odoo las cotizaciones enviadas y las órdenes de venta nuevas.
+    // auto: lo dispara la pantalla sola (al abrir y cada 2 min), sin cartel salvo que entren nuevas.
+    const cargarRef = useRef(cargar);
+    cargarRef.current = cargar;
+    const sync = useCallback(async ({ auto = false } = {}) => {
+        if (syncEnCurso.current) return;
+        syncEnCurso.current = true;
         setSyncing(true);
-        setError(null);
-        const empresas = company === 'ambas' ? ['neggo', 'preventas'] : [company];
+        if (!auto) setError(null);
+        const empresas = auto || company === 'ambas' ? ['neggo', 'preventas'] : [company];
         const tot = { leidos: 0, creados: 0, actualizados: 0 };
+        let fallo = null;
         for (const c of empresas) {
             const res = await api.post('/pedido-envios/sync', { company: c });
             if (!res.success) {
-                setSyncing(false);
-                setError(res.error || 'No pude hablar con Odoo');
-                return;
+                fallo = res.error || 'No pude hablar con Odoo';
+                break;
             }
             tot.leidos += res.data.leidos;
             tot.creados += res.data.creados;
             tot.actualizados += res.data.actualizados;
         }
+        syncEnCurso.current = false;
         setSyncing(false);
-        setAviso(`Odoo: ${tot.leidos} órdenes, ${tot.creados} nuevas, ${tot.actualizados} actualizadas.`);
-        cargar();
-    };
+        if (fallo) {
+            if (!auto) setError(fallo);
+            return;
+        }
+        setUltimoSync(new Date().toISOString());
+        if (!auto) {
+            setAviso(`Odoo: ${tot.leidos} órdenes, ${tot.creados} nuevas, ${tot.actualizados} actualizadas.`);
+            cargarRef.current();
+            return;
+        }
+        if (tot.creados > 0) {
+            setAviso(tot.creados === 1 ? 'Entró 1 pedido nuevo de Odoo.' : `Entraron ${tot.creados} pedidos nuevos de Odoo.`);
+        }
+        // Si tocaste «Cargar más» no se recorta la lista: se refresca con el próximo filtro
+        if (!masCargados.current) cargarRef.current({ silencioso: true });
+    }, [company]);
+
+    // Al abrir la pantalla, cada 2 min y al volver a la pestaña: la lista sigue a Odoo sola
+    const syncRef = useRef(sync);
+    syncRef.current = sync;
+    const ultimoSyncMs = useRef(0);
+    useEffect(() => {
+        const correr = () => {
+            if (document.visibilityState !== 'visible') return;
+            if (Date.now() - ultimoSyncMs.current < SYNC_MIN_MS) return;
+            ultimoSyncMs.current = Date.now();
+            syncRef.current({ auto: true });
+        };
+        correr();
+        const id = setInterval(correr, SYNC_CADA_MS);
+        document.addEventListener('visibilitychange', correr);
+        return () => {
+            clearInterval(id);
+            document.removeEventListener('visibilitychange', correr);
+        };
+    }, []);
 
     // Marca cotización enviada / pago recibido (solo en la app, no toca Odoo)
     const marcar = async (ids, ruta, body, okMsg) => {
@@ -591,8 +647,10 @@ export default function PedidoEnvios() {
                             );
                         })}
                     </div>
-                    <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={syncing} onClick={sync}
-                        aria-label="Traer de Odoo" style={isMobile ? { height: 44, flexShrink: 0 } : undefined}>
+                    <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={syncing} onClick={() => sync()}
+                        aria-label="Traer de Odoo"
+                        title={ultimoSync ? `Se actualiza sola cada 2 min · última vez ${haceCuanto(ultimoSync)}` : 'Se actualiza sola cada 2 min'}
+                        style={isMobile ? { height: 44, flexShrink: 0 } : undefined}>
                         {syncing ? 'Odoo…' : isMobile ? '' : 'Traer de Odoo'}
                     </Button>
                 </div>

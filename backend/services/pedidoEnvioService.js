@@ -373,10 +373,12 @@ async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
     return nuevo;
 }
 
-// Para armar: cotización enviada, sin factura ni POS ni 2 envíos hechos en Odoo.
-// El pedido de pendientes en borrador espera en la solapa Pendientes; entra cuando se envía.
+// Para armar: cotización enviada u orden de venta confirmada, sin factura ni POS ni
+// 2 envíos hechos en Odoo. El pedido de pendientes en borrador espera en la solapa
+// Pendientes; entra cuando se envía.
 function esCotizacionParaArmar(odoo) {
-    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo) && !ordenEnviosYaHechos(odoo);
+    return !!odoo && (odoo.state === 'sent' || odoo.state === 'sale')
+        && !ordenCobradaAparte(odoo) && !ordenEnviosYaHechos(odoo);
 }
 
 // Al cerrar el control: la orden queda con lo que salió (pedida = entregada) y
@@ -1211,16 +1213,26 @@ async function obtener(id, { syncOdoo = false } = {}) {
     }
 }
 
-// Trae de Odoo las cotizaciones enviadas y actualiza las que ya están acá.
-// Los activos (para armar / controlar) vienen con líneas; los controlados sólo con
-// sus envíos, que alcanza para ver si se facturaron o si Odoo abrió un envío nuevo.
+// Trae de Odoo las cotizaciones enviadas y las órdenes de venta confirmadas en la última
+// semana, y actualiza las que ya están acá. Los activos (para armar / controlar) vienen
+// con líneas; los controlados sólo con sus envíos, que alcanza para ver si se facturaron
+// o si Odoo abrió un envío nuevo.
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
-    const enviadas = await odooService.getSaleOrdersWithLines(company, {
-        states: ['sent'],
-        days: 30,
-        limit: 80,
-    });
+    const enviadas = [
+        ...await odooService.getSaleOrdersWithLines(company, {
+            states: ['sent'],
+            days: 30,
+            limit: 80,
+        }),
+        // Confirmadas directo en Odoo (sin pasar por enviada). Casi todas se cobran en el
+        // POS enseguida: con la última semana alcanza para no perder las nuevas.
+        ...await odooService.getSaleOrdersWithLines(company, {
+            states: ['sale'],
+            days: 7,
+            limit: 80,
+        }),
+    ];
     const { rows: locales } = await pool.query(
         `SELECT odoo_sale_order_id, estado FROM pedido_envios
           WHERE company_key = $1 AND odoo_sale_order_id IS NOT NULL
