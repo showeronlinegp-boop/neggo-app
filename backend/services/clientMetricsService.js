@@ -336,6 +336,7 @@ const SORTS = {
     prioridad: 'priority DESC, revenue_12m DESC',
     facturacion: 'revenue_12m DESC, partner_name ASC',
     ultima: 'last_purchase_date DESC NULLS LAST, partner_name ASC',
+    compras: 'purchase_count DESC NULLS LAST, revenue_12m DESC',
     nombre: 'partner_name ASC',
     accion: 'next_action_date ASC NULLS LAST, priority DESC',
 };

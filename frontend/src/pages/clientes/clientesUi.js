@@ -16,6 +16,7 @@ export const SORT_OPTIONS = [
     { value: 'prioridad',   label: 'Prioridad para llamar' },
     { value: 'facturacion', label: 'Más facturación' },
     { value: 'ultima',      label: 'Compra más reciente' },
+    { value: 'compras',     label: 'Más compras' },
     { value: 'nombre',      label: 'Nombre' },
 ];
 

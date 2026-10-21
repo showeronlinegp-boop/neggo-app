@@ -1,5 +1,5 @@
 // Rutas del CRM de clientes
-// GET    /api/clientes?search=&city=&rubro=&health=&stage=&open=1&sort=prioridad|facturacion|ultima|nombre|accion&limit=&offset=
+// GET    /api/clientes?search=&city=&rubro=&health=&stage=&open=1&sort=prioridad|facturacion|ultima|compras|nombre|accion&limit=&offset=
 // GET    /api/clientes/resumen        — contadores por estado y etapa, facturación, ciudades, rubros y última actualización
 // POST   /api/clientes/sync           — vuelve a calcular las métricas desde Odoo
 //

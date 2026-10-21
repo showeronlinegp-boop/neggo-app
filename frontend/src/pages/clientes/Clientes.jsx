@@ -26,8 +26,8 @@ import {
 // 60 días, de Neggo y Preventas, aparecen como motivo para hablarle al cliente.
 
 const PAGE = 50;
-// Cliente · estado · etapa · última compra · 12 meses · tendencia · cotización
-const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 160px 72px minmax(104px, 1.1fr)';
+// Cliente · estado · etapa · última compra · compras · 12 meses · tendencia · cotización
+const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
 const SORTS = [...SORT_OPTIONS, { value: 'accion', label: 'Próxima acción' }];
 
@@ -106,6 +106,13 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
         </div>
     );
 
+    const compras = (
+        <span style={{ fontSize: t.font.size.sm, color: c.purchase_count > 0 ? t.color.text : t.color.textFaint, ...t.numericStyle }}
+            title="Compras en el POS de Neggo, en total">
+            {fmtInt(c.purchase_count || 0)}
+        </span>
+    );
+
     const cotizacion = cotizaciones.length > 0 ? (
         <Badge tone="warn" style={{ ...t.numericStyle, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {cotizaciones.length === 1 ? cotizaciones[0].name : `${cotizaciones.length} cotiz.`} · {fmtAR(totalCot)}
@@ -130,7 +137,14 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                     <Badge tone={meta.tone} dot>{meta.label}</Badge>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: t.space[3], width: '100%' }}>
-                    {ultima}
+                    <div>
+                        {ultima}
+                        {c.purchase_count > 0 && (
+                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
+                                {fmtInt(c.purchase_count)} {c.purchase_count === 1 ? 'compra' : 'compras'} en total
+                            </div>
+                        )}
+                    </div>
                     <div style={{ textAlign: 'right', fontSize: t.font.size.sm, ...t.numericStyle }}>
                         <div style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{fmtAR(c.revenue_12m)}</div>
                         <Tendencia trend={c.trend} pct={c.trend_pct} t={t} />
@@ -154,6 +168,7 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
             <span><Badge tone={meta.tone} dot>{meta.label}</Badge></span>
             <Etapa c={c} t={t} />
             {ultima}
+            <span style={{ textAlign: 'right' }}>{compras}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], justifyContent: 'flex-end' }}>
                 <BarrasMensuales data={c.monthly_revenue || []} compacto />
                 <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, minWidth: 84, textAlign: 'right', ...t.numericStyle }}>
@@ -425,6 +440,7 @@ export default function Clientes() {
                         <span>Estado</span>
                         <span>Etapa</span>
                         <span>Última compra</span>
+                        <span style={{ textAlign: 'right' }}>Compras</span>
                         <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
                         <span style={{ textAlign: 'right' }}>Tendencia</span>
                         <span style={{ textAlign: 'right' }}>Cotización</span>
