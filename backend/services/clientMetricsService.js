@@ -1,6 +1,7 @@
 // CRM de clientes, fase 1: métricas por cliente desde Odoo → client_metrics_cache.
 // Compra = ticket del POS de Neggo (decisión D2). Las cotizaciones abiertas de Neggo
-// y Preventas se muestran como seguimiento de pedidos (D1). Ver docs/plan-crm-clientes.md.
+// y Preventas de los últimos 60 días se muestran como motivo para hablarle (D1, D19).
+// Ver docs/plan-crm-clientes.md.
 
 const fs = require('fs');
 const path = require('path');
@@ -17,14 +18,16 @@ const EXCLUDED_NAMES = ['rma'];
 // Cuenta genérica: suma en la facturación total pero no aparece en listados ni en el funnel (D4)
 const GENERIC_NAMES = ['consumidor final'];
 
-const SCHEMA_042 = fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', '042_clientes_crm.sql'), 'utf8');
+const SCHEMA = ['042_clientes_crm.sql', '043_clientes_rubro.sql']
+    .map((file) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', file), 'utf8'))
+    .join('\n');
 
 let schemaReady = null;
 let syncInFlight = null;
 
 function ensureSchema(db = pool) {
     if (!schemaReady) {
-        schemaReady = db.query(SCHEMA_042).catch((err) => {
+        schemaReady = db.query(SCHEMA).catch((err) => {
             schemaReady = null;
             throw err;
         });
@@ -58,16 +61,56 @@ async function readAll(model, domain, fields, context) {
 
 // Solo productos físicos (type consu): señas, saldos y envíos son servicios y no van al ranking
 // de lo que más compra. El importe del ticket sí los incluye: es lo que pagó.
+// Un ticket que cobra un pedido de venta (anticipo o saldo) no trae los productos: se toman
+// del pedido, una sola vez aunque se haya pagado en varios tickets, con el primero de ellos.
 async function readPosLines(orderIds, context) {
     const lines = [];
+    const firstTicketBySale = new Map();
     for (let i = 0; i < orderIds.length; i += LINE_BATCH) {
         const batch = orderIds.slice(i, i + LINE_BATCH);
         const rows = await callOdoo('pos.order.line', 'search_read',
             [[['order_id', 'in', batch], ['product_id.type', '=', 'consu']]],
             { fields: ['order_id', 'product_id', 'qty', 'price_subtotal_incl'], context });
         lines.push(...rows);
+        const settled = await callOdoo('pos.order.line', 'search_read',
+            [[['order_id', 'in', batch], ['sale_order_origin_id', '!=', false]]],
+            { fields: ['order_id', 'sale_order_origin_id'], context });
+        for (const l of settled) {
+            const saleId = m2oId(l.sale_order_origin_id);
+            const posId = m2oId(l.order_id);
+            if (!firstTicketBySale.has(saleId) || posId < firstTicketBySale.get(saleId)) firstTicketBySale.set(saleId, posId);
+        }
+    }
+
+    const saleIds = [...firstTicketBySale.keys()];
+    for (let i = 0; i < saleIds.length; i += LINE_BATCH) {
+        const rows = await callOdoo('sale.order.line', 'search_read',
+            [[['order_id', 'in', saleIds.slice(i, i + LINE_BATCH)], ['display_type', '=', false], ['product_id.type', '=', 'consu']]],
+            { fields: ['order_id', 'product_id', 'product_uom_qty', 'price_total'], context });
+        for (const r of rows) {
+            lines.push({
+                order_id: [firstTicketBySale.get(m2oId(r.order_id)), null],
+                product_id: r.product_id,
+                qty: r.product_uom_qty,
+                price_subtotal_incl: r.price_total,
+            });
+        }
     }
     return lines;
+}
+
+/** Categoría de producto (rubro) de cada producto que aparece en las líneas. */
+async function readProductCategories(productIds, context) {
+    const out = new Map();
+    const list = [...productIds];
+    for (let i = 0; i < list.length; i += 500) {
+        const rows = await callOdoo('product.product', 'read', [list.slice(i, i + 500)], {
+            fields: ['id', 'categ_id'],
+            context: { ...context, active_test: false },
+        });
+        for (const r of rows) out.set(r.id, m2oName(r.categ_id));
+    }
+    return out;
 }
 
 /**
@@ -131,10 +174,17 @@ async function readPartners(ids) {
 
 /**
  * Arma las filas de métricas a partir de lo leído de Odoo. Sin I/O: se testea aparte.
- * @param {{ orders: object[], lines: object[], quotations: Map, partners: Map, today: string }} input
+ * @param {{ orders: object[], lines: object[], quotations: Map, partners: Map, categories?: Map, today: string }} input
  */
-function buildRows({ orders, lines, quotations, partners, today }) {
+function buildRows({ orders, lines, quotations, partners, categories = new Map(), today }) {
     const since12m = health.addDays(today, -365);
+    // Solo las cotizaciones recientes: sirven de excusa para hablarle, las viejas no (D19)
+    const sinceQuotes = health.addDays(today, -health.QUOTATION_DAYS);
+    const recentQuotes = new Map();
+    for (const [pid, list] of quotations) {
+        const recent = list.filter((q) => q.date && q.date >= sinceQuotes);
+        if (recent.length) recentQuotes.set(pid, recent);
+    }
     const purchasesByPartner = new Map();
     const orderInfo = new Map();
     for (const o of orders) {
@@ -148,6 +198,7 @@ function buildRows({ orders, lines, quotations, partners, today }) {
         purchasesByPartner.set(pid, list);
     }
 
+    const rubros = health.rubroLabels(categories.values());
     const linesByPartner = new Map();
     for (const l of lines) {
         const info = orderInfo.get(m2oId(l.order_id));
@@ -159,17 +210,19 @@ function buildRows({ orders, lines, quotations, partners, today }) {
             qty: l.qty,
             amount: l.price_subtotal_incl,
             date: info.date,
+            category: rubros.get(categories.get(m2oId(l.product_id))) || null,
         });
         linesByPartner.set(info.pid, list);
     }
 
     const rows = [];
-    const ids = new Set([...purchasesByPartner.keys(), ...quotations.keys()]);
+    const ids = new Set([...purchasesByPartner.keys(), ...recentQuotes.keys()]);
     for (const pid of ids) {
         const partner = partners.get(pid) || {};
         const name = partner.name || `Cliente ${pid}`;
         if (EXCLUDED_NAMES.includes(normName(name))) continue;
         const metrics = health.buildMetrics(purchasesByPartner.get(pid) || [], today);
+        const partnerLines = linesByPartner.get(pid) || [];
         rows.push({
             odoo_partner_id: pid,
             partner_name: name,
@@ -178,15 +231,16 @@ function buildRows({ orders, lines, quotations, partners, today }) {
             tags: partner.tags || [],
             is_generic: GENERIC_NAMES.includes(normName(name)),
             ...metrics,
-            top_products: health.topProducts(linesByPartner.get(pid) || []),
-            open_quotations: quotations.get(pid) || [],
+            rubro: health.topRubro(partnerLines),
+            top_products: health.topProducts(partnerLines),
+            open_quotations: recentQuotes.get(pid) || [],
         });
     }
     return rows;
 }
 
 const COLUMNS = [
-    'odoo_partner_id', 'partner_name', 'phone', 'city', 'tags', 'is_generic',
+    'odoo_partner_id', 'partner_name', 'phone', 'city', 'tags', 'is_generic', 'rubro',
     'total_revenue', 'avg_ticket', 'purchase_count', 'first_purchase_date', 'last_purchase_date',
     'days_since_last_purchase', 'median_interval_days', 'interval_is_default',
     'revenue_90d', 'revenue_prev_90d', 'revenue_12m', 'health', 'trend', 'trend_pct', 'priority',
@@ -243,13 +297,14 @@ async function runSync() {
     const recentIds = orders.filter((o) => (health.toArDate(o.date_order) || '') > since12m).map((o) => o.id);
     const lines = await readPosLines(recentIds, context);
     const quotations = await readOpenQuotations(companies);
+    const categories = await readProductCategories(new Set(lines.map((l) => m2oId(l.product_id)).filter(Boolean)), context);
 
     const partnerIds = new Set([
         ...orders.map((o) => m2oId(o.partner_id)).filter(Boolean),
         ...quotations.keys(),
     ]);
     const partners = await readPartners(partnerIds);
-    const rows = buildRows({ orders, lines, quotations, partners, today });
+    const rows = buildRows({ orders, lines, quotations, partners, categories, today });
     await persist(rows);
 
     const seconds = Math.round((Date.now() - started) / 100) / 10;
@@ -279,8 +334,9 @@ async function lastSyncedAt() {
 /**
  * Si los datos tienen más de maxAgeHours (o no hay), dispara el sync en segundo plano.
  * No espera: la pantalla muestra lo que hay y avisa que se está actualizando.
+ * Se calcula una vez por día (D16): al arrancar el servidor y, si quedó prendido, a las 24 h.
  */
-async function refreshIfStale(maxAgeHours = 6) {
+async function refreshIfStale(maxAgeHours = 24) {
     const last = await lastSyncedAt();
     const age = last ? (Date.now() - new Date(last).getTime()) / 3600000 : null;
     if (last && age < maxAgeHours) return false;
@@ -298,7 +354,7 @@ const SORTS = {
 
 /**
  * Listado de clientes (sin la cuenta genérica).
- * @param {{ search?: string, city?: string, health?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
+ * @param {{ search?: string, city?: string, rubro?: string, health?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
  */
 async function listClients(f = {}) {
     await ensureSchema();
@@ -319,6 +375,10 @@ async function listClients(f = {}) {
         params.push(String(f.city).trim());
         where.push(`LOWER(TRIM(city)) = LOWER($${params.length})`);
     }
+    if (f.rubro) {
+        params.push(String(f.rubro).trim());
+        where.push(`rubro = $${params.length}`);
+    }
     if (f.health && HEALTH_VALUES.includes(f.health)) {
         params.push(f.health);
         where.push(`health = $${params.length}`);
@@ -332,7 +392,7 @@ async function listClients(f = {}) {
     const whereSql = where.join(' AND ');
     const { rows: [count] } = await pool.query(`SELECT COUNT(*) AS total FROM client_metrics_cache WHERE ${whereSql}`, params);
     const { rows } = await pool.query(
-        `SELECT odoo_partner_id, partner_name, phone, city, tags, health, trend, trend_pct,
+        `SELECT odoo_partner_id, partner_name, phone, city, tags, rubro, health, trend, trend_pct,
                 purchase_count, avg_ticket, revenue_12m, revenue_90d, last_purchase_date,
                 days_since_last_purchase, median_interval_days, interval_is_default,
                 monthly_revenue, open_quotations, priority
@@ -345,7 +405,7 @@ async function listClients(f = {}) {
     return { rows, total: parseInt(count.total, 10), limit, offset };
 }
 
-/** Contadores de la pantalla: por estado, ganados del mes, facturación y ciudades. */
+/** Contadores de la pantalla: por estado, ganados del mes, facturación, ciudades y rubros. */
 async function summary() {
     await ensureSchema();
     const { rows: byHealth } = await pool.query(
@@ -364,6 +424,10 @@ async function summary() {
         `SELECT MIN(TRIM(city)) AS city, COUNT(*)::int AS n FROM client_metrics_cache
          WHERE company = $1 AND is_generic = false AND NULLIF(TRIM(city), '') IS NOT NULL
          GROUP BY LOWER(TRIM(city)) ORDER BY n DESC, city ASC`, [COMPANY]);
+    const { rows: rubros } = await pool.query(
+        `SELECT rubro, COUNT(*)::int AS n FROM client_metrics_cache
+         WHERE company = $1 AND is_generic = false AND rubro IS NOT NULL
+         GROUP BY rubro ORDER BY n DESC, rubro ASC`, [COMPANY]);
     const counts = Object.fromEntries(HEALTH_VALUES.map((h) => [h, 0]));
     for (const r of byHealth) if (r.health) counts[r.health] = r.n;
     return {
@@ -376,6 +440,7 @@ async function summary() {
         revenue_12m: Number(totals.revenue_12m),
         revenue_90d_generic: Number(totals.revenue_90d_generic),
         cities,
+        rubros,
         synced_at: totals.synced_at,
         syncing: isSyncing(),
     };

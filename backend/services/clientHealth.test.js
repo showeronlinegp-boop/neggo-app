@@ -14,6 +14,9 @@ const {
     lastMonths,
     buildMetrics,
     topProducts,
+    rubroKey,
+    rubroLabels,
+    topRubro,
     addDays,
 } = require('./clientHealth');
 
@@ -146,6 +149,36 @@ function testTopProducts() {
     assert.strictEqual(top[1].product_id, 2);
 }
 
+function testRubro() {
+    // Las categorías duplicadas de Odoo caen en el mismo rubro
+    assert.strictEqual(rubroKey('Accesorios de Moda'), rubroKey('Accesorios Moda'));
+    assert.strictEqual(rubroKey('Tecnologia'), rubroKey('Tecnología'));
+    assert.strictEqual(rubroKey('Bazar6920253361236'), 'bazar');
+    // Servicios y categorías genéricas no son rubro
+    assert.strictEqual(rubroKey('Deliveries'), null);
+    assert.strictEqual(rubroKey('Goods'), null);
+    assert.strictEqual(rubroKey(null), null);
+
+    assert.strictEqual(topRubro([
+        { category: 'Tecnologia', amount: 300 },
+        { category: 'Tecnología', amount: 300 },
+        { category: 'Libreria', amount: 500 },
+        { category: 'Services', amount: 9000 },
+    ]), 'Tecnología');
+    assert.strictEqual(topRubro([
+        { category: 'Accesorios de Moda', amount: 100 },
+        { category: 'Accesorios Moda', amount: 100 },
+    ]), 'Accesorios Moda');
+    assert.strictEqual(topRubro([]), null);
+
+    // El nombre del rubro sale de todas las categorías juntas, no de las de un cliente
+    const labels = rubroLabels(['Tecnologia', 'Tecnología', 'Bazar6920253361236', 'Bazar', 'Services']);
+    assert.strictEqual(labels.get('Tecnologia'), 'Tecnología');
+    assert.strictEqual(labels.get('Bazar6920253361236'), 'Bazar');
+    assert.strictEqual(labels.has('Services'), false);
+    assert.strictEqual(topRubro([{ category: 'Goods', amount: 100 }]), null);
+}
+
 testToArDate();
 testUsualInterval();
 testClassifyHealth();
@@ -156,4 +189,5 @@ testBuildMetricsVacio();
 testBuildMetricsEnfriandose();
 testBuildMetricsTendencia();
 testTopProducts();
+testRubro();
 console.log('ok clientHealth.test.js');

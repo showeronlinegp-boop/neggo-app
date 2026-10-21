@@ -11,6 +11,10 @@ const DESFASAJE_FACTOR = 1.5;
 const ENFRIANDO_FACTOR = 2.5;
 const TREND_THRESHOLD_PCT = 20;
 const MONTHS_IN_SERIES = 12;
+// Cotizaciones abiertas que se muestran como motivo para hablarle al cliente (D19)
+const QUOTATION_DAYS = 60;
+// Categorías de Odoo que no son un rubro (servicios, gastos y las genéricas de fábrica)
+const NOT_RUBRO = new Set(['deliveries', 'expenses', 'services', 'goods', 'food', 'all']);
 
 const HEALTH = {
     nuevo: 'nuevo',
@@ -220,8 +224,77 @@ function topProducts(lines, limit = 5) {
         .map((p) => ({ ...p, qty: Math.round(p.qty * 100) / 100, amount: Math.round(p.amount * 100) / 100 }));
 }
 
+/**
+ * Clave para agrupar categorías duplicadas de Odoo: sin tildes, sin números pegados,
+ * sin "de" ("Accesorios de Moda" = "Accesorios Moda", "Tecnologia" = "Tecnología").
+ */
+function rubroKey(name) {
+    const key = String(name || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/\d+/g, ' ')
+        .replace(/\bde\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return key && !NOT_RUBRO.has(key) ? key : null;
+}
+
+/** Entre variantes de un mismo rubro, el nombre con tilde y, si empatan, el más corto. */
+function preferRubroLabel(a, b) {
+    const clean = (x) => String(x).replace(/\d+/g, '').trim();
+    const [ca, cb] = [clean(a), clean(b)];
+    const accent = (x) => /[^\x20-\x7e]/.test(x);
+    if (accent(ca) !== accent(cb)) return accent(ca) ? ca : cb;
+    return ca.length <= cb.length ? ca : cb;
+}
+
+/**
+ * Nombre único de rubro para cada categoría de Odoo, mirando todas juntas: así un cliente
+ * que compró en "Tecnologia" y otro en "Tecnología" quedan en el mismo rubro.
+ * @param {Iterable<string>} names
+ * @returns {Map<string, string>} nombre de la categoría → nombre del rubro
+ */
+function rubroLabels(names) {
+    const labelByKey = new Map();
+    const all = [...new Set([...names].filter(Boolean))];
+    for (const name of all) {
+        const key = rubroKey(name);
+        if (!key) continue;
+        labelByKey.set(key, labelByKey.has(key) ? preferRubroLabel(labelByKey.get(key), name) : preferRubroLabel(name, name));
+    }
+    const out = new Map();
+    for (const name of all) {
+        const key = rubroKey(name);
+        if (key) out.set(name, labelByKey.get(key));
+    }
+    return out;
+}
+
+/**
+ * Rubro del cliente: la categoría de producto en la que más gastó (D6).
+ * @param {Array<{ category: string, amount: number }>} lines
+ * @returns {string|null}
+ */
+function topRubro(lines) {
+    const byKey = new Map();
+    for (const l of lines) {
+        const key = rubroKey(l && l.category);
+        if (!key) continue;
+        const prev = byKey.get(key) || { label: String(l.category).replace(/\d+/g, '').trim(), amount: 0 };
+        prev.label = preferRubroLabel(prev.label, l.category);
+        prev.amount += Number(l.amount) || 0;
+        byKey.set(key, prev);
+    }
+    let best = null;
+    for (const r of byKey.values()) {
+        if (r.amount > 0 && (!best || r.amount > best.amount)) best = r;
+    }
+    return best ? best.label : null;
+}
+
 module.exports = {
     DEFAULT_INTERVAL_DAYS,
+    QUOTATION_DAYS,
     MIN_INTERVAL_DAYS,
     NEW_CLIENT_DAYS,
     LOST_DAYS,
@@ -237,4 +310,7 @@ module.exports = {
     lastMonths,
     buildMetrics,
     topProducts,
+    rubroKey,
+    rubroLabels,
+    topRubro,
 };

@@ -18,23 +18,32 @@ function testBuildRows() {
         { order_id: [1, 'x'], product_id: [100, 'Vasos'], qty: 2, price_subtotal_incl: 400 },
         { order_id: [2, 'x'], product_id: [100, 'Vasos'], qty: 1, price_subtotal_incl: 200 },
         { order_id: [2, 'x'], product_id: [101, 'Platos'], qty: 4, price_subtotal_incl: 2800 },
+        { order_id: [2, 'x'], product_id: [102, 'Cuaderno'], qty: 1, price_subtotal_incl: 100 },
     ];
+    const categories = new Map([[100, 'Bazar6920253361236'], [101, 'Bazar'], [102, 'Libreria']]);
     const quotations = new Map([
-        [10, [{ company: 'neggo', name: 'S04187', state: 'sent', date: '2026-10-18', amount: 412500 }]],
+        [10, [
+            { company: 'neggo', name: 'S04187', state: 'sent', date: '2026-10-18', amount: 412500 },
+            { company: 'neggo', name: 'S03000', state: 'draft', date: '2026-07-01', amount: 9000 },
+        ]],
         [20, [{ company: 'preventas', name: 'S00300', state: 'draft', date: '2026-10-19', amount: 1000 }]],
+        // Solo una cotización vieja y nunca compró: no entra
+        [30, [{ company: 'neggo', name: 'S01000', state: 'sent', date: '2026-05-01', amount: 5000 }]],
     ]);
     const partners = new Map([
         [10, { id: 10, name: 'Polirrubro El Trébol', phone: '+54 9 236 461-0093', city: ' Junín ', tags: ['Polirrubros'] }],
         [6, { id: 6, name: 'Consumidor Final', tags: [] }],
         [1516, { id: 1516, name: 'RMA', tags: [] }],
         [20, { id: 20, name: 'Prospecto Rojas', tags: [] }],
+        [30, { id: 30, name: 'Cotizó hace meses', tags: [] }],
     ]);
 
-    const rows = buildRows({ orders, lines, quotations, partners, today: TODAY });
+    const rows = buildRows({ orders, lines, quotations, partners, categories, today: TODAY });
     const byId = new Map(rows.map((r) => [r.odoo_partner_id, r]));
 
     // RMA queda afuera de todo; los tickets sin cliente no generan fila
     assert.strictEqual(byId.has(1516), false);
+    assert.strictEqual(byId.has(30), false);
     assert.strictEqual(rows.length, 3);
 
     const trebol = byId.get(10);
@@ -43,7 +52,10 @@ function testBuildRows() {
     assert.strictEqual(trebol.city, 'Junín');
     assert.deepStrictEqual(trebol.tags, ['Polirrubros']);
     assert.strictEqual(trebol.is_generic, false);
-    assert.strictEqual(trebol.open_quotations[0].name, 'S04187');
+    // Solo las cotizaciones de los últimos 60 días
+    assert.deepStrictEqual(trebol.open_quotations.map((q) => q.name), ['S04187']);
+    // Rubro: Bazar (400 + 200 + 2800, con la categoría duplicada) le gana a Librería (100)
+    assert.strictEqual(trebol.rubro, 'Bazar');
     assert.strictEqual(trebol.top_products[0].name, 'Platos');
     assert.strictEqual(trebol.top_products[1].qty, 3);
 
@@ -56,6 +68,7 @@ function testBuildRows() {
     assert.strictEqual(prospecto.health, 'sin_compras');
     assert.strictEqual(prospecto.purchase_count, 0);
     assert.strictEqual(prospecto.open_quotations[0].company, 'preventas');
+    assert.strictEqual(prospecto.rubro, null);
 }
 
 testBuildRows();

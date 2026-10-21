@@ -1,8 +1,8 @@
 // Rutas del CRM de clientes (fase 1: solo lectura)
-// GET    /api/clientes?search=&city=&health=&open=1&sort=prioridad|facturacion|ultima|nombre&limit=&offset=
-// GET    /api/clientes/resumen        — contadores por estado, facturación, ciudades y última actualización
+// GET    /api/clientes?search=&city=&rubro=&health=&open=1&sort=prioridad|facturacion|ultima|nombre&limit=&offset=
+// GET    /api/clientes/resumen        — contadores por estado, facturación, ciudades, rubros y última actualización
 // POST   /api/clientes/sync           — vuelve a calcular las métricas desde Odoo
-// GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones abiertas y últimos tickets
+// GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
 
 const express = require('express');
 const router = express.Router();
@@ -18,6 +18,7 @@ router.get('/', authenticate, requireRole(...ROLES), async (req, res) => {
         const { rows, total, limit, offset } = await clientes.listClients({
             search: req.query.search,
             city: req.query.city,
+            rubro: req.query.rubro,
             health: req.query.health,
             open: req.query.open === '1' || req.query.open === 'true',
             sort: req.query.sort,
