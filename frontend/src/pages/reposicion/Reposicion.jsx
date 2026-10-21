@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
-import { fmtAR } from '../../theme/tokens';
+import { fmtAR, fmtInt } from '../../theme/tokens';
 import useIsMobile from '../../hooks/useIsMobile';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
@@ -41,6 +41,47 @@ const ESTADO = {
 const fmtFecha = (iso) => iso
     ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '—';
+
+// Pedido al proveedor en PDF, con el mismo generador que Preventas (Chrome headless en el backend).
+// items: [{ name, internal_ref, barcode, image_url, standard_price, qty }]
+async function descargarPedidoPDF(vendor, items) {
+    const products = items.map(it => ({
+        product_name: it.name,
+        external_id:  it.internal_ref || it.barcode || null,
+        unit_cost:    Number(it.standard_price) > 0 ? Number(it.standard_price) : null,
+        total_qty:    it.qty,
+        image_url:    it.image_url,
+    }));
+    const hasCost = products.some(p => p.unit_cost != null);
+    const totalCost = products.reduce((s, p) => p.unit_cost != null ? s + p.unit_cost * p.total_qty : s, 0);
+    const token = localStorage.getItem('neggo_token');
+    const res = await fetch('/api/preventas/odoo-quotations/pdf', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            supplier_name: vendor,
+            products,
+            total_cost: hasCost ? Math.round(totalCost * 100) / 100 : null,
+            total_qty:  products.reduce((s, p) => s + p.total_qty, 0),
+        }),
+    });
+    if (!res.ok) {
+        let message = 'No se pudo generar el PDF';
+        try {
+            const body = await res.json();
+            if (body?.error) message = body.error;
+        } catch { /* la respuesta no era JSON */ }
+        throw new Error(message);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safe = vendor.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+    a.href = url;
+    a.download = `reposicion-${safe}-${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
 
 function agruparPorProveedor(items) {
     const grupos = new Map();
@@ -264,6 +305,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
     const [qtys, setQtys] = useState({});
     const [selected, setSelected] = useState({});
     const [guardando, setGuardando] = useState(false);
+    const [generandoPdf, setGenerandoPdf] = useState(false);
     const [aviso, setAviso] = useState(null);
 
     const cargar = useCallback(async () => {
@@ -287,6 +329,22 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
 
     const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }));
 
+    // La cantidad queda guardada al salir del casillero, aunque no se resuelva el ítem:
+    // así la usa el PDF del encabezado del proveedor.
+    const guardarQty = async (it) => {
+        const raw = qtys[it.id];
+        if (raw === '' || raw == null) return;
+        const qty = Number(raw);
+        if (!Number.isInteger(qty) || qty < 0 || qty === it.qty_decidida) return;
+        const res = await api.patch(`/reposicion/${it.id}`, { estado: it.estado, qty_decidida: qty });
+        if (!res.success) { setError(res.error || 'No se pudo guardar la cantidad'); return; }
+        setDetalle(prev => prev && ({
+            ...prev,
+            items: prev.items.map(x => x.id === it.id ? { ...x, qty_decidida: qty } : x),
+        }));
+        onChanged?.();
+    };
+
     const itemsSeleccionados = () => (detalle?.items || [])
         .filter(it => selected[it.id])
         .map(it => ({ id: it.id, qty_decidida: qtys[it.id] === '' ? undefined : Number(qtys[it.id]) }));
@@ -304,6 +362,23 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
         setAviso(`${res.data.resueltos} producto(s) marcados como ${label}.`);
         onChanged?.();
         await cargar();
+    };
+
+    // Sale en el PDF lo tildado con cantidad mayor a cero.
+    const pdf = async () => {
+        const items = (detalle?.items || [])
+            .filter(it => selected[it.id] && Number(qtys[it.id]) > 0)
+            .map(it => ({ ...it, qty: Math.round(Number(qtys[it.id])) }));
+        if (!items.length) { setError('Tildá al menos un producto con cantidad para armar el PDF'); return; }
+        setGenerandoPdf(true);
+        setError(null);
+        try {
+            await descargarPedidoPDF(vendor, items);
+        } catch (err) {
+            setError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setGenerandoPdf(false);
+        }
     };
 
     const th = {
@@ -326,6 +401,15 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
             footer={(
                 <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                     <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+                    <Button
+                        variant="ghost"
+                        leftIcon={<Icon.FileText size={14} />}
+                        disabled={generandoPdf || loading || !(detalle?.items?.length)}
+                        title="Descargar el pedido al proveedor con lo tildado y sus cantidades"
+                        onClick={pdf}
+                    >
+                        {generandoPdf ? 'Generando…' : 'PDF'}
+                    </Button>
                     <Button
                         variant="ghost"
                         leftIcon={<Icon.X size={14} />}
@@ -409,6 +493,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
                                             step={1}
                                             value={qtys[it.id] ?? ''}
                                             onChange={e => setQtys(prev => ({ ...prev, [it.id]: e.target.value }))}
+                                            onBlur={() => guardarQty(it)}
                                             style={{
                                                 width: 72, padding: '4px 6px', border: `1px solid ${t.color.border}`,
                                                 borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: t.font.size.sm,
@@ -426,7 +511,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
                         </div>
                     )}
                     <div style={{ marginTop: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal; no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola.
+                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal; no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola. El PDF lleva lo tildado con su cantidad y el costo de Odoo.
                     </div>
                 </div>
             )}
@@ -587,6 +672,11 @@ function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, onV
                         {fmtAR(it.list_price)}
                     </div>
                     <div style={{ fontSize: 11, color: t.color.textMuted, ...t.numericStyle }}>{fmtAR(it.standard_price)}</div>
+                    {it.qty_decidida != null && (
+                        <div style={{ fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.text, marginTop: 2, ...t.numericStyle }}>
+                            × {fmtInt(it.qty_decidida)}
+                        </div>
+                    )}
                 </div>
             </div>
             <div style={{ fontSize: 11, color: t.color.textFaint, fontFamily: t.font.family, ...t.numericStyle }}>
@@ -645,6 +735,21 @@ export default function Reposicion() {
     useEffect(() => { cargarProveedores(); }, [cargarProveedores]);
 
     const mostrarError = useCallback((msg) => setError(msg), []);
+
+    // PDF rápido desde el encabezado del proveedor: todo lo de la lista, con la cantidad
+    // cargada en «Decidir» (una unidad si no se cargó ninguna).
+    const [pdfProveedor, setPdfProveedor] = useState(null);
+    const pdfEncabezado = async (proveedor, lista) => {
+        setPdfProveedor(proveedor);
+        setError(null);
+        try {
+            await descargarPedidoPDF(proveedor, lista.map(it => ({ ...it, qty: Number(it.qty_decidida) > 0 ? Number(it.qty_decidida) : 1 })));
+        } catch (err) {
+            mostrarError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setPdfProveedor(null);
+        }
+    };
 
     const cambiarEstado = async (item, estado) => {
         setTrabajando(item.id);
@@ -862,6 +967,21 @@ export default function Reposicion() {
                                     Decidir
                                 </Button>
                             )}
+                            {(pendiente || encargado || lista.some(i => i.estado === 'repuesto')) && (
+                                <Button size="sm" variant="ghost"
+                                    leftIcon={<Icon.FileText size={13} />}
+                                    disabled={pdfProveedor === proveedor}
+                                    title={pendiente || encargado
+                                        ? 'Descargar el pedido en PDF con las cantidades cargadas en «Decidir» (una unidad si no tiene)'
+                                        : 'Descargar en PDF los repuestos de este proveedor con sus cantidades'}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        // En resueltos van solo los repuestos: lo descartado no se pide
+                                        pdfEncabezado(proveedor, pendiente || encargado ? lista : lista.filter(i => i.estado === 'repuesto'));
+                                    }}>
+                                    {pdfProveedor === proveedor ? 'Generando…' : 'PDF'}
+                                </Button>
+                            )}
                             {!isMobile && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Ver catálogo</span>}
                             <Icon.ChevronRight size={16} />
                         </button>
@@ -886,6 +1006,7 @@ export default function Reposicion() {
                                             <th style={thStyle}>Producto</th>
                                             <th style={thStyle}>{pendiente ? 'Motivo' : encargado ? 'Estado' : 'Resultado'}</th>
                                             <th style={thStyle}>{pendiente ? 'Desde' : encargado ? 'Pedido' : 'Resuelto'}</th>
+                                            <th style={{ ...thStyle, textAlign: 'right' }}>Cant.</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}>Costo</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}>Venta</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}></th>
@@ -924,6 +1045,9 @@ export default function Reposicion() {
                                                     {(pendiente ? it.created_by_name : encargado ? (it.encargado_by_name || it.created_by_name) : it.resolved_by_name) && (
                                                         <div>{pendiente ? it.created_by_name : encargado ? (it.encargado_by_name || it.created_by_name) : it.resolved_by_name}</div>
                                                     )}
+                                                </td>
+                                                <td style={{ ...tdStyle, textAlign: 'right', fontWeight: t.font.weight.semibold, ...t.numericStyle }}>
+                                                    {it.qty_decidida != null ? fmtInt(it.qty_decidida) : '—'}
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: 'right', color: t.color.textMuted, ...t.numericStyle }}>{fmtAR(it.standard_price)}</td>
                                                 <td style={{ ...tdStyle, textAlign: 'right', fontWeight: t.font.weight.semibold, color: t.color.primary, ...t.numericStyle }}>{fmtAR(it.list_price)}</td>
