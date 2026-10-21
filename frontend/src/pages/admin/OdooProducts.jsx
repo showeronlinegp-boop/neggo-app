@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../theme/ThemeContext';
+import useIsMobile from '../../hooks/useIsMobile';
 import { fmtAR } from '../../theme/tokens';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
@@ -23,6 +24,7 @@ const LIMIT = 50;
 
 export default function OdooProducts() {
     const { tokens: t } = useTheme();
+    const isMobile = useIsMobile();
     const { user } = useAuth();
 
     const [company, setCompany] = useState('neggo');
@@ -141,6 +143,32 @@ export default function OdooProducts() {
         verticalAlign: 'middle', fontFamily: t.font.family,
     };
 
+    // Botones de cada producto: los usan la tabla y la lista del celu
+    const acciones = (p, enCelu) => {
+        const ancho = enCelu ? { flex: 1 } : undefined;
+        return (
+            <div style={{ display: enCelu ? 'flex' : 'inline-flex', gap: t.space[2] }}>
+                {company === 'neggo' && (
+                    <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} style={ancho}
+                        disabled={trabajando === p.odoo_id} onClick={() => reponer(p)}>
+                        Reponer
+                    </Button>
+                )}
+                {p.active ? (
+                    <Button size="sm" variant="danger" leftIcon={<Icon.Archive size={13} />} style={ancho}
+                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'archivar', p })}>
+                        Archivar
+                    </Button>
+                ) : (
+                    <Button size="sm" variant="success" leftIcon={<Icon.Check size={13} />} style={ancho}
+                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'activar', p })}>
+                        Activar
+                    </Button>
+                )}
+            </div>
+        );
+    };
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[5] }}>
 
@@ -221,6 +249,30 @@ export default function OdooProducts() {
                             No hay productos{search ? ' que coincidan con la búsqueda' : ''}
                         </div>
                     </div>
+                ) : isMobile ? (
+                    // En el celu la tabla no entra: una tarjeta por producto con los botones a la vista
+                    <div>
+                        {products.map((p, i) => (
+                            <div key={p.id} style={{ padding: t.space[3], borderTop: i ? `1px solid ${t.color.border}` : 'none', display: 'flex', flexDirection: 'column', gap: t.space[2], fontFamily: t.font.family }}>
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: t.space[3] }}>
+                                    <MiniaturaFoto p={p} size={56} onVerFoto={setFoto}
+                                        onSubirFoto={puedeSubirFoto ? subirFoto : null} subiendoFoto={subiendoFoto} />
+                                    <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: t.space[2] }}>
+                                            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, minWidth: 0 }}>{p.name}</div>
+                                            <Badge tone={p.active ? 'success' : 'muted'} dot>{p.active ? 'Activo' : 'Inactivo'}</Badge>
+                                        </div>
+                                        <div style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{p.internal_ref || p.barcode || '—'}</div>
+                                        <div style={{ display: 'flex', gap: t.space[4], fontSize: t.font.size.xs, color: t.color.textMuted, ...t.numericStyle }}>
+                                            <span>PVP <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.primary }}>{fmtAR(p.list_price)}</span></span>
+                                            <span>Stock <span style={{ fontSize: t.font.size.sm, color: t.color.text }}>{p.qty_available != null ? Number(p.qty_available).toLocaleString('es-AR') : '—'}</span></span>
+                                        </div>
+                                    </div>
+                                </div>
+                                {acciones(p, true)}
+                            </div>
+                        ))}
+                    </div>
                 ) : (
                     <div style={{ overflowX: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -263,27 +315,7 @@ export default function OdooProducts() {
                                             <Badge tone={p.active ? 'success' : 'muted'} dot>{p.active ? 'Activo' : 'Inactivo'}</Badge>
                                         </td>
                                         <td style={{ ...tdStyle, fontSize: t.font.size.xs, color: t.color.textFaint, whiteSpace: 'nowrap' }}>{fmtDate(p.synced_at)}</td>
-                                        <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                            <div style={{ display: 'inline-flex', gap: t.space[2] }}>
-                                                {company === 'neggo' && (
-                                                    <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />}
-                                                        disabled={trabajando === p.odoo_id} onClick={() => reponer(p)}>
-                                                        Reponer
-                                                    </Button>
-                                                )}
-                                                {p.active ? (
-                                                    <Button size="sm" variant="danger" leftIcon={<Icon.Archive size={13} />}
-                                                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'archivar', p })}>
-                                                        Archivar
-                                                    </Button>
-                                                ) : (
-                                                    <Button size="sm" variant="success" leftIcon={<Icon.Check size={13} />}
-                                                        disabled={trabajando === p.odoo_id} onClick={() => setConfirmar({ tipo: 'activar', p })}>
-                                                        Activar
-                                                    </Button>
-                                                )}
-                                            </div>
-                                        </td>
+                                        <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{acciones(p, false)}</td>
                                     </tr>
                                 ))}
                             </tbody>
