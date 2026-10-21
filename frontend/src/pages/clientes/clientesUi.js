@@ -71,3 +71,71 @@ export function linkWhatsApp(phone) {
     if (!digits.startsWith('54')) digits = `549${digits}`;
     return `https://wa.me/${digits}`;
 }
+
+// ── Fase 2: seguimiento ─────────────────────────────────────────
+
+// Etapa del funnel (D9). Ganado lo marca una compra después de Caliente.
+export const STAGE_META = {
+    frio:       { label: 'Frío',       tone: 'muted',   hint: 'Todavía no hubo un contacto que funcione' },
+    templado:   { label: 'Templado',   tone: 'warn',    hint: 'Respondió y hay interés' },
+    caliente:   { label: 'Caliente',   tone: 'danger',  hint: 'Está por comprar' },
+    ganado:     { label: 'Ganado',     tone: 'success', hint: 'Compró después de pasar a Caliente' },
+    descartado: { label: 'Descartado', tone: 'muted',   hint: 'No va a comprar por ahora' },
+};
+export const STAGE_ORDER = ['frio', 'templado', 'caliente', 'ganado', 'descartado'];
+export const MANUAL_STAGES = ['frio', 'templado', 'caliente', 'descartado'];
+
+// Tipos de acción y de contacto registrado
+export const ACTION_META = {
+    llamar:   { label: 'Llamar',       verbo: 'Llamada' },
+    whatsapp: { label: 'WhatsApp',     verbo: 'WhatsApp' },
+    visitar:  { label: 'Visitar',      verbo: 'Visita' },
+    lista:    { label: 'Mandar lista', verbo: 'Lista enviada' },
+    otra:     { label: 'Otra',         verbo: 'Otro contacto' },
+};
+export const ACTION_ORDER = ['llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
+
+export const EVENT_META = {
+    nota:   { label: 'Nota' },
+    etapa:  { label: 'Cambio de etapa' },
+    compra: { label: 'Compra' },
+    ...Object.fromEntries(Object.entries(ACTION_META).map(([k, v]) => [k, { label: v.verbo }])),
+};
+
+// Estado que traían los contactos de la agenda ("Estado: NRI NLD-21")
+export const SOURCE_STATUS_META = {
+    cliente:    { label: 'Cliente',     tone: 'success' },
+    recuperar:  { label: 'C. Recuperar', tone: 'warn' },
+    churn:      { label: 'Churn',       tone: 'danger' },
+    lead:       { label: 'Lead',        tone: 'primary' },
+    nri:        { label: 'NRI',         tone: 'muted' },
+    sin_estado: { label: 'Sin estado',  tone: 'muted' },
+};
+export const SOURCE_STATUS_ORDER = ['lead', 'cliente', 'recuperar', 'churn', 'nri', 'sin_estado'];
+
+// Fecha de hoy en Argentina (YYYY-MM-DD) y corrimientos en días
+export function hoyAr(dias = 0) {
+    const ms = Date.now() - 3 * 3600000 + dias * 86400000;
+    return new Date(ms).toISOString().slice(0, 10);
+}
+
+// "Hoy", "Mañana", "Vencida hace 3 días", "En 5 días"
+export function fmtProxima(iso) {
+    if (!iso) return null;
+    const dias = Math.round((Date.parse(iso) - Date.parse(hoyAr())) / 86400000);
+    if (dias === 0) return 'Hoy';
+    if (dias === 1) return 'Mañana';
+    if (dias === -1) return 'Vencida ayer';
+    if (dias < 0) return `Vencida hace ${-dias} días`;
+    return `En ${dias} días`;
+}
+
+export function fmtFechaHora(iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+// Nombre para mostrar de un posible cliente sin nombre en la agenda
+export function nombreLead(l) {
+    return l?.name || l?.phone || l?.email || 'Sin nombre';
+}

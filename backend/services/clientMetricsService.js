@@ -3,11 +3,11 @@
 // y Preventas de los últimos 60 días se muestran como motivo para hablarle (D1, D19).
 // Ver docs/plan-crm-clientes.md.
 
-const fs = require('fs');
-const path = require('path');
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const health = require('./clientHealth');
+const { ensureSchema } = require('./crmSchema');
+const followups = require('./crmFollowupService');
 
 const COMPANY = 'neggo';
 const PAGE = 2000;
@@ -18,22 +18,7 @@ const EXCLUDED_NAMES = ['rma'];
 // Cuenta genérica: suma en la facturación total pero no aparece en listados ni en el funnel (D4)
 const GENERIC_NAMES = ['consumidor final'];
 
-const SCHEMA = ['042_clientes_crm.sql', '043_clientes_rubro.sql']
-    .map((file) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', file), 'utf8'))
-    .join('\n');
-
-let schemaReady = null;
 let syncInFlight = null;
-
-function ensureSchema(db = pool) {
-    if (!schemaReady) {
-        schemaReady = db.query(SCHEMA).catch((err) => {
-            schemaReady = null;
-            throw err;
-        });
-    }
-    return schemaReady;
-}
 
 function m2oId(value) {
     return Array.isArray(value) ? value[0] : value || null;
@@ -306,6 +291,8 @@ async function runSync() {
     const partners = await readPartners(partnerIds);
     const rows = buildRows({ orders, lines, quotations, partners, categories, today });
     await persist(rows);
+    // Vincula posibles clientes que aparecieron en Odoo y marca los ganados
+    await followups.afterSync().catch((err) => console.error('❌ CRM: error después del sync:', err.message));
 
     const seconds = Math.round((Date.now() - started) / 100) / 10;
     console.log(`✅ CRM: ${rows.length} cliente(s) actualizados (${orders.length} tickets, ${lines.length} líneas) en ${seconds} s`);
@@ -350,11 +337,21 @@ const SORTS = {
     facturacion: 'revenue_12m DESC, partner_name ASC',
     ultima: 'last_purchase_date DESC NULLS LAST, partner_name ASC',
     nombre: 'partner_name ASC',
+    accion: 'next_action_date ASC NULLS LAST, priority DESC',
 };
+const STAGE_VALUES = followups.STAGES;
+// Cliente + etapa del funnel (sin fila = Frío) + fecha de la próxima acción pendiente
+const CLIENTS_FROM = `(
+    SELECT c.*, COALESCE(f.stage, 'frio') AS stage,
+           (SELECT MIN(a.due_date)::text FROM crm_actions a
+            WHERE a.odoo_partner_id = c.odoo_partner_id AND a.done = false) AS next_action_date
+    FROM client_metrics_cache c
+    LEFT JOIN crm_followups f ON f.odoo_partner_id = c.odoo_partner_id
+) x`;
 
 /**
  * Listado de clientes (sin la cuenta genérica).
- * @param {{ search?: string, city?: string, rubro?: string, health?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
+ * @param {{ search?: string, city?: string, rubro?: string, health?: string, stage?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
  */
 async function listClients(f = {}) {
     await ensureSchema();
@@ -383,6 +380,10 @@ async function listClients(f = {}) {
         params.push(f.health);
         where.push(`health = $${params.length}`);
     }
+    if (f.stage && STAGE_VALUES.includes(f.stage)) {
+        params.push(f.stage);
+        where.push(`stage = $${params.length}`);
+    }
     if (f.open) where.push(`jsonb_array_length(open_quotations) > 0`);
 
     const order = SORTS[f.sort] || SORTS.prioridad;
@@ -390,13 +391,13 @@ async function listClients(f = {}) {
     const offset = Math.max(parseInt(f.offset, 10) || 0, 0);
 
     const whereSql = where.join(' AND ');
-    const { rows: [count] } = await pool.query(`SELECT COUNT(*) AS total FROM client_metrics_cache WHERE ${whereSql}`, params);
+    const { rows: [count] } = await pool.query(`SELECT COUNT(*) AS total FROM ${CLIENTS_FROM} WHERE ${whereSql}`, params);
     const { rows } = await pool.query(
         `SELECT odoo_partner_id, partner_name, phone, city, tags, rubro, health, trend, trend_pct,
                 purchase_count, avg_ticket, revenue_12m, revenue_90d, last_purchase_date,
                 days_since_last_purchase, median_interval_days, interval_is_default,
-                monthly_revenue, open_quotations, priority
-         FROM client_metrics_cache
+                monthly_revenue, open_quotations, priority, stage, next_action_date
+         FROM ${CLIENTS_FROM}
          WHERE ${whereSql}
          ORDER BY ${order}
          LIMIT ${limit} OFFSET ${offset}`,
@@ -428,6 +429,10 @@ async function summary() {
         `SELECT rubro, COUNT(*)::int AS n FROM client_metrics_cache
          WHERE company = $1 AND is_generic = false AND rubro IS NOT NULL
          GROUP BY rubro ORDER BY n DESC, rubro ASC`, [COMPANY]);
+    const { rows: byStage } = await pool.query(
+        `SELECT COALESCE(f.stage, 'frio') AS stage, COUNT(*)::int AS n
+         FROM client_metrics_cache c LEFT JOIN crm_followups f ON f.odoo_partner_id = c.odoo_partner_id
+         WHERE c.company = $1 AND c.is_generic = false GROUP BY 1`, [COMPANY]);
     const counts = Object.fromEntries(HEALTH_VALUES.map((h) => [h, 0]));
     for (const r of byHealth) if (r.health) counts[r.health] = r.n;
     return {
@@ -441,6 +446,7 @@ async function summary() {
         revenue_90d_generic: Number(totals.revenue_90d_generic),
         cities,
         rubros,
+        stages: Object.fromEntries(byStage.map((r) => [r.stage, r.n])),
         synced_at: totals.synced_at,
         syncing: isSyncing(),
     };

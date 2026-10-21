@@ -19,6 +19,8 @@ const routeTitles = {
     '/ingreso/new':                  'Ingreso de mercadería',
     '/ingreso':                      'Ingreso de mercadería',
     '/reposicion':                   'Reposición',
+    '/clientes':                     'Clientes',
+    '/clientes/mi-dia':              'Mi día',
     '/reposicion/recorrida':         'Recorrida de depósito',
     '/pedidos/armado':               'Armado y control',
     '/preventas/pedidos':            'Pedidos de clientes',
@@ -43,7 +45,8 @@ const NAV_GROUPS = [
     {
         label: 'Ventas',
         items: [
-            { icon: Icon.Users,         label: 'Clientes',              path: '/clientes',                 roles: ['admin', 'vendedor'] },
+            { icon: Icon.Users,         label: 'Clientes',              path: '/clientes',                 roles: ['admin', 'vendedor'], exact: true },
+            { icon: Icon.Check,         label: 'Mi día',                path: '/clientes/mi-dia',          roles: ['admin', 'vendedor'] },
         ],
     },
     {
