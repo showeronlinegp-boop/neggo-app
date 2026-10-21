@@ -253,8 +253,8 @@ export default function PedidoEnvioDetalle() {
             const salida = res.success ? res.data.odoo_salida : null;
             if (!aplicar(res, res.success
                 ? (salida?.picking
-                    ? `Entrega ${salida.picking.name} validada en Odoo con lo controlado.`
-                        + (salida.backorder ? ` Lo que faltó quedó en ${salida.backorder.name}.` : '')
+                    ? `Entrega ${salida.picking.name} validada en Odoo con lo controlado. La orden quedó igual a lo entregado.`
+                        + (res.data.backorder_odoo_name ? ` Lo que faltó va en ${res.data.backorder_odoo_name}.` : '')
                     : res.data.backorder_odoo_name
                     ? `Odoo quedó con lo controlado. Pendientes en ${res.data.backorder_odoo_name}.`
                     : 'Odoo quedó igual a lo controlado. No había pendientes.')
@@ -630,7 +630,7 @@ export default function PedidoEnvioDetalle() {
                 <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
                     <p style={{ marginTop: 0 }}>
                         {envio.odoo_picking_state === 'done'
-                            ? 'Esto valida la entrega en Odoo con lo que controlaste. Si falta algo, queda en un backorder de la entrega.'
+                            ? 'Esto valida la entrega en Odoo con lo que controlaste y deja la orden igual a lo entregado. Lo que falta va a un pedido de pendientes aparte (lo ves en la solapa Pendientes).'
                             : 'Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.'}
                     </p>
                     {preview.queda.length === 0 && preview.pendientes.length === 0 && (

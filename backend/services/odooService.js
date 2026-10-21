@@ -634,41 +634,36 @@ function pickingEsEnvio1(row) {
     return !code || code === 'outgoing' || code === 'internal';
 }
 
-async function attachDonePickingCounts(companyKey, orders) {
+// Envíos de cada orden. Con withMoves trae las líneas de los envíos hechos
+// (lo armado / controlado); sin eso alcanza para saber la etapa.
+async function attachDonePickingCounts(companyKey, orders, { withMoves = true } = {}) {
     const allIds = [...new Set((orders || []).flatMap((o) => o.picking_ids || []).filter(Boolean))];
-    const done = new Set();
     let rows = [];
+    const companyId = allIds.length ? await resolveCompanyId(companyKey) : null;
     if (allIds.length) {
-        const companyId = await resolveCompanyId(companyKey);
         rows = await readByIds(
             'stock.picking',
             allIds,
-            ['id', 'state', 'picking_type_code'],
+            ['id', 'name', 'state', 'picking_type_code', 'backorder_id'],
             { allowed_company_ids: [companyId] }
         ) || [];
-        for (const r of rows) {
-            if (r.state === 'done' && pickingEsEnvio1(r)) done.add(r.id);
-        }
     }
-    const doneIds = rows.filter((r) => r.state === 'done' && pickingEsEnvio1(r)).map((r) => r.id);
+    const conLineas = withMoves
+        ? rows.filter((r) => r.state === 'done' && pickingEsEnvio1(r)).map((r) => r.id)
+        : [];
     const movesByPicking = new Map();
-    if (doneIds.length) {
-        const companyId = await resolveCompanyId(companyKey);
-        const moveRows = [];
-        for (let i = 0; i < doneIds.length; i += 80) {
-            const chunk = doneIds.slice(i, i + 80);
-            const batch = await callOdoo(
-                'stock.move',
-                'search_read',
-                [[['picking_id', 'in', chunk], ['state', '!=', 'cancel']]],
-                withCompany(companyId, {
-                    fields: ['id', 'picking_id', 'product_id', 'product_uom_qty', 'quantity', 'picked', 'state', 'sale_line_id'],
-                    limit: 500,
-                })
-            ) || [];
-            moveRows.push(...batch);
-        }
-        for (const m of moveRows) {
+    // Sin límite: un tope por lote cortaba líneas de pedidos grandes
+    for (let i = 0; i < conLineas.length; i += 40) {
+        const chunk = conLineas.slice(i, i + 40);
+        const batch = await callOdoo(
+            'stock.move',
+            'search_read',
+            [[['picking_id', 'in', chunk], ['state', '!=', 'cancel']]],
+            withCompany(companyId, {
+                fields: ['id', 'picking_id', 'product_id', 'product_uom_qty', 'quantity', 'picked', 'state', 'sale_line_id'],
+            })
+        ) || [];
+        for (const m of batch) {
             const mapped = mapMoveRow(m);
             if (!mapped?.picking_id) continue;
             if (!movesByPicking.has(mapped.picking_id)) movesByPicking.set(mapped.picking_id, []);
@@ -679,12 +674,10 @@ async function attachDonePickingCounts(companyKey, orders) {
     for (const o of orders || []) {
         const ids = o.picking_ids || [];
         o.pickings = ids.map((id) => byId.get(id)).filter(Boolean).map((r) => ({
-            id: r.id,
-            state: r.state || null,
-            picking_type_code: r.picking_type_code || null,
+            ...mapPickingRow(r),
             moves: movesByPicking.get(r.id) || [],
         }));
-        o.done_picking_count = ids.filter((id) => done.has(id)).length;
+        o.done_picking_count = o.pickings.filter((p) => p.state === 'done' && pickingEsEnvio1(p)).length;
     }
     return orders;
 }
@@ -739,7 +732,12 @@ async function getFirstOutgoingPicking(odooOrderId, companyKey, orderName = null
         ) || [];
     }
     const sorted = rows.filter(pickingEsEnvio1).slice().sort((a, b) => a.id - b.id);
-    return mapPickingRow(sorted[0]);
+    // 2 pasos: el Recolectar abierto. 1 paso: la entrega abierta. Si agregaron
+    // productos en Odoo después de armar, el abierto es el nuevo. Si no, el primero.
+    const hayInternal = sorted.some((r) => r.picking_type_code === 'internal');
+    const code = hayInternal ? 'internal' : 'outgoing';
+    const abierto = sorted.find((r) => r.state !== 'done' && (!r.picking_type_code || r.picking_type_code === code));
+    return mapPickingRow(abierto || sorted[0]);
 }
 
 async function getPicking(pickingId, companyKey) {
@@ -1482,7 +1480,7 @@ async function getSaleOrdersWithLines(companyKey, {
  * Solo el encabezado (estado, facturación, POS) de varias sale.order, sin líneas.
  * Sirve para refrescar muchos pedidos de una sin bajar todo el detalle.
  */
-async function getSaleOrderHeaders(companyKey, ids) {
+async function getSaleOrderHeaders(companyKey, ids, { withMoves = true } = {}) {
     if (!ids || ids.length === 0) return [];
     const companyId = await resolveCompanyId(companyKey);
     const rows = await readByIds(
@@ -1500,7 +1498,7 @@ async function getSaleOrderHeaders(companyKey, ids) {
         pos_order_count: Number(o.pos_order_count) || 0,
         picking_ids:     Array.isArray(o.picking_ids) ? o.picking_ids : [],
     }));
-    return attachDonePickingCounts(companyKey, mapped);
+    return attachDonePickingCounts(companyKey, mapped, { withMoves });
 }
 
 async function findSaleOrdersByOriginRef(companyKey, {

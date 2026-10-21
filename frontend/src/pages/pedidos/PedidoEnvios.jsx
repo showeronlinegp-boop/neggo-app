@@ -39,6 +39,21 @@ const ORDENES = [
     { value: 'unidades', label: 'Más unidades' },
 ];
 const DOS_DIAS_MS = 2 * 24 * 60 * 60 * 1000;
+// Estado en Odoo del pedido de pendientes
+const ESTADO_PENDIENTES = {
+    draft: { label: 'Cotización', tone: 'muted' },
+    sent:  { label: 'Enviada', tone: 'accent' },
+};
+const SUBTITULO = {
+    pedidos: 'Cotización enviada entra acá. Se confirma en Odoo, se arma con el envío 1 y se controla con el envío 2. Si se factura o va al POS, desaparece.',
+    esperando_pago: 'Pedidos controlados a los que ya les mandaste la cotización y esperan el pago.',
+    pendientes: 'Lo que no salió en un pedido queda en un pedido de pendientes aparte en Odoo. Cuando lo mandes como cotización, entra a armar.',
+};
+const VACIO = {
+    pedidos: ['No hay pedidos con estos filtros', 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar cotizaciones enviadas. Las que ya tienen factura o fueron al POS no aparecen.'],
+    esperando_pago: ['No hay pedidos esperando pago', 'Cuando un pedido controlado tenga la cotización enviada, aparece acá.'],
+    pendientes: ['No hay pendientes', 'Cuando cierres un control con productos que no salieron, el pedido de pendientes aparece acá.'],
+};
 
 const fmtHora = (iso) => (iso
     ? new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
@@ -302,6 +317,7 @@ export default function PedidoEnvios() {
 
     const COLS_PEDIDOS = '40px 130px minmax(0, 1fr) 140px 160px 110px 244px 32px';
     const COLS_PAGO = '130px minmax(0, 1fr) 200px 120px 110px 250px';
+    const COLS_PEND = '130px minmax(0, 1fr) 170px 130px 120px 32px';
     const header = (cols, labels) => (
         <div style={{
             display: 'grid', gridTemplateColumns: cols, alignItems: 'center', padding: `0 ${pad}px 0 12px`,
@@ -487,6 +503,62 @@ export default function PedidoEnvios() {
         );
     };
 
+    const filaPendiente = (it) => {
+        const est = ESTADO_PENDIENTES[it.pendientes_odoo_state] || ESTADO_PENDIENTES.draft;
+        const abrir = () => navigate(`/pedidos/armado/${it.id}`);
+        const unidades = Number(it.qty_pendiente) || 0;
+        const pedido = (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontFamily: t.font.mono, fontSize: 13, fontWeight: t.font.weight.semibold, color: t.color.text }}>{it.odoo_order_name}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: t.color.textFaint, ...t.numericStyle }}>
+                    {fmtFecha(it.saldado_at || it.date_order)}
+                    {mostrarEmpresa && etiquetaEmpresa(it)}
+                </span>
+            </div>
+        );
+        const destino = (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontFamily: t.font.mono, fontSize: 13, fontWeight: t.font.weight.semibold, color: t.color.accent }}>{it.backorder_odoo_name || '—'}</span>
+                <span style={{ fontSize: 11, color: t.color.textFaint }}>pedido de pendientes</span>
+            </div>
+        );
+        if (isMobile) {
+            return (
+                <button key={it.id} type="button" onClick={abrir} style={{
+                    display: 'flex', flexDirection: 'column', gap: 8, width: '100%', padding: 14, border: 'none',
+                    borderTop: `1px solid ${t.color.border}`, background: t.color.surface, textAlign: 'left',
+                    cursor: 'pointer', fontFamily: t.font.family,
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%' }}>
+                        {pedido}
+                        <Badge tone={est.tone} dot>{est.label}</Badge>
+                    </div>
+                    <span style={{ fontSize: 15, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.partner_name || 'Sin cliente'}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, width: '100%' }}>
+                        {destino}
+                        <span style={{ fontSize: 15, fontWeight: t.font.weight.semibold, color: t.color.text, ...t.numericStyle }}>{unidades} u.</span>
+                    </div>
+                </button>
+            );
+        }
+        return (
+            <div key={it.id} onClick={abrir} style={{
+                display: 'grid', gridTemplateColumns: COLS_PEND, alignItems: 'center',
+                padding: `10px ${pad}px 10px 12px`, minHeight: 60, borderTop: `1px solid ${t.color.border}`,
+                cursor: 'pointer', fontFamily: t.font.family,
+            }}>
+                {pedido}
+                <span style={{ fontSize: t.font.size.base, fontWeight: t.font.weight.medium, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 12 }}>
+                    {it.partner_name || 'Sin cliente'}
+                </span>
+                {destino}
+                <span style={{ fontSize: t.font.size.base, color: t.color.text, ...t.numericStyle }}>{unidades} u.</span>
+                <div><Badge tone={est.tone} dot>{est.label}</Badge></div>
+                <span style={{ display: 'flex', justifyContent: 'center', color: t.color.textFaint }}><Icon.ChevronRight size={18} /></span>
+            </div>
+        );
+    };
+
     return (
         <div style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1180, margin: '0 auto' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
@@ -495,9 +567,7 @@ export default function PedidoEnvios() {
                         Armado y control
                     </h1>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, fontFamily: t.font.family }}>
-                        {solapa === 'pedidos'
-                            ? 'Cotización enviada entra acá. Se confirma en Odoo, se arma con el envío 1 y se controla con el envío 2. Si se factura o va al POS, desaparece.'
-                            : 'Pedidos controlados a los que ya les mandaste la cotización y esperan el pago.'}
+                        {SUBTITULO[solapa]}
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', width: isMobile ? '100%' : undefined }}>
@@ -533,6 +603,7 @@ export default function PedidoEnvios() {
                 tabs={[
                     { value: 'pedidos', label: 'Pedidos', count: data.solapas?.pedidos ?? null },
                     { value: 'esperando_pago', label: 'Esperando pago', count: data.solapas?.esperando_pago ?? null },
+                    { value: 'pendientes', label: 'Pendientes', count: data.solapas?.pendientes ?? null },
                 ]}
                 value={solapa}
                 onChange={(v) => { setSolapa(v); setAviso(null); }}
@@ -623,12 +694,10 @@ export default function PedidoEnvios() {
             ) : items.length === 0 ? (
                 <Card style={{ textAlign: 'center', padding: 28 }}>
                     <div style={{ fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>
-                        {solapa === 'pedidos' ? 'No hay pedidos con estos filtros' : 'No hay pedidos esperando pago'}
+                        {VACIO[solapa][0]}
                     </div>
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 6, fontFamily: t.font.family }}>
-                        {solapa === 'pedidos'
-                            ? 'Probá con otro estado o fecha, o tocá «Traer de Odoo» para bajar cotizaciones enviadas. Las que ya tienen factura o fueron al POS no aparecen.'
-                            : 'Cuando un pedido controlado tenga la cotización enviada, aparece acá.'}
+                        {VACIO[solapa][1]}
                     </div>
                 </Card>
             ) : (
@@ -637,6 +706,8 @@ export default function PedidoEnvios() {
                         <div style={{ minWidth: isMobile ? 0 : 960 }}>
                             {!isMobile && (solapa === 'pedidos'
                                 ? header(COLS_PEDIDOS, ['', 'Pedido', 'Cliente', 'Estado', 'Avance', 'Total', 'Cotización', ''])
+                                : solapa === 'pendientes'
+                                ? header(COLS_PEND, ['Pedido', 'Cliente', 'Pendientes en', 'Unidades', 'En Odoo', ''])
                                 : header(COLS_PAGO, ['Pedido', 'Cliente', 'Cotización enviada', 'Esperando', 'Total', 'Acciones']))}
                             {solapa === 'pedidos'
                                 ? grupos.map((g, i) => (
@@ -653,6 +724,8 @@ export default function PedidoEnvios() {
                                         {g.rows.map(filaPedido)}
                                     </div>
                                 ))
+                                : solapa === 'pendientes'
+                                ? items.map(filaPendiente)
                                 : items.map(filaPago)}
                         </div>
                     </div>

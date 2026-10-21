@@ -1,19 +1,8 @@
--- El estado de armado/control sigue los envíos de Odoo, no se esconde el pedido.
--- Recolectar+entrega done (o factura/POS) = controlado. Un envío done = para controlar.
-UPDATE pedido_envios
-   SET estado = 'saldado',
-       saldado_at = COALESCE(saldado_at, NOW()),
-       updated_at = NOW()
- WHERE estado NOT IN ('cancelado', 'saldado')
-   AND (
-        COALESCE(odoo_picking_done_count, 0) >= 2
-     OR COALESCE(odoo_invoice_count, 0) > 0
-     OR COALESCE(odoo_pos_count, 0) > 0
-     OR COALESCE(invoice_status, '') = 'invoiced'
-   );
+-- El estado de armado/control sale de los envíos de Odoo (lo recalcula el sync).
+-- Acá sólo el estado en Odoo del pedido de pendientes, para la solapa Pendientes:
+-- draft/sent = sigue esperando; sale/done/cancel = ya se resolvió.
+ALTER TABLE pedido_envios ADD COLUMN IF NOT EXISTS pendientes_odoo_state TEXT;
 
-UPDATE pedido_envios
-   SET estado = 'armado',
-       updated_at = NOW()
- WHERE estado IN ('pendiente', 'armando')
-   AND COALESCE(odoo_picking_done_count, 0) = 1;
+CREATE INDEX IF NOT EXISTS idx_pedido_envios_backorder_odoo
+    ON pedido_envios (company_key, backorder_odoo_id)
+    WHERE backorder_odoo_id IS NOT NULL;
