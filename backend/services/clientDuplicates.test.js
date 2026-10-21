@@ -16,6 +16,10 @@ function testKeys() {
     assert.strictEqual(docKey('20-42087268-3'), '42087268');
     assert.strictEqual(docKey(false), null);
     assert.strictEqual(docKey('123'), null);
+    // DNI de relleno
+    assert.strictEqual(docKey('12345678'), null);
+    assert.strictEqual(docKey('11111111'), null);
+    assert.strictEqual(docKey('20-12345678-3'), null);
     assert.strictEqual(nameKey('Marisa Becerro Estado: Cliente SLD'), 'marisa becerro');
     assert.strictEqual(nameKey('Yesica González '), 'yesica gonzalez');
 }

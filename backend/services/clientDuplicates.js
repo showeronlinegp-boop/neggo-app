@@ -23,12 +23,17 @@ function nameKey(name) {
         .trim();
 }
 
-/** DNI de un documento: el DNI tal cual o el que lleva adentro un CUIT de 11 dígitos. */
+/**
+ * DNI de un documento: el DNI tal cual o el que lleva adentro un CUIT de 11 dígitos.
+ * Los de relleno (12345678, 11111111...) no cuentan: los cargan para varios clientes.
+ */
 function docKey(vat) {
     const digits = String(vat || '').replace(/\D/g, '');
-    if (digits.length === 11) return String(Number(digits.slice(2, 10)));
-    if (digits.length === 7 || digits.length === 8) return String(Number(digits));
-    return null;
+    let dni = null;
+    if (digits.length === 11) dni = String(Number(digits.slice(2, 10)));
+    else if (digits.length === 7 || digits.length === 8) dni = String(Number(digits));
+    if (!dni || /^(\d)\1+$/.test(dni) || '123456789'.includes(dni) || '987654321'.includes(dni)) return null;
+    return dni;
 }
 
 /** Últimos 10 dígitos del teléfono (ignora +54 y el 9 de celular). */
