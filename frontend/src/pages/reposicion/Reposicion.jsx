@@ -41,6 +41,47 @@ const fmtFecha = (iso) => iso
     ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '—';
 
+// Pedido al proveedor en PDF, con el mismo generador que Preventas (Chrome headless en el backend).
+// items: [{ name, internal_ref, barcode, image_url, standard_price, qty }]
+async function descargarPedidoPDF(vendor, items) {
+    const products = items.map(it => ({
+        product_name: it.name,
+        external_id:  it.internal_ref || it.barcode || null,
+        unit_cost:    Number(it.standard_price) > 0 ? Number(it.standard_price) : null,
+        total_qty:    it.qty,
+        image_url:    it.image_url,
+    }));
+    const hasCost = products.some(p => p.unit_cost != null);
+    const totalCost = products.reduce((s, p) => p.unit_cost != null ? s + p.unit_cost * p.total_qty : s, 0);
+    const token = localStorage.getItem('neggo_token');
+    const res = await fetch('/api/preventas/odoo-quotations/pdf', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            supplier_name: vendor,
+            products,
+            total_cost: hasCost ? Math.round(totalCost * 100) / 100 : null,
+            total_qty:  products.reduce((s, p) => s + p.total_qty, 0),
+        }),
+    });
+    if (!res.ok) {
+        let message = 'No se pudo generar el PDF';
+        try {
+            const body = await res.json();
+            if (body?.error) message = body.error;
+        } catch { /* la respuesta no era JSON */ }
+        throw new Error(message);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safe = vendor.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+    a.href = url;
+    a.download = `reposicion-${safe}-${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
 function agruparPorProveedor(items) {
     const grupos = new Map();
     for (const it of items) {
@@ -263,6 +304,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
     const [qtys, setQtys] = useState({});
     const [selected, setSelected] = useState({});
     const [guardando, setGuardando] = useState(false);
+    const [generandoPdf, setGenerandoPdf] = useState(false);
     const [aviso, setAviso] = useState(null);
 
     const cargar = useCallback(async () => {
@@ -305,6 +347,23 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
         await cargar();
     };
 
+    // Sale en el PDF lo tildado con cantidad mayor a cero.
+    const pdf = async () => {
+        const items = (detalle?.items || [])
+            .filter(it => selected[it.id] && Number(qtys[it.id]) > 0)
+            .map(it => ({ ...it, qty: Math.round(Number(qtys[it.id])) }));
+        if (!items.length) { setError('Tildá al menos un producto con cantidad para armar el PDF'); return; }
+        setGenerandoPdf(true);
+        setError(null);
+        try {
+            await descargarPedidoPDF(vendor, items);
+        } catch (err) {
+            setError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setGenerandoPdf(false);
+        }
+    };
+
     const th = {
         padding: '8px 10px', textAlign: 'left', fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
         color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -325,6 +384,15 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
             footer={(
                 <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                     <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+                    <Button
+                        variant="ghost"
+                        leftIcon={<Icon.FileText size={14} />}
+                        disabled={generandoPdf || loading || !(detalle?.items?.length)}
+                        title="Descargar el pedido al proveedor con lo tildado y sus cantidades"
+                        onClick={pdf}
+                    >
+                        {generandoPdf ? 'Generando…' : 'PDF'}
+                    </Button>
                     <Button
                         variant="ghost"
                         leftIcon={<Icon.X size={14} />}
@@ -425,7 +493,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
                         </div>
                     )}
                     <div style={{ marginTop: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal; no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola.
+                        El ritmo y el Pareto ABC van por unidades vendidas (no por monto). La cantidad sugerida es ~2 semanas de ritmo de venta. Las ventas se refrescan al abrir este modal; no hay cron diario. No se genera OC en Odoo: la decisión queda en la cola. El PDF lleva lo tildado con su cantidad y el costo de Odoo.
                     </div>
                 </div>
             )}
