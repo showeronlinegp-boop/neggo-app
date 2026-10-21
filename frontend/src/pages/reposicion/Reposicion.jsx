@@ -700,6 +700,20 @@ export default function Reposicion() {
 
     const mostrarError = useCallback((msg) => setError(msg), []);
 
+    // PDF rápido desde el encabezado del proveedor: todo lo de la lista, una unidad de cada uno.
+    const [pdfProveedor, setPdfProveedor] = useState(null);
+    const pdfEncabezado = async (proveedor, lista) => {
+        setPdfProveedor(proveedor);
+        setError(null);
+        try {
+            await descargarPedidoPDF(proveedor, lista.map(it => ({ ...it, qty: 1 })));
+        } catch (err) {
+            mostrarError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setPdfProveedor(null);
+        }
+    };
+
     const cambiarEstado = async (item, estado) => {
         setTrabajando(item.id);
         setError(null);
@@ -914,6 +928,15 @@ export default function Reposicion() {
                                 <Button size="sm" variant="ghost"
                                     onClick={(e) => { e.stopPropagation(); setProveedorDecidir(proveedor); }}>
                                     Decidir
+                                </Button>
+                            )}
+                            {(pendiente || encargado) && (
+                                <Button size="sm" variant="ghost"
+                                    leftIcon={<Icon.FileText size={13} />}
+                                    disabled={pdfProveedor === proveedor}
+                                    title="Descargar el pedido en PDF (una unidad de cada producto)"
+                                    onClick={(e) => { e.stopPropagation(); pdfEncabezado(proveedor, lista); }}>
+                                    {pdfProveedor === proveedor ? 'Generando…' : 'PDF'}
                                 </Button>
                             )}
                             {!isMobile && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Ver catálogo</span>}
