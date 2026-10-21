@@ -328,6 +328,22 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
 
     const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }));
 
+    // La cantidad queda guardada al salir del casillero, aunque no se resuelva el ítem:
+    // así la usa el PDF del encabezado del proveedor.
+    const guardarQty = async (it) => {
+        const raw = qtys[it.id];
+        if (raw === '' || raw == null) return;
+        const qty = Number(raw);
+        if (!Number.isInteger(qty) || qty < 0 || qty === it.qty_decidida) return;
+        const res = await api.patch(`/reposicion/${it.id}`, { estado: it.estado, qty_decidida: qty });
+        if (!res.success) { setError(res.error || 'No se pudo guardar la cantidad'); return; }
+        setDetalle(prev => prev && ({
+            ...prev,
+            items: prev.items.map(x => x.id === it.id ? { ...x, qty_decidida: qty } : x),
+        }));
+        onChanged?.();
+    };
+
     const itemsSeleccionados = () => (detalle?.items || [])
         .filter(it => selected[it.id])
         .map(it => ({ id: it.id, qty_decidida: qtys[it.id] === '' ? undefined : Number(qtys[it.id]) }));
@@ -476,6 +492,7 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
                                             step={1}
                                             value={qtys[it.id] ?? ''}
                                             onChange={e => setQtys(prev => ({ ...prev, [it.id]: e.target.value }))}
+                                            onBlur={() => guardarQty(it)}
                                             style={{
                                                 width: 72, padding: '4px 6px', border: `1px solid ${t.color.border}`,
                                                 borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: t.font.size.sm,
@@ -700,13 +717,14 @@ export default function Reposicion() {
 
     const mostrarError = useCallback((msg) => setError(msg), []);
 
-    // PDF rápido desde el encabezado del proveedor: todo lo de la lista, una unidad de cada uno.
+    // PDF rápido desde el encabezado del proveedor: todo lo de la lista, con la cantidad
+    // cargada en «Decidir» (una unidad si no se cargó ninguna).
     const [pdfProveedor, setPdfProveedor] = useState(null);
     const pdfEncabezado = async (proveedor, lista) => {
         setPdfProveedor(proveedor);
         setError(null);
         try {
-            await descargarPedidoPDF(proveedor, lista.map(it => ({ ...it, qty: 1 })));
+            await descargarPedidoPDF(proveedor, lista.map(it => ({ ...it, qty: Number(it.qty_decidida) > 0 ? Number(it.qty_decidida) : 1 })));
         } catch (err) {
             mostrarError(err.message || 'No se pudo generar el PDF');
         } finally {
@@ -934,7 +952,7 @@ export default function Reposicion() {
                                 <Button size="sm" variant="ghost"
                                     leftIcon={<Icon.FileText size={13} />}
                                     disabled={pdfProveedor === proveedor}
-                                    title="Descargar el pedido en PDF (una unidad de cada producto)"
+                                    title="Descargar el pedido en PDF con las cantidades cargadas en «Decidir» (una unidad si no tiene)"
                                     onClick={(e) => { e.stopPropagation(); pdfEncabezado(proveedor, lista); }}>
                                     {pdfProveedor === proveedor ? 'Generando…' : 'PDF'}
                                 </Button>
