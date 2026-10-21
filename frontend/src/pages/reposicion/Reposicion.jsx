@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
-import { fmtAR } from '../../theme/tokens';
+import { fmtAR, fmtInt } from '../../theme/tokens';
 import useIsMobile from '../../hooks/useIsMobile';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
@@ -660,6 +660,11 @@ function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, t }
                         {fmtAR(it.list_price)}
                     </div>
                     <div style={{ fontSize: 11, color: t.color.textMuted, ...t.numericStyle }}>{fmtAR(it.standard_price)}</div>
+                    {it.qty_decidida != null && (
+                        <div style={{ fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.text, marginTop: 2, ...t.numericStyle }}>
+                            × {fmtInt(it.qty_decidida)}
+                        </div>
+                    )}
                 </div>
             </div>
             <div style={{ fontSize: 11, color: t.color.textFaint, fontFamily: t.font.family, ...t.numericStyle }}>
@@ -948,12 +953,18 @@ export default function Reposicion() {
                                     Decidir
                                 </Button>
                             )}
-                            {(pendiente || encargado) && (
+                            {(pendiente || encargado || lista.some(i => i.estado === 'repuesto')) && (
                                 <Button size="sm" variant="ghost"
                                     leftIcon={<Icon.FileText size={13} />}
                                     disabled={pdfProveedor === proveedor}
-                                    title="Descargar el pedido en PDF con las cantidades cargadas en «Decidir» (una unidad si no tiene)"
-                                    onClick={(e) => { e.stopPropagation(); pdfEncabezado(proveedor, lista); }}>
+                                    title={pendiente || encargado
+                                        ? 'Descargar el pedido en PDF con las cantidades cargadas en «Decidir» (una unidad si no tiene)'
+                                        : 'Descargar en PDF los repuestos de este proveedor con sus cantidades'}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        // En resueltos van solo los repuestos: lo descartado no se pide
+                                        pdfEncabezado(proveedor, pendiente || encargado ? lista : lista.filter(i => i.estado === 'repuesto'));
+                                    }}>
                                     {pdfProveedor === proveedor ? 'Generando…' : 'PDF'}
                                 </Button>
                             )}
@@ -980,6 +991,7 @@ export default function Reposicion() {
                                             <th style={thStyle}>Producto</th>
                                             <th style={thStyle}>{pendiente ? 'Motivo' : encargado ? 'Estado' : 'Resultado'}</th>
                                             <th style={thStyle}>{pendiente ? 'Desde' : encargado ? 'Pedido' : 'Resuelto'}</th>
+                                            <th style={{ ...thStyle, textAlign: 'right' }}>Cant.</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}>Costo</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}>Venta</th>
                                             <th style={{ ...thStyle, textAlign: 'right' }}></th>
@@ -1018,6 +1030,9 @@ export default function Reposicion() {
                                                     {(pendiente ? it.created_by_name : encargado ? (it.encargado_by_name || it.created_by_name) : it.resolved_by_name) && (
                                                         <div>{pendiente ? it.created_by_name : encargado ? (it.encargado_by_name || it.created_by_name) : it.resolved_by_name}</div>
                                                     )}
+                                                </td>
+                                                <td style={{ ...tdStyle, textAlign: 'right', fontWeight: t.font.weight.semibold, ...t.numericStyle }}>
+                                                    {it.qty_decidida != null ? fmtInt(it.qty_decidida) : '—'}
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: 'right', color: t.color.textMuted, ...t.numericStyle }}>{fmtAR(it.standard_price)}</td>
                                                 <td style={{ ...tdStyle, textAlign: 'right', fontWeight: t.font.weight.semibold, color: t.color.primary, ...t.numericStyle }}>{fmtAR(it.list_price)}</td>
