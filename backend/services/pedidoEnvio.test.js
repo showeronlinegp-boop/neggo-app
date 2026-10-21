@@ -265,7 +265,10 @@ function testAuditarDrift() {
 
 function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent' })), true);
-    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), false);
+    // Orden de venta confirmada directo en Odoo, sin factura ni POS: también se arma
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), true);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale', pos_order_count: 1 })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'cancel' })), false);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
     // Sólo arranca con cotizaciones enviadas (el pedido de pendientes en borrador espera en su solapa)
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft' })), false);
