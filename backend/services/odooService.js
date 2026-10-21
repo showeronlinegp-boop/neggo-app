@@ -575,20 +575,44 @@ async function getSaleOrderHeader(odooOrderId, companyKey) {
     const rows = await callOdoo(
         'sale.order',
         'read',
-        [[odooOrderId], ['id', 'name', 'state', 'invoice_status', 'picking_ids']],
+        [[odooOrderId], ['id', 'name', 'state', 'invoice_status', 'invoice_count', 'invoice_ids', 'pos_order_count', 'picking_ids']],
         withCompany(companyId)
     );
     const row = rows?.[0];
     if (!row) return null;
     const picking_ids = Array.isArray(row.picking_ids) ? row.picking_ids : [];
+    const invoice_ids = Array.isArray(row.invoice_ids) ? row.invoice_ids : [];
     const [withCount] = await attachDonePickingCounts(companyKey, [{ id: row.id, picking_ids }]);
     return {
         id: row.id,
         name: row.name,
         state: row.state,
         invoice_status: row.invoice_status || null,
+        invoice_count: contarFacturas(row),
+        invoice_ids,
+        pos_order_count: Number(row.pos_order_count) || 0,
         picking_ids,
+        pickings: withCount?.pickings || [],
         done_picking_count: withCount?.done_picking_count || 0,
+    };
+}
+
+function contarFacturas(row) {
+    const ids = Array.isArray(row?.invoice_ids) ? row.invoice_ids.filter(Boolean) : [];
+    return Math.max(Number(row?.invoice_count) || 0, ids.length);
+}
+
+function mapMoveRow(r) {
+    if (!r || r.id == null) return null;
+    return {
+        id: r.id,
+        product_id: Array.isArray(r.product_id) ? r.product_id[0] : r.product_id,
+        product_uom_qty: Number(r.product_uom_qty) || 0,
+        quantity: Number(r.quantity) || 0,
+        picked: !!r.picked,
+        state: r.state || null,
+        sale_line_id: Array.isArray(r.sale_line_id) ? r.sale_line_id[0] : (r.sale_line_id || null),
+        picking_id: Array.isArray(r.picking_id) ? r.picking_id[0] : (r.picking_id || null),
     };
 }
 
@@ -613,9 +637,10 @@ function pickingEsEnvio1(row) {
 async function attachDonePickingCounts(companyKey, orders) {
     const allIds = [...new Set((orders || []).flatMap((o) => o.picking_ids || []).filter(Boolean))];
     const done = new Set();
+    let rows = [];
     if (allIds.length) {
         const companyId = await resolveCompanyId(companyKey);
-        const rows = await readByIds(
+        rows = await readByIds(
             'stock.picking',
             allIds,
             ['id', 'state', 'picking_type_code'],
@@ -625,8 +650,41 @@ async function attachDonePickingCounts(companyKey, orders) {
             if (r.state === 'done' && pickingEsEnvio1(r)) done.add(r.id);
         }
     }
+    const doneIds = rows.filter((r) => r.state === 'done' && pickingEsEnvio1(r)).map((r) => r.id);
+    const movesByPicking = new Map();
+    if (doneIds.length) {
+        const companyId = await resolveCompanyId(companyKey);
+        const moveRows = [];
+        for (let i = 0; i < doneIds.length; i += 80) {
+            const chunk = doneIds.slice(i, i + 80);
+            const batch = await callOdoo(
+                'stock.move',
+                'search_read',
+                [[['picking_id', 'in', chunk], ['state', '!=', 'cancel']]],
+                withCompany(companyId, {
+                    fields: ['id', 'picking_id', 'product_id', 'product_uom_qty', 'quantity', 'picked', 'state', 'sale_line_id'],
+                    limit: 500,
+                })
+            ) || [];
+            moveRows.push(...batch);
+        }
+        for (const m of moveRows) {
+            const mapped = mapMoveRow(m);
+            if (!mapped?.picking_id) continue;
+            if (!movesByPicking.has(mapped.picking_id)) movesByPicking.set(mapped.picking_id, []);
+            movesByPicking.get(mapped.picking_id).push(mapped);
+        }
+    }
+    const byId = new Map(rows.map((r) => [r.id, r]));
     for (const o of orders || []) {
-        o.done_picking_count = (o.picking_ids || []).filter((id) => done.has(id)).length;
+        const ids = o.picking_ids || [];
+        o.pickings = ids.map((id) => byId.get(id)).filter(Boolean).map((r) => ({
+            id: r.id,
+            state: r.state || null,
+            picking_type_code: r.picking_type_code || null,
+            moves: movesByPicking.get(r.id) || [],
+        }));
+        o.done_picking_count = ids.filter((id) => done.has(id)).length;
     }
     return orders;
 }
@@ -706,15 +764,7 @@ async function getPickingMoves(pickingId, companyKey) {
             order: 'id asc',
         })
     ) || [];
-    return rows.map((r) => ({
-        id: r.id,
-        product_id: Array.isArray(r.product_id) ? r.product_id[0] : r.product_id,
-        product_uom_qty: Number(r.product_uom_qty) || 0,
-        quantity: Number(r.quantity) || 0,
-        picked: !!r.picked,
-        state: r.state || null,
-        sale_line_id: Array.isArray(r.sale_line_id) ? r.sale_line_id[0] : (r.sale_line_id || null),
-    }));
+    return rows.map(mapMoveRow).filter(Boolean);
 }
 
 async function writePickingMoveQuantities(writes, companyKey) {
@@ -1368,7 +1418,7 @@ async function getSaleOrdersWithLines(companyKey, {
             fields: [
                 'id', 'name', 'partner_id', 'date_order', 'amount_total',
                 'amount_untaxed', 'state', 'order_line', 'origin', 'client_order_ref',
-                'invoice_status', 'locked', 'invoice_count', 'pos_order_count', 'picking_ids',
+                'invoice_status', 'locked', 'invoice_count', 'invoice_ids', 'pos_order_count', 'picking_ids',
             ],
             order: 'date_order desc',
             limit: pageSize,
@@ -1419,7 +1469,8 @@ async function getSaleOrdersWithLines(companyKey, {
         client_order_ref: o.client_order_ref || null,
         invoice_status:   o.invoice_status || null,
         locked:           !!o.locked,
-        invoice_count:    Number(o.invoice_count) || 0,
+        invoice_count:    contarFacturas(o),
+        invoice_ids:      Array.isArray(o.invoice_ids) ? o.invoice_ids : [],
         pos_order_count:  Number(o.pos_order_count) || 0,
         picking_ids:      Array.isArray(o.picking_ids) ? o.picking_ids : [],
         lines:            linesByOrder[o.id] || [],
@@ -1437,14 +1488,15 @@ async function getSaleOrderHeaders(companyKey, ids) {
     const rows = await readByIds(
         'sale.order',
         ids,
-        ['id', 'state', 'invoice_status', 'invoice_count', 'pos_order_count', 'picking_ids'],
+        ['id', 'state', 'invoice_status', 'invoice_count', 'invoice_ids', 'pos_order_count', 'picking_ids'],
         { allowed_company_ids: [companyId] }
     );
     const mapped = rows.map(o => ({
         id:              o.id,
         state:           o.state,
         invoice_status:  o.invoice_status || null,
-        invoice_count:   Number(o.invoice_count) || 0,
+        invoice_count:   contarFacturas(o),
+        invoice_ids:     Array.isArray(o.invoice_ids) ? o.invoice_ids : [],
         pos_order_count: Number(o.pos_order_count) || 0,
         picking_ids:     Array.isArray(o.picking_ids) ? o.picking_ids : [],
     }));
