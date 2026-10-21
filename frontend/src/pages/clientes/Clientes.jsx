@@ -95,10 +95,10 @@ function FilaCliente({ c, onAbrir, onImportancia, isMobile, t }) {
                     {c.city && <span>{c.city}</span>}
                     {c.rubro && <span>{c.rubro}</span>}
                 </div>
+                <div style={{ marginTop: isMobile ? 6 : 4 }}>
+                    <Importancia value={c.importance} size={isMobile ? 20 : 13} onChange={(n) => onImportancia(c, n)} />
+                </div>
             </div>
-            <span style={{ marginLeft: 'auto', paddingLeft: t.space[2] }}>
-                <Importancia value={c.importance} size={isMobile ? 20 : 14} onChange={(n) => onImportancia(c, n)} />
-            </span>
         </div>
     );
 

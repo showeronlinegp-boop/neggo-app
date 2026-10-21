@@ -149,14 +149,14 @@ async function setStage(target, { stage, reason, userId }) {
     });
 }
 
-/** Marca la importancia (0 a 5). Si no tenía seguimiento, lo crea en Frío. */
+/** Marca la importancia (0 a 5). Si no tenía seguimiento, lo crea en Frío sin fecha de etapa. */
 async function setImportance(target, { importance, userId }) {
     await ensureSchema();
     const n = parseImportance(importance);
     await assertTargetExists(target);
     await pool.query(
-        `INSERT INTO crm_followups (${target.col}, importance, importance_changed_at, importance_changed_by)
-         VALUES ($1, $2, NOW(), $3)
+        `INSERT INTO crm_followups (${target.col}, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         VALUES ($1, $2, NOW(), $3, NULL)
          ON CONFLICT (${target.col}) DO UPDATE
          SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
              importance_changed_by = EXCLUDED.importance_changed_by`,
