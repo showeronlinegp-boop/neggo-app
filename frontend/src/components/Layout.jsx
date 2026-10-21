@@ -463,7 +463,9 @@ function NavGroup({ group, userRole, currentPath, openGroups, onToggle, alertCou
                         {badgeTotal > 99 ? '99+' : badgeTotal}
                     </span>
                 )}
-                <Icon.ChevronRight size={12} color="currentColor" style={{ transition: 'transform 150ms', transform: isOpen ? 'rotate(90deg)' : 'none' }} />
+                {isOpen
+                    ? <Icon.ChevronDown size={12} color="currentColor" />
+                    : <Icon.ChevronRight size={12} color="currentColor" />}
             </button>
             {isOpen && visibleItems.map(item => (
                 <NavItem
