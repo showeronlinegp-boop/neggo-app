@@ -194,7 +194,7 @@ function mergeDuplicates({ orders, quotations, partners }) {
 }
 
 /**
- * El seguimiento (etapa, eventos, acciones) y los posibles clientes vinculados a una ficha
+ * El seguimiento (etapa, eventos, acciones, seguimiento cercano) y los posibles clientes vinculados a una ficha
  * que quedó unificada pasan al representante del grupo. Si los dos tenían etapa, queda la
  * del representante.
  */
@@ -205,7 +205,16 @@ async function moveFollowupsToRep(groups) {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        // La lista de seguimiento cercano (nota #74) puede no estar todavía
+        const { rows: [{ watchlist }] } = await client.query(
+            "SELECT to_regclass('crm_watchlist') IS NOT NULL AS watchlist");
         for (const [from, to] of moves) {
+            if (watchlist) {
+                await client.query(
+                    `UPDATE crm_watchlist SET odoo_partner_id = $2
+                     WHERE odoo_partner_id = $1 AND NOT EXISTS (SELECT 1 FROM crm_watchlist WHERE odoo_partner_id = $2)`,
+                    [from, to]);
+            }
             await client.query('UPDATE crm_events SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
             await client.query('UPDATE crm_actions SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
             await client.query('UPDATE crm_leads SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
