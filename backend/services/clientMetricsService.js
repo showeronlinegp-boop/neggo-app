@@ -332,17 +332,20 @@ async function refreshIfStale(maxAgeHours = 24) {
 }
 
 const HEALTH_VALUES = Object.values(health.HEALTH);
+// La importancia que marca el equipo multiplica la prioridad: ×1,5 con 1 cuadradito, ×3,5 con 5
+const PRIORITY_WITH_IMPORTANCE = 'priority * (1 + importance / 2.0)';
 const SORTS = {
-    prioridad: 'priority DESC, revenue_12m DESC',
+    prioridad: `${PRIORITY_WITH_IMPORTANCE} DESC, importance DESC, revenue_12m DESC`,
+    importancia: 'importance DESC, priority DESC, revenue_12m DESC',
     facturacion: 'revenue_12m DESC, partner_name ASC',
     ultima: 'last_purchase_date DESC NULLS LAST, partner_name ASC',
     nombre: 'partner_name ASC',
-    accion: 'next_action_date ASC NULLS LAST, priority DESC',
+    accion: `next_action_date ASC NULLS LAST, ${PRIORITY_WITH_IMPORTANCE} DESC`,
 };
 const STAGE_VALUES = followups.STAGES;
-// Cliente + etapa del funnel (sin fila = Frío) + fecha de la próxima acción pendiente
+// Cliente + etapa del funnel (sin fila = Frío) + importancia + fecha de la próxima acción pendiente
 const CLIENTS_FROM = `(
-    SELECT c.*, COALESCE(f.stage, 'frio') AS stage,
+    SELECT c.*, COALESCE(f.stage, 'frio') AS stage, COALESCE(f.importance, 0) AS importance,
            (SELECT MIN(a.due_date)::text FROM crm_actions a
             WHERE a.odoo_partner_id = c.odoo_partner_id AND a.done = false) AS next_action_date
     FROM client_metrics_cache c
@@ -351,7 +354,7 @@ const CLIENTS_FROM = `(
 
 /**
  * Listado de clientes (sin la cuenta genérica).
- * @param {{ search?: string, city?: string, rubro?: string, health?: string, stage?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
+ * @param {{ search?: string, city?: string, rubro?: string, health?: string, stage?: string, open?: boolean, importancia?: number, sort?: string, limit?: number, offset?: number }} f
  */
 async function listClients(f = {}) {
     await ensureSchema();
@@ -385,6 +388,12 @@ async function listClients(f = {}) {
         where.push(`stage = $${params.length}`);
     }
     if (f.open) where.push(`jsonb_array_length(open_quotations) > 0`);
+    // Importancia mínima (1 a 5)
+    const importanciaMin = parseInt(f.importancia, 10);
+    if (importanciaMin >= 1 && importanciaMin <= followups.IMPORTANCE_MAX) {
+        params.push(importanciaMin);
+        where.push(`importance >= $${params.length}`);
+    }
 
     const order = SORTS[f.sort] || SORTS.prioridad;
     const limit = Math.min(Math.max(parseInt(f.limit, 10) || 50, 1), 200);
@@ -396,7 +405,7 @@ async function listClients(f = {}) {
         `SELECT odoo_partner_id, partner_name, phone, city, tags, rubro, health, trend, trend_pct,
                 purchase_count, avg_ticket, revenue_12m, revenue_90d, last_purchase_date,
                 days_since_last_purchase, median_interval_days, interval_is_default,
-                monthly_revenue, open_quotations, priority, stage, next_action_date
+                monthly_revenue, open_quotations, priority, stage, importance, next_action_date
          FROM ${CLIENTS_FROM}
          WHERE ${whereSql}
          ORDER BY ${order}
