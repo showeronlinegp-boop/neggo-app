@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../api/client';
+import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../theme/ThemeContext';
 import { fmtAR } from '../../theme/tokens';
 import Card from '../../components/common/Card';
@@ -9,6 +10,8 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Toggle from '../../components/common/Toggle';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
+import FotoAmpliada from '../../components/common/FotoAmpliada';
+import MiniaturaFoto from '../../components/common/MiniaturaFoto';
 import * as Icon from '../../components/common/icons';
 
 const fmtDate = (iso) => {
@@ -20,6 +23,7 @@ const LIMIT = 50;
 
 export default function OdooProducts() {
     const { tokens: t } = useTheme();
+    const { user } = useAuth();
 
     const [company, setCompany] = useState('neggo');
     const [searchInput, setSearchInput] = useState('');
@@ -34,6 +38,9 @@ export default function OdooProducts() {
     const [lastSync, setLastSync] = useState(null);
     const [trabajando, setTrabajando] = useState(null);
     const [confirmar, setConfirmar] = useState(null);
+    const [foto, setFoto] = useState(null);
+    const [subiendoFoto, setSubiendoFoto] = useState(null);
+    const cerrarFoto = useCallback(() => setFoto(null), []);
 
     const load = useCallback(async () => {
         setLoading(true); setError(null);
@@ -62,6 +69,24 @@ export default function OdooProducts() {
         const como = res.data?.origen === 'archivado' ? 'agotado' : 'queda poco';
         setAviso(`«${p.name}» entró a Reposición como «${como}».`);
     };
+
+    // Misma carga que en Reposición: escribe la foto en Odoo Neggo
+    const subirFoto = async (p, file) => {
+        if (!file) return;
+        setSubiendoFoto(p.odoo_id); setError(null); setAviso(null);
+        const form = new FormData();
+        form.append('image', file);
+        const res = await api.post(`/reposicion/foto/${p.odoo_id}`, form);
+        setSubiendoFoto(null);
+        if (!res.success) { setError(res.error || 'No se pudo cargar la foto en Odoo'); return; }
+        // Cache-buster: la URL del template puede ser la misma que antes de tener foto
+        const imageUrl = res.data?.image_url ? `${res.data.image_url}?v=${Date.now()}` : null;
+        if (imageUrl) setProducts(prev => prev.map(x => x.odoo_id === p.odoo_id ? { ...x, image_url: imageUrl } : x));
+        setAviso(`Foto de «${p.name}» cargada en Odoo.`);
+    };
+
+    // Cargar foto escribe en Odoo: solo admin y solo Neggo (el endpoint no sabe escribir en Preventas)
+    const puedeSubirFoto = user?.role === 'admin' && company === 'neggo';
 
     const confirmarOdoo = async () => {
         const { tipo, p } = confirmar || {};
@@ -201,6 +226,7 @@ export default function OdooProducts() {
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                             <thead>
                                 <tr>
+                                    <th style={{ ...thStyle, width: 1 }}>Foto</th>
                                     <th style={thStyle}>ID Odoo</th>
                                     <th style={thStyle}>Nombre</th>
                                     <th style={thStyle}>Referencia</th>
@@ -217,6 +243,10 @@ export default function OdooProducts() {
                             <tbody>
                                 {products.map(p => (
                                     <tr key={p.id}>
+                                        <td style={{ ...tdStyle, padding: '6px 12px' }}>
+                                            <MiniaturaFoto p={p} size={40} onVerFoto={setFoto}
+                                                onSubirFoto={puedeSubirFoto ? subirFoto : null} subiendoFoto={subiendoFoto} />
+                                        </td>
                                         <td style={{ ...tdStyle, fontFamily: t.font.mono, color: t.color.textFaint, fontSize: t.font.size.xs }}>{p.odoo_id}</td>
                                         <td style={{ ...tdStyle, fontWeight: t.font.weight.medium, maxWidth: 280 }}>
                                             <span title={p.name} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
@@ -274,6 +304,13 @@ export default function OdooProducts() {
                     </div>
                 </div>
             )}
+
+            <FotoAmpliada
+                imageUrl={foto?.image_url}
+                nombre={foto?.name}
+                detalle={foto ? (foto.internal_ref || foto.barcode) : null}
+                onClose={cerrarFoto}
+            />
 
             <ConfirmDialog
                 isOpen={!!confirmar}
