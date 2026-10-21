@@ -535,6 +535,7 @@ CREATE TABLE IF NOT EXISTS pedido_envios (
     odoo_picking_state VARCHAR(20),
     odoo_picking_backorder_id INTEGER,
     odoo_picking_backorder_name VARCHAR(50),
+    odoo_picking_done_count INTEGER,
     estado VARCHAR(20) NOT NULL DEFAULT 'pendiente',
     assembled_by INTEGER REFERENCES users(id),
     assembled_at TIMESTAMP,

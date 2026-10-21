@@ -13,6 +13,13 @@ const {
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
+    ordenEnviosYaHechos,
+    clasificarEnvios,
+    etapaDesdeOdoo,
+    estadoSegunOdoo,
+    qtyDesdeMoves,
+    fuentesDeQty,
+    planIgualar,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -50,6 +57,9 @@ function testListado() {
     const pedidos = condicionesListado({ companies });
     assert.deepStrictEqual(pedidos.params, [companies]);
     assert.ok(pedidos.where.includes('e.cotizacion_enviada_at IS NULL'));
+    assert.ok(pedidos.where.includes("e.estado <> 'cancelado'"));
+    assert.ok(pedidos.where.some((w) => w.includes("invoice_status") && w.includes('odoo_pos_count')));
+    assert.ok(!pedidos.where.some((w) => w.includes('odoo_picking_done_count')));
 
     const esperando = condicionesListado({ companies, solapa: 'esperando_pago', q: 'S04', dias: '7' });
     assert.deepStrictEqual(esperando.params, [companies, '%S04%', 7]);
@@ -61,9 +71,10 @@ function testListado() {
     // Días inválidos no filtran
     assert.strictEqual(condicionesListado({ companies, dias: 'x' }).params.length, 1);
 
-    assert.ok(ordenListado(undefined, 'pedidos').startsWith('x.date_order ASC'));
-    assert.ok(ordenListado('nuevos', 'pedidos').startsWith('x.date_order DESC'));
-    assert.ok(ordenListado('viejos', 'esperando_pago').startsWith('x.cotizacion_enviada_at ASC'));
+    assert.ok(ordenListado(undefined, 'pedidos').includes('x.date_order ASC'));
+    assert.ok(ordenListado(undefined, 'pedidos').includes("x.estado = 'saldado'"));
+    assert.ok(ordenListado('nuevos', 'pedidos').includes('x.date_order DESC'));
+    assert.ok(ordenListado('viejos', 'esperando_pago').includes('x.cotizacion_enviada_at ASC'));
 }
 
 function testBarcode() {
@@ -211,13 +222,164 @@ function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent' })), true);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), false);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
+    // Sólo arranca con cotizaciones enviadas (el pedido de pendientes en borrador espera en su solapa)
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft' })), false);
+    const pend = { client_order_ref: 'Pendientes de S00042' };
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', ...pend })), true);
     assert.strictEqual(ordenFacturada(odooOrder({ invoice_status: 'invoiced' })), true);
     assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
     // Con factura (aunque sea borrador) o derivada al POS no se arma
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_count: 1 })), false);
+    assert.strictEqual(ordenCobradaAparte(odooOrder({ invoice_status: 'to invoice', invoice_count: 1 })), true);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', pos_order_count: 1 })), false);
     assert.strictEqual(ordenCobradaAparte(odooOrder({ pos_order_count: 1 })), true);
     assert.strictEqual(ordenCobradaAparte(odooOrder({})), false);
+    // La base son los envíos de Odoo: 2 validados no se arma
+    assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 2 })), true);
+    assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 1 })), false);
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', done_picking_count: 2 })), false);
+    const yaEnviada = auditarEmpezarArmar(odooOrder({ state: 'sale', done_picking_count: 2 }));
+    assert.strictEqual(yaEnviada.ok, false);
+    assert.match(yaEnviada.error, /envíos hechos/);
+    const facturada = auditarEmpezarArmar(odooOrder({ state: 'sale', invoice_status: 'invoiced' }));
+    assert.strictEqual(facturada.ok, false);
+    assert.match(facturada.error, /factura|POS/);
+}
+
+function testEtapaDesdeEnviosOdoo() {
+    const nahue = clasificarEnvios([
+        { id: 6335, state: 'cancel', picking_type_code: 'internal' },
+        { id: 6333, state: 'done', picking_type_code: 'internal' },
+        { id: 6334, state: 'done', picking_type_code: 'outgoing' },
+    ]);
+    assert.deepStrictEqual(nahue, { para_armar: false, reabierto: false, envio1_done: true, envio2_done: true });
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 6333, state: 'done', picking_type_code: 'internal' },
+        { id: 6334, state: 'done', picking_type_code: 'outgoing' },
+    ] }), 'saldado');
+
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'assigned', picking_type_code: 'internal' },
+    ] }), 'pendiente');
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'done', picking_type_code: 'internal' },
+        { id: 2, state: 'assigned', picking_type_code: 'outgoing' },
+    ] }), 'armado');
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'done', picking_type_code: 'internal' },
+    ] }), 'armado');
+    assert.strictEqual(etapaDesdeOdoo({ done_picking_count: 2 }), 'saldado');
+    assert.strictEqual(etapaDesdeOdoo({ done_picking_count: 1 }), 'armado');
+    assert.strictEqual(etapaDesdeOdoo({ state: 'sent' }), 'pendiente');
+    // Factura/POS no son etapa: el listado las saca, el envío sigue mandando el estado
+    assert.strictEqual(etapaDesdeOdoo({ state: 'sale', pos_order_count: 1 }), 'pendiente');
+    assert.strictEqual(etapaDesdeOdoo({ state: 'sale', invoice_status: 'invoiced' }), 'pendiente');
+    assert.strictEqual(etapaDesdeOdoo({
+        invoice_status: 'invoiced',
+        pickings: [
+            { id: 1, state: 'done', picking_type_code: 'internal' },
+            { id: 2, state: 'done', picking_type_code: 'outgoing' },
+        ],
+    }), 'saldado');
+
+    assert.strictEqual(estadoSegunOdoo('pendiente', 'saldado'), 'saldado');
+    assert.strictEqual(estadoSegunOdoo('pendiente', 'armado'), 'armado');
+    assert.strictEqual(estadoSegunOdoo('armando', 'armado'), 'armado');
+    assert.strictEqual(estadoSegunOdoo('controlando', 'armado'), 'controlando');
+    assert.strictEqual(estadoSegunOdoo('armando', 'pendiente'), 'armando');
+    assert.strictEqual(estadoSegunOdoo('saldado', 'pendiente'), 'saldado');
+    assert.strictEqual(estadoSegunOdoo('cancelado', 'saldado'), 'cancelado');
+
+    // 1 paso: la entrega hecha es el armado; se controla en la app
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'done', picking_type_code: 'outgoing' },
+    ] }), 'armado');
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'assigned', picking_type_code: 'outgoing' },
+    ] }), 'pendiente');
+}
+
+// En Odoo agregaron productos después de armar: abre un Recolectar nuevo y vuelve a armar
+function testReabiertoPorProductosNuevos() {
+    const reabierto = [
+        { id: 1, state: 'done', picking_type_code: 'internal' },
+        { id: 2, state: 'done', picking_type_code: 'outgoing' },
+        { id: 3, state: 'assigned', picking_type_code: 'internal' },
+        { id: 4, state: 'waiting', picking_type_code: 'outgoing' },
+    ];
+    assert.strictEqual(clasificarEnvios(reabierto).reabierto, true);
+    assert.strictEqual(etapaDesdeOdoo({ pickings: reabierto }), 'rearmar');
+    assert.strictEqual(estadoSegunOdoo('saldado', 'rearmar'), 'pendiente');
+    assert.strictEqual(estadoSegunOdoo('armado', 'rearmar'), 'pendiente');
+    assert.strictEqual(estadoSegunOdoo('controlando', 'rearmar'), 'pendiente');
+    // Si ya lo están armando, no se suelta
+    assert.strictEqual(estadoSegunOdoo('armando', 'rearmar'), 'armando');
+    assert.strictEqual(estadoSegunOdoo('pendiente', 'rearmar'), 'pendiente');
+    // Recolectar cancelado no reabre
+    assert.strictEqual(etapaDesdeOdoo({ pickings: [
+        { id: 1, state: 'done', picking_type_code: 'internal' },
+        { id: 2, state: 'done', picking_type_code: 'outgoing' },
+        { id: 3, state: 'cancel', picking_type_code: 'internal' },
+    ] }), 'saldado');
+}
+
+// Lo escaneado en la app no se pisa con lo de Odoo hasta que termina la etapa
+function testFuentesDeQty() {
+    const pickings = [
+        { id: 1, state: 'done', picking_type_code: 'internal', moves: [{ id: 10, quantity: 2 }] },
+        { id: 2, state: 'done', picking_type_code: 'outgoing', moves: [{ id: 20, quantity: 1 }] },
+    ];
+    assert.strictEqual(fuentesDeQty('armando', pickings).arm.length, 0);
+    assert.strictEqual(fuentesDeQty('pendiente', pickings).arm.length, 0);
+    assert.strictEqual(fuentesDeQty('armado', pickings).arm.length, 1);
+    assert.strictEqual(fuentesDeQty('controlando', pickings).ctrl.length, 0);
+    assert.strictEqual(fuentesDeQty('saldado', pickings).ctrl.length, 1);
+    // 1 paso: la entrega es el armado y no hay envío de control
+    const unPaso = [pickings[1]];
+    assert.strictEqual(fuentesDeQty('armado', unPaso).arm[0].id, 20);
+    assert.strictEqual(fuentesDeQty('saldado', unPaso).ctrl.length, 0);
+}
+
+// Al cerrar el control: pedida = entregada y el resto al pedido de pendientes
+function testPlanIgualar() {
+    const plan = planIgualar({
+        lines: [
+            { id: 1, product_id: 10, product_name: 'Taza', quantity: 6, qty_delivered: 6, unit_price: 100 },
+            { id: 2, product_id: 11, product_name: 'Vaso', quantity: 4, qty_delivered: 1, unit_price: 50 },
+            { id: 3, product_id: 12, product_name: 'Plato', quantity: 3, qty_delivered: 0, unit_price: 80 },
+            { id: 4, product_id: 99, product_name: 'Down payment', quantity: 1, qty_delivered: 0 },
+            { id: 5, product_id: null, product_name: 'Nota', quantity: 0 },
+        ],
+    });
+    assert.deepStrictEqual(plan.writes.map((w) => [w.odoo_line_id, w.qty]), [[2, 1], [3, 0]]);
+    assert.deepStrictEqual(
+        plan.pendientes.map((p) => [p.odoo_product_id, p.qty_pendiente, p.price_unit]),
+        [[11, 3, 50], [12, 3, 80]]
+    );
+    // Ya igualada (reintento): no escribe nada
+    const igual = planIgualar({ lines: [{ id: 1, product_id: 10, quantity: 2, qty_delivered: 2 }] });
+    assert.strictEqual(igual.writes.length + igual.pendientes.length, 0);
+}
+
+function testQtyDesdeMoves() {
+    const items = [
+        { id: 1, odoo_line_id: 74168, odoo_product_id: 68122, qty_pedida: 2 },
+        { id: 2, odoo_line_id: 74179, odoo_product_id: 46148, qty_pedida: 2 },
+        { id: 3, odoo_line_id: 99, odoo_product_id: 1, qty_pedida: 5 },
+    ];
+    const rec = [
+        { sale_line_id: 74168, product_id: 68122, quantity: 2, state: 'done' },
+        { sale_line_id: 74179, product_id: 46148, quantity: 2, state: 'done' },
+        { sale_line_id: 88, product_id: 1, quantity: 3, state: 'cancel' },
+    ];
+    const armadas = qtyDesdeMoves(items, rec);
+    assert.deepStrictEqual(armadas.map((x) => [x.id, x.qty]), [[1, 2], [2, 2], [3, 0]]);
+
+    const porProducto = qtyDesdeMoves(
+        [{ id: 9, odoo_line_id: null, odoo_product_id: 50, qty_pedida: 4 }],
+        [{ sale_line_id: null, product_id: 50, quantity: 3, state: 'done' }]
+    );
+    assert.strictEqual(porProducto[0].qty, 3);
 }
 
 function testAuditarCancelarOrden() {
@@ -529,6 +691,11 @@ testAuditarEscribeParcialYCero();
 testAuditarYaAplicado();
 testAuditarDrift();
 testCotizacionParaArmar();
+testEtapaDesdeEnviosOdoo();
+testQtyDesdeMoves();
+testReabiertoPorProductosNuevos();
+testFuentesDeQty();
+testPlanIgualar();
 testConfirmarAlEmpezar();
 testPrimerPickingSalida();
 testPlanQtyMovesArmado();

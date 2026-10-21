@@ -34,10 +34,18 @@ const SCHEMA_038 = fs.readFileSync(
 const SCHEMA_039 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '039_pedido_envios_factura_pos.sql'), 'utf8'
 );
+const SCHEMA_040 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '040_pedido_envios_picking_done.sql'), 'utf8'
+);
+const SCHEMA_041 = fs.readFileSync(
+    path.join(__dirname, '..', 'sql', 'migrations', '041_pedido_envios_estado_desde_odoo.sql'), 'utf8'
+);
 
 const ESTADOS = ['pendiente', 'armando', 'armado', 'controlando', 'saldado'];
 const COMPANIES = new Set(['neggo', 'preventas']);
-const SOLAPAS = new Set(['pedidos', 'esperando_pago']);
+const SOLAPAS = new Set(['pedidos', 'esperando_pago', 'pendientes']);
+// Pedido de pendientes vivo en Odoo (cotización todavía sin confirmar ni cancelar)
+const PENDIENTES_VIVOS = ['draft', 'sent'];
 const MOTIVOS = new Set(['archivado', 'reponer', 'faltante']);
 
 const SELECT_ENVIO = `
@@ -188,15 +196,209 @@ function ordenFacturada(odoo) {
     return (odoo.lines || []).some((l) => num(l.qty_invoiced) > 0);
 }
 
-// Ya tiene factura o se cobró en el POS: se resolvió por otro lado, no se arma acá.
+// Factura en Odoo o comprobante al POS: se resolvió allá, desaparece de Armado y control.
 function ordenCobradaAparte(odoo) {
     if (!odoo) return false;
     return ordenFacturada(odoo) || num(odoo.invoice_count) > 0 || num(odoo.pos_order_count) > 0;
 }
 
-// Para armar: cotización enviada, sin factura ni POS. Las sale confirmadas/facturadas no.
+function sqlFueraPorFacturaOPos() {
+    return `(COALESCE(e.invoice_status, '') = 'invoiced'
+        OR COALESCE(e.odoo_invoice_count, 0) > 0
+        OR COALESCE(e.odoo_pos_count, 0) > 0)`;
+}
+
+// La base son los envíos de Odoo: 2 o más validados = ya se resolvió allá.
+function ordenEnviosYaHechos(odoo) {
+    return num(odoo?.done_picking_count) >= 2;
+}
+
+// Envío 1 = Recolectar (internal), envío 2 = Entrega (outgoing). En depósito de
+// 1 paso la entrega es el envío 1. Cancelados no cuentan.
+// Un envío 1 abierto = hay algo para armar (también si en Odoo agregaron productos
+// después de armar: Odoo abre un Recolectar nuevo).
+function clasificarEnvios(pickings) {
+    const vivos = (pickings || []).filter((p) => p && p.state && p.state !== 'cancel');
+    const rec = vivos.filter((p) => p.picking_type_code === 'internal');
+    const out = vivos.filter((p) => p.picking_type_code === 'outgoing');
+    const abierto = (rows) => rows.some((p) => p.state !== 'done');
+    const hecho = (rows) => rows.some((p) => p.state === 'done');
+    const env1 = rec.length ? rec : out;
+    return {
+        para_armar: abierto(env1),
+        reabierto: abierto(env1) && hecho(env1),
+        envio1_done: hecho(env1) && !abierto(env1),
+        envio2_done: rec.length > 0 && out.length > 0 && !abierto(out),
+    };
+}
+
+// El listado es el reflejo de los envíos de Odoo. No se inventan envíos acá.
+//    sin envíos o envío 1 abierto                → pendiente   Para armar
+//    envío 1 abierto y otro ya hecho             → rearmar     Para armar (agregaron productos)
+//    envío 1 cerrado, envío 2 no                 → armado      Para controlar
+//    envío 1 y 2 cerrados                        → saldado     Controlado
+// Factura o POS no es una etapa: desaparece del listado.
+function etapaDesdeOdoo(odoo) {
+    if (!odoo) return 'pendiente';
+    if (odoo.pickings) {
+        const c = clasificarEnvios(odoo.pickings);
+        if (c.reabierto) return 'rearmar';
+        if (c.para_armar) return 'pendiente';
+        if (c.envio2_done) return 'saldado';
+        if (c.envio1_done) return 'armado';
+        return 'pendiente';
+    }
+    const done = num(odoo.done_picking_count);
+    if (done >= 2) return 'saldado';
+    if (done >= 1) return 'armado';
+    return 'pendiente';
+}
+
+// Odoo empuja para adelante. Sólo vuelve a «Para armar» si Odoo abrió un envío nuevo.
+function estadoSegunOdoo(local, etapa) {
+    const loc = String(local || 'pendiente');
+    if (loc === 'cancelado') return 'cancelado';
+    const rank = { pendiente: 0, armando: 1, armado: 2, controlando: 3, saldado: 4 };
+    if (etapa === 'rearmar') return (rank[loc] || 0) >= 2 ? 'pendiente' : loc;
+    if (etapa === 'saldado') return 'saldado';
+    if (etapa === 'armado') return (rank[loc] || 0) >= 2 ? loc : 'armado';
+    if (loc === 'armando') return 'armando';
+    return loc || 'pendiente';
+}
+
+// Cantidad hecha en Odoo (stock.move.quantity) → ítems locales, por línea y si no por producto.
+function qtyDesdeMoves(items, moves) {
+    const vivos = (moves || []).filter((m) => m && m.state !== 'cancel');
+    const porLinea = new Map();
+    const porProd = new Map();
+    for (const m of vivos) {
+        const q = num(m.quantity);
+        if (m.sale_line_id) porLinea.set(m.sale_line_id, (porLinea.get(m.sale_line_id) || 0) + q);
+        if (m.product_id) porProd.set(m.product_id, (porProd.get(m.product_id) || 0) + q);
+    }
+    return (items || []).map((it) => {
+        let q = 0;
+        if (it.odoo_line_id && porLinea.has(it.odoo_line_id)) q = porLinea.get(it.odoo_line_id);
+        else if (it.odoo_product_id && porProd.has(it.odoo_product_id)) q = porProd.get(it.odoo_product_id);
+        return { id: it.id, qty: clampQty(q, it.qty_pedida) };
+    });
+}
+
+function movesDePickings(pickings, code) {
+    return (pickings || [])
+        .filter((p) => p && p.state === 'done' && (!code || p.picking_type_code === code))
+        .flatMap((p) => p.moves || []);
+}
+
+// Qué fuente de Odoo manda en cada estado. Mientras se arma o se controla,
+// lo escaneado vive en la app y se escribe en Odoo al terminar la etapa.
+function fuentesDeQty(estado, pickings) {
+    const recMoves = movesDePickings(pickings, 'internal');
+    const outMoves = movesDePickings(pickings, 'outgoing');
+    const dosPasos = (pickings || []).some((p) => p && p.picking_type_code === 'internal');
+    const yaArmado = estado === 'armado' || estado === 'controlando' || estado === 'saldado';
+    return {
+        arm: yaArmado ? (dosPasos ? recMoves : outMoves) : [],
+        ctrl: estado === 'saldado' && dosPasos ? outMoves : [],
+    };
+}
+
+async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
+    if (!envioId || !odoo) return;
+    const { arm, ctrl } = fuentesDeQty(estado, odoo.pickings || []);
+    if (!arm.length && !ctrl.length) return;
+
+    const { rows: items } = await db.query(
+        `SELECT id, odoo_line_id, odoo_product_id, qty_pedida
+           FROM pedido_envio_items WHERE envio_id = $1`,
+        [envioId]
+    );
+    if (!items.length) return;
+
+    // Un UPDATE por campo, sólo donde cambió
+    for (const [campo, moves] of [['qty_armada', arm], ['qty_controlada', ctrl]]) {
+        if (!moves.length) continue;
+        const qtys = qtyDesdeMoves(items, moves);
+        await db.query(
+            `UPDATE pedido_envio_items i
+                SET ${campo} = v.qty
+               FROM unnest($1::int[], $2::numeric[]) AS v(id, qty)
+              WHERE i.id = v.id AND i.${campo} IS DISTINCT FROM v.qty`,
+            [qtys.map((q) => q.id), qtys.map((q) => q.qty)]
+        );
+    }
+}
+
+async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
+    const nuevo = estadoSegunOdoo(localEstado, etapaDesdeOdoo(odoo));
+    if (!envioId || nuevo === localEstado) return nuevo;
+    if (nuevo === 'pendiente') {
+        // Odoo abrió un envío nuevo (agregaron productos): se arma de cero ese envío
+        await db.query(
+            `UPDATE pedido_envios
+                SET estado = 'pendiente',
+                    odoo_picking_id = NULL,
+                    odoo_picking_name = NULL,
+                    odoo_picking_state = NULL,
+                    odoo_picking_backorder_id = NULL,
+                    odoo_picking_backorder_name = NULL,
+                    saldado_at = NULL,
+                    updated_at = NOW()
+              WHERE id = $1 AND estado <> 'cancelado'`,
+            [envioId]
+        );
+        await db.query(
+            'UPDATE pedido_envio_items SET qty_armada = 0, qty_controlada = 0 WHERE envio_id = $1',
+            [envioId]
+        );
+        return nuevo;
+    }
+    if (nuevo === 'saldado') {
+        await db.query(
+            `UPDATE pedido_envios
+                SET estado = 'saldado',
+                    saldado_at = COALESCE(saldado_at, NOW()),
+                    updated_at = NOW()
+              WHERE id = $1 AND estado <> 'cancelado'`,
+            [envioId]
+        );
+    } else {
+        await db.query(
+            `UPDATE pedido_envios
+                SET estado = $2, updated_at = NOW()
+              WHERE id = $1 AND estado <> 'cancelado'`,
+            [envioId, nuevo]
+        );
+    }
+    return nuevo;
+}
+
+// Para armar: cotización enviada, sin factura ni POS ni 2 envíos hechos en Odoo.
+// El pedido de pendientes en borrador espera en la solapa Pendientes; entra cuando se envía.
 function esCotizacionParaArmar(odoo) {
-    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo);
+    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo) && !ordenEnviosYaHechos(odoo);
+}
+
+// Al cerrar el control: la orden queda con lo que salió (pedida = entregada) y
+// lo que no salió va al pedido de pendientes. Sale de Odoo, no de la app. Sin I/O.
+function planIgualar(odoo) {
+    const writes = [];
+    const pendientes = [];
+    for (const l of lineasProductoOdoo(odoo)) {
+        const pedida = num(l.quantity);
+        const entregada = Math.max(0, num(l.qty_delivered));
+        if (entregada + 0.0001 >= pedida) continue;
+        writes.push({ odoo_line_id: l.id, qty: entregada, product_name: l.product_name });
+        pendientes.push({
+            odoo_line_id: l.id,
+            odoo_product_id: l.product_id,
+            product_name: l.product_name,
+            price_unit: num(l.unit_price),
+            qty_pedida: pedida,
+            qty_pendiente: Math.round((pedida - entregada) * 100) / 100,
+        });
+    }
+    return { writes, pendientes };
 }
 
 function odooNecesitaConfirmar(state) {
@@ -327,6 +529,20 @@ function auditarEmpezarArmar(odoo) {
         return {
             ok: false,
             error: `La orden ${odoo.name || ''} en Odoo está cancelada, no se puede armar`.replace(/\s+/g, ' ').trim(),
+            statusCode: 409,
+        };
+    }
+    if (ordenCobradaAparte(odoo)) {
+        return {
+            ok: false,
+            error: `${odoo.name || 'Este pedido'} ya tiene factura o comprobante en el POS, no se arma acá`,
+            statusCode: 409,
+        };
+    }
+    if (ordenEnviosYaHechos(odoo)) {
+        return {
+            ok: false,
+            error: `${odoo.name || 'Este pedido'} ya tiene ${odoo.done_picking_count} envíos hechos en Odoo, no se arma acá`,
             statusCode: 409,
         };
     }
@@ -577,8 +793,9 @@ async function validarEnvio1AlTerminar(envio) {
 
     try {
         await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
+        // Sin backorder: lo que no se armó va al pedido de pendientes al cerrar el control
         const validated = await odooService.validateSalePicking(pickingRef.id, envio.company_key, {
-            createBackorder: true,
+            createBackorder: false,
         });
         return {
             picking: validated.picking || picking || pickingRef,
@@ -595,7 +812,7 @@ async function validarEnvio1AlTerminar(envio) {
 
 // Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
 // el armado. Al cerrar el control se valida la entrega (outgoing) con lo
-// controlado; si falta algo Odoo deja el resto en backorder. En 1 paso no hace nada.
+// controlado, sin backorder: lo que falta va al pedido de pendientes. En 1 paso no hace nada.
 async function validarSalidaAlSaldar(envio) {
     if (!envio.odoo_picking_id) return null;
     let salida = null;
@@ -626,7 +843,7 @@ async function validarSalidaAlSaldar(envio) {
     try {
         await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
         const validated = await odooService.validateSalePicking(salida.id, envio.company_key, {
-            createBackorder: true,
+            createBackorder: false,
         });
         return {
             picking: validated.picking || salida,
@@ -746,6 +963,8 @@ async function ensureSchema(db = pool) {
     await db.query(SCHEMA_037);
     await db.query(SCHEMA_038);
     await db.query(SCHEMA_039);
+    await db.query(SCHEMA_040);
+    await db.query(SCHEMA_041);
 }
 
 if (!String(process.argv[1] || '').includes('.test.js')) {
@@ -847,13 +1066,17 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
         params.push(nDias);
         where.push(`e.date_order >= NOW() - ($${params.length}::int * INTERVAL '1 day')`);
     }
-    // Para armar: solo cotizaciones enviadas en Odoo, sin factura ni cobro en el POS
-    where.push(`(e.estado NOT IN ('pendiente', 'armando') OR (
-        COALESCE(e.invoice_status, '') <> 'invoiced'
-        AND COALESCE(e.odoo_invoice_count, 0) = 0
-        AND COALESCE(e.odoo_pos_count, 0) = 0
-        AND (e.odoo_state IS NULL OR e.odoo_state IN ('sent', 'sale', 'done'))
-    ))`);
+    if (solapa === 'pendientes') {
+        // Lo que no salió quedó en el pedido de pendientes. Se ve aunque el original ya esté facturado.
+        params.push(PENDIENTES_VIVOS);
+        where.push(`e.backorder_odoo_id IS NOT NULL
+            AND COALESCE(e.pendientes_odoo_state, 'draft') = ANY($${params.length}::text[])`);
+        return { where, params };
+    }
+    // Factura o POS en Odoo: ya no se arma/controla acá.
+    where.push(`NOT ${sqlFueraPorFacturaOPos()}`);
+    // Sólo arranca con cotizaciones enviadas: una que volvió a borrador en Odoo no se arma
+    where.push(`NOT (e.estado = 'pendiente' AND COALESCE(e.odoo_state, '') = 'draft')`);
     if (solapa === 'esperando_pago') {
         where.push('e.cotizacion_enviada_at IS NOT NULL AND e.pago_recibido_at IS NULL');
     } else if (incluirPagados) {
@@ -867,11 +1090,12 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
 function ordenListado(orden, solapa) {
     // En "Esperando pago" la fecha que manda es la del envío de la cotización
     const fecha = solapa === 'esperando_pago' ? 'x.cotizacion_enviada_at' : 'x.date_order';
+    const cola = `CASE WHEN x.estado = 'saldado' THEN 1 ELSE 0 END`;
     const ordenes = {
-        viejos: `${fecha} ASC NULLS LAST, x.id ASC`,
-        nuevos: `${fecha} DESC NULLS LAST, x.id DESC`,
-        monto: 'x.amount_total DESC NULLS LAST, x.id ASC',
-        unidades: 'qty_pedida DESC, x.id ASC',
+        viejos: `${cola}, ${fecha} ASC NULLS LAST, x.id ASC`,
+        nuevos: `${cola}, ${fecha} DESC NULLS LAST, x.id DESC`,
+        monto: `${cola}, x.amount_total DESC NULLS LAST, x.id ASC`,
+        unidades: `${cola}, qty_pedida DESC, x.id ASC`,
     };
     return ordenes[orden] || ordenes.viejos;
 }
@@ -907,13 +1131,17 @@ async function listar({
         conteos.todos += r.n;
     });
 
-    // Total de la otra solapa (para el número de la solapa)
-    const otraSolapa = sol === 'pedidos' ? 'esperando_pago' : 'pedidos';
-    const otra = condicionesListado({ ...base, solapa: otraSolapa });
-    const { rows: [{ n: nOtra }] } = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM pedido_envios e WHERE ${otra.where.join(' AND ')}`,
-        otra.params
-    );
+    // Totales de las otras solapas (para el número de cada solapa)
+    const solapas = { [sol]: conteos.todos };
+    for (const otraSolapa of SOLAPAS) {
+        if (otraSolapa === sol) continue;
+        const otra = condicionesListado({ ...base, solapa: otraSolapa });
+        const { rows: [{ n }] } = await pool.query(
+            `SELECT COUNT(*)::int AS n FROM pedido_envios e WHERE ${otra.where.join(' AND ')}`,
+            otra.params
+        );
+        solapas[otraSolapa] = n;
+    }
 
     const listaWhere = [...where];
     const listaParams = [...params];
@@ -928,7 +1156,8 @@ async function listar({
                    COUNT(*)::int AS n_items,
                    COALESCE(SUM(qty_pedida), 0) AS qty_pedida,
                    COALESCE(SUM(qty_armada), 0) AS qty_armada,
-                   COALESCE(SUM(qty_controlada), 0) AS qty_controlada
+                   COALESCE(SUM(qty_controlada), 0) AS qty_controlada,
+                   COALESCE(SUM(GREATEST(qty_pedida - qty_controlada, 0)), 0) AS qty_pendiente
               FROM pedido_envio_items
              GROUP BY envio_id
         )
@@ -936,7 +1165,8 @@ async function listar({
                COALESCE(s.n_items, 0) AS n_items,
                COALESCE(s.qty_pedida, 0) AS qty_pedida,
                COALESCE(s.qty_armada, 0) AS qty_armada,
-               COALESCE(s.qty_controlada, 0) AS qty_controlada
+               COALESCE(s.qty_controlada, 0) AS qty_controlada,
+               COALESCE(s.qty_pendiente, 0) AS qty_pendiente
           FROM (${SELECT_ENVIO} WHERE ${listaWhere.join(' AND ')}) x
           LEFT JOIN s ON s.envio_id = x.id
          ORDER BY ${ordenListado(orden, sol)}
@@ -948,10 +1178,7 @@ async function listar({
         items: rows.map((r) => ({ ...r, tab: tabDeEstado(r.estado) })),
         conteos,
         total: est === 'todos' ? conteos.todos : conteos[est],
-        solapas: {
-            pedidos: sol === 'pedidos' ? conteos.todos : nOtra,
-            esperando_pago: sol === 'esperando_pago' ? conteos.todos : nOtra,
-        },
+        solapas,
         offset: off,
         limit: lim,
     };
@@ -984,6 +1211,9 @@ async function obtener(id, { syncOdoo = false } = {}) {
     }
 }
 
+// Trae de Odoo las cotizaciones enviadas y actualiza las que ya están acá.
+// Los activos (para armar / controlar) vienen con líneas; los controlados sólo con
+// sus envíos, que alcanza para ver si se facturaron o si Odoo abrió un envío nuevo.
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
     const enviadas = await odooService.getSaleOrdersWithLines(company, {
@@ -992,25 +1222,46 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
         limit: 80,
     });
     const { rows: locales } = await pool.query(
-        `SELECT odoo_sale_order_id FROM pedido_envios
-          WHERE company_key = $1 AND estado IN ('pendiente', 'armando')
-            AND odoo_sale_order_id IS NOT NULL
-          ORDER BY date_order DESC NULLS LAST`,
+        `SELECT odoo_sale_order_id, estado FROM pedido_envios
+          WHERE company_key = $1 AND odoo_sale_order_id IS NOT NULL
+            AND estado <> 'cancelado'
+            AND (
+                estado IN ('pendiente', 'armando', 'armado', 'controlando')
+                OR (
+                    estado = 'saldado'
+                    AND COALESCE(invoice_status, '') <> 'invoiced'
+                    AND COALESCE(odoo_invoice_count, 0) = 0
+                    AND COALESCE(odoo_pos_count, 0) = 0
+                )
+            )
+          ORDER BY (estado = 'saldado'), date_order DESC NULLS LAST`,
         [company]
     );
-    const idsTodos = locales.map((r) => r.odoo_sale_order_id);
-    // Los 80 más nuevos con líneas; del resto alcanza con el encabezado (factura / POS / estado)
-    const idsLocales = idsTodos.slice(0, 80);
-    const vivos = idsLocales.length
-        ? await odooService.getSaleOrdersWithLines(company, { ids: idsLocales, days: null, limit: idsLocales.length })
-        : [];
-    const porId = new Map();
-    for (const order of [...enviadas, ...vivos]) porId.set(order.id, order);
+    const activos = locales.filter((r) => r.estado !== 'saldado').map((r) => r.odoo_sale_order_id);
+    const controlados = locales.filter((r) => r.estado === 'saldado').map((r) => r.odoo_sale_order_id);
+    const porId = new Map(enviadas.map((o) => [o.id, o]));
+    const conLineas = activos.filter((id) => !porId.has(id)).slice(0, 80);
+    if (conLineas.length) {
+        const vivos = await odooService.getSaleOrdersWithLines(company, { ids: conLineas, days: null, limit: conLineas.length });
+        for (const o of vivos) porId.set(o.id, o);
+    }
+    let cabeceras = [
+        ...await odooService.getSaleOrderHeaders(company, activos.filter((id) => !porId.has(id))),
+        ...await odooService.getSaleOrderHeaders(
+            company,
+            controlados.filter((id) => !porId.has(id)),
+            { withMoves: false }
+        ),
+    ];
+    // Controlados a los que Odoo les abrió un envío nuevo: vuelven a armar con sus líneas
+    const reabiertos = cabeceras.filter((c) => etapaDesdeOdoo(c) === 'rearmar' && !ordenCobradaAparte(c)).map((c) => c.id);
+    if (reabiertos.length) {
+        const vivos = await odooService.getSaleOrdersWithLines(company, { ids: reabiertos, days: null, limit: reabiertos.length });
+        for (const o of vivos) porId.set(o.id, o);
+        cabeceras = cabeceras.filter((c) => !porId.has(c.id));
+    }
     const orders = [...porId.values()];
-    const cabeceras = await odooService.getSaleOrderHeaders(
-        company,
-        idsTodos.filter((id) => !porId.has(id))
-    );
+    const pendientes = await estadosPendientes(company);
 
     let creados = 0;
     let actualizados = 0;
@@ -1023,22 +1274,24 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                   WHERE company_key = $1 AND odoo_sale_order_id = $2`,
                 [company, order.id]
             );
-            if (existente && existente.estado === 'saldado') continue;
-
             const paraArmar = esCotizacionParaArmar(order);
             // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización enviada
             if (existente?.estado === 'cancelado' && !paraArmar) continue;
             if (!existente && (!paraArmar || !order.lines.length)) continue;
 
             let envioId;
-            const soltarArmando = existente?.estado === 'armando' && odooNecesitaConfirmar(order.state);
+            const etapa = etapaDesdeOdoo(order);
+            const soltarArmando = existente?.estado === 'armando'
+                && odooNecesitaConfirmar(order.state)
+                && etapa === 'pendiente';
             if (!existente) {
                 const { rows: [row] } = await client.query(
                     `INSERT INTO pedido_envios (
                          company_key, odoo_sale_order_id, odoo_order_name,
                          partner_id, partner_name, date_order, amount_total,
-                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                         odoo_state, invoice_status, odoo_invoice_count, odoo_pos_count,
+                         odoo_picking_done_count
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                      RETURNING id`,
                     [
                         company, order.id, order.name,
@@ -1046,6 +1299,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
                         num(order.invoice_count), num(order.pos_order_count),
+                        num(order.done_picking_count),
                     ]
                 );
                 envioId = row.id;
@@ -1062,6 +1316,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                             invoice_status = $8,
                             odoo_invoice_count = $9,
                             odoo_pos_count = $10,
+                            odoo_picking_done_count = $11,
                             updated_at = NOW()
                       WHERE id = $1`,
                     [
@@ -1069,6 +1324,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                         order.date || null, num(order.total),
                         order.state || null, order.invoice_status || null,
                         num(order.invoice_count), num(order.pos_order_count),
+                        num(order.done_picking_count),
                     ]
                 );
                 envioId = existente.id;
@@ -1093,25 +1349,56 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                     );
                 }
             }
-            if (paraArmar) {
+            const localEstado = !existente
+                ? 'pendiente'
+                : (soltarArmando || existente.estado === 'cancelado' ? 'pendiente' : existente.estado);
+            const nuevo = await persistirEstadoDesdeOdoo(client, envioId, localEstado, order);
+            if (order.lines?.length) {
+                // Mientras se arma o se controla no se tocan las cantidades pedidas
                 await upsertItems(client, envioId, company, order.lines, {
-                    freezeQty: !!(existente && existente.estado !== 'pendiente'),
+                    freezeQty: nuevo !== 'pendiente',
                 });
             }
+            await aplicarQtysDesdeEnvios(client, envioId, nuevo, order);
         }
-        for (const cab of cabeceras) {
-            const { rowCount } = await client.query(
-                `UPDATE pedido_envios
-                    SET odoo_state = $3,
-                        invoice_status = $4,
-                        odoo_invoice_count = $5,
-                        odoo_pos_count = $6,
-                        updated_at = NOW()
-                  WHERE company_key = $1 AND odoo_sale_order_id = $2
-                    AND estado IN ('pendiente', 'armando')`,
-                [company, cab.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count]
+        if (cabeceras.length) {
+            const { rows: filas } = await client.query(
+                `SELECT id, odoo_sale_order_id, estado FROM pedido_envios
+                  WHERE company_key = $1 AND odoo_sale_order_id = ANY($2::int[])
+                    AND estado <> 'cancelado'`,
+                [company, cabeceras.map((c) => c.id)]
             );
-            actualizados += rowCount;
+            const cabPorId = new Map(cabeceras.map((c) => [c.id, c]));
+            for (const row of filas) {
+                const cab = cabPorId.get(row.odoo_sale_order_id);
+                const { rowCount } = await client.query(
+                    `UPDATE pedido_envios
+                        SET odoo_state = $2,
+                            invoice_status = $3,
+                            odoo_invoice_count = $4,
+                            odoo_pos_count = $5,
+                            odoo_picking_done_count = $6,
+                            updated_at = NOW()
+                      WHERE id = $1
+                        AND (odoo_state IS DISTINCT FROM $2
+                          OR invoice_status IS DISTINCT FROM $3
+                          OR odoo_invoice_count IS DISTINCT FROM $4
+                          OR odoo_pos_count IS DISTINCT FROM $5
+                          OR odoo_picking_done_count IS DISTINCT FROM $6)`,
+                    [row.id, cab.state || null, cab.invoice_status, cab.invoice_count, cab.pos_order_count, cab.done_picking_count]
+                );
+                const nuevo = await persistirEstadoDesdeOdoo(client, row.id, row.estado, cab);
+                if (rowCount || nuevo !== row.estado) actualizados++;
+                await aplicarQtysDesdeEnvios(client, row.id, nuevo, cab);
+            }
+        }
+        for (const p of pendientes) {
+            await client.query(
+                `UPDATE pedido_envios SET pendientes_odoo_state = $2
+                  WHERE company_key = $1 AND backorder_odoo_id = $3
+                    AND pendientes_odoo_state IS DISTINCT FROM $2`,
+                [company, p.state || null, p.id]
+            );
         }
         await client.query('COMMIT');
     } catch (err) {
@@ -1121,8 +1408,24 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
         client.release();
     }
     const leidos = orders.length + cabeceras.length;
-    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos });
+    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos, reabiertos: reabiertos.length });
     return { creados, actualizados, leidos };
+}
+
+// Estado en Odoo de los pedidos de pendientes que siguen vivos (para la solapa Pendientes)
+async function estadosPendientes(company) {
+    const { rows } = await pool.query(
+        `SELECT DISTINCT backorder_odoo_id AS id FROM pedido_envios
+          WHERE company_key = $1 AND backorder_odoo_id IS NOT NULL
+            AND COALESCE(pendientes_odoo_state, 'draft') = ANY($2::text[])`,
+        [company, PENDIENTES_VIVOS]
+    );
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.id);
+    const cabs = await odooService.getSaleOrderHeaders(company, ids, { withMoves: false });
+    const vistos = new Set(cabs.map((c) => c.id));
+    // Borrado en Odoo: ya no es un pendiente
+    return [...cabs, ...ids.filter((id) => !vistos.has(id)).map((id) => ({ id, state: 'cancel' }))];
 }
 
 async function cambiarEstado(id, estado, userId) {
@@ -1477,6 +1780,34 @@ async function asegurarBackorder(envio, plan) {
     return created;
 }
 
+// Después de la entrega: la orden queda igual a lo entregado y lo que no salió
+// va al pedido de pendientes. Si ya tiene factura no se toca.
+async function igualarYPendientes(envio) {
+    let odoo = null;
+    try {
+        [odoo] = await odooService.getSaleOrdersWithLines(envio.company_key, {
+            ids: [envio.odoo_sale_order_id],
+            days: null,
+        });
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la orden en Odoo para igualarla');
+    }
+    if (!odoo) throw httpError('No encontré la orden en Odoo', 404);
+    if (ordenFacturada(odoo)) return { backorder: null, writes: [] };
+
+    const plan = planIgualar(odoo);
+    // Primero el pedido de pendientes: si algo falla después, al reintentar se reusa
+    const backorder = plan.pendientes.length ? await asegurarBackorder(envio, plan) : null;
+    try {
+        for (const w of plan.writes) {
+            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key);
+        }
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo igualar las cantidades de ${envio.odoo_order_name || 'la orden'}`);
+    }
+    return { backorder, writes: plan.writes };
+}
+
 async function saldar(id, userId) {
     const envioId = Number(id);
     if (!Number.isInteger(envioId) || envioId <= 0) throw httpError('Pedido inválido', 400);
@@ -1496,8 +1827,12 @@ async function saldarLocked(id, userId) {
 
     let backorder = null;
     let salida = null;
+    let igualadas = [];
     if (pickingYaValidado) {
         salida = await validarSalidaAlSaldar(envio);
+        const cierre = await igualarYPendientes(envio);
+        backorder = cierre.backorder;
+        igualadas = cierre.writes;
     } else {
         const vivos = await odooService.getSaleOrdersWithLines(envio.company_key, {
             ids: [envio.odoo_sale_order_id],
@@ -1540,6 +1875,7 @@ async function saldarLocked(id, userId) {
         cancelo: plan.cancela_original,
         odoo_salida: salida?.picking?.name || null,
         odoo_salida_backorder: salida?.backorder?.name || null,
+        lineas_igualadas: igualadas.length,
     });
     const final = await obtener(id);
     return salida ? { ...final, odoo_salida: salida } : final;
@@ -1558,6 +1894,14 @@ module.exports = {
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
+    sqlFueraPorFacturaOPos,
+    ordenEnviosYaHechos,
+    clasificarEnvios,
+    etapaDesdeOdoo,
+    estadoSegunOdoo,
+    qtyDesdeMoves,
+    fuentesDeQty,
+    planIgualar,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
