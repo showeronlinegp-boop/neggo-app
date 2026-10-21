@@ -11,6 +11,7 @@ import Input from '../../components/common/Input';
 import Tabs from '../../components/common/Tabs';
 import Modal from '../../components/common/Modal';
 import ProductThumb from '../../components/common/ProductThumb';
+import FotoAmpliada from '../../components/common/FotoAmpliada';
 import * as Icon from '../../components/common/icons';
 import ReposicionProveedorModal from './ReposicionProveedorModal';
 import ReposicionOrdenes from './ReposicionOrdenes';
@@ -534,7 +535,18 @@ function ListaProveedores({ proveedores, loading, filtro, onFiltro, onAbrir, isM
     );
 }
 
-function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, t }) {
+// Miniatura que, si hay foto, se toca para verla en grande
+function ThumbCola({ it, size, onVerFoto }) {
+    if (!it.image_url) return <ProductThumb imageUrl={it.image_url} size={size} />;
+    return (
+        <button type="button" onClick={() => onVerFoto(it)} aria-label={`Ver foto de ${it.name || 'producto'}`} title="Ver foto en grande"
+            style={{ padding: 0, border: 'none', background: 'none', cursor: 'zoom-in', lineHeight: 0, flexShrink: 0 }}>
+            <ProductThumb imageUrl={it.image_url} size={size} />
+        </button>
+    );
+}
+
+function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, onVerFoto, t }) {
     const pendiente = tab === 'pendiente';
     const encargado = tab === 'encargado';
     const fecha = fmtFecha(pendiente ? it.created_at : encargado ? (it.encargado_at || it.created_at) : it.resolved_at);
@@ -548,7 +560,7 @@ function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, t }
             display: 'flex', flexDirection: 'column', gap: 10,
         }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                <ProductThumb imageUrl={it.image_url} size={52} />
+                <ThumbCola it={it} size={52} onVerFoto={onVerFoto} />
                 <div style={{ flex: 1, minWidth: 0, fontFamily: t.font.family }}>
                     <div style={{
                         fontWeight: t.font.weight.semibold, fontSize: t.font.size.base, color: t.color.text,
@@ -600,6 +612,8 @@ export default function Reposicion() {
     const [proveedorAbierto, setProveedorAbierto] = useState(null);
     const [proveedorDecidir, setProveedorDecidir] = useState(null);
     const [recargarOrdenes, setRecargarOrdenes] = useState(0);
+    const [foto, setFoto] = useState(null);
+    const cerrarFoto = useCallback(() => setFoto(null), []);
     const ordenes = tab === 'ordenes';
 
     const cargarCola = useCallback(async () => {
@@ -860,6 +874,7 @@ export default function Reposicion() {
                                     trabajando={trabajando}
                                     onCambiar={cambiarEstado}
                                     etiquetaIngreso={etiquetaIngreso}
+                                    onVerFoto={setFoto}
                                     t={t}
                                 />
                             ))
@@ -881,7 +896,7 @@ export default function Reposicion() {
                                             <tr key={it.id} style={it.llego_ingreso ? { background: t.color.successSoft } : undefined}>
                                                 <td style={tdStyle}>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3] }}>
-                                                        <ProductThumb imageUrl={it.image_url} size={36} />
+                                                        <ThumbCola it={it} size={36} onVerFoto={setFoto} />
                                                         <div style={{ minWidth: 0 }}>
                                                             <div style={{ fontWeight: t.font.weight.medium, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.name}>
                                                                 {it.name || `Producto ${it.odoo_id}`}
@@ -925,6 +940,12 @@ export default function Reposicion() {
                 ))
             )}
 
+            <FotoAmpliada
+                imageUrl={foto?.image_url}
+                nombre={foto?.name}
+                detalle={foto ? (foto.internal_ref || foto.barcode) : null}
+                onClose={cerrarFoto}
+            />
             <ReposicionProveedorModal
                 vendorName={proveedorAbierto}
                 onClose={() => setProveedorAbierto(null)}
