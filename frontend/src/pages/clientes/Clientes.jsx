@@ -28,6 +28,22 @@ import {
 const PAGE = 50;
 // Cliente · estado · etapa · última compra · compras · 12 meses · tendencia · cotización
 const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
+// Medio: sin el gráfico de barras y con la tendencia abajo del monto de 12 meses
+const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 96px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
+// Ancho de la tabla (con la estrella) desde el que entra cada diseño; más angosto, tarjetas
+const ANCHO_MIN = { ancho: 1110, medio: 860 };
+
+// Ancho disponible de un elemento, actualizado al cambiar la ventana o el menú lateral
+function useAnchoDe(el) {
+    const [ancho, setAncho] = useState(0);
+    useEffect(() => {
+        if (!el) return undefined;
+        const ro = new ResizeObserver(([entry]) => setAncho(entry.contentRect.width));
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [el]);
+    return ancho;
+}
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
 const SORTS = [...SORT_OPTIONS, { value: 'accion', label: 'Próxima acción' }];
 
@@ -73,7 +89,10 @@ function Avatar({ nombre, size, t }) {
     );
 }
 
-function FilaCliente({ c, onAbrir, isMobile, t }) {
+// modo: ancho (todas las columnas) · medio (más compacta) · tarjeta (celular o pantalla angosta)
+function FilaCliente({ c, onAbrir, modo, t }) {
+    const isMobile = modo === 'tarjeta';
+    const medio = modo === 'medio';
     const meta = HEALTH_META[c.health] || HEALTH_META.sin_compras;
     const cotizaciones = c.open_quotations || [];
     const totalCot = cotizaciones.reduce((s, q) => s + (Number(q.amount) || 0), 0);
@@ -161,14 +180,21 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
     return (
         <button type="button" onClick={() => onAbrir(c)} {...hover}
             style={{
-                ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: t.space[4],
-                gridTemplateColumns: COLUMNAS,
+                ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: medio ? t.space[3] : t.space[4],
+                gridTemplateColumns: medio ? COLUMNAS_MEDIO : COLUMNAS,
             }}>
             {nombre}
             <span><Badge tone={meta.tone} dot>{meta.label}</Badge></span>
             <Etapa c={c} t={t} />
             {ultima}
             <span style={{ textAlign: 'right' }}>{compras}</span>
+            {medio ? (
+                <div style={{ textAlign: 'right', fontSize: t.font.size.sm, ...t.numericStyle }}>
+                    <div style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{fmtAR(c.revenue_12m)}</div>
+                    <Tendencia trend={c.trend} pct={c.trend_pct} t={t} />
+                </div>
+            ) : (
+            <>
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], justifyContent: 'flex-end' }}>
                 <BarrasMensuales data={c.monthly_revenue || []} compacto />
                 <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, minWidth: 84, textAlign: 'right', ...t.numericStyle }}>
@@ -176,13 +202,16 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                 </span>
             </div>
             <span style={{ fontSize: t.font.size.sm, textAlign: 'right' }}><Tendencia trend={c.trend} pct={c.trend_pct} t={t} /></span>
-            <span style={{ textAlign: 'right' }}>{cotizacion}</span>
+            </>
+            )}
+            <span style={{ textAlign: 'right', minWidth: 0 }}>{cotizacion}</span>
         </button>
     );
 }
 
 // Estrella a la izquierda de la fila: suma o saca al cliente de la lista de seguimiento cercano
-function BotonCercano({ c, onToggle, isMobile, t }) {
+function BotonCercano({ c, onToggle, modo, t }) {
+    const isMobile = modo === 'tarjeta';
     const activo = Boolean(c.cercano);
     const texto = activo ? 'Sacar de seguimiento cercano' : 'Sumar a seguimiento cercano';
     return (
@@ -250,6 +279,12 @@ export default function Clientes() {
     const [soloCercanos, setSoloCercanos] = useState(false);
     const [sort, setSort] = useState('prioridad');
     const pollRef = useRef(null);
+
+    // La tabla se arma según el ancho que tiene (cambia con la ventana y con el menú lateral)
+    const [tablaEl, setTablaEl] = useState(null);
+    const anchoTabla = useAnchoDe(tablaEl);
+    const modo = isMobile || anchoTabla < ANCHO_MIN.medio ? 'tarjeta'
+        : anchoTabla < ANCHO_MIN.ancho ? 'medio' : 'ancho';
 
     // Espera 300 ms después de tipear antes de buscar
     useEffect(() => {
@@ -469,11 +504,12 @@ export default function Clientes() {
                 </div>
             )}
 
+            <div ref={setTablaEl}>
             <Card padding={false} style={{ overflow: 'hidden' }}>
-                {!isMobile && (
+                {modo !== 'tarjeta' && (
                     <div style={{
-                        display: 'grid', gap: t.space[4], padding: '10px 16px 10px 56px', background: t.color.surface2,
-                        gridTemplateColumns: COLUMNAS,
+                        display: 'grid', gap: modo === 'medio' ? t.space[3] : t.space[4], padding: '10px 16px 10px 56px', background: t.color.surface2,
+                        gridTemplateColumns: modo === 'medio' ? COLUMNAS_MEDIO : COLUMNAS,
                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
                         textTransform: 'uppercase', letterSpacing: '0.04em',
                     }}>
@@ -482,8 +518,14 @@ export default function Clientes() {
                         <span>Etapa</span>
                         <span>Última compra</span>
                         <span style={{ textAlign: 'right' }}>Compras</span>
-                        <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
-                        <span style={{ textAlign: 'right' }}>Tendencia</span>
+                        {modo === 'medio' ? (
+                            <span style={{ textAlign: 'right' }} title="Facturación de los últimos 12 meses y tendencia">12 meses</span>
+                        ) : (
+                            <>
+                                <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
+                                <span style={{ textAlign: 'right' }}>Tendencia</span>
+                            </>
+                        )}
                         <span style={{ textAlign: 'right' }}>Cotización</span>
                     </div>
                 )}
@@ -511,9 +553,9 @@ export default function Clientes() {
                 ) : (
                     rows.map((c) => (
                         <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch' }}>
-                            <BotonCercano c={c} onToggle={toggleCercano} isMobile={isMobile} t={t} />
+                            <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                                <FilaCliente c={c} onAbrir={setAbierto} isMobile={isMobile} t={t} />
+                                <FilaCliente c={c} onAbrir={setAbierto} modo={modo} t={t} />
                             </div>
                         </div>
                     ))
@@ -534,6 +576,7 @@ export default function Clientes() {
                     </div>
                 )}
             </Card>
+            </div>
 
             <ClienteFicha partnerId={abierto?.odoo_partner_id} resumen={abierto} onClose={cerrarFicha}
                 onCambio={() => { huboCambios.current = true; }} />

@@ -316,3 +316,10 @@ export const Star = ({ filled = false, ...p }) => (
     />
   </Icon>
 );
+
+export const PanelLeft = (p) => (
+  <Icon {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
+  </Icon>
+);
