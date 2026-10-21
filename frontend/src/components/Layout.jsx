@@ -15,14 +15,15 @@ const routeTitles = {
     '/productos/sync-preventas':     'Sincronización Preventas',
     '/alertas':                      'Alertas de precios',
     '/scraping':                     'Panel de scraping',
-    '/ingreso/new':                  'Ingreso de Mercadería',
-    '/ingreso':                      'Ingreso de Mercadería',
+    '/productos/vinculos':           'Vínculos Odoo',
+    '/ingreso/new':                  'Ingreso de mercadería',
+    '/ingreso':                      'Ingreso de mercadería',
     '/reposicion':                   'Reposición',
     '/reposicion/recorrida':         'Recorrida de depósito',
     '/pedidos/armado':               'Armado y control',
-    '/preventas/pedidos':            'Pedidos',
-    '/preventas/ordenes':            'Órdenes a proveedores',
-    '/preventas/catalogos':          'Catálogos',
+    '/preventas/pedidos':            'Pedidos de clientes',
+    '/preventas/ordenes':            'Órdenes de compra',
+    '/preventas/catalogos':          'Catálogos PDF',
     '/preventas/cotizaciones':       'Cotizaciones Odoo — Preventas',
     '/preventas/ordenes-odoo':       'Pedidos por proveedor — Cotizaciones Odoo',
     '/preventas/listas-precios':     'Listas de precios especiales',
@@ -34,38 +35,70 @@ const routeTitles = {
 };
 
 // ─── Ítems de navegación ────────────────────────────────────────────────────────
-const NAV_ITEMS = [
-    { icon: Icon.LayoutDashboard, label: 'Dashboard',              path: '/' },
-    { icon: Icon.Truck,           label: 'Proveedores',            path: '/proveedores',           roles: ['admin'], unmappedBadge: true },
-    { icon: Icon.Bot,             label: 'Scraping',               path: '/scraping',              roles: ['admin'] },
-    { icon: Icon.PackageDown,     label: 'Ingreso de Mercadería',  path: '/ingreso',               roles: ['admin', 'operador'] },
-    { icon: Icon.Refresh,         label: 'Reposición',             path: '/reposicion',            roles: ['admin', 'operador'] },
-    { icon: Icon.ScanBarcode,     label: 'Armado y control',       path: '/pedidos/armado',        roles: ['admin', 'operador'] },
+// Dashboard va suelto arriba; el resto se agrupa siguiendo el recorrido del negocio.
+// `exact`: solo se marca activo en esa ruta (no en sus subrutas, que tienen ítem propio).
+const NAV_HOME = { icon: Icon.LayoutDashboard, label: 'Dashboard', path: '/' };
+
+const NAV_GROUPS = [
     {
-        icon: Icon.Package, label: 'Productos',
-        roles: ['admin', 'operador'],
-        children: [
-            { label: 'Lista de productos',   path: '/productos',                roles: ['admin', 'operador'] },
-            { label: 'Sync Preventas',       path: '/productos/sync-preventas', roles: ['admin'] },
-            { label: 'Vínculos Odoo',        path: '/productos/vinculos',       roles: ['admin'] },
+        label: 'Depósito',
+        items: [
+            { icon: Icon.PackageDown,   label: 'Ingreso de mercadería', path: '/ingreso',                  roles: ['admin', 'operador'] },
+            { icon: Icon.Refresh,       label: 'Reposición',            path: '/reposicion',               roles: ['admin', 'operador'] },
+            { icon: Icon.ScanBarcode,   label: 'Armado y control',      path: '/pedidos/armado',           roles: ['admin', 'operador'] },
         ],
     },
-    { icon: Icon.Bell,         label: 'Alertas de precio',      path: '/alertas',               roles: ['admin'], badge: true },
-    { icon: Icon.ShoppingCart, label: 'Pedidos',                path: '/preventas/pedidos',         roles: ['admin', 'vendedor', 'operador'] },
-    { icon: Icon.ClipboardList,label: 'Órdenes a proveedores',  path: '/preventas/ordenes',         roles: ['admin', 'operador'] },
-    { icon: Icon.Tag,          label: 'Listas de precios',      path: '/preventas/listas-precios',  roles: ['admin'] },
-    { icon: Icon.BookOpen,     label: 'Catálogos',              path: '/preventas/catalogos',       roles: ['admin', 'vendedor'] },
-    { icon: Icon.FileText,     label: 'Cotizaciones Odoo',      path: '/preventas/cotizaciones',    roles: ['admin', 'operador'] },
-    { icon: Icon.ShoppingBag,  label: 'Pedidos x Proveedor',   path: '/preventas/ordenes-odoo',    roles: ['admin', 'operador'] },
+    {
+        label: 'Preventas',
+        items: [
+            { icon: Icon.ShoppingCart,  label: 'Pedidos de clientes',   path: '/preventas/pedidos',        roles: ['admin', 'vendedor', 'operador'] },
+            { icon: Icon.FileText,      label: 'Cotizaciones Odoo',     path: '/preventas/cotizaciones',   roles: ['admin', 'operador'] },
+            { icon: Icon.ShoppingBag,   label: 'Pedidos por proveedor', path: '/preventas/ordenes-odoo',   roles: ['admin', 'operador'] },
+            { icon: Icon.ClipboardList, label: 'Órdenes de compra',     path: '/preventas/ordenes',        roles: ['admin', 'operador'] },
+        ],
+    },
+    {
+        label: 'Catálogo y precios',
+        items: [
+            { icon: Icon.Package,       label: 'Productos',             path: '/productos',                roles: ['admin', 'operador'], exact: true },
+            { icon: Icon.Bell,          label: 'Alertas de precio',     path: '/alertas',                  roles: ['admin'], badge: true },
+            { icon: Icon.Truck,         label: 'Proveedores',           path: '/proveedores',              roles: ['admin'], unmappedBadge: true },
+            { icon: Icon.Link,          label: 'Vínculos Odoo',         path: '/productos/vinculos',       roles: ['admin'] },
+            { icon: Icon.ArrowRight,    label: 'Sync Preventas',        path: '/productos/sync-preventas', roles: ['admin'] },
+        ],
+    },
+    {
+        label: 'Difusión',
+        items: [
+            { icon: Icon.BookOpen,      label: 'Catálogos PDF',         path: '/preventas/catalogos',      roles: ['admin', 'vendedor'] },
+            { icon: Icon.MessageCircle, label: 'WhatsApp',              path: '/admin/whatsapp',           roles: ['admin'] },
+        ],
+    },
+    {
+        label: 'Sistema',
+        items: [
+            { icon: Icon.Bot,           label: 'Scraping',              path: '/scraping',                 roles: ['admin'] },
+            { icon: Icon.Database,      label: 'Productos Odoo',        path: '/admin/odoo-products',      roles: ['admin'] },
+            { icon: Icon.Tag,           label: 'Listas de precios',     path: '/preventas/listas-precios', roles: ['admin'] },
+            { icon: Icon.Users,         label: 'Usuarios',              path: '/usuarios',                 roles: ['admin'] },
+            { icon: Icon.Activity,      label: 'Actividad',             path: '/actividad',                roles: ['admin'] },
+            { icon: Icon.Settings,      label: 'Administración',        path: '/admin',                    roles: ['admin'], exact: true },
+        ],
+    },
 ];
 
-const ADMIN_ITEMS = [
-    { icon: Icon.Settings,  label: 'Administración',  path: '/admin' },
-    { icon: Icon.Database,  label: 'Productos Odoo',  path: '/admin/odoo-products' },
-    { icon: Icon.MessageCircle, label: 'WhatsApp',     path: '/admin/whatsapp' },
-    { icon: Icon.Users,     label: 'Usuarios',         path: '/usuarios' },
-    { icon: Icon.Activity,  label: 'Actividad',        path: '/actividad' },
-];
+// Grupos que el usuario abrió/cerró a mano (se recuerdan entre sesiones)
+const NAV_STORAGE_KEY = 'neggo.nav.gruposAbiertos';
+
+function leerGruposAbiertos() {
+    try { return JSON.parse(localStorage.getItem(NAV_STORAGE_KEY)) || {}; } catch { return {}; }
+}
+
+function isPathActive(item, currentPath) {
+    if (currentPath === item.path) return true;
+    if (item.exact || item.path === '/') return false;
+    return currentPath.startsWith(item.path + '/');
+}
 
 // ─── Breakpoint mobile ──────────────────────────────────────────────────────────
 function useIsMobile(breakpoint = 880) {
@@ -210,18 +243,14 @@ export default function Layout() {
     const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
     const [alertCount, setAlertCount] = useState(0);
     const [unmappedCount, setUnmappedCount] = useState(0);
-    const [expandedGroups, setExpandedGroups] = useState(() => {
-        const initial = {};
-        for (const item of NAV_ITEMS) {
-            if (item.children) {
-                initial[item.label] = item.children.some(c => location.pathname.startsWith(c.path));
-            }
-        }
-        return initial;
-    });
+    const [openGroups, setOpenGroups] = useState(leerGruposAbiertos);
 
-    const toggleGroup = useCallback((label) => {
-        setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }));
+    const toggleGroup = useCallback((label, isOpen) => {
+        setOpenGroups(prev => {
+            const next = { ...prev, [label]: !isOpen };
+            try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(next)); } catch { /* sin storage: queda en memoria */ }
+            return next;
+        });
     }, []);
 
     useEffect(() => { setSidebarOpen(!isMobile); }, [isMobile]);
@@ -248,7 +277,7 @@ export default function Layout() {
 
     const pageTitle = routeTitles[location.pathname]
         ?? (location.pathname.startsWith('/pedidos/armado') ? 'Armado y control'
-            : location.pathname.startsWith('/ingreso/') ? 'Ingreso de Mercadería'
+            : location.pathname.startsWith('/ingreso/') ? 'Ingreso de mercadería'
             : location.pathname.startsWith('/proveedores/') ? 'Reglas del proveedor' : 'Neggo');
 
     const displayName = user?.displayName || user?.display_name || 'Usuario';
@@ -303,49 +332,26 @@ export default function Layout() {
 
                 {/* Nav items */}
                 <div style={{ padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflowY: 'auto' }}>
-                    <SectionLabel label="Operación" tokens={t} />
-                    {NAV_ITEMS
-                        .filter(item => !item.roles || item.roles.includes(user?.role))
-                        .map(item => item.children ? (
-                            <NavGroup
-                                key={item.label}
-                                item={item}
-                                userRole={user?.role}
-                                currentPath={location.pathname}
-                                isOpen={!!expandedGroups[item.label]}
-                                onToggle={() => toggleGroup(item.label)}
-                                onNavigate={isMobile ? toggleSidebar : undefined}
-                                tokens={t}
-                            />
-                        ) : (
-                            <NavItem
-                                key={item.path}
-                                item={item}
-                                alertCount={alertCount}
-                                unmappedCount={unmappedCount}
-                                currentPath={location.pathname}
-                                onNavigate={isMobile ? toggleSidebar : undefined}
-                                tokens={t}
-                            />
-                        ))
-                    }
-
-                    {user?.role === 'admin' && (
-                        <>
-                            <SectionLabel label="Admin" tokens={t} top />
-                            {ADMIN_ITEMS.map(item => (
-                                <NavItem
-                                    key={item.path}
-                                    item={item}
-                                    alertCount={0}
-                                    unmappedCount={0}
-                                    currentPath={location.pathname}
-                                    onNavigate={isMobile ? toggleSidebar : undefined}
-                                    tokens={t}
-                                />
-                            ))}
-                        </>
-                    )}
+                    <NavItem
+                        item={NAV_HOME}
+                        currentPath={location.pathname}
+                        onNavigate={isMobile ? toggleSidebar : undefined}
+                        tokens={t}
+                    />
+                    {NAV_GROUPS.map(group => (
+                        <NavGroup
+                            key={group.label}
+                            group={group}
+                            userRole={user?.role}
+                            currentPath={location.pathname}
+                            openGroups={openGroups}
+                            onToggle={toggleGroup}
+                            alertCount={alertCount}
+                            unmappedCount={unmappedCount}
+                            onNavigate={isMobile ? toggleSidebar : undefined}
+                            tokens={t}
+                        />
+                    ))}
                 </div>
 
                 {/* Usuario */}
@@ -410,61 +416,65 @@ export default function Layout() {
 
 // ─── Componentes internos ────────────────────────────────────────────────────────
 
-function SectionLabel({ label, tokens: t, top = false }) {
-    return (
-        <div style={{
-            fontSize: 11,
-            fontWeight: t.font.weight.semibold,
-            color: t.color.textFaint,
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-            padding: `${top ? 20 : 12}px 12px 6px`,
-            fontFamily: t.font.family,
-        }}>
-            {label}
-        </div>
-    );
+function getBadgeCount(item, alertCount, unmappedCount) {
+    return item.badge ? alertCount : item.unmappedBadge ? unmappedCount : 0;
 }
 
-function NavGroup({ item, userRole, currentPath, isOpen, onToggle, onNavigate, tokens: t }) {
+// Grupo plegable: el de la pantalla actual siempre está abierto; los demás recuerdan
+// cómo los dejó el usuario. Cerrado, muestra la suma de avisos de sus ítems.
+function NavGroup({ group, userRole, currentPath, openGroups, onToggle, alertCount, unmappedCount, onNavigate, tokens: t }) {
     const [hovered, setHovered] = useState(false);
-    const visibleChildren = item.children.filter(c => !c.roles || c.roles.includes(userRole));
-    if (visibleChildren.length === 0) return null;
+    const visibleItems = group.items.filter(i => !i.roles || i.roles.includes(userRole));
+    if (visibleItems.length === 0) return null;
 
-    const hasActiveChild = visibleChildren.some(c => currentPath.startsWith(c.path));
-    const active = hasActiveChild;
+    const hasActiveItem = visibleItems.some(i => isPathActive(i, currentPath));
+    const isOpen = hasActiveItem || !!openGroups[group.label];
+    const badgeTotal = visibleItems.reduce((acc, i) => acc + getBadgeCount(i, alertCount, unmappedCount), 0);
+    const hasAlert = visibleItems.some(i => i.badge && alertCount > 0);
 
     return (
         <>
             <button
                 type="button"
-                onClick={onToggle}
+                onClick={() => onToggle(group.label, isOpen)}
                 onMouseEnter={() => setHovered(true)}
                 onMouseLeave={() => setHovered(false)}
+                aria-expanded={isOpen}
                 style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    width: '100%', padding: '9px 12px',
-                    borderRadius: t.radius.sm,
-                    background: active ? t.color.primarySoft : hovered ? t.color.surface2 : 'transparent',
-                    color: active ? t.color.primary : t.color.textMuted,
-                    fontSize: t.font.size.sm, fontWeight: active ? t.font.weight.semibold : t.font.weight.medium,
-                    transition: 'all 120ms', cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    width: '100%', padding: '16px 12px 6px',
+                    background: 'transparent', border: 'none',
+                    color: hasActiveItem ? t.color.primary : hovered ? t.color.textMuted : t.color.textFaint,
+                    fontSize: 11, fontWeight: t.font.weight.semibold,
+                    textTransform: 'uppercase', letterSpacing: '0.06em',
+                    cursor: 'pointer', textAlign: 'left',
                     fontFamily: t.font.family,
+                    transition: 'color 120ms',
                 }}
             >
-                <item.icon size={17} color="currentColor" />
-                <span style={{ flex: 1 }}>{item.label}</span>
-                <Icon.ChevronRight size={12} color={t.color.textFaint} style={{ transition: 'transform 150ms', transform: (isOpen || hasActiveChild) ? 'rotate(90deg)' : 'none' }} />
+                <span style={{ flex: 1 }}>{group.label}</span>
+                {!isOpen && badgeTotal > 0 && (
+                    <span style={{
+                        fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
+                        padding: '1px 7px', borderRadius: t.radius.full, letterSpacing: 0,
+                        background: hasAlert ? t.color.danger : t.color.accentSoft,
+                        color: hasAlert ? '#fff' : t.color.accent,
+                    }}>
+                        {badgeTotal > 99 ? '99+' : badgeTotal}
+                    </span>
+                )}
+                {isOpen
+                    ? <Icon.ChevronDown size={12} color="currentColor" />
+                    : <Icon.ChevronRight size={12} color="currentColor" />}
             </button>
-            {(isOpen || hasActiveChild) && visibleChildren.map(child => (
+            {isOpen && visibleItems.map(item => (
                 <NavItem
-                    key={child.path}
-                    item={child}
-                    alertCount={0}
-                    unmappedCount={0}
+                    key={item.path}
+                    item={item}
+                    alertCount={alertCount}
+                    unmappedCount={unmappedCount}
                     currentPath={currentPath}
                     onNavigate={onNavigate}
-                    isChild
                     tokens={t}
                 />
             ))}
@@ -474,8 +484,8 @@ function NavGroup({ item, userRole, currentPath, isOpen, onToggle, onNavigate, t
 
 function NavItem({ item, alertCount = 0, unmappedCount = 0, currentPath, onNavigate, isChild = false, tokens: t }) {
     const [hovered, setHovered] = useState(false);
-    const isActive = currentPath === item.path || (item.path !== '/' && currentPath.startsWith(item.path + '/'));
-    const badgeCount = item.badge ? alertCount : item.unmappedBadge ? unmappedCount : 0;
+    const isActive = isPathActive(item, currentPath);
+    const badgeCount = getBadgeCount(item, alertCount, unmappedCount);
 
     return (
         <NavLink to={item.path} style={{ textDecoration: 'none' }} onClick={onNavigate}>
