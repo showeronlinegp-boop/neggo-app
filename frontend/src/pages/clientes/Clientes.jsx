@@ -18,7 +18,8 @@ import {
 } from './clientesUi';
 
 // CRM de clientes, fase 1: quién compra, a qué ritmo y quién se está enfriando.
-// Las métricas salen de los tickets del POS de Neggo; las cotizaciones abiertas, de Neggo y Preventas.
+// Las métricas salen de los tickets del POS de Neggo; las cotizaciones abiertas de los últimos
+// 60 días, de Neggo y Preventas, aparecen como motivo para hablarle al cliente.
 
 const PAGE = 50;
 // Cliente · estado · última compra · 12 meses · tendencia · cotización
@@ -68,6 +69,7 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                 <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', gap: '0 8px' }}>
                     <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
                     {c.city && <span>{c.city}</span>}
+                    {c.rubro && <span>{c.rubro}</span>}
                 </div>
             </div>
         </div>
@@ -180,6 +182,7 @@ export default function Clientes() {
     const [search, setSearch] = useState('');
     const [busqueda, setBusqueda] = useState('');
     const [city, setCity] = useState('');
+    const [rubro, setRubro] = useState('');
     const [health, setHealth] = useState('');
     const [soloAbiertas, setSoloAbiertas] = useState(false);
     const [sort, setSort] = useState('prioridad');
@@ -194,12 +197,13 @@ export default function Clientes() {
     const filtros = useCallback((offset) => ({
         search: busqueda || undefined,
         city: city || undefined,
+        rubro: rubro || undefined,
         health: health || undefined,
         open: soloAbiertas ? 1 : undefined,
         sort,
         limit: PAGE,
         offset,
-    }), [busqueda, city, health, soloAbiertas, sort]);
+    }), [busqueda, city, rubro, health, soloAbiertas, sort]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/resumen');
@@ -264,13 +268,15 @@ export default function Clientes() {
 
     const ciudades = [{ value: '', label: 'Todas las ciudades' },
         ...(resumen?.cities || []).map((c) => ({ value: c.city, label: `${c.city} · ${c.n}` }))];
+    const rubros = [{ value: '', label: 'Todos los rubros' },
+        ...(resumen?.rubros || []).map((r) => ({ value: r.rubro, label: `${r.rubro} · ${r.n}` }))];
 
     const variacion90 = resumen && resumen.revenue_prev_90d > 0
         ? Math.round(((resumen.revenue_90d - resumen.revenue_prev_90d) / resumen.revenue_prev_90d) * 100)
         : null;
 
-    const filtrosActivos = busqueda || city || health || soloAbiertas;
-    const limpiar = () => { setSearch(''); setCity(''); setHealth(''); setSoloAbiertas(false); };
+    const filtrosActivos = busqueda || city || rubro || health || soloAbiertas;
+    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setSoloAbiertas(false); };
 
     return (
         <div style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family }}>
@@ -314,7 +320,7 @@ export default function Clientes() {
                         )}
                     </span>
                     <span>Nuevos este mes: <strong style={{ color: t.color.text }}>{fmtInt(resumen.nuevos_mes)}</strong></span>
-                    <span>Con cotización abierta: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
+                    <span title="Cotizaciones abiertas de los últimos 60 días: una excusa para hablarle">Con cotización reciente: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
                 </div>
             )}
 
@@ -329,10 +335,11 @@ export default function Clientes() {
                     />
                 </div>
                 <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 200 }} />
+                <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={sort} onChange={setSort} options={SORT_OPTIONS} style={{ width: isMobile ? '100%' : 210 }} />
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}>
                     <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
-                    Solo con cotización abierta
+                    Solo con cotización reciente
                 </label>
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>

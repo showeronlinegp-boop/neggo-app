@@ -112,6 +112,7 @@ export default function ClienteFicha({ partnerId, resumen, onClose }) {
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: t.space[2], alignItems: 'center' }}>
                             <Badge tone={meta.tone} dot>{meta.label}</Badge>
                             <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>{meta.hint}</span>
+                            {cliente.rubro && <Badge tone="primary">{cliente.rubro}</Badge>}
                             {(cliente.tags || []).filter((tag) => tag !== 'Historico').map((tag) => (
                                 <Badge key={tag} tone="muted">{tag}</Badge>
                             ))}
@@ -132,11 +133,14 @@ export default function ClienteFicha({ partnerId, resumen, onClose }) {
                                 : <Vacio t={t}>No compró en el último año.</Vacio>}
                         </Seccion>
 
-                        <Seccion titulo="Cotizaciones abiertas" t={t}>
+                        <Seccion titulo="Motivo para hablarle" t={t}>
                             {(cliente.open_quotations || []).length === 0 ? (
-                                <Vacio t={t}>No tiene cotizaciones abiertas en Neggo ni en Preventas.</Vacio>
+                                <Vacio t={t}>No tiene cotizaciones abiertas en los últimos 60 días, ni en Neggo ni en Preventas.</Vacio>
                             ) : (
                                 <div>
+                                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: t.space[2] }}>
+                                        Cotizaciones abiertas de los últimos 60 días: buena excusa para preguntarle si sigue en pie.
+                                    </div>
                                     {cliente.open_quotations.map((q) => (
                                         <Fila key={`${q.company}-${q.odoo_id}`} t={t}
                                             izquierda={(

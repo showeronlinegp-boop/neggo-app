@@ -196,45 +196,38 @@ CREATE TABLE client_events (
 ### Tomadas (2026-10-21)
 
 - **D1 Empresas.** Facturación y métricas: **solo Neggo**. Seguimiento de pedidos y cotizaciones abiertas: **Neggo y Preventas**, en la misma ficha.
-- **D2 Qué cuenta como compra.** **Solo el ticket del punto de venta (`pos.order`)**, porque todo se cobra por ahí. Las OV no suman como compra, así que no hace falta deduplicar. Las cotizaciones abiertas se muestran como interés.
+- **D2 Qué cuenta como compra.** **Solo el ticket del punto de venta (`pos.order`)**, porque todo se cobra por ahí. Las OV no suman como compra, así que no hace falta deduplicar.
+- **D3 Dónde vive el seguimiento.** **Solo en la app.** No se escribe nada en `crm.lead` ni en las etiquetas de Odoo.
 - **D4 Exclusiones.** "Shower" **cuenta como cliente**. **RMA se excluye.** "Consumidor Final" **suma solo en la facturación total** de Neggo: no aparece en listados, rankings, salud ni funnel.
 - **D5 Umbrales.** Quedan 1,5× y 2,5× del intervalo propio y "Perdido" a los 120 días. Para clientes con 1 o 2 compras, el intervalo es **15 días**.
-- **D8 Responsables.** **Todos son responsables de todo** por ahora. No hay responsable fijo por cliente. La próxima acción igual guarda quién la creó y a quién se asignó.
+- **D6 Rubro.** **El rubro es la categoría de producto en la que más compró** en los últimos 12 meses. No se usan las etiquetas ni el nombre.
+- **D7 Ciudad.** **Se deja como está** (muchos clientes sin ciudad; el filtro sirve para los que la tienen).
+- **D8 Responsables y usuarios.** **Todos son responsables de todo** por ahora. Los usuarios de los vendedores **se dejan para más adelante**. La próxima acción igual guarda quién la creó.
+- **D9 Etapas.** **Frío, Templado y Caliente alcanzan.**
+- **D10 Arranque del funnel.** **Entran todos los clientes.**
+- **D11 Leads sin compras.** **Sí, pero solo si tienen mail o celular.** El usuario va a pasar una lista de contactos de Neggo desde Drive (no todos son clientes) para cargarlos.
+- **D12 Tipos de acción.** **El accionable podría ser por mail** (por ejemplo, "Mandar lista" por correo). Falta definir con qué cuenta se manda y qué se manda.
+- **D13 Qué ves primero.** **Se ve después.**
+- **D14 Avisos.** **No hacen falta** avisos fuera de la app.
+- **D15 Métricas en la ficha.** **Solo facturación**, sin margen. (Respuesta: "No solo lo facturado"; se lee como "No, solo lo facturado". Confirmar.)
+- **D16 Frecuencia del sync.** **Una vez por día:** se calcula al arrancar el servidor y, si quedó prendido, otra vez a las 24 h. El botón "Actualizar" sigue estando.
+- **D17 Piso del intervalo: 7 días.** **Aprobado.**
+- **D18 Señas y saldos.** **Se deja así:** un pedido pagado en 2 tickets cuenta como 2 compras.
+- **D19 Cotizaciones.** **Solo las de los últimos 60 días**, y **solo como excusa para hablarle al cliente**: no suman al estado ni a la prioridad.
+- **D20 Estado en el nombre.** **Los nombres quedan como están.**
 
 ### Pendientes
 
-Las marcadas ★ bloquean la fase 1.
-
-**Datos y alcance**
-
-- ~~D1~~ decidida arriba.
-- ~~D2~~ decidida arriba.
-- **D3 Dónde vive el seguimiento.** ¿Solo en la app (recomendado: rápido, sin depender de Odoo), o se escribe la etapa en `crm.lead` o en etiquetas de Odoo? ¿Se archivan los 20 leads viejos y las etiquetas "Churn" o "Cliente a Recuperar"?
-- ~~D4~~ decidida arriba.
-- ~~D5~~ decidida arriba.
-- **D6 Segmento o rubro.** Hoy está mezclado en etiquetas (Farmacias, Librería, Polirrubros…) y en el texto del nombre ("Estado: Cliente SLD"). ¿Se toma de las etiquetas de Odoo, se carga en la app o se limpian los nombres en Odoo? ¿Qué significan NLD y SLD?
-- **D7 Ciudad.** 267 clientes no tienen ciudad. ¿Se completa en Odoo (la app podría ofrecer cargarla desde la ficha) o se ignora el filtro por ahora?
-
-**Funnel y equipo**
-
-- **D8 Usuarios.** Responsables: todos (decidido). Falta saber qué vendedores hay para crearles usuario en la app.
-- **D9 Etapas.** ¿Frío, Templado y Caliente alcanzan? ¿Qué pasa a un cliente activo que compra seguido: entra al funnel o el funnel es solo para leads y clientes a recuperar?
-- **D10 Arranque del funnel.** El mockup arranca con 358 en Frío. ¿Entran todos los clientes en Frío, solo los que están enfriándose o perdidos, o se agregan a mano ("Marcar para seguimiento")?
-- **D11 Leads sin compras.** ¿Se cargan prospectos que todavía no son clientes en Odoo? ¿Se crean como partner en Odoo desde la app o quedan solo en la app hasta su primera compra?
-- **D12 Tipos de acción.** Llamar, WhatsApp, Visitar, Mandar lista, Otra. ¿Algún tipo dispara algo (por ejemplo, "Mandar lista" abre la lista de precios del cliente o el envío por WhatsApp)?
-
-**Visualización y avisos**
-
-- **D13 Qué ves primero.** ¿La pantalla de entrada es la lista de "Enfriándose" ordenada por prioridad, Mi día o el listado general?
-- **D14 Avisos.** ¿Hace falta aviso fuera de la app (WhatsApp al vendedor, push de la PWA) o alcanza con el contador en el menú y en el Dashboard?
-- **D15 Métricas en la ficha.** ¿Se muestran margen o rentabilidad por cliente (requiere costo en Odoo) o solo facturación?
-- **D16 Frecuencia del sync.** ¿Alcanza una vez por noche, o hace falta que una compra de hoy saque al cliente de "Enfriándose" en el momento?
+- **D12** con qué cuenta de correo y qué contenido tiene el accionable por mail.
+- **D13** pantalla de entrada del CRM.
+- **D15** confirmar que es "solo facturación".
+- Lista de contactos de Drive (D11): el usuario la pasa.
 
 ## 9. Riesgos
 
 - Los partners duplicados en Odoo (el mismo cliente con 2 fichas) parten la historia y lo hacen parecer frío. Hace falta un listado de "posibles duplicados" por teléfono.
 - Contar dos veces OV y POS infla la facturación. Hay que cubrirlo con un test.
-- Sin usuarios reales ni responsables, la fase 2 no se usa. Hay que definir D8 antes de empezar a construirla.
+- Sin usuarios por vendedor, la fase 2 la usan todos con su usuario actual; el historial guarda quién hizo cada acción.
 
 ---
 
@@ -243,7 +236,7 @@ Las marcadas ★ bloquean la fase 1.
 - `backend/services/clientHealth.js`: intervalo habitual, estado, tendencia, prioridad y métricas. Lógica pura, con tests en `clientHealth.test.js`.
 - `backend/services/clientMetricsService.js`: lee de Odoo los tickets del POS de Neggo, sus líneas de producto de los últimos 12 meses y las cotizaciones abiertas de Neggo y Preventas. Lo guarda en `client_metrics_cache` (migración `042_clientes_crm.sql`, que también aplica `ensureSchema` al arrancar). Los tests de armado de filas están en `clientMetrics.test.js`. Con los datos de hoy, el sync completo tarda ~7 s.
 - `backend/routes/clientes.js`: `GET /api/clientes`, `GET /api/clientes/resumen`, `GET /api/clientes/:id` y `POST /api/clientes/sync`, para los roles admin y vendedor.
-- Cuándo se actualiza: si al abrir el listado los datos tienen más de 6 horas, el backend lanza el sync en segundo plano. También se puede pedir con el botón "Actualizar". No corre en el scraper-worker, así que no hace falta reconstruirlo.
+- Cuándo se actualiza: al arrancar el servidor (D16) y, si al abrir el listado los datos tienen más de 24 horas, el backend lanza el sync en segundo plano. También se puede pedir con el botón "Actualizar". No corre en el scraper-worker, así que no hace falta reconstruirlo.
 - Frontend: menú **Ventas → Clientes** (`/clientes`).
   - Contadores por estado, que también funcionan como filtro.
   - Facturación de 90 días contra los 90 anteriores.
@@ -252,9 +245,9 @@ Las marcadas ★ bloquean la fase 1.
 
 Primer sync con datos reales (2026-10-21): 433 clientes. 87 activos, 30 nuevos, 25 en desfasaje, 71 enfriándose, 90 perdidos y 130 sin compras (solo tienen cotizaciones).
 
-### Decisiones nuevas que surgieron (a validar)
+### Ajustes después de las decisiones (2026-10-21)
 
-- **D17 Piso del intervalo: 7 días.** Hay clientes que compran casi a diario, con intervalo de 1 o 2 días. Sin piso, faltar 3 días ya los pasaba a "Enfriándose". ¿Está bien 7 días?
-- **D18 Señas y saldos.** Un pedido pagado en 2 tickets (seña + saldo) cuenta como 2 compras y le acorta el intervalo al cliente. El importe sí es real. Del ranking "Lo que más compra" ya quedan afuera los servicios (señas, saldos, envíos). ¿Se deja así?
-- **D19 Cotizaciones viejas.** Hay 198 clientes con alguna cotización en borrador o enviada, varias de hace meses. ¿Se muestran solo las de los últimos 30 o 60 días?
-- **D20 Estado en el nombre.** Varios nombres de Odoo traen "Estado: Cliente NLD-xx". La app los muestra tal cual. ¿Se limpian en Odoo, o la app oculta esa parte?
+- Cotizaciones: solo las abiertas de los últimos 60 días (D19). En la ficha aparecen como "Motivo para hablarle".
+- Rubro por cliente (D6), migración `043_clientes_rubro.sql`. Las categorías duplicadas de Odoo se unifican ("Tecnologia" = "Tecnología", "Accesorios de Moda" = "Accesorios Moda", "Bazar6920253361236" = "Bazar"). Servicios, gastos y las categorías genéricas (Goods, Food) no son rubro. Hay filtro por rubro en el listado.
+- Tickets que cobran un pedido de venta (anticipo o saldo): no traen productos, así que se toman las líneas del pedido de venta, una sola vez por pedido. Antes, unos 160 clientes quedaban sin "Lo que más compra".
+- Sync al arrancar el servidor y cada 24 h (D16). Con los datos de hoy tarda ~15 s: 353 clientes, 299 con rubro.

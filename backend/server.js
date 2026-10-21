@@ -152,9 +152,14 @@ async function start() {
         });
 
         // El scheduler (sync Odoo, alertas) corre en el scraper-worker.
-        // Acá solo arranca la cola de WhatsApp.
+        // Acá arranca la cola de WhatsApp.
         const { startWhatsappWorker, stopWhatsappWorker } = require('./jobs/whatsappWorker');
         startWhatsappWorker(pool);
+
+        // CRM de clientes: las métricas se calculan al arrancar (D16). Después, la pantalla
+        // las vuelve a pedir si pasaron 24 h. Si Odoo no responde, el servidor arranca igual.
+        require('./services/clientMetricsService').syncClientMetrics()
+            .catch((err) => console.error('❌ CRM: error en el sync al arrancar:', err.message));
         process.on('SIGTERM', stopWhatsappWorker);
         process.on('SIGINT', stopWhatsappWorker);
     } catch (error) {
