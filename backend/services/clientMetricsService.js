@@ -8,6 +8,7 @@ const { callOdoo, getCompanyIds } = require('../config/odoo');
 const health = require('./clientHealth');
 const { ensureSchema } = require('./crmSchema');
 const followups = require('./crmFollowupService');
+const duplicates = require('./clientDuplicates');
 
 const COMPANY = 'neggo';
 const PAGE = 2000;
@@ -142,7 +143,7 @@ async function readPartners(ids) {
     const list = [...ids];
     for (let i = 0; i < list.length; i += 500) {
         const rows = await callOdoo('res.partner', 'read', [list.slice(i, i + 500)], {
-            fields: ['id', 'name', 'phone', 'city', 'category_id'],
+            fields: ['id', 'name', 'phone', 'email', 'vat', 'city', 'category_id', 'commercial_partner_id'],
             context: { active_test: false },
         });
         for (const r of rows) out.set(r.id, r);
@@ -155,6 +156,71 @@ async function readPartners(ids) {
     }
     for (const p of out.values()) p.tags = (p.category_id || []).map((id) => tagNames.get(id)).filter(Boolean);
     return out;
+}
+
+/**
+ * Junta las fichas duplicadas de Odoo (ver clientDuplicates.js): los tickets y cotizaciones de
+ * cada una pasan a la ficha que representa al grupo. Sin I/O: se testea aparte.
+ * @returns {{ orders: object[], quotations: Map, partners: Map, groups: Map<number, number[]> }}
+ */
+function mergeDuplicates({ orders, quotations, partners }) {
+    const { repOf, groups } = duplicates.groupDuplicates(partners, {
+        skipNames: [...EXCLUDED_NAMES, ...GENERIC_NAMES],
+    });
+    if (!groups.size) return { orders, quotations, partners, groups };
+    const rep = (id) => repOf.get(id) || id;
+
+    const tickets = new Map();
+    for (const o of orders) {
+        const pid = m2oId(o.partner_id);
+        if (pid) tickets.set(pid, (tickets.get(pid) || 0) + 1);
+    }
+    const mergedPartners = new Map(partners);
+    for (const [repId, ids] of groups) {
+        mergedPartners.set(repId, duplicates.mergedPartner(repId, ids.map((id) => partners.get(id)), tickets));
+    }
+
+    const mergedOrders = orders.map((o) => {
+        const pid = m2oId(o.partner_id);
+        return pid && rep(pid) !== pid ? { ...o, partner_id: [rep(pid), m2oName(o.partner_id)] } : o;
+    });
+    const mergedQuotes = new Map();
+    for (const [pid, list] of quotations) {
+        const key = rep(pid);
+        mergedQuotes.set(key, [...(mergedQuotes.get(key) || []), ...list]);
+    }
+    for (const list of mergedQuotes.values()) list.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    return { orders: mergedOrders, quotations: mergedQuotes, partners: mergedPartners, groups };
+}
+
+/**
+ * El seguimiento (etapa, eventos, acciones) y los posibles clientes vinculados a una ficha
+ * que quedó unificada pasan al representante del grupo. Si los dos tenían etapa, queda la
+ * del representante.
+ */
+async function moveFollowupsToRep(groups) {
+    const moves = [];
+    for (const [rep, ids] of groups) for (const id of ids) if (id !== rep) moves.push([id, rep]);
+    if (!moves.length) return;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        for (const [from, to] of moves) {
+            await client.query('UPDATE crm_events SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
+            await client.query('UPDATE crm_actions SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
+            await client.query('UPDATE crm_leads SET odoo_partner_id = $2 WHERE odoo_partner_id = $1', [from, to]);
+            await client.query(
+                `UPDATE crm_followups SET odoo_partner_id = $2
+                 WHERE odoo_partner_id = $1 AND NOT EXISTS (SELECT 1 FROM crm_followups WHERE odoo_partner_id = $2)`,
+                [from, to]);
+        }
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 /**
@@ -219,6 +285,7 @@ function buildRows({ orders, lines, quotations, partners, categories = new Map()
             rubro: health.topRubro(partnerLines),
             top_products: health.topProducts(partnerLines),
             open_quotations: recentQuotes.get(pid) || [],
+            merged_partners: partner.merged || [],
         });
     }
     return rows;
@@ -229,9 +296,9 @@ const COLUMNS = [
     'total_revenue', 'avg_ticket', 'purchase_count', 'first_purchase_date', 'last_purchase_date',
     'days_since_last_purchase', 'median_interval_days', 'interval_is_default',
     'revenue_90d', 'revenue_prev_90d', 'revenue_12m', 'health', 'trend', 'trend_pct', 'priority',
-    'monthly_revenue', 'top_products', 'open_quotations',
+    'monthly_revenue', 'top_products', 'open_quotations', 'merged_partners',
 ];
-const JSON_COLUMNS = new Set(['tags', 'monthly_revenue', 'top_products', 'open_quotations']);
+const JSON_COLUMNS = new Set(['tags', 'monthly_revenue', 'top_products', 'open_quotations', 'merged_partners']);
 
 async function persist(rows) {
     const client = await pool.connect();
@@ -289,8 +356,14 @@ async function runSync() {
         ...quotations.keys(),
     ]);
     const partners = await readPartners(partnerIds);
-    const rows = buildRows({ orders, lines, quotations, partners, categories, today });
+    // Los contactos hijos suman a su cliente principal: hay que tenerlo aunque no haya comprado
+    const mainIds = new Set([...partners.values()]
+        .map((p) => m2oId(p.commercial_partner_id)).filter((id) => id && !partners.has(id)));
+    for (const [id, p] of await readPartners(mainIds)) partners.set(id, p);
+    const merged = mergeDuplicates({ orders, quotations, partners });
+    const rows = buildRows({ ...merged, lines, categories, today });
     await persist(rows);
+    await moveFollowupsToRep(merged.groups);
     // Vincula posibles clientes que aparecieron en Odoo y marca los ganados
     await followups.afterSync().catch((err) => console.error('❌ CRM: error después del sync:', err.message));
 
@@ -360,12 +433,15 @@ async function listClients(f = {}) {
     const search = String(f.search || '').trim();
     if (search) {
         params.push(`%${search}%`);
+        // También por el nombre de cualquiera de sus fichas unificadas
+        const byName = (n) => `(partner_name ILIKE $${n} OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(merged_partners) m WHERE m->>'name' ILIKE $${n}))`;
         const digits = search.replace(/\D/g, '');
         if (digits.length >= 4) {
             params.push(`%${digits}%`);
-            where.push(`(partner_name ILIKE $${params.length - 1} OR regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE $${params.length})`);
+            where.push(`(${byName(params.length - 1)} OR regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') LIKE $${params.length})`);
         } else {
-            where.push(`partner_name ILIKE $${params.length}`);
+            where.push(byName(params.length));
         }
     }
     if (f.city) {
@@ -452,12 +528,12 @@ async function summary() {
     };
 }
 
-/** Últimos tickets del cliente, leídos en vivo de Odoo. */
-async function recentPurchases(partnerId, limit = 15) {
+/** Últimos tickets del cliente (de todas sus fichas unificadas), leídos en vivo de Odoo. */
+async function recentPurchases(partnerIds, limit = 15) {
     const companies = await getCompanyIds();
     const context = { allowed_company_ids: [companies.neggo] };
     const orders = await callOdoo('pos.order', 'search_read',
-        [[['company_id', '=', companies.neggo], ['partner_id', '=', partnerId], ['state', 'in', POS_STATES]]],
+        [[['company_id', '=', companies.neggo], ['partner_id', 'in', partnerIds], ['state', 'in', POS_STATES]]],
         { fields: ['id', 'name', 'pos_reference', 'date_order', 'amount_total', 'lines'], order: 'date_order desc', limit, context });
     return orders.map((o) => ({
         odoo_id: o.id,
@@ -477,7 +553,8 @@ async function getClient(partnerId) {
     let purchases = [];
     let purchasesError = null;
     try {
-        purchases = await recentPurchases(partnerId);
+        const merged = (row.merged_partners || []).map((p) => p.id);
+        purchases = await recentPurchases(merged.length ? merged : [row.odoo_partner_id]);
     } catch (err) {
         purchasesError = 'No pude leer los últimos tickets de Odoo';
         console.warn(`⚠️ CRM: tickets de ${partnerId}: ${err.message}`);
@@ -488,6 +565,7 @@ async function getClient(partnerId) {
 module.exports = {
     ensureSchema,
     buildRows,
+    mergeDuplicates,
     syncClientMetrics,
     isSyncing,
     lastSyncedAt,
