@@ -9,21 +9,43 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import Toggle from '../../components/common/Toggle';
+import Tabs from '../../components/common/Tabs';
 import * as Icon from '../../components/common/icons';
 import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
+import PosiblesClientes from './PosiblesClientes';
 import {
-    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS,
-    fmtHace, fmtIntervalo, fmtActualizado, iniciales,
+    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER,
+    fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
 } from './clientesUi';
 
-// CRM de clientes, fase 1: quién compra, a qué ritmo y quién se está enfriando.
+// CRM de clientes: quién compra, a qué ritmo, quién se está enfriando y en qué etapa
+// del seguimiento está cada uno (fase 2). La pestaña Posibles clientes tiene los que
+// todavía no están en Odoo.
 // Las métricas salen de los tickets del POS de Neggo; las cotizaciones abiertas de los últimos
 // 60 días, de Neggo y Preventas, aparecen como motivo para hablarle al cliente.
 
 const PAGE = 50;
-// Cliente · estado · última compra · 12 meses · tendencia · cotización
-const COLUMNAS = 'minmax(190px, 2fr) 118px minmax(104px, 1fr) 160px 72px minmax(104px, 1.1fr)';
+// Cliente · estado · etapa · última compra · 12 meses · tendencia · cotización
+const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 160px 72px minmax(104px, 1.1fr)';
+const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
+const SORTS = [...SORT_OPTIONS, { value: 'accion', label: 'Próxima acción' }];
+
+function Etapa({ c, t }) {
+    const meta = STAGE_META[c.stage] || STAGE_META.frio;
+    const proxima = fmtProxima(c.next_action_date);
+    const vencida = c.next_action_date && c.next_action_date < hoyAr();
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
+            <Badge tone={meta.tone}>{meta.label}</Badge>
+            {proxima && (
+                <span style={{ fontSize: t.font.size.xs, color: vencida ? t.color.danger : t.color.textMuted, ...t.numericStyle }}>
+                    {proxima}
+                </span>
+            )}
+        </div>
+    );
+}
 
 function Tendencia({ trend, pct, t }) {
     if (!trend) return <span style={{ color: t.color.textFaint }}>—</span>;
@@ -114,7 +136,10 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                         <Tendencia trend={c.trend} pct={c.trend_pct} t={t} />
                     </div>
                 </div>
-                {cotizacion}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], width: '100%' }}>
+                    <Etapa c={c} t={t} />
+                    {cotizacion}
+                </div>
             </button>
         );
     }
@@ -127,6 +152,7 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
             }}>
             {nombre}
             <span><Badge tone={meta.tone} dot>{meta.label}</Badge></span>
+            <Etapa c={c} t={t} />
             {ultima}
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], justifyContent: 'flex-end' }}>
                 <BarrasMensuales data={c.monthly_revenue || []} compacto />
@@ -184,6 +210,10 @@ export default function Clientes() {
     const [city, setCity] = useState('');
     const [rubro, setRubro] = useState('');
     const [health, setHealth] = useState('');
+    const [stage, setStage] = useState('');
+    const [tab, setTab] = useState('clientes');
+    const [leadsTotal, setLeadsTotal] = useState(null);
+    const huboCambios = useRef(false);
     const [soloAbiertas, setSoloAbiertas] = useState(false);
     const [sort, setSort] = useState('prioridad');
     const pollRef = useRef(null);
@@ -199,11 +229,12 @@ export default function Clientes() {
         city: city || undefined,
         rubro: rubro || undefined,
         health: health || undefined,
+        stage: stage || undefined,
         open: soloAbiertas ? 1 : undefined,
         sort,
         limit: PAGE,
         offset,
-    }), [busqueda, city, rubro, health, soloAbiertas, sort]);
+    }), [busqueda, city, rubro, health, stage, soloAbiertas, sort]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/resumen');
@@ -242,6 +273,11 @@ export default function Clientes() {
 
     useEffect(() => () => clearTimeout(pollRef.current), []);
 
+    // Cantidad de posibles clientes para la pestaña
+    useEffect(() => {
+        api.get('/clientes/leads/resumen').then((res) => { if (res.success) setLeadsTotal(res.data.total); });
+    }, []);
+
     // Al terminar un sync que estaba corriendo, recarga la lista
     const prevSync = useRef(false);
     useEffect(() => {
@@ -275,8 +311,14 @@ export default function Clientes() {
         ? Math.round(((resumen.revenue_90d - resumen.revenue_prev_90d) / resumen.revenue_prev_90d) * 100)
         : null;
 
-    const filtrosActivos = busqueda || city || rubro || health || soloAbiertas;
-    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setSoloAbiertas(false); };
+    const filtrosActivos = busqueda || city || rubro || health || stage || soloAbiertas;
+    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setSoloAbiertas(false); };
+
+    // Lo que se cambia en la ficha (etapa, acciones) se ve en la lista al cerrarla
+    const cerrarFicha = () => {
+        setAbierto(null);
+        if (huboCambios.current) { huboCambios.current = false; cargarLista(); }
+    };
 
     return (
         <div style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family }}>
@@ -298,6 +340,21 @@ export default function Clientes() {
                     </Button>
                 </div>
             </div>
+
+            <Tabs
+                value={tab}
+                onChange={setTab}
+                style={{ marginBottom: t.space[6] }}
+                tabs={[
+                    { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
+                    { value: 'leads', label: 'Posibles clientes', icon: <Icon.Plus size={16} />, count: leadsTotal },
+                ]}
+            />
+
+            {tab === 'leads' ? (
+                <PosiblesClientes onResumen={(r) => setLeadsTotal(r.total)} />
+            ) : (
+            <>
 
             <div style={{ display: 'flex', gap: t.space[3], flexWrap: 'wrap', marginBottom: t.space[4] }}>
                 {HEALTH_ORDER.map((h) => (
@@ -336,7 +393,8 @@ export default function Clientes() {
                 </div>
                 <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 200 }} />
-                <Select value={sort} onChange={setSort} options={SORT_OPTIONS} style={{ width: isMobile ? '100%' : 210 }} />
+                <Select value={stage} onChange={setStage} options={ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 170 }} />
+                <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 210 }} />
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}>
                     <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
                     Solo con cotización reciente
@@ -365,6 +423,7 @@ export default function Clientes() {
                     }}>
                         <span>Cliente</span>
                         <span>Estado</span>
+                        <span>Etapa</span>
                         <span>Última compra</span>
                         <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
                         <span style={{ textAlign: 'right' }}>Tendencia</span>
@@ -410,7 +469,10 @@ export default function Clientes() {
                 )}
             </Card>
 
-            <ClienteFicha partnerId={abierto?.odoo_partner_id} resumen={abierto} onClose={() => setAbierto(null)} />
+            <ClienteFicha partnerId={abierto?.odoo_partner_id} resumen={abierto} onClose={cerrarFicha}
+                onCambio={() => { huboCambios.current = true; }} />
+            </>
+            )}
         </div>
     );
 }

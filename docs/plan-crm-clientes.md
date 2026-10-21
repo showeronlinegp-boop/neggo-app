@@ -206,10 +206,10 @@ CREATE TABLE client_events (
 - **D9 Etapas.** **Frío, Templado y Caliente alcanzan.**
 - **D10 Arranque del funnel.** **Entran todos los clientes.**
 - **D11 Leads sin compras.** **Sí, pero solo si tienen mail o celular.** El usuario va a pasar una lista de contactos de Neggo desde Drive (no todos son clientes) para cargarlos.
-- **D12 Tipos de acción.** **El accionable podría ser por mail** (por ejemplo, "Mandar lista" por correo). Falta definir con qué cuenta se manda y qué se manda.
-- **D13 Qué ves primero.** **Se ve después.**
+- **D12 Tipos de acción.** Llamar, WhatsApp, Visitar, Mandar lista y Otra. **El envío por mail queda para después.**
+- **D13 Qué ves primero.** **Se decide después de usar la fase 2.**
 - **D14 Avisos.** **No hacen falta** avisos fuera de la app.
-- **D15 Métricas en la ficha.** **Solo facturación**, sin margen. (Respuesta: "No solo lo facturado"; se lee como "No, solo lo facturado". Confirmar.)
+- **D15 Métricas en la ficha.** **Solo facturación**, sin margen (confirmado).
 - **D16 Frecuencia del sync.** **Una vez por día:** se calcula al arrancar el servidor y, si quedó prendido, otra vez a las 24 h. El botón "Actualizar" sigue estando.
 - **D17 Piso del intervalo: 7 días.** **Aprobado.**
 - **D18 Señas y saldos.** **Se deja así:** un pedido pagado en 2 tickets cuenta como 2 compras.
@@ -218,10 +218,9 @@ CREATE TABLE client_events (
 
 ### Pendientes
 
-- **D12** con qué cuenta de correo y qué contenido tiene el accionable por mail.
-- **D13** pantalla de entrada del CRM.
-- **D15** confirmar que es "solo facturación".
-- Lista de contactos de Drive (D11): el usuario la pasa.
+- **D12** envío por mail (cuenta y contenido), para más adelante.
+- **D13** pantalla de entrada del CRM, después de usar la fase 2.
+- Qué significan los estados y listas de la agenda (NRI, NLD-xx, SLD, LD-30).
 
 ## 9. Riesgos
 
@@ -251,3 +250,12 @@ Primer sync con datos reales (2026-10-21): 433 clientes. 87 activos, 30 nuevos, 
 - Rubro por cliente (D6), migración `043_clientes_rubro.sql`. Las categorías duplicadas de Odoo se unifican ("Tecnologia" = "Tecnología", "Accesorios de Moda" = "Accesorios Moda", "Bazar6920253361236" = "Bazar"). Servicios, gastos y las categorías genéricas (Goods, Food) no son rubro. Hay filtro por rubro en el listado.
 - Tickets que cobran un pedido de venta (anticipo o saldo): no traen productos, así que se toman las líneas del pedido de venta, una sola vez por pedido. Antes, unos 160 clientes quedaban sin "Lo que más compra".
 - Sync al arrancar el servidor y cada 24 h (D16). Con los datos de hoy tarda ~15 s: 353 clientes, 299 con rubro.
+
+## 11. Fase 2: qué quedó hecho (2026-10-21)
+
+- Migración `044_crm_seguimiento.sql`: `crm_leads` (posibles clientes), `crm_followups` (etapa; sin fila = Frío), `crm_events` (historial) y `crm_actions` (próximas acciones). Cada fila es de un cliente de Odoo o de un posible cliente. Las tablas viejas `client_notes` y `client_reminders` (vacías) no se usan.
+- `services/crmContacts.js` (lógica pura, con tests): lee el CSV de Google Contacts, saca el "Estado: …" del nombre y lo guarda aparte (estado, lista y ciudad), pasa a ciudad la que viene entre paréntesis, normaliza teléfonos argentinos a característica + número y cruza con Odoo.
+- `services/crmLeadService.js`: listado, alta a mano (pide celular o mail y avisa si ya está en Odoo o en la app) e importación. Script: `node scripts/importarContactos.js <csv> [--cargar]`.
+- `services/crmFollowupService.js`: etapa (Ganado no se elige a mano y Descartado pide motivo), acciones (programar, mover, marcar hecha con resultado), contactos registrados, Mi día y, después de cada sync, dos tareas automáticas: vincula un posible cliente que aparece en Odoo con el mismo teléfono (se lleva su seguimiento) y pasa a Ganado al que compró después de estar en Caliente.
+- Frontend: en Clientes, columna y filtro de etapa, orden por próxima acción y pestaña **Posibles clientes**. En la ficha (de clientes y de posibles clientes), el bloque de seguimiento. Página **Ventas → Mi día** con lo vencido, lo de hoy y lo de mañana.
+- Importación de la agenda (5.068 filas): 255 ya estaban en Odoo y no se cargaron; quedaron afuera 17 teléfonos inválidos, 34 repetidos y 2 números propios. Se cargaron **4.760 posibles clientes**: 4.285 NRI, 284 Lead, 128 sin estado, 31 Churn, 18 C. Recuperar y 14 Cliente. 3.194 no tienen nombre en la agenda y se muestran por su número.

@@ -7,6 +7,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
 import BarrasMensuales from './BarrasMensuales';
+import Seguimiento from './Seguimiento';
 import {
     HEALTH_META, COMPANY_LABEL, QUOTATION_STATE,
     fmtHace, fmtFecha, fmtIntervalo, linkWhatsApp,
@@ -61,7 +62,7 @@ function Vacio({ children, t }) {
     return <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>{children}</div>;
 }
 
-export default function ClienteFicha({ partnerId, resumen, onClose }) {
+export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) {
     const { tokens: t } = useTheme();
     const [cliente, setCliente] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -126,6 +127,8 @@ export default function ClienteFicha({ partnerId, resumen, onClose }) {
                             <Dato t={t} label="Última compra" value={fmtHace(cliente.days_since_last_purchase)} hint={fmtFecha(cliente.last_purchase_date)} />
                             <Dato t={t} label="Cliente desde" value={fmtFecha(cliente.first_purchase_date)} />
                         </div>
+
+                        <Seguimiento tipo="cliente" id={partnerId} onCambio={onCambio} />
 
                         <Seccion titulo="Compras por mes" t={t}>
                             {Number(cliente.revenue_12m) > 0
