@@ -639,14 +639,13 @@ export default function Reposicion() {
         setTrabajando(null);
         if (!res.success) { setError(res.error || 'No se pudo actualizar'); return; }
         const texto = estado === 'pendiente' ? 'volvió a pendientes'
-            : estado === 'encargado' ? 'quedó encargado (se pidió, no es un resuelto)'
+            : estado === 'encargado' ? 'pasó a Encargados'
             : estado === 'repuesto' ? 'quedó como repuesto'
             : 'quedó descartado';
         setAviso(`«${item.name || item.odoo_id}» ${texto}.`);
         cargarProveedores();
-        const nextTab = estado === 'encargado' ? 'encargado' : estado === 'pendiente' ? 'pendiente' : null;
-        if (nextTab && nextTab !== tab) setTab(nextTab);
-        else setItems(prev => prev.filter(i => i.id !== item.id));
+        // El producto sale de la lista; el usuario se queda en la pestaña donde estaba
+        setItems(prev => prev.filter(i => i.id !== item.id));
     };
 
     const alAgregar = (item) => {
