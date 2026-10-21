@@ -373,17 +373,10 @@ async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
     return nuevo;
 }
 
-// Pedido de pendientes armado al cerrar un control (cotización "Pendientes de S0xxx")
-function esPedidoDePendientes(odoo) {
-    return String(odoo?.client_order_ref || '').startsWith(refPendientes(''));
-}
-
-// Para armar: cotización (borrador o enviada), sin factura ni POS ni 2 envíos hechos en Odoo.
+// Para armar: cotización enviada, sin factura ni POS ni 2 envíos hechos en Odoo.
 // El pedido de pendientes en borrador espera en la solapa Pendientes; entra cuando se envía.
 function esCotizacionParaArmar(odoo) {
-    if (!odoo || ordenCobradaAparte(odoo) || ordenEnviosYaHechos(odoo)) return false;
-    if (odoo.state === 'sent') return true;
-    return odoo.state === 'draft' && !esPedidoDePendientes(odoo);
+    return !!odoo && odoo.state === 'sent' && !ordenCobradaAparte(odoo) && !ordenEnviosYaHechos(odoo);
 }
 
 // Al cerrar el control: la orden queda con lo que salió (pedida = entregada) y
@@ -1082,6 +1075,8 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
     }
     // Factura o POS en Odoo: ya no se arma/controla acá.
     where.push(`NOT ${sqlFueraPorFacturaOPos()}`);
+    // Sólo arranca con cotizaciones enviadas: una que volvió a borrador en Odoo no se arma
+    where.push(`NOT (e.estado = 'pendiente' AND COALESCE(e.odoo_state, '') = 'draft')`);
     if (solapa === 'esperando_pago') {
         where.push('e.cotizacion_enviada_at IS NOT NULL AND e.pago_recibido_at IS NULL');
     } else if (incluirPagados) {
@@ -1222,7 +1217,7 @@ async function obtener(id, { syncOdoo = false } = {}) {
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
     const enviadas = await odooService.getSaleOrdersWithLines(company, {
-        states: ['draft', 'sent'],
+        states: ['sent'],
         days: 30,
         limit: 80,
     });
@@ -1280,7 +1275,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 [company, order.id]
             );
             const paraArmar = esCotizacionParaArmar(order);
-            // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización
+            // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización enviada
             if (existente?.estado === 'cancelado' && !paraArmar) continue;
             if (!existente && (!paraArmar || !order.lines.length)) continue;
 
@@ -1908,7 +1903,6 @@ module.exports = {
     fuentesDeQty,
     planIgualar,
     esCotizacionParaArmar,
-    esPedidoDePendientes,
     odooNecesitaConfirmar,
     odooYaConfirmada,
     armandoRequiereConfirmado,

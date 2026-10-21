@@ -222,12 +222,9 @@ function testCotizacionParaArmar() {
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent' })), true);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sale' })), false);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', invoice_status: 'invoiced' })), false);
-    // Arranca con las cotizaciones en borrador o enviadas
-    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft' })), true);
-    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft', pos_order_count: 1 })), false);
-    // El pedido de pendientes en borrador espera en su solapa; enviado, entra a armar
+    // Sólo arranca con cotizaciones enviadas (el pedido de pendientes en borrador espera en su solapa)
+    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft' })), false);
     const pend = { client_order_ref: 'Pendientes de S00042' };
-    assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'draft', ...pend })), false);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', ...pend })), true);
     assert.strictEqual(ordenFacturada(odooOrder({ invoice_status: 'invoiced' })), true);
     assert.strictEqual(ordenFacturada(odooOrder({ lines: [odooLine({ qty_invoiced: 1 })] })), true);
