@@ -93,6 +93,9 @@ app.use('/api/reposicion', require('./routes/reposicion'));
 // Armado y control de pedidos (2-step en la app; Odoo al saldar)
 app.use('/api/pedido-envios', require('./routes/pedidoEnvios'));
 
+// CRM de clientes: métricas desde el POS de Neggo, estado y cotizaciones abiertas
+app.use('/api/clientes', require('./routes/clientes'));
+
 // Backup de la base: estado y "Hacer backup ahora" (lo ejecuta el contenedor db-backup)
 app.use('/api/backup', require('./routes/backup'));
 

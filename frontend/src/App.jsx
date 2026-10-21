@@ -36,6 +36,7 @@ const Reposicion        = lazy(() => import('./pages/reposicion/Reposicion'));
 const Recorrida         = lazy(() => import('./pages/reposicion/Recorrida'));
 const PedidoEnvios      = lazy(() => import('./pages/pedidos/PedidoEnvios'));
 const PedidoEnvioDetalle = lazy(() => import('./pages/pedidos/PedidoEnvioDetalle'));
+const Clientes          = lazy(() => import('./pages/clientes/Clientes'));
 
 // ─── Fallback de carga ────────────────────────────────────────────────────────
 function PageLoader() {
@@ -64,6 +65,9 @@ export default function App() {
                         {/* Productos */}
                         <Route path="/productos"               element={<SupplierProducts />} />
                         <Route path="/productos/vinculos"      element={<ProductMappings />} />
+
+                        {/* Ventas */}
+                        <Route path="/clientes"                element={<Clientes />} />
 
                         {/* Alertas */}
                         <Route path="/alertas"                 element={<PriceAlerts />} />

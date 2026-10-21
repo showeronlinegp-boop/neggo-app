@@ -41,6 +41,12 @@ const NAV_HOME = { icon: Icon.LayoutDashboard, label: 'Dashboard', path: '/' };
 
 const NAV_GROUPS = [
     {
+        label: 'Ventas',
+        items: [
+            { icon: Icon.Users,         label: 'Clientes',              path: '/clientes',                 roles: ['admin', 'vendedor'] },
+        ],
+    },
+    {
         label: 'Depósito',
         items: [
             { icon: Icon.PackageDown,   label: 'Ingreso de mercadería', path: '/ingreso',                  roles: ['admin', 'operador'] },
