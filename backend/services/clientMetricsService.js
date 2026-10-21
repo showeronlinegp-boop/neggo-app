@@ -342,17 +342,20 @@ const SORTS = {
 };
 const STAGE_VALUES = followups.STAGES;
 // Cliente + etapa del funnel (sin fila = Frío) + fecha de la próxima acción pendiente
+// + si está en la lista de seguimiento cercano
 const CLIENTS_FROM = `(
     SELECT c.*, COALESCE(f.stage, 'frio') AS stage,
            (SELECT MIN(a.due_date)::text FROM crm_actions a
-            WHERE a.odoo_partner_id = c.odoo_partner_id AND a.done = false) AS next_action_date
+            WHERE a.odoo_partner_id = c.odoo_partner_id AND a.done = false) AS next_action_date,
+           (w.id IS NOT NULL) AS cercano
     FROM client_metrics_cache c
     LEFT JOIN crm_followups f ON f.odoo_partner_id = c.odoo_partner_id
+    LEFT JOIN crm_watchlist w ON w.odoo_partner_id = c.odoo_partner_id
 ) x`;
 
 /**
  * Listado de clientes (sin la cuenta genérica).
- * @param {{ search?: string, city?: string, rubro?: string, health?: string, stage?: string, open?: boolean, sort?: string, limit?: number, offset?: number }} f
+ * @param {{ search?: string, city?: string, rubro?: string, health?: string, stage?: string, open?: boolean, cercanos?: boolean, sort?: string, limit?: number, offset?: number }} f
  */
 async function listClients(f = {}) {
     await ensureSchema();
@@ -386,6 +389,7 @@ async function listClients(f = {}) {
         where.push(`stage = $${params.length}`);
     }
     if (f.open) where.push(`jsonb_array_length(open_quotations) > 0`);
+    if (f.cercanos) where.push('cercano');
 
     const order = SORTS[f.sort] || SORTS.prioridad;
     const limit = Math.min(Math.max(parseInt(f.limit, 10) || 50, 1), 200);
@@ -397,7 +401,7 @@ async function listClients(f = {}) {
         `SELECT odoo_partner_id, partner_name, phone, city, tags, rubro, health, trend, trend_pct,
                 purchase_count, avg_ticket, revenue_12m, revenue_90d, last_purchase_date,
                 days_since_last_purchase, median_interval_days, interval_is_default,
-                monthly_revenue, open_quotations, priority, stage, next_action_date
+                monthly_revenue, open_quotations, priority, stage, next_action_date, cercano
          FROM ${CLIENTS_FROM}
          WHERE ${whereSql}
          ORDER BY ${order}
@@ -434,6 +438,10 @@ async function summary() {
         `SELECT COALESCE(f.stage, 'frio') AS stage, COUNT(*)::int AS n
          FROM client_metrics_cache c LEFT JOIN crm_followups f ON f.odoo_partner_id = c.odoo_partner_id
          WHERE c.company = $1 AND c.is_generic = false GROUP BY 1`, [COMPANY]);
+    const { rows: [cercanos] } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM crm_watchlist w
+         JOIN client_metrics_cache c ON c.odoo_partner_id = w.odoo_partner_id
+         WHERE c.company = $1 AND c.is_generic = false`, [COMPANY]);
     const counts = Object.fromEntries(HEALTH_VALUES.map((h) => [h, 0]));
     for (const r of byHealth) if (r.health) counts[r.health] = r.n;
     return {
@@ -441,6 +449,7 @@ async function summary() {
         total_clientes: byHealth.reduce((s, r) => s + r.n, 0),
         nuevos_mes: totals.nuevos_mes,
         con_cotizacion: totals.con_cotizacion,
+        cercanos: cercanos.n,
         revenue_90d: Number(totals.revenue_90d),
         revenue_prev_90d: Number(totals.revenue_prev_90d),
         revenue_12m: Number(totals.revenue_12m),
@@ -469,6 +478,27 @@ async function recentPurchases(partnerId, limit = 15) {
     }));
 }
 
+/**
+ * Suma o saca un cliente de la lista de seguimiento cercano.
+ * @returns {Promise<{ odoo_partner_id: number, cercano: boolean } | null>} null si el cliente no existe
+ */
+async function setCercano(partnerId, cercano, userId = null) {
+    await ensureSchema();
+    const id = parseInt(partnerId, 10);
+    if (!Number.isInteger(id) || id <= 0) return null;
+    const { rows: [existe] } = await pool.query(
+        'SELECT 1 FROM client_metrics_cache WHERE company = $1 AND odoo_partner_id = $2', [COMPANY, id]);
+    if (!existe) return null;
+    if (cercano) {
+        await pool.query(
+            `INSERT INTO crm_watchlist (odoo_partner_id, added_by) VALUES ($1, $2)
+             ON CONFLICT (odoo_partner_id) DO NOTHING`, [id, userId]);
+    } else {
+        await pool.query('DELETE FROM crm_watchlist WHERE odoo_partner_id = $1', [id]);
+    }
+    return { odoo_partner_id: id, cercano: Boolean(cercano) };
+}
+
 /** Ficha del cliente: métricas guardadas + últimos tickets en vivo. */
 async function getClient(partnerId) {
     await ensureSchema();
@@ -495,6 +525,7 @@ module.exports = {
     refreshIfStale,
     listClients,
     summary,
+    setCercano,
     getClient,
     EXCLUDED_NAMES,
     GENERIC_NAMES,

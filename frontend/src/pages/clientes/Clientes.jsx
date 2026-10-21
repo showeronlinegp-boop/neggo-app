@@ -181,6 +181,23 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
     );
 }
 
+// Estrella a la izquierda de la fila: suma o saca al cliente de la lista de seguimiento cercano
+function BotonCercano({ c, onToggle, isMobile, t }) {
+    const activo = Boolean(c.cercano);
+    const texto = activo ? 'Sacar de seguimiento cercano' : 'Sumar a seguimiento cercano';
+    return (
+        <button type="button" onClick={() => onToggle(c)} aria-pressed={activo} aria-label={texto} title={texto}
+            style={{
+                width: 40, flexShrink: 0, border: 'none', borderTop: `1px solid ${t.color.border}`,
+                background: 'transparent', cursor: 'pointer', padding: isMobile ? '14px 0 0 8px' : '0 0 0 8px',
+                display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center',
+                color: activo ? t.color.warn : t.color.textFaint,
+            }}>
+            <Icon.Star size={18} filled={activo} />
+        </button>
+    );
+}
+
 function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
     const meta = HEALTH_META[valor];
     const tones = {
@@ -230,6 +247,7 @@ export default function Clientes() {
     const [leadsTotal, setLeadsTotal] = useState(null);
     const huboCambios = useRef(false);
     const [soloAbiertas, setSoloAbiertas] = useState(false);
+    const [soloCercanos, setSoloCercanos] = useState(false);
     const [sort, setSort] = useState('prioridad');
     const pollRef = useRef(null);
 
@@ -246,10 +264,11 @@ export default function Clientes() {
         health: health || undefined,
         stage: stage || undefined,
         open: soloAbiertas ? 1 : undefined,
+        cercanos: soloCercanos ? 1 : undefined,
         sort,
         limit: PAGE,
         offset,
-    }), [busqueda, city, rubro, health, stage, soloAbiertas, sort]);
+    }), [busqueda, city, rubro, health, stage, soloAbiertas, soloCercanos, sort]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/resumen');
@@ -326,8 +345,24 @@ export default function Clientes() {
         ? Math.round(((resumen.revenue_90d - resumen.revenue_prev_90d) / resumen.revenue_prev_90d) * 100)
         : null;
 
-    const filtrosActivos = busqueda || city || rubro || health || stage || soloAbiertas;
-    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setSoloAbiertas(false); };
+    const filtrosActivos = busqueda || city || rubro || health || stage || soloAbiertas || soloCercanos;
+    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setSoloAbiertas(false); setSoloCercanos(false); };
+
+    // Estrella: se ve al instante y vuelve atrás si el backend no lo guarda.
+    // Si se saca uno con el filtro puesto, queda en pantalla para poder deshacerlo.
+    const toggleCercano = async (c) => {
+        const cercano = !c.cercano;
+        const aplicar = (valor) => {
+            setRows((prev) => prev.map((r) => (r.odoo_partner_id === c.odoo_partner_id ? { ...r, cercano: valor } : r)));
+            setResumen((prev) => (prev ? { ...prev, cercanos: Math.max(0, (prev.cercanos || 0) + (valor ? 1 : -1)) } : prev));
+        };
+        aplicar(cercano);
+        const res = await api.put(`/clientes/cercanos/${c.odoo_partner_id}`, { cercano });
+        if (!res.success) {
+            aplicar(!cercano);
+            setError(res.error || 'No se pudo cambiar la lista de seguimiento cercano');
+        }
+    };
 
     // Lo que se cambia en la ficha (etapa, acciones) se ve en la lista al cerrarla
     const cerrarFicha = () => {
@@ -414,6 +449,12 @@ export default function Clientes() {
                     <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
                     Solo con cotización reciente
                 </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}
+                    title="Los clientes que marcaste con la estrella">
+                    <Toggle checked={soloCercanos} onChange={setSoloCercanos} />
+                    <Icon.Star size={14} filled color={t.color.warn} />
+                    <span style={t.numericStyle}>Seguimiento cercano · {fmtInt(resumen?.cercanos ?? 0)}</span>
+                </label>
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>
                 )}
@@ -431,7 +472,7 @@ export default function Clientes() {
             <Card padding={false} style={{ overflow: 'hidden' }}>
                 {!isMobile && (
                     <div style={{
-                        display: 'grid', gap: t.space[4], padding: '10px 16px', background: t.color.surface2,
+                        display: 'grid', gap: t.space[4], padding: '10px 16px 10px 56px', background: t.color.surface2,
                         gridTemplateColumns: COLUMNAS,
                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
                         textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -455,17 +496,26 @@ export default function Clientes() {
                             <Icon.Users size={22} />
                         </div>
                         <div style={{ fontSize: 15, fontWeight: t.font.weight.medium, color: t.color.text }}>
-                            {resumen?.synced_at ? 'No hay clientes con estos filtros' : 'Todavía no hay datos de clientes'}
+                            {soloCercanos && !resumen?.cercanos
+                                ? 'Todavía no hay clientes en seguimiento cercano'
+                                : resumen?.synced_at ? 'No hay clientes con estos filtros' : 'Todavía no hay datos de clientes'}
                         </div>
                         <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
-                            {resumen?.synced_at
+                            {soloCercanos && !resumen?.cercanos
+                                ? 'Sacá este filtro y tocá la estrella al lado de cada cliente que quieras seguir de cerca.'
+                                : resumen?.synced_at
                                 ? 'Probá con otra búsqueda o sacá algún filtro.'
                                 : 'Tocá «Actualizar» para leer los tickets del POS desde Odoo.'}
                         </div>
                     </div>
                 ) : (
                     rows.map((c) => (
-                        <FilaCliente key={c.odoo_partner_id} c={c} onAbrir={setAbierto} isMobile={isMobile} t={t} />
+                        <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch' }}>
+                            <BotonCercano c={c} onToggle={toggleCercano} isMobile={isMobile} t={t} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <FilaCliente c={c} onAbrir={setAbierto} isMobile={isMobile} t={t} />
+                            </div>
+                        </div>
                     ))
                 )}
 

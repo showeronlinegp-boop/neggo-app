@@ -2,6 +2,8 @@
 // GET    /api/clientes?search=&city=&rubro=&health=&stage=&open=1&sort=prioridad|facturacion|ultima|compras|nombre|accion&limit=&offset=
 // GET    /api/clientes/resumen        — contadores por estado y etapa, facturación, ciudades, rubros y última actualización
 // POST   /api/clientes/sync           — vuelve a calcular las métricas desde Odoo
+// El listado también acepta cercanos=1: solo la lista de seguimiento cercano
+// PUT    /api/clientes/cercanos/:partnerId — { cercano: true|false } suma o saca de esa lista
 //
 // Posibles clientes (D11)
 // GET    /api/clientes/leads?search=&status=&stage=&city=&sort=recientes|nombre|accion&limit=&offset=
@@ -49,6 +51,7 @@ router.get('/', ...auth, async (req, res) => {
             health: req.query.health,
             stage: req.query.stage,
             open: req.query.open === '1' || req.query.open === 'true',
+            cercanos: req.query.cercanos === '1' || req.query.cercanos === 'true',
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -200,6 +203,19 @@ router.post('/acciones/:actionId/hecha', ...auth, async (req, res) => {
         return ok(res, await followups.completeAction(req.params.actionId, { result, userId: req.user.id }));
     } catch (err) {
         return handle(res, err, 'No se pudo marcar la acción como hecha');
+    }
+});
+
+// ── Lista de seguimiento cercano ─────────────────────────────────
+
+router.put('/cercanos/:partnerId', ...auth, async (req, res) => {
+    try {
+        const cercano = Boolean(req.body?.cercano);
+        const result = await clientes.setCercano(req.params.partnerId, cercano, req.user.id);
+        if (!result) return fail(res, 'No encontré ese cliente', 404);
+        return ok(res, result);
+    } catch (err) {
+        return handle(res, err, 'No se pudo cambiar la lista de seguimiento cercano');
     }
 });
 
