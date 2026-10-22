@@ -28,6 +28,17 @@ function parseCsv(text) {
 }
 
 /**
+ * Celular en formato local con el 15 después de la característica ("2477 15-123456"):
+ * saca el 15. Prueba característica de 4, 3 y 2 dígitos. Si no hay 15, lo deja como estaba.
+ */
+function sinQuince(d) {
+    for (const len of [4, 3, 2]) {
+        if (d.slice(len, len + 2) === '15') return d.slice(0, len) + d.slice(len + 2);
+    }
+    return d;
+}
+
+/**
  * Teléfono argentino como característica + número (10 dígitos), sin 54, sin el 9 de celular
  * y sin el 0 inicial. Devuelve null si no es un número argentino completo.
  */
@@ -39,6 +50,10 @@ function phoneKey(raw) {
         if (d.length === 11 && d.startsWith('9')) d = d.slice(1);
     } else if (d.length === 11 && d.startsWith('0')) {
         d = d.slice(1);
+    } else if (d.length === 13 && d.startsWith('0')) {
+        d = sinQuince(d.slice(1));
+    } else if (d.length === 12) {
+        d = sinQuince(d);
     }
     return d.length === 10 && /^[1-3]/.test(d) ? d : null;
 }

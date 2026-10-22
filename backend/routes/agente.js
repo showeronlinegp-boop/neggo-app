@@ -1,0 +1,166 @@
+// Rutas de la API del agente (Grok Bot). Auth con API key (AGENTE_API_KEY), sin usuarios de la app.
+// GET    /api/agente/clientes/nuevos?dias=15&etapa=&no_contactar=&page=&limit=&refresh=1
+// GET    /api/agente/productos?rubro=&stock=&q=&page=&limit=
+// PATCH  /api/agente/clientes/:id/seguimiento    — { etapa, ultimo_contacto, proxima_accion }
+// POST   /api/agente/clientes/:id/interacciones  — { fecha, tipo, etapa, mensaje, respuesta }
+// GET    /api/agente/clientes/:id/interacciones?page=&limit=
+// PATCH  /api/agente/clientes/:id                — { no_contactar, contacto }
+// POST   /api/agente/feedback                    — { tipo, endpoint, mensaje } lo que el agente quiere que cambie
+// GET    /api/agente/feedback?page=&limit=
+//
+// Públicas (sin datos): GET /api/agente/openapi.json y GET /api/agente/docs (Swagger UI)
+
+const express = require('express');
+const path = require('path');
+const router = express.Router();
+const { agenteAuth } = require('../middleware/agenteAuth');
+const agente = require('../services/agenteService');
+const v = require('../services/agenteValidacion');
+
+const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
+const SWAGGER_VERSION = '5.17.14';
+
+function sendPage(res, { data, total, page, limit }, status = 200) {
+    return res.status(status).json({
+        success: true,
+        data,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
+}
+
+function invalid(res, errors) {
+    return res.status(422).json({ success: false, error: 'Datos inválidos', details: errors });
+}
+
+function handle(res, err, generic) {
+    if (err instanceof agente.AgenteError) {
+        const body = { success: false, error: err.message };
+        if (err.details) body.details = err.details;
+        return res.status(err.status).json(body);
+    }
+    console.error(`❌ Agente: ${generic}:`, err.message);
+    return res.status(500).json({ success: false, error: generic });
+}
+
+/** Valida :id y, si viene, el body. Devuelve null si ya respondió 422. */
+function parse(req, res, validarBody) {
+    const id = v.validarId(req.params.id);
+    const body = validarBody ? validarBody(req.body) : { value: null, errors: [] };
+    const errors = [...id.errors, ...body.errors];
+    if (errors.length) {
+        invalid(res, errors);
+        return null;
+    }
+    return { id: id.value, value: body.value };
+}
+
+// ── Documentación (pública) ──────────────────────────────────
+
+router.get('/openapi.json', (req, res) => res.sendFile(SPEC_PATH));
+
+router.get('/docs', (req, res) => {
+    res.type('html').send(`<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API del agente — Neggo</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/${SWAGGER_VERSION}/swagger-ui.min.css">
+</head>
+<body style="margin:0">
+<div id="swagger"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/${SWAGGER_VERSION}/swagger-ui-bundle.min.js"></script>
+<script>
+window.ui = SwaggerUIBundle({ url: 'openapi.json', dom_id: '#swagger', persistAuthorization: true });
+</script>
+</body>
+</html>`);
+});
+
+// ── Datos (con API key) ──────────────────────────────────────
+
+router.use(agenteAuth);
+
+router.get('/clientes/nuevos', async (req, res) => {
+    const { value, errors } = v.validarQueryNuevos(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agente.listarNuevos(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudo armar la lista de clientes nuevos');
+    }
+});
+
+router.get('/productos', async (req, res) => {
+    const { value, errors } = v.validarQueryProductos(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agente.listarProductos(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer los productos');
+    }
+});
+
+router.patch('/clientes/:id/seguimiento', async (req, res) => {
+    const p = parse(req, res, (b) => v.validarSeguimiento(b));
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agente.actualizarSeguimiento(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el seguimiento');
+    }
+});
+
+router.post('/clientes/:id/interacciones', async (req, res) => {
+    const p = parse(req, res, (b) => v.validarInteraccion(b));
+    if (!p) return undefined;
+    try {
+        return res.status(201).json({ success: true, data: await agente.registrarInteraccion(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar la interacción');
+    }
+});
+
+router.get('/clientes/:id/interacciones', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    const pag = v.validarPaginacion(req.query);
+    if (pag.errors.length) return invalid(res, pag.errors);
+    try {
+        return sendPage(res, await agente.listarInteracciones(p.id, pag.value));
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer las interacciones');
+    }
+});
+
+router.patch('/clientes/:id', async (req, res) => {
+    const p = parse(req, res, v.validarClientePatch);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agente.actualizarCliente(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo actualizar el cliente');
+    }
+});
+
+router.post('/feedback', async (req, res) => {
+    const { value, errors } = v.validarFeedback(req.body);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return res.status(201).json({ success: true, data: await agente.registrarFeedback(value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el feedback');
+    }
+});
+
+router.get('/feedback', async (req, res) => {
+    const pag = v.validarPaginacion(req.query);
+    if (pag.errors.length) return invalid(res, pag.errors);
+    try {
+        return sendPage(res, await agente.listarFeedback(pag.value));
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer el feedback');
+    }
+});
+
+module.exports = router;

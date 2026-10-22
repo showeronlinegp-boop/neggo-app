@@ -96,6 +96,9 @@ app.use('/api/pedido-envios', require('./routes/pedidoEnvios'));
 // CRM de clientes: métricas desde el POS de Neggo, estado y cotizaciones abiertas
 app.use('/api/clientes', require('./routes/clientes'));
 
+// API del agente (Grok Bot): seguimiento de clientes nuevos. Auth con AGENTE_API_KEY, sin JWT
+app.use('/api/agente', require('./routes/agente'));
+
 // Backup de la base: estado y "Hacer backup ahora" (lo ejecuta el contenedor db-backup)
 app.use('/api/backup', require('./routes/backup'));
 
@@ -119,6 +122,10 @@ app.use('/api/*', (req, res) => {
 // =============================================
 
 app.use((err, req, res, _next) => {
+    // JSON mal armado en la API del agente: es un error de validación, no del servidor
+    if (err.type === 'entity.parse.failed' && req.originalUrl.startsWith('/api/agente')) {
+        return res.status(422).json({ success: false, error: 'Datos inválidos', details: [{ campo: 'body', error: 'JSON inválido' }] });
+    }
     console.error('❌ Error no manejado:', err.message);
     console.error(err.stack);
     return res.status(500).json({

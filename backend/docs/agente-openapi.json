@@ -1,0 +1,1587 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "API del agente de Neggo (Grok Bot)",
+    "version": "1.0.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: los que hicieron su primera compra en los últimos N días.\n\n- No escribe nada en Odoo: solo lo lee. Lo que guarda (etapa, mensajes, no contactar) queda en la base de la app.\n- Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Fechas en hora de Argentina (UTC−3): `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`."
+  },
+  "servers": [
+    {
+      "url": "/api/agente",
+      "description": "Backend de Neggo App"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Clientes",
+      "description": "Clientes nuevos, seguimiento y no contactar"
+    },
+    {
+      "name": "Interacciones",
+      "description": "Mensajes enviados y recibidos"
+    },
+    {
+      "name": "Productos",
+      "description": "Productos para recomendar"
+    },
+    {
+      "name": "Feedback",
+      "description": "Lo que el agente quiere que cambie en la API"
+    },
+    {
+      "name": "Documentación",
+      "description": "Públicas, sin datos"
+    }
+  ],
+  "paths": {
+    "/clientes/nuevos": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "listarClientesNuevos",
+        "summary": "Clientes con primera compra en los últimos N días",
+        "description": "Se calcula en vivo contra Odoo (caché de 5 minutos; `refresh=1` la saltea). Un cliente es nuevo si su primera compra válida, en toda la historia, cae entre hoy y los `dias - 1` días anteriores. Orden: `fecha_primera_compra` desc. Excluye \"Consumidor Final\", \"RMA\" y los tickets sin cliente.",
+        "parameters": [
+          {
+            "name": "dias",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90,
+              "default": 15
+            },
+            "description": "Ventana en días, contando hoy",
+            "example": 15
+          },
+          {
+            "name": "etapa",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pendiente",
+                "dia_1",
+                "dia_7",
+                "dia_15",
+                "finalizado"
+              ]
+            },
+            "description": "Solo los clientes en esta etapa del bot"
+          },
+          {
+            "name": "no_contactar",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Mandá false para traer solo los que se pueden contactar",
+            "example": false
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            },
+            "description": "Saltea la caché de 5 minutos"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data",
+                    "pagination"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClienteNuevo"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 123,
+                      "nombre": "Kiosco Don Pepe",
+                      "contacto": "José Pérez",
+                      "telefono": "+5492477000000",
+                      "ciudad": "Pergamino",
+                      "rubro": "Librería",
+                      "no_contactar": false,
+                      "fecha_primera_compra": "2026-10-10",
+                      "cantidad_compras": 2,
+                      "compras": [
+                        {
+                          "id": "pos-555",
+                          "referencia": "Pedido 00012-003-0004",
+                          "fecha": "2026-10-10T16:20:00-03:00",
+                          "monto": 45000,
+                          "estado": "pagado",
+                          "productos": [
+                            {
+                              "id": 10,
+                              "nombre": "Producto X",
+                              "cantidad": 3,
+                              "precio": 15000
+                            }
+                          ]
+                        }
+                      ],
+                      "seguimiento": {
+                        "etapa": "dia_7",
+                        "ultimo_contacto": "2026-10-17T10:00:00-03:00",
+                        "proxima_accion": "2026-10-25"
+                      }
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}": {
+      "patch": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "actualizarCliente",
+        "summary": "Marcar no contactar o guardar el nombre del contacto",
+        "description": "Tiene que venir al menos un campo. Si `no_contactar` pasa a true, la etapa queda en `finalizado` y se deja una nota en la ficha del cliente para el equipo. Desmarcarlo no cambia la etapa.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientePatch"
+              },
+              "example": {
+                "no_contactar": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ClienteActualizado"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 123,
+                    "nombre": "Kiosco Don Pepe",
+                    "contacto": "José Pérez",
+                    "no_contactar": true,
+                    "seguimiento": {
+                      "etapa": "finalizado",
+                      "ultimo_contacto": "2026-10-17T10:00:00-03:00",
+                      "proxima_accion": "2026-10-25"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}/seguimiento": {
+      "patch": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "actualizarSeguimiento",
+        "summary": "Actualizar etapa, último contacto o próxima acción",
+        "description": "Solo cambia los campos que mandás; tiene que venir al menos uno. `ultimo_contacto` no puede ser futuro (hay 5 minutos de margen). `ultimo_contacto` y `proxima_accion` aceptan null para borrarlos.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeguimientoPatch"
+              },
+              "example": {
+                "etapa": "dia_7",
+                "ultimo_contacto": "2026-10-17T10:00:00-03:00",
+                "proxima_accion": "2026-10-25"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/SeguimientoCompleto"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 123,
+                    "etapa": "dia_7",
+                    "ultimo_contacto": "2026-10-17T10:00:00-03:00",
+                    "proxima_accion": "2026-10-25",
+                    "no_contactar": false,
+                    "no_contactar_at": null,
+                    "contacto": "José Pérez",
+                    "actualizado": "2026-10-17T10:00:05-03:00"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}/interacciones": {
+      "post": {
+        "tags": [
+          "Interacciones"
+        ],
+        "operationId": "registrarInteraccion",
+        "summary": "Registrar un mensaje enviado o recibido",
+        "description": "Un `enviado` actualiza `ultimo_contacto` del seguimiento (si es más nuevo que el que había). Un `enviado` a un cliente con `no_contactar` → 409; los `recibido` se guardan igual.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteraccionNueva"
+              },
+              "example": {
+                "fecha": "2026-10-17T10:00:00-03:00",
+                "tipo": "enviado",
+                "etapa": "dia_7",
+                "mensaje": "Hola José, ¿qué tal te fue con...?",
+                "respuesta": null
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Creada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Interaccion"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1,
+                    "cliente_id": 123,
+                    "fecha": "2026-10-17T10:00:00-03:00",
+                    "tipo": "enviado",
+                    "etapa": "dia_7",
+                    "mensaje": "Hola José, ¿qué tal te fue con...?",
+                    "respuesta": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/NoContactar"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Interacciones"
+        ],
+        "operationId": "listarInteracciones",
+        "summary": "Historial de mensajes del cliente",
+        "description": "De la más nueva a la más vieja.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data",
+                    "pagination"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Interaccion"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 1,
+                      "cliente_id": 123,
+                      "fecha": "2026-10-17T10:00:00-03:00",
+                      "tipo": "enviado",
+                      "etapa": "dia_7",
+                      "mensaje": "Hola José, ¿qué tal te fue con...?",
+                      "respuesta": null
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/productos": {
+      "get": {
+        "tags": [
+          "Productos"
+        ],
+        "operationId": "listarProductos",
+        "summary": "Productos de Neggo para recomendar",
+        "description": "Productos de Neggo con precio de venta. Neggo no lleva stock en Odoo: un producto agotado se archiva. Por eso `stock: true` quiere decir disponible (activo y no archivado). Sin el parámetro vienen solo los disponibles; `stock=false` trae los agotados. `rubro` acepta el mismo valor que viene en el cliente e ignora tildes y \"de\" (\"Tecnologia\" = \"Tecnología\"). Orden: con stock primero, después por nombre.",
+        "parameters": [
+          {
+            "name": "rubro",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Rubro, tal cual viene en el cliente",
+            "example": "Librería"
+          },
+          {
+            "name": "stock",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = disponibles (por defecto); false = agotados",
+            "example": true
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Búsqueda por nombre",
+            "example": "cargador"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data",
+                    "pagination"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Producto"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 32400,
+                      "nombre": "Auricular inalámbrico c/pantalla JK-604",
+                      "precio": 5474,
+                      "rubro": "Tecnología",
+                      "categoria": "Tecnología",
+                      "stock": true,
+                      "url": "https://neggo.odoo.com/shop/itm10-auricular-inalambrico-c-pantalla-jk-604-33275",
+                      "imagen": "https://neggo.odoo.com/web/image/product.template/33275/image_512"
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/feedback": {
+      "post": {
+        "tags": [
+          "Feedback"
+        ],
+        "operationId": "enviarFeedback",
+        "summary": "Contarle al equipo qué le falta o qué cambiarías a la API",
+        "description": "Lo lee el equipo de Neggo para mejorar la API. Usalo cuando un dato no te alcanza, una respuesta no se entiende, algo da error o se te ocurre una mejora.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackNuevo"
+              },
+              "example": {
+                "tipo": "falta",
+                "endpoint": "/productos",
+                "mensaje": "Me sirve tener el stock real por producto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Guardado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Feedback"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1,
+                    "tipo": "falta",
+                    "endpoint": "/productos",
+                    "mensaje": "Me sirve tener el stock real por producto",
+                    "fecha": "2026-10-22T10:30:00-03:00"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Feedback"
+        ],
+        "operationId": "listarFeedback",
+        "summary": "Feedback enviado, del más nuevo al más viejo",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data",
+                    "pagination"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Feedback"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 1,
+                      "tipo": "falta",
+                      "endpoint": "/productos",
+                      "mensaje": "Me sirve tener el stock real por producto",
+                      "fecha": "2026-10-22T10:30:00-03:00"
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "Documentación"
+        ],
+        "security": [],
+        "summary": "Esta especificación",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.0",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "tags": [
+          "Documentación"
+        ],
+        "security": [],
+        "summary": "Swagger UI",
+        "responses": {
+          "200": {
+            "description": "Página HTML",
+            "content": {
+              "text/html": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key del agente (AGENTE_API_KEY): `Authorization: Bearer <API_KEY>`"
+      }
+    },
+    "schemas": {
+      "Etapa": {
+        "type": "string",
+        "enum": [
+          "pendiente",
+          "dia_1",
+          "dia_7",
+          "dia_15",
+          "finalizado"
+        ],
+        "description": "Etapa de la cadencia del bot. Sin registro = pendiente."
+      },
+      "Paginacion": {
+        "type": "object",
+        "required": [
+          "page",
+          "limit",
+          "total",
+          "pages"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "example": 1
+          },
+          "limit": {
+            "type": "integer",
+            "example": 20
+          },
+          "total": {
+            "type": "integer",
+            "example": 16
+          },
+          "pages": {
+            "type": "integer",
+            "example": 1
+          }
+        }
+      },
+      "ProductoComprado": {
+        "type": "object",
+        "required": [
+          "id",
+          "nombre",
+          "cantidad",
+          "precio"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "product.product de Odoo"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "cantidad": {
+            "type": "number"
+          },
+          "precio": {
+            "type": "number",
+            "description": "Precio unitario con impuestos, 2 decimales"
+          }
+        }
+      },
+      "Compra": {
+        "type": "object",
+        "required": [
+          "id",
+          "referencia",
+          "fecha",
+          "monto",
+          "estado",
+          "productos"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`pos-<ticket>`, o `venta-<pedido>` cuando agrupa seña y saldo",
+            "example": "pos-555"
+          },
+          "referencia": {
+            "type": "string",
+            "description": "Número del ticket, o del pedido si agrupa varios"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "description": "Fecha del primer ticket"
+          },
+          "monto": {
+            "type": "number",
+            "description": "Total cobrado con impuestos (suma de los tickets)"
+          },
+          "estado": {
+            "type": "string",
+            "enum": [
+              "pagado",
+              "facturado"
+            ],
+            "description": "En una compra agrupada, el del último ticket"
+          },
+          "productos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductoComprado"
+            },
+            "description": "Solo productos físicos (no señas ni envíos)"
+          }
+        }
+      },
+      "Seguimiento": {
+        "type": "object",
+        "required": [
+          "etapa",
+          "ultimo_contacto",
+          "proxima_accion"
+        ],
+        "properties": {
+          "etapa": {
+            "$ref": "#/components/schemas/Etapa"
+          },
+          "ultimo_contacto": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "nullable": true
+          },
+          "proxima_accion": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-25",
+            "nullable": true
+          }
+        }
+      },
+      "ClienteNuevo": {
+        "type": "object",
+        "required": [
+          "id",
+          "nombre",
+          "contacto",
+          "telefono",
+          "ciudad",
+          "rubro",
+          "no_contactar",
+          "fecha_primera_compra",
+          "cantidad_compras",
+          "compras",
+          "seguimiento"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "res.partner de Odoo"
+          },
+          "nombre": {
+            "type": "string",
+            "description": "Nombre del cliente en Odoo (suele ser el comercio)"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true,
+            "description": "Nombre de la persona: el que guardó el agente o, si no hay, el primer contacto del cliente en Odoo"
+          },
+          "telefono": {
+            "type": "string",
+            "nullable": true,
+            "description": "Celular argentino +549…; null si el número no es válido",
+            "example": "+5492477000000"
+          },
+          "ciudad": {
+            "type": "string",
+            "nullable": true
+          },
+          "rubro": {
+            "type": "string",
+            "nullable": true,
+            "description": "Categoría en la que más compró. Sirve tal cual para GET /productos?rubro="
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "fecha_primera_compra": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-25"
+          },
+          "cantidad_compras": {
+            "type": "integer"
+          },
+          "compras": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Compra"
+            },
+            "description": "De la más nueva a la más vieja"
+          },
+          "seguimiento": {
+            "$ref": "#/components/schemas/Seguimiento"
+          }
+        }
+      },
+      "SeguimientoPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "etapa": {
+            "$ref": "#/components/schemas/Etapa"
+          },
+          "ultimo_contacto": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "nullable": true,
+            "description": "ISO 8601 (fecha o datetime); no futuro"
+          },
+          "proxima_accion": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-25",
+            "nullable": true
+          }
+        }
+      },
+      "SeguimientoCompleto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Seguimiento"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "no_contactar": {
+                "type": "boolean"
+              },
+              "no_contactar_at": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-10-17T10:00:00-03:00",
+                "nullable": true
+              },
+              "contacto": {
+                "type": "string",
+                "nullable": true
+              },
+              "actualizado": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-10-17T10:00:00-03:00",
+                "nullable": true
+              }
+            }
+          }
+        ]
+      },
+      "ClientePatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 200,
+            "description": "Nombre de la persona con la que hablás; null o \"\" lo borra"
+          }
+        }
+      },
+      "ClienteActualizado": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "seguimiento": {
+            "$ref": "#/components/schemas/Seguimiento"
+          }
+        }
+      },
+      "InteraccionNueva": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tipo",
+          "mensaje"
+        ],
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "description": "Por defecto, ahora. No futuro."
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "enviado",
+              "recibido"
+            ]
+          },
+          "etapa": {
+            "$ref": "#/components/schemas/Etapa"
+          },
+          "mensaje": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "respuesta": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 4000
+          }
+        }
+      },
+      "Interaccion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "cliente_id": {
+            "type": "integer"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00"
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "enviado",
+              "recibido"
+            ]
+          },
+          "etapa": {
+            "type": "string",
+            "enum": [
+              "pendiente",
+              "dia_1",
+              "dia_7",
+              "dia_15",
+              "finalizado"
+            ],
+            "nullable": true
+          },
+          "mensaje": {
+            "type": "string"
+          },
+          "respuesta": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "Producto": {
+        "type": "object",
+        "required": [
+          "id",
+          "nombre",
+          "precio",
+          "rubro",
+          "categoria",
+          "stock",
+          "url",
+          "imagen"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "product.product de Odoo"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "precio": {
+            "type": "number",
+            "description": "Precio de venta de Odoo"
+          },
+          "rubro": {
+            "type": "string",
+            "nullable": true
+          },
+          "categoria": {
+            "type": "string",
+            "nullable": true,
+            "description": "Categoría tal cual está en Odoo"
+          },
+          "stock": {
+            "type": "boolean",
+            "description": "true = disponible (no archivado)"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Link a la tienda; null si no está publicado"
+          },
+          "imagen": {
+            "type": "string",
+            "nullable": true,
+            "description": "Foto pública (512 px); null si no está publicado"
+          }
+        }
+      },
+      "FeedbackNuevo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tipo",
+          "mensaje"
+        ],
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "falta",
+              "error",
+              "mejora",
+              "comentario"
+            ],
+            "description": "falta = un dato que necesitás; error = algo que no anda; mejora = cómo lo harías mejor"
+          },
+          "endpoint": {
+            "type": "string",
+            "maxLength": 200,
+            "nullable": true,
+            "example": "/productos"
+          },
+          "mensaje": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        }
+      },
+      "Feedback": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "tipo": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string",
+            "nullable": true
+          },
+          "mensaje": {
+            "type": "string"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorValidacion": {
+        "type": "object",
+        "required": [
+          "success",
+          "error",
+          "details"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "string",
+            "example": "Datos inválidos"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "campo": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "NoAutorizado": {
+        "description": "Falta la API key o es incorrecta",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "API key inválida"
+            }
+          }
+        }
+      },
+      "Deshabilitada": {
+        "description": "AGENTE_API_KEY no está configurada en el servidor",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "API del agente deshabilitada"
+            }
+          }
+        }
+      },
+      "NoEncontrado": {
+        "description": "Cliente inexistente",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "Cliente inexistente"
+            }
+          }
+        }
+      },
+      "Validacion": {
+        "description": "Datos inválidos",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorValidacion"
+            },
+            "example": {
+              "success": false,
+              "error": "Datos inválidos",
+              "details": [
+                {
+                  "campo": "dias",
+                  "error": "Tiene que ser un entero de 1 a 90"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "NoContactar": {
+        "description": "El cliente pidió no recibir mensajes",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "El cliente pidió no recibir mensajes"
+            }
+          }
+        }
+      },
+      "OdooCaido": {
+        "description": "Odoo no responde",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "success": false,
+              "error": "No pude leer Odoo"
+            }
+          }
+        }
+      },
+      "ErrorInterno": {
+        "description": "Error interno",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

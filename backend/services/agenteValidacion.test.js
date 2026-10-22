@@ -1,0 +1,147 @@
+// Validación, teléfonos y auth de la API del agente. Sin base ni Odoo.
+// node backend/services/agenteValidacion.test.js
+
+const assert = require('assert');
+const v = require('./agenteValidacion');
+const { phoneKey, phoneDisplay } = require('./crmContacts');
+const { agenteAuth } = require('../middleware/agenteAuth');
+
+const NOW = new Date('2026-10-22T13:00:00Z'); // 10:00 en Argentina
+
+function campos(errors) {
+    return errors.map((e) => e.campo).sort();
+}
+
+function testDias() {
+    for (const malo of ['0', '91', 'abc', '15x', '-3', '1.5']) {
+        assert.strictEqual(v.validarDias(malo).errors.length, 1, `dias=${malo} tendría que fallar`);
+    }
+    for (const [bueno, n] of [['1', 1], ['15', 15], ['90', 90]]) {
+        assert.deepStrictEqual(v.validarDias(bueno), { value: n, errors: [] });
+    }
+    assert.strictEqual(v.validarDias(undefined).value, 15);
+}
+
+function testQueryNuevos() {
+    const ok = v.validarQueryNuevos({ dias: '7', etapa: 'dia_7', no_contactar: 'false', page: '2', limit: '50' });
+    assert.deepStrictEqual(ok.errors, []);
+    assert.deepStrictEqual(ok.value, { dias: 7, page: 2, limit: 50, offset: 50, refresh: false, etapa: 'dia_7', no_contactar: false });
+    const mal = v.validarQueryNuevos({ etapa: 'dia_3', no_contactar: 'si', limit: '101', page: '0' });
+    assert.deepStrictEqual(campos(mal.errors), ['etapa', 'limit', 'no_contactar', 'page']);
+    assert.strictEqual(v.validarQueryProductos({ stock: 'quizas' }).errors[0].campo, 'stock');
+    assert.strictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubro, 'Librería');
+}
+
+function testFechasIso() {
+    assert.strictEqual(v.parseIso('2026-10-17T10:00:00-03:00').toISOString(), '2026-10-17T13:00:00.000Z');
+    assert.strictEqual(v.parseIso('2026-10-17T13:00:00Z').toISOString(), '2026-10-17T13:00:00.000Z');
+    // Sin offset es hora de Argentina; una fecha sola es ese día a las 00:00 de Argentina
+    assert.strictEqual(v.parseIso('2026-10-17T10:00').toISOString(), '2026-10-17T13:00:00.000Z');
+    assert.strictEqual(v.parseIso('2026-10-17').toISOString(), '2026-10-17T03:00:00.000Z');
+    for (const malo of ['2026-02-30', '17/10/2026', '2026-10-17T25:00:00', 'ayer', '', 12345]) {
+        assert.strictEqual(v.parseIso(malo), null, `${malo} no es ISO`);
+    }
+    assert.ok(v.esFechaSimple('2026-10-25'));
+    assert.ok(!v.esFechaSimple('2026-10-25T10:00:00'));
+}
+
+function testSeguimiento() {
+    const ok = v.validarSeguimiento({ etapa: 'dia_7', ultimo_contacto: '2026-10-17T10:00:00-03:00', proxima_accion: '2026-10-25' }, NOW);
+    assert.deepStrictEqual(ok.errors, []);
+    assert.strictEqual(ok.value.ultimo_contacto.toISOString(), '2026-10-17T13:00:00.000Z');
+    // Solo los campos que vinieron
+    assert.deepStrictEqual(Object.keys(v.validarSeguimiento({ proxima_accion: null }, NOW).value), ['proxima_accion']);
+    assert.deepStrictEqual(campos(v.validarSeguimiento({}, NOW).errors), ['body']);
+    assert.deepStrictEqual(campos(v.validarSeguimiento({ etapa: 'dia_3' }, NOW).errors), ['etapa']);
+    assert.deepStrictEqual(campos(v.validarSeguimiento({ etapa: 'dia_1', notas: 'x' }, NOW).errors), ['notas']);
+    assert.deepStrictEqual(campos(v.validarSeguimiento({ proxima_accion: '25/10/2026' }, NOW).errors), ['proxima_accion']);
+    // Hasta 5 minutos en el futuro se acepta (relojes desfasados); más, no
+    assert.deepStrictEqual(v.validarSeguimiento({ ultimo_contacto: '2026-10-22T10:04:00-03:00' }, NOW).errors, []);
+    assert.deepStrictEqual(campos(v.validarSeguimiento({ ultimo_contacto: '2026-10-22T10:06:00-03:00' }, NOW).errors), ['ultimo_contacto']);
+    assert.deepStrictEqual(campos(v.validarSeguimiento([], NOW).errors), ['body']);
+}
+
+function testInteraccion() {
+    const ok = v.validarInteraccion({ tipo: 'enviado', etapa: 'dia_7', mensaje: ' Hola José ', respuesta: null }, NOW);
+    assert.deepStrictEqual(ok.errors, []);
+    assert.strictEqual(ok.value.mensaje, 'Hola José');
+    assert.strictEqual(ok.value.fecha, NOW);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ mensaje: 'x' }, NOW).errors), ['tipo']);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'leido', mensaje: '' }, NOW).errors), ['mensaje', 'tipo']);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x'.repeat(4001) }, NOW).errors), ['mensaje']);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', respuesta: 5 }, NOW).errors), ['respuesta']);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'enviado', mensaje: 'Hola! �C�mo' }, NOW).errors), ['mensaje']);
+    assert.deepStrictEqual(v.validarInteraccion({ tipo: 'enviado', mensaje: 'Hola! ¿Cómo te fue?' }, NOW).errors, []);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', fecha: 'hoy' }, NOW).errors), ['fecha']);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', canal: 'wa' }, NOW).errors), ['canal']);
+}
+
+function testClientePatch() {
+    assert.deepStrictEqual(v.validarClientePatch({ no_contactar: true }), { value: { no_contactar: true }, errors: [] });
+    assert.deepStrictEqual(v.validarClientePatch({ contacto: '  José Pérez ' }).value, { contacto: 'José Pérez' });
+    assert.deepStrictEqual(v.validarClientePatch({ contacto: '' }).value, { contacto: null });
+    assert.deepStrictEqual(campos(v.validarClientePatch({}).errors), ['body']);
+    assert.deepStrictEqual(campos(v.validarClientePatch({ no_contactar: 'true' }).errors), ['no_contactar']);
+    assert.deepStrictEqual(campos(v.validarClientePatch({ no_contactar: true, etapa: 'finalizado' }).errors), ['etapa']);
+    assert.deepStrictEqual(campos(v.validarFeedback({ tipo: 'mejora' }).errors), ['mensaje']);
+    assert.deepStrictEqual(v.validarFeedback({ tipo: 'falta', endpoint: '/productos', mensaje: 'Quiero el stock' }).errors, []);
+}
+
+function testId() {
+    assert.strictEqual(v.validarId('123').value, 123);
+    for (const malo of ['0', '-1', 'abc', '1.5', '99999999999']) assert.strictEqual(v.validarId(malo).errors.length, 1);
+}
+
+function testTelefonos() {
+    for (const raw of ['02477 15-123456', '+54 9 2477 123456', '2477123456']) {
+        assert.strictEqual(phoneDisplay(phoneKey(raw)), '+5492477123456', raw);
+    }
+    assert.strictEqual(phoneDisplay(phoneKey('2477 1234')), null);
+}
+
+/** req/res falsos para el middleware. */
+function correrAuth(header) {
+    const req = { headers: header ? { authorization: header } : {} };
+    const res = {
+        statusCode: 200,
+        body: null,
+        status(code) { this.statusCode = code; return this; },
+        json(body) { this.body = body; return this; },
+    };
+    let siguio = false;
+    agenteAuth(req, res, () => { siguio = true; });
+    return { req, res, siguio };
+}
+
+function testAuth() {
+    const clave = 'a'.repeat(64);
+    const previa = process.env.AGENTE_API_KEY;
+    try {
+        delete process.env.AGENTE_API_KEY;
+        let r = correrAuth(`Bearer ${clave}`);
+        assert.strictEqual(r.res.statusCode, 503);
+        assert.strictEqual(r.res.body.error, 'API del agente deshabilitada');
+
+        process.env.AGENTE_API_KEY = 'corta';
+        assert.strictEqual(correrAuth('Bearer corta').res.statusCode, 503);
+
+        process.env.AGENTE_API_KEY = clave;
+        r = correrAuth(null);
+        assert.strictEqual(r.res.statusCode, 401);
+        assert.deepStrictEqual(r.res.body, { success: false, error: 'API key inválida' });
+        assert.strictEqual(correrAuth(`Bearer ${'b'.repeat(64)}`).res.statusCode, 401);
+        assert.strictEqual(correrAuth('Bearer otra').res.statusCode, 401);
+        assert.strictEqual(correrAuth(clave).res.statusCode, 401);
+
+        r = correrAuth(`Bearer ${clave}`);
+        assert.ok(r.siguio);
+        assert.strictEqual(r.req.agente, true);
+    } finally {
+        if (previa === undefined) delete process.env.AGENTE_API_KEY;
+        else process.env.AGENTE_API_KEY = previa;
+    }
+}
+
+const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testClientePatch, testId, testTelefonos, testAuth];
+for (const t of tests) t();
+console.log(`✅ agenteValidacion: ${tests.length} tests OK`);
