@@ -444,6 +444,17 @@ async function syncOdooProducts() {
 
             const upserted = await upsertProducts(products, empresa.key);
 
+            // Si se archivó desde la app y después lo reactivaron en Odoo, la marca local
+            // quedaba vieja y lo seguía ocultando (WhatsApp, catálogo, agente). Odoo manda.
+            const { rowCount: desarchivados } = await pool.query(
+                `UPDATE odoo_products_cache SET locally_archived = false
+                 WHERE company = $1 AND active = true AND locally_archived = true`,
+                [empresa.key]
+            );
+            if (desarchivados) {
+                console.log(`✅ Sync Odoo [${empresa.key}]: ${desarchivados} producto(s) reactivados en Odoo dejan de figurar archivados en la app`);
+            }
+
             if (activoAntes) {
                 try {
                     await reposicion.procesarSync(activoAntes, products);
