@@ -4,6 +4,7 @@
 //   codigo_parecido — la referencia tiene el mismo código salvo el último dígito (otro color/variante)
 //   nombre          — el nombre se parece a la descripción de la factura (trigramas, pg_trgm)
 // Con texto escrito (q) busca cada palabra por separado, en cualquier orden.
+// Incluye los archivados desde Reposición (locally_archived): son justo los que vuelven a entrar.
 
 const pool = require('../config/database');
 
@@ -25,9 +26,20 @@ function normalizeCode(s) {
     return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-// Palabras útiles del texto, sin repetidas
+// Plural → singular simple ("coladores" → "colador", "vasos" → "vaso").
+// Solo recorta el final: la palabra original sigue conteniendo al término
+function singular(w) {
+    if (w.length < 5) return w;
+    if (/[rlndjy]es$/.test(w)) return w.slice(0, -2);
+    if (/[aeiou]s$/.test(w)) return w.slice(0, -1);
+    return w;
+}
+
+// Palabras útiles del texto, en singular y sin repetidas
 function searchTerms(text) {
-    const words = normText(text).split(/[^a-z0-9ñ]+/).filter(w => w.length >= 2 && !STOPWORDS.has(w));
+    const words = normText(text).split(/[^a-z0-9ñ]+/)
+        .filter(w => w.length >= 2 && !STOPWORDS.has(w))
+        .map(singular);
     return [...new Set(words)].slice(0, MAX_TERMS);
 }
 
@@ -66,7 +78,7 @@ async function suggestForItem({ company, codigo, descripcion, limit }) {
                 CASE WHEN $4 <> '' THEN word_similarity($4, ${NAME_NORM}) ELSE 0 END AS sim_palabras,
                 CASE WHEN $4 <> '' THEN similarity($4, ${NAME_NORM}) ELSE 0 END AS sim_total
             FROM odoo_products_cache opc
-            WHERE opc.company = $1 AND opc.locally_archived = false
+            WHERE opc.company = $1
         )
         SELECT * FROM c
         WHERE motivo IS NOT NULL
@@ -104,7 +116,7 @@ async function searchByText({ company, q, limit }) {
         `SELECT ${SELECT_COLS},
             CASE WHEN ${byCode} THEN 'codigo' ELSE 'busqueda' END AS motivo
          FROM odoo_products_cache opc
-         WHERE opc.company = $1 AND opc.locally_archived = false AND (${byWords}${byCode})
+         WHERE opc.company = $1 AND (${byWords}${byCode})
          ORDER BY CASE WHEN ${byCode} THEN 0 ELSE 1 END,
                   word_similarity($${pText}, ${NAME_NORM}) DESC, opc.active DESC, opc.name ASC
          LIMIT $${pLimit}`,
@@ -113,4 +125,4 @@ async function searchByText({ company, q, limit }) {
     return rows;
 }
 
-module.exports = { suggestForItem, searchByText, normalizeCode, searchTerms, codeFamily, normText };
+module.exports = { suggestForItem, searchByText, normalizeCode, searchTerms, codeFamily, normText, singular };

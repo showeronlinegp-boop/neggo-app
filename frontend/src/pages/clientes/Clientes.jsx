@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
+import { useToast } from '../../context/ToastContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
 import useIsMobile from '../../hooks/useIsMobile';
 import Card from '../../components/common/Card';
@@ -13,9 +14,10 @@ import Tabs from '../../components/common/Tabs';
 import * as Icon from '../../components/common/icons';
 import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
+import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
 import {
-    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER,
+    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
 } from './clientesUi';
 
@@ -26,10 +28,26 @@ import {
 // 60 días, de Neggo y Preventas, aparecen como motivo para hablarle al cliente.
 
 const PAGE = 50;
-// Cliente · estado · etapa · última compra · 12 meses · tendencia · cotización
-const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 160px 72px minmax(104px, 1.1fr)';
+// Cliente · estado · etapa · última compra · compras · 12 meses · tendencia · cotización
+const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
+// Medio: sin el gráfico de barras y con la tendencia abajo del monto de 12 meses
+const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 96px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
+// Ancho de la tabla (con la estrella) desde el que entra cada diseño; más angosto, tarjetas
+const ANCHO_MIN = { ancho: 1110, medio: 860 };
+
+// Ancho disponible de un elemento, actualizado al cambiar la ventana o el menú lateral
+function useAnchoDe(el) {
+    const [ancho, setAncho] = useState(0);
+    useEffect(() => {
+        if (!el) return undefined;
+        const ro = new ResizeObserver(([entry]) => setAncho(entry.contentRect.width));
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [el]);
+    return ancho;
+}
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
-const SORTS = [...SORT_OPTIONS, { value: 'accion', label: 'Próxima acción' }];
+const SORTS = [...SORT_OPTIONS, { value: 'importancia', label: 'Más importantes' }, { value: 'accion', label: 'Próxima acción' }];
 
 function Etapa({ c, t }) {
     const meta = STAGE_META[c.stage] || STAGE_META.frio;
@@ -73,7 +91,10 @@ function Avatar({ nombre, size, t }) {
     );
 }
 
-function FilaCliente({ c, onAbrir, isMobile, t }) {
+// modo: ancho (todas las columnas) · medio (más compacta) · tarjeta (celular o pantalla angosta)
+function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
+    const isMobile = modo === 'tarjeta';
+    const medio = modo === 'medio';
     const meta = HEALTH_META[c.health] || HEALTH_META.sin_compras;
     const cotizaciones = c.open_quotations || [];
     const totalCot = cotizaciones.reduce((s, q) => s + (Number(q.amount) || 0), 0);
@@ -93,6 +114,9 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                     {c.city && <span>{c.city}</span>}
                     {c.rubro && <span>{c.rubro}</span>}
                 </div>
+                <div style={{ marginTop: isMobile ? 6 : 4 }}>
+                    <Importancia value={c.importance} size={isMobile ? 20 : 13} onChange={(n) => onImportancia(c, n)} />
+                </div>
             </div>
         </div>
     );
@@ -106,6 +130,13 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
         </div>
     );
 
+    const compras = (
+        <span style={{ fontSize: t.font.size.sm, color: c.purchase_count > 0 ? t.color.text : t.color.textFaint, ...t.numericStyle }}
+            title="Compras en el POS de Neggo, en total">
+            {fmtInt(c.purchase_count || 0)}
+        </span>
+    );
+
     const cotizacion = cotizaciones.length > 0 ? (
         <Badge tone="warn" style={{ ...t.numericStyle, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {cotizaciones.length === 1 ? cotizaciones[0].name : `${cotizaciones.length} cotiz.`} · {fmtAR(totalCot)}
@@ -113,24 +144,35 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
     ) : null;
 
     const estilosBoton = {
-        width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
+        width: '100%', boxSizing: 'border-box', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
         fontFamily: t.font.family, borderTop: `1px solid ${t.color.border}`,
     };
+    // La fila es un div clickeable (no un <button>) porque adentro van los botones de importancia
     const hover = {
+        role: 'button',
+        tabIndex: 0,
+        onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAbrir(c); } },
         onMouseEnter: (e) => { e.currentTarget.style.background = t.color.surface2; },
         onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
     };
 
     if (isMobile) {
         return (
-            <button type="button" onClick={() => onAbrir(c)} {...hover}
+            <div onClick={() => onAbrir(c)} {...hover}
                 style={{ ...estilosBoton, padding: '12px', display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                 <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', width: '100%' }}>
                     {nombre}
                     <Badge tone={meta.tone} dot>{meta.label}</Badge>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: t.space[3], width: '100%' }}>
-                    {ultima}
+                    <div>
+                        {ultima}
+                        {c.purchase_count > 0 && (
+                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
+                                {fmtInt(c.purchase_count)} {c.purchase_count === 1 ? 'compra' : 'compras'} en total
+                            </div>
+                        )}
+                    </div>
                     <div style={{ textAlign: 'right', fontSize: t.font.size.sm, ...t.numericStyle }}>
                         <div style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{fmtAR(c.revenue_12m)}</div>
                         <Tendencia trend={c.trend} pct={c.trend_pct} t={t} />
@@ -140,20 +182,28 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                     <Etapa c={c} t={t} />
                     {cotizacion}
                 </div>
-            </button>
+            </div>
         );
     }
 
     return (
-        <button type="button" onClick={() => onAbrir(c)} {...hover}
+        <div onClick={() => onAbrir(c)} {...hover}
             style={{
-                ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: t.space[4],
-                gridTemplateColumns: COLUMNAS,
+                ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: medio ? t.space[3] : t.space[4],
+                gridTemplateColumns: medio ? COLUMNAS_MEDIO : COLUMNAS,
             }}>
             {nombre}
             <span><Badge tone={meta.tone} dot>{meta.label}</Badge></span>
             <Etapa c={c} t={t} />
             {ultima}
+            <span style={{ textAlign: 'right' }}>{compras}</span>
+            {medio ? (
+                <div style={{ textAlign: 'right', fontSize: t.font.size.sm, ...t.numericStyle }}>
+                    <div style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{fmtAR(c.revenue_12m)}</div>
+                    <Tendencia trend={c.trend} pct={c.trend_pct} t={t} />
+                </div>
+            ) : (
+            <>
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], justifyContent: 'flex-end' }}>
                 <BarrasMensuales data={c.monthly_revenue || []} compacto />
                 <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, minWidth: 84, textAlign: 'right', ...t.numericStyle }}>
@@ -161,7 +211,61 @@ function FilaCliente({ c, onAbrir, isMobile, t }) {
                 </span>
             </div>
             <span style={{ fontSize: t.font.size.sm, textAlign: 'right' }}><Tendencia trend={c.trend} pct={c.trend_pct} t={t} /></span>
-            <span style={{ textAlign: 'right' }}>{cotizacion}</span>
+            </>
+            )}
+            <span style={{ textAlign: 'right', minWidth: 0 }}>{cotizacion}</span>
+        </div>
+    );
+}
+
+// Estrella a la izquierda de la fila: suma o saca al cliente de la lista de seguimiento cercano
+function BotonCercano({ c, onToggle, modo, t }) {
+    const isMobile = modo === 'tarjeta';
+    const activo = Boolean(c.cercano);
+    const texto = activo ? 'Sacar de seguimiento cercano' : 'Sumar a seguimiento cercano';
+    return (
+        <button type="button" onClick={() => onToggle(c)} aria-pressed={activo} aria-label={texto} title={texto}
+            style={{
+                width: 40, flexShrink: 0, border: 'none', borderTop: `1px solid ${t.color.border}`,
+                background: 'transparent', cursor: 'pointer', padding: isMobile ? '14px 0 0 8px' : '0 0 0 8px',
+                display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center',
+                color: activo ? t.color.warn : t.color.textFaint,
+            }}>
+            <Icon.Star size={18} filled={activo} />
+        </button>
+    );
+}
+
+// En modo "Elegir varios" la estrella cede su lugar a una casilla
+function CasillaElegir({ c, elegido, onToggle, modo, t }) {
+    const isMobile = modo === 'tarjeta';
+    return (
+        <label title={elegido ? 'Quitar de los elegidos' : 'Elegir'}
+            style={{
+                width: 40, flexShrink: 0, boxSizing: 'border-box', borderTop: `1px solid ${t.color.border}`, cursor: 'pointer',
+                padding: isMobile ? '14px 0 0 8px' : '0 0 0 8px',
+                display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center',
+            }}>
+            <input type="checkbox" checked={elegido} onChange={() => onToggle(c)} aria-label={`Elegir a ${c.partner_name}`}
+                style={{ width: 18, height: 18, margin: 0, cursor: 'pointer', accentColor: t.color.primary }} />
+        </label>
+    );
+}
+
+// Encabezado de columna que ordena la lista; tocarlo de nuevo vuelve a la prioridad para llamar
+function Encabezado({ children, valor, sort, onSort, align = 'left', title, t }) {
+    const activo = sort === valor;
+    return (
+        <button type="button" onClick={() => onSort(activo ? 'prioridad' : valor)} aria-pressed={activo}
+            title={title ? `${title}. Tocá para ordenar` : 'Tocá para ordenar'}
+            style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: align === 'right' ? 'end' : 'start',
+                padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: t.font.family,
+                fontSize: 'inherit', fontWeight: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit',
+                color: activo ? t.color.primary : 'inherit', textAlign: align,
+            }}>
+            {children}
+            {activo && <Icon.ChevronDown size={12} />}
         </button>
     );
 }
@@ -196,6 +300,7 @@ function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
 export default function Clientes() {
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
+    const { showToast } = useToast();
     const [resumen, setResumen] = useState(null);
     const [rows, setRows] = useState([]);
     const [total, setTotal] = useState(0);
@@ -211,12 +316,24 @@ export default function Clientes() {
     const [rubro, setRubro] = useState('');
     const [health, setHealth] = useState('');
     const [stage, setStage] = useState('');
+    const [importancia, setImportancia] = useState('');
     const [tab, setTab] = useState('clientes');
     const [leadsTotal, setLeadsTotal] = useState(null);
     const huboCambios = useRef(false);
     const [soloAbiertas, setSoloAbiertas] = useState(false);
+    const [soloCercanos, setSoloCercanos] = useState(false);
     const [sort, setSort] = useState('prioridad');
+    // Elegir varios clientes para ponerles la misma importancia (nota #75)
+    const [eligiendo, setEligiendo] = useState(false);
+    const [elegidos, setElegidos] = useState(() => new Set());
+    const [aplicando, setAplicando] = useState(false);
     const pollRef = useRef(null);
+
+    // La tabla se arma según el ancho que tiene (cambia con la ventana y con el menú lateral)
+    const [tablaEl, setTablaEl] = useState(null);
+    const anchoTabla = useAnchoDe(tablaEl);
+    const modo = isMobile || anchoTabla < ANCHO_MIN.medio ? 'tarjeta'
+        : anchoTabla < ANCHO_MIN.ancho ? 'medio' : 'ancho';
 
     // Espera 300 ms después de tipear antes de buscar
     useEffect(() => {
@@ -231,10 +348,12 @@ export default function Clientes() {
         health: health || undefined,
         stage: stage || undefined,
         open: soloAbiertas ? 1 : undefined,
+        cercanos: soloCercanos ? 1 : undefined,
+        importancia: importancia || undefined,
         sort,
         limit: PAGE,
         offset,
-    }), [busqueda, city, rubro, health, stage, soloAbiertas, sort]);
+    }), [busqueda, city, rubro, health, stage, importancia, soloAbiertas, soloCercanos, sort]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/resumen');
@@ -248,6 +367,8 @@ export default function Clientes() {
         const res = await api.get('/clientes', filtros(0));
         setLoading(false);
         if (!res.success) { setError(res.error || 'No se pudo cargar la lista de clientes'); return; }
+        // Con otros filtros u otro orden, la elección arranca de cero: nada elegido fuera de la vista
+        setElegidos(new Set());
         setRows(res.data || []);
         setTotal(res.pagination?.total ?? (res.data || []).length);
     }, [filtros]);
@@ -311,8 +432,61 @@ export default function Clientes() {
         ? Math.round(((resumen.revenue_90d - resumen.revenue_prev_90d) / resumen.revenue_prev_90d) * 100)
         : null;
 
-    const filtrosActivos = busqueda || city || rubro || health || stage || soloAbiertas;
-    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setSoloAbiertas(false); };
+    const filtrosActivos = busqueda || city || rubro || health || stage || importancia || soloAbiertas || soloCercanos;
+    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setImportancia(''); setSoloAbiertas(false); setSoloCercanos(false); };
+
+    // Estrella: se ve al instante y vuelve atrás si el backend no lo guarda.
+    // Si se saca uno con el filtro puesto, queda en pantalla para poder deshacerlo.
+    const toggleCercano = async (c) => {
+        const cercano = !c.cercano;
+        const aplicar = (valor) => {
+            setRows((prev) => prev.map((r) => (r.odoo_partner_id === c.odoo_partner_id ? { ...r, cercano: valor } : r)));
+            setResumen((prev) => (prev ? { ...prev, cercanos: Math.max(0, (prev.cercanos || 0) + (valor ? 1 : -1)) } : prev));
+        };
+        aplicar(cercano);
+        const res = await api.put(`/clientes/cercanos/${c.odoo_partner_id}`, { cercano });
+        if (!res.success) {
+            aplicar(!cercano);
+            setError(res.error || 'No se pudo cambiar la lista de seguimiento cercano');
+        }
+    };
+
+    // Cambia la importancia desde la fila: se ve al instante y vuelve atrás si falla
+    const cambiarImportancia = async (c, n) => {
+        const antes = c.importance || 0;
+        const poner = (valor) => setRows((prev) => prev.map((r) => (r.odoo_partner_id === c.odoo_partner_id ? { ...r, importance: valor } : r)));
+        poner(n);
+        const res = await api.put(`/clientes/seguimiento/cliente/${c.odoo_partner_id}/importancia`, { importance: n });
+        if (!res.success) {
+            poner(antes);
+            showToast(res.error || 'No se pudo cambiar la importancia', 'error');
+        }
+    };
+
+    const toggleElegido = (c) => setElegidos((prev) => {
+        const sig = new Set(prev);
+        if (sig.has(c.odoo_partner_id)) sig.delete(c.odoo_partner_id); else sig.add(c.odoo_partner_id);
+        return sig;
+    });
+    const todosElegidos = rows.length > 0 && rows.every((r) => elegidos.has(r.odoo_partner_id));
+    const elegirTodos = () => setElegidos(todosElegidos ? new Set() : new Set(rows.map((r) => r.odoo_partner_id)));
+    const salirDeElegir = () => { setEligiendo(false); setElegidos(new Set()); };
+
+    // La misma importancia a todos los elegidos; la lista se actualiza sin recargar
+    const importanciaAElegidos = async (n) => {
+        const ids = [...elegidos];
+        if (!ids.length || aplicando) return;
+        setAplicando(true);
+        const res = await api.put('/clientes/importancia', { partner_ids: ids, importance: n });
+        setAplicando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo cambiar la importancia', 'error'); return; }
+        setRows((prev) => prev.map((r) => (elegidos.has(r.odoo_partner_id) ? { ...r, importance: n } : r)));
+        const cuantos = res.data?.updated ?? ids.length;
+        showToast(n
+            ? `Importancia ${n} para ${fmtInt(cuantos)} ${cuantos === 1 ? 'cliente' : 'clientes'}`
+            : `Sin importancia para ${fmtInt(cuantos)} ${cuantos === 1 ? 'cliente' : 'clientes'}`, 'success');
+        salirDeElegir();
+    };
 
     // Lo que se cambia en la ficha (etapa, acciones) se ve en la lista al cerrarla
     const cerrarFicha = () => {
@@ -394,15 +568,56 @@ export default function Clientes() {
                 <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={stage} onChange={setStage} options={ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 170 }} />
+                <Select value={importancia} onChange={setImportancia} options={IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 210 }} />
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}>
                     <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
                     Solo con cotización reciente
                 </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}
+                    title="Los clientes que marcaste con la estrella">
+                    <Toggle checked={soloCercanos} onChange={setSoloCercanos} />
+                    <Icon.Star size={14} filled color={t.color.warn} />
+                    <span style={t.numericStyle}>Seguimiento cercano · {fmtInt(resumen?.cercanos ?? 0)}</span>
+                </label>
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>
                 )}
+                {!eligiendo && (
+                    <Button variant="secondary" size="sm" leftIcon={<Icon.Check size={14} />} onClick={() => setEligiendo(true)}
+                        title="Elegí varios clientes para ponerles la misma importancia">
+                        Elegir varios
+                    </Button>
+                )}
             </Card>
+
+            {eligiendo && (
+                <Card padding={false} style={{
+                    padding: '10px 14px', display: 'flex', gap: t.space[4], flexWrap: 'wrap', alignItems: 'center',
+                    marginBottom: t.space[4], border: `1px solid ${t.color.primary}`, background: t.color.primarySoft,
+                }}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer', ...t.numericStyle }}>
+                        <input type="checkbox" checked={todosElegidos} onChange={elegirTodos} disabled={!rows.length}
+                            style={{ width: 18, height: 18, margin: 0, cursor: 'pointer', accentColor: t.color.primary }} />
+                        <span>
+                            <strong>{fmtInt(elegidos.size)}</strong> {elegidos.size === 1 ? 'elegido' : 'elegidos'}
+                            <span style={{ color: t.color.textMuted }}> · {todosElegidos ? 'quitar todos' : `elegir los ${fmtInt(rows.length)} que se ven`}</span>
+                        </span>
+                    </label>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: t.space[3], fontSize: t.font.size.sm, color: elegidos.size ? t.color.text : t.color.textFaint }}>
+                        Ponerles importancia
+                        <Importancia value={0} size={isMobile ? 22 : 18} disabled={!elegidos.size || aplicando} onChange={importanciaAElegidos} />
+                        <Button variant="ghost" size="sm" disabled={!elegidos.size || aplicando} onClick={() => importanciaAElegidos(0)}>
+                            Sin importancia
+                        </Button>
+                    </div>
+                    <div style={{ marginLeft: 'auto' }}>
+                        <Button variant="secondary" size="sm" leftIcon={<Icon.X size={14} />} onClick={salirDeElegir}>
+                            Terminar
+                        </Button>
+                    </div>
+                </Card>
+            )}
 
             {error && (
                 <div role="alert" style={{
@@ -413,20 +628,28 @@ export default function Clientes() {
                 </div>
             )}
 
+            <div ref={setTablaEl}>
             <Card padding={false} style={{ overflow: 'hidden' }}>
-                {!isMobile && (
+                {modo !== 'tarjeta' && (
                     <div style={{
-                        display: 'grid', gap: t.space[4], padding: '10px 16px', background: t.color.surface2,
-                        gridTemplateColumns: COLUMNAS,
+                        display: 'grid', gap: modo === 'medio' ? t.space[3] : t.space[4], padding: '10px 16px 10px 56px', background: t.color.surface2,
+                        gridTemplateColumns: modo === 'medio' ? COLUMNAS_MEDIO : COLUMNAS,
                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
                         textTransform: 'uppercase', letterSpacing: '0.04em',
                     }}>
-                        <span>Cliente</span>
+                        <Encabezado valor="nombre" sort={sort} onSort={setSort} t={t}>Cliente</Encabezado>
                         <span>Estado</span>
                         <span>Etapa</span>
-                        <span>Última compra</span>
-                        <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
-                        <span style={{ textAlign: 'right' }}>Tendencia</span>
+                        <Encabezado valor="ultima" sort={sort} onSort={setSort} title="Compra más reciente primero" t={t}>Última compra</Encabezado>
+                        <Encabezado valor="compras" sort={sort} onSort={setSort} align="right" title="Más compras primero" t={t}>Compras</Encabezado>
+                        {modo === 'medio' ? (
+                            <Encabezado valor="facturacion" sort={sort} onSort={setSort} align="right" title="Facturación de los últimos 12 meses y tendencia" t={t}>12 meses</Encabezado>
+                        ) : (
+                            <>
+                                <Encabezado valor="facturacion" sort={sort} onSort={setSort} align="right" title="Más facturación de los últimos 12 meses primero" t={t}>Últimos 12 meses</Encabezado>
+                                <span style={{ textAlign: 'right' }}>Tendencia</span>
+                            </>
+                        )}
                         <span style={{ textAlign: 'right' }}>Cotización</span>
                     </div>
                 )}
@@ -439,18 +662,32 @@ export default function Clientes() {
                             <Icon.Users size={22} />
                         </div>
                         <div style={{ fontSize: 15, fontWeight: t.font.weight.medium, color: t.color.text }}>
-                            {resumen?.synced_at ? 'No hay clientes con estos filtros' : 'Todavía no hay datos de clientes'}
+                            {soloCercanos && !resumen?.cercanos
+                                ? 'Todavía no hay clientes en seguimiento cercano'
+                                : resumen?.synced_at ? 'No hay clientes con estos filtros' : 'Todavía no hay datos de clientes'}
                         </div>
                         <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
-                            {resumen?.synced_at
+                            {soloCercanos && !resumen?.cercanos
+                                ? 'Sacá este filtro y tocá la estrella al lado de cada cliente que quieras seguir de cerca.'
+                                : resumen?.synced_at
                                 ? 'Probá con otra búsqueda o sacá algún filtro.'
                                 : 'Tocá «Actualizar» para leer los tickets del POS desde Odoo.'}
                         </div>
                     </div>
                 ) : (
-                    rows.map((c) => (
-                        <FilaCliente key={c.odoo_partner_id} c={c} onAbrir={setAbierto} isMobile={isMobile} t={t} />
-                    ))
+                    rows.map((c) => {
+                        const elegido = elegidos.has(c.odoo_partner_id);
+                        return (
+                            <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch', background: elegido ? t.color.primarySoft : undefined }}>
+                                {eligiendo
+                                    ? <CasillaElegir c={c} elegido={elegido} onToggle={toggleElegido} modo={modo} t={t} />
+                                    : <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <FilaCliente c={c} onAbrir={eligiendo ? toggleElegido : setAbierto} onImportancia={cambiarImportancia} modo={modo} t={t} />
+                                </div>
+                            </div>
+                        );
+                    })
                 )}
 
                 {!loading && rows.length > 0 && (
@@ -468,6 +705,7 @@ export default function Clientes() {
                     </div>
                 )}
             </Card>
+            </div>
 
             <ClienteFicha partnerId={abierto?.odoo_partner_id} resumen={abierto} onClose={cerrarFicha}
                 onCambio={() => { huboCambios.current = true; }} />

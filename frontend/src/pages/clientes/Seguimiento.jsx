@@ -7,8 +7,9 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
+import Importancia from './Importancia';
 import {
-    STAGE_META, MANUAL_STAGES, ACTION_META, ACTION_ORDER, EVENT_META,
+    STAGE_META, MANUAL_STAGES, ACTION_META, ACTION_ORDER, EVENT_META, IMPORTANCIA_LABEL, RESPONSE_META, RESPONSE_ORDER,
     hoyAr, fmtProxima, fmtFecha, fmtFechaHora,
 } from './clientesUi';
 
@@ -73,6 +74,42 @@ function TextoEvento({ e }) {
     return <>{e.text}</>;
 }
 
+// Respuesta del cliente a un contacto del historial (nota #80). Sin cargar = todavía no respondió.
+function RespuestaContacto({ t, respuesta, abierta, texto, onTexto, guardando, onElegir, onCancelar, onGuardar }) {
+    if (respuesta) {
+        const meta = RESPONSE_META[respuesta.meta?.response];
+        return (
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: t.space[2], flexWrap: 'wrap', marginTop: 4 }}>
+                <Badge tone={meta?.tone || 'muted'} dot>{meta?.label || respuesta.meta?.response}</Badge>
+                {respuesta.text && <span style={{ fontSize: t.font.size.sm, color: t.color.text, whiteSpace: 'pre-wrap' }}>{respuesta.text}</span>}
+                <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint, ...t.numericStyle }}>
+                    {fmtFechaHora(respuesta.created_at)}{respuesta.user_name ? ` · ${respuesta.user_name}` : ''}
+                </span>
+            </div>
+        );
+    }
+    if (abierta) {
+        return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: 6 }}>
+                <div><Badge tone={RESPONSE_META[abierta].tone} dot>{RESPONSE_META[abierta].label}</Badge></div>
+                <AreaTexto t={t} value={texto} onChange={onTexto} placeholder="¿Qué dijo? (opcional)" />
+                <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end' }}>
+                    <Button variant="ghost" size="sm" onClick={onCancelar}>Cancelar</Button>
+                    <Button variant="primary" size="sm" disabled={guardando} onClick={onGuardar}>Guardar</Button>
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap', marginTop: 4 }}>
+            <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Todavía no respondió</span>
+            {RESPONSE_ORDER.map((r) => (
+                <Button key={r} size="sm" variant="ghost" disabled={guardando} onClick={() => onElegir(r)}>{RESPONSE_META[r].label}</Button>
+            ))}
+        </div>
+    );
+}
+
 export default function Seguimiento({ tipo, id, onCambio }) {
     const { tokens: t } = useTheme();
     const { showToast } = useToast();
@@ -84,17 +121,18 @@ export default function Seguimiento({ tipo, id, onCambio }) {
     const [descartando, setDescartando] = useState(false);
     const [motivo, setMotivo] = useState('');
     // Próxima acción
-    const [tipoAccion, setTipoAccion] = useState('llamar');
+    const [tipoAccion, setTipoAccion] = useState(tipo === 'lead' ? 'presentacion' : 'llamar');
     const [fechaAccion, setFechaAccion] = useState(hoyAr(1));
     const [notaAccion, setNotaAccion] = useState('');
-    // Acción que se está cerrando o moviendo
-    const [cerrando, setCerrando] = useState(null);
-    const [resultado, setResultado] = useState('');
+    // Acción que se está moviendo
     const [moviendo, setMoviendo] = useState(null);
     const [nuevaFecha, setNuevaFecha] = useState('');
     // Contacto suelto
     const [tipoContacto, setTipoContacto] = useState('llamar');
     const [textoContacto, setTextoContacto] = useState('');
+    // Respuesta que se está cargando: { eventId, response }
+    const [respondiendo, setRespondiendo] = useState(null);
+    const [textoRespuesta, setTextoRespuesta] = useState('');
 
     const base = `/clientes/seguimiento/${tipo}/${id}`;
 
@@ -108,8 +146,8 @@ export default function Seguimiento({ tipo, id, onCambio }) {
     useEffect(() => {
         setData(null);
         setDescartando(false);
-        setCerrando(null);
         setMoviendo(null);
+        setRespondiendo(null);
         if (id) cargar();
     }, [id, cargar]);
 
@@ -130,6 +168,10 @@ export default function Seguimiento({ tipo, id, onCambio }) {
         enviar(() => api.put(`${base}/etapa`, { stage }), `Pasó a ${STAGE_META[stage].label}`);
     };
 
+    const cambiarImportancia = (importance) => {
+        enviar(() => api.put(`${base}/importancia`, { importance }), `Importancia: ${IMPORTANCIA_LABEL[importance]}`);
+    };
+
     const confirmarDescarte = async () => {
         const ok = await enviar(() => api.put(`${base}/etapa`, { stage: 'descartado', reason: motivo }), 'Descartado');
         if (ok) { setDescartando(false); setMotivo(''); }
@@ -142,11 +184,11 @@ export default function Seguimiento({ tipo, id, onCambio }) {
         if (ok) { setNotaAccion(''); setFechaAccion(hoyAr(1)); }
     };
 
+    // Hecha de un toque: la respuesta del cliente se carga aparte, en el historial (nota #80)
     const cerrarAccion = async (accion) => {
-        const ok = await enviar(() => api.post(`/clientes/acciones/${accion.id}/hecha`, { result: resultado }), 'Listo. Programá la próxima.');
+        const ok = await enviar(() => api.post(`/clientes/acciones/${accion.id}/hecha`, {}),
+            'Hecha. Cuando conteste, cargalo en el historial.');
         if (ok) {
-            setCerrando(null);
-            setResultado('');
             // Deja el formulario listo para la próxima acción del mismo tipo
             setTipoAccion(accion.action_type);
             setFechaAccion(hoyAr(1));
@@ -163,14 +205,46 @@ export default function Seguimiento({ tipo, id, onCambio }) {
         if (ok) setTextoContacto('');
     };
 
+    const guardarRespuesta = async () => {
+        const { eventId, response } = respondiendo;
+        setGuardando(true);
+        const res = await api.post(`/clientes/eventos/${eventId}/respuesta`, { response, text: textoRespuesta });
+        setGuardando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo guardar', 'error'); return; }
+        showToast(res.data?.stage === 'templado' ? 'Respuesta cargada. Pasó a Templado' : 'Respuesta cargada', 'success');
+        setRespondiendo(null);
+        setTextoRespuesta('');
+        await cargar();
+        onCambio?.();
+    };
+
     if (error) return <div style={{ fontSize: t.font.size.sm, color: t.color.danger }}>{error}</div>;
     if (!data) return <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>Cargando el seguimiento…</div>;
 
     const etapa = STAGE_META[data.stage] || STAGE_META.frio;
+    // Las respuestas se muestran debajo del contacto al que contestan, no como renglón aparte
+    const respuestas = {};
+    for (const e of data.events) {
+        if (e.kind === 'respuesta' && e.meta?.event_id) respuestas[e.meta.event_id] = e;
+    }
+    const historial = data.events.filter((e) => e.kind !== 'respuesta');
     const caja = { background: t.color.surface2, borderRadius: t.radius.md, padding: 12, display: 'flex', flexDirection: 'column', gap: t.space[3] };
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[10] }}>
+            <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+                <Titulo t={t}>Importancia</Titulo>
+                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3] }}>
+                    <Importancia value={data.importance} size={24} disabled={guardando} onChange={cambiarImportancia} />
+                    <span style={{ fontSize: t.font.size.sm, color: data.importance ? t.color.text : t.color.textMuted }}>
+                        {IMPORTANCIA_LABEL[data.importance || 0]}
+                    </span>
+                </div>
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                    Tocá el cuadradito de más a la derecha para subirla. Los más importantes suben en «Prioridad para llamar».
+                </div>
+            </section>
+
             <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                 <Titulo t={t}>Etapa</Titulo>
                 <div role="group" aria-label="Etapa del seguimiento" style={{ display: 'flex', flexWrap: 'wrap', gap: t.space[2] }}>
@@ -227,22 +301,13 @@ export default function Seguimiento({ tipo, id, onCambio }) {
                                     {a.note && <div style={{ fontSize: t.font.size.sm, color: t.color.text, marginTop: 2 }}>{a.note}</div>}
                                     {a.created_by_name && <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint, marginTop: 2 }}>La programó {a.created_by_name}</div>}
                                 </div>
-                                {cerrando !== a.id && moviendo !== a.id && (
+                                {moviendo !== a.id && (
                                     <div style={{ display: 'flex', gap: t.space[2], flexShrink: 0 }}>
                                         <Button size="sm" variant="ghost" onClick={() => { setMoviendo(a.id); setNuevaFecha(a.due_date < hoyAr() ? hoyAr() : a.due_date); }}>Mover</Button>
-                                        <Button size="sm" variant="primary" leftIcon={<Icon.Check size={14} />} onClick={() => { setCerrando(a.id); setResultado(''); }}>Hecha</Button>
+                                        <Button size="sm" variant="primary" leftIcon={<Icon.Check size={14} />} disabled={guardando} onClick={() => cerrarAccion(a)}>Hecha</Button>
                                     </div>
                                 )}
                             </div>
-                            {cerrando === a.id && (
-                                <>
-                                    <AreaTexto t={t} value={resultado} onChange={setResultado} placeholder="¿Cómo te fue? Por ejemplo: «Pidió la lista de útiles, la paso el lunes»" />
-                                    <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end' }}>
-                                        <Button variant="ghost" size="sm" onClick={() => setCerrando(null)}>Cancelar</Button>
-                                        <Button variant="primary" size="sm" disabled={guardando || !resultado.trim()} onClick={() => cerrarAccion(a)}>Guardar</Button>
-                                    </div>
-                                </>
-                            )}
                             {moviendo === a.id && (
                                 <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                                     <Fecha t={t} value={nuevaFecha} onChange={setNuevaFecha} ariaLabel="Nueva fecha" />
@@ -272,28 +337,38 @@ export default function Seguimiento({ tipo, id, onCambio }) {
                 <Titulo t={t}>Registrar un contacto</Titulo>
                 <div style={caja}>
                     <Select value={tipoContacto} onChange={setTipoContacto} options={TIPOS_CONTACTO} />
-                    <AreaTexto t={t} value={textoContacto} onChange={setTextoContacto} placeholder="Qué hablaron o qué anotar" />
+                    <AreaTexto t={t} value={textoContacto} onChange={setTextoContacto}
+                        placeholder={tipoContacto === 'nota' ? 'Qué anotar' : 'Qué hablaron (opcional)'} />
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                        <Button variant="secondary" size="sm" disabled={guardando || !textoContacto.trim()} onClick={registrarContacto}>Guardar</Button>
+                        <Button variant="secondary" size="sm" disabled={guardando || (tipoContacto === 'nota' && !textoContacto.trim())} onClick={registrarContacto}>Guardar</Button>
                     </div>
                 </div>
             </section>
 
             <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                 <Titulo t={t}>Historial</Titulo>
-                {data.events.length === 0 ? (
+                {historial.length === 0 ? (
                     <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>Todavía no hay contactos registrados.</div>
                 ) : (
                     <div>
-                        {data.events.map((e) => (
+                        {historial.map((e) => (
                             <div key={e.id} style={{ padding: '8px 0', borderTop: `1px solid ${t.color.border}` }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[3], fontSize: t.font.size.xs, color: t.color.textMuted }}>
                                     <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{EVENT_META[e.kind]?.label || e.kind}</span>
                                     <span style={t.numericStyle}>{fmtFechaHora(e.created_at)}{e.user_name ? ` · ${e.user_name}` : ''}</span>
                                 </div>
-                                <div style={{ fontSize: t.font.size.sm, color: t.color.text, marginTop: 2, whiteSpace: 'pre-wrap' }}>
-                                    <TextoEvento e={e} />
-                                </div>
+                                {(e.text || e.kind === 'etapa') && (
+                                    <div style={{ fontSize: t.font.size.sm, color: t.color.text, marginTop: 2, whiteSpace: 'pre-wrap' }}>
+                                        <TextoEvento e={e} />
+                                    </div>
+                                )}
+                                {ACTION_META[e.kind] && (
+                                    <RespuestaContacto t={t} respuesta={respuestas[e.id]}
+                                        abierta={respondiendo?.eventId === e.id ? respondiendo.response : null}
+                                        texto={textoRespuesta} onTexto={setTextoRespuesta} guardando={guardando}
+                                        onElegir={(response) => { setRespondiendo({ eventId: e.id, response }); setTextoRespuesta(''); }}
+                                        onCancelar={() => setRespondiendo(null)} onGuardar={guardarRespuesta} />
+                                )}
                             </div>
                         ))}
                     </div>

@@ -13,9 +13,14 @@ const STAGES = ['frio', 'templado', 'caliente', 'ganado', 'descartado'];
 const MANUAL_STAGES = ['frio', 'templado', 'caliente', 'descartado'];
 const DEFAULT_STAGE = 'frio';
 // Tipos de acción y de contacto registrado (D12; el envío por mail queda para después)
-const ACTION_TYPES = ['llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
+const ACTION_TYPES = ['presentacion', 'llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
 const EVENT_KINDS = ['nota', ...ACTION_TYPES];
+// Respuesta del cliente a un contacto (nota #80): va aparte de lo que hicimos.
+// Sin respuesta cargada = todavía no respondió, no hace falta escribirlo.
+const RESPONSES = ['respondio', 'no_interesa'];
 const TARGET_COLUMN = { cliente: 'odoo_partner_id', lead: 'lead_id' };
+// Importancia que marca el equipo: 0 = sin marcar, 5 = la más alta (nota #71)
+const IMPORTANCE_MAX = 5;
 
 class FollowupError extends Error {
     constructor(message, status = 400) {
@@ -45,6 +50,15 @@ function shouldWin(followup, lastPurchaseDate) {
     return Boolean(since) && String(lastPurchaseDate).slice(0, 10) >= since;
 }
 
+/** Valida la importancia (entero de 0 a IMPORTANCE_MAX). */
+function parseImportance(value) {
+    const n = Number(value);
+    if (value === null || value === '' || !Number.isInteger(n) || n < 0 || n > IMPORTANCE_MAX) {
+        throw new FollowupError('Importancia inválida');
+    }
+    return n;
+}
+
 /** Valida y normaliza { tipo, id } → { tipo, col, id }. */
 function toTarget(tipo, id) {
     const col = TARGET_COLUMN[tipo];
@@ -66,7 +80,8 @@ async function assertTargetExists(target, db = pool) {
 async function getFollowup(target) {
     await ensureSchema();
     const { rows: [f] } = await pool.query(
-        `SELECT f.stage, f.discard_reason, f.stage_changed_at, u.display_name AS stage_changed_by_name
+        `SELECT f.stage, f.discard_reason, f.stage_changed_at, u.display_name AS stage_changed_by_name,
+                f.importance
          FROM crm_followups f LEFT JOIN users u ON u.id = f.stage_changed_by
          WHERE f.${target.col} = $1`, [target.id]);
     const { rows: actions } = await pool.query(
@@ -86,6 +101,7 @@ async function getFollowup(target) {
         discard_reason: f?.discard_reason || null,
         stage_changed_at: f?.stage_changed_at || null,
         stage_changed_by_name: f?.stage_changed_by_name || null,
+        importance: f?.importance || 0,
         actions,
         events,
     };
@@ -136,12 +152,57 @@ async function setStage(target, { stage, reason, userId }) {
     });
 }
 
-/** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. */
+/** Marca la importancia (0 a 5). Si no tenía seguimiento, lo crea en Frío sin fecha de etapa. */
+async function setImportance(target, { importance, userId }) {
+    await ensureSchema();
+    const n = parseImportance(importance);
+    await assertTargetExists(target);
+    await pool.query(
+        `INSERT INTO crm_followups (${target.col}, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         VALUES ($1, $2, NOW(), $3, NULL)
+         ON CONFLICT (${target.col}) DO UPDATE
+         SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
+             importance_changed_by = EXCLUDED.importance_changed_by`,
+        [target.id, n, userId]);
+    return { importance: n };
+}
+
+// Tope de clientes por pedido al marcar varios juntos (la lista carga de a 50)
+const BULK_MAX = 500;
+
+/** Valida la lista de clientes elegidos: enteros positivos, sin repetir. */
+function parsePartnerIds(value) {
+    if (!Array.isArray(value) || !value.length) throw new FollowupError('Elegí al menos un cliente');
+    const ids = [...new Set(value.map((v) => Number(v)))];
+    if (ids.some((n) => !Number.isInteger(n) || n <= 0)) throw new FollowupError('Cliente inválido');
+    if (ids.length > BULK_MAX) throw new FollowupError(`Elegí hasta ${BULK_MAX} clientes por vez`);
+    return ids;
+}
+
+/** Pone la misma importancia a varios clientes de una vez (nota #75). Ignora los que no existen. */
+async function setImportanceMany(partnerIds, { importance, userId }) {
+    await ensureSchema();
+    const n = parseImportance(importance);
+    const ids = parsePartnerIds(partnerIds);
+    const { rowCount } = await pool.query(
+        `INSERT INTO crm_followups (odoo_partner_id, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         SELECT DISTINCT c.odoo_partner_id, $3::smallint, NOW(), $4::int, NULL::timestamp
+           FROM client_metrics_cache c
+          WHERE c.company = $1 AND c.odoo_partner_id = ANY($2::int[]) AND c.is_generic = false
+         ON CONFLICT (odoo_partner_id) DO UPDATE
+         SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
+             importance_changed_by = EXCLUDED.importance_changed_by`,
+        [COMPANY, ids, n, userId]);
+    if (!rowCount) throw new FollowupError('No encontré esos clientes', 404);
+    return { importance: n, updated: rowCount };
+}
+
+/** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. Solo la nota pide texto. */
 async function addEvent(target, { kind, text, userId }) {
     await ensureSchema();
     if (!EVENT_KINDS.includes(kind)) throw new FollowupError('Tipo de contacto inválido');
-    const texto = String(text || '').trim().slice(0, 2000);
-    if (!texto) throw new FollowupError('Escribí qué pasó');
+    const texto = String(text || '').trim().slice(0, 2000) || null;
+    if (kind === 'nota' && !texto) throw new FollowupError('Escribí qué pasó');
     await assertTargetExists(target);
     await insertEvent(pool, target, { kind, text: texto, userId });
     return { ok: true };
@@ -184,11 +245,10 @@ async function updateAction(actionId, { type, dueDate, note }) {
     return { ok: true };
 }
 
-/** Marca la acción como hecha y registra el resultado en el historial. */
+/** Marca la acción como hecha y la deja en el historial. El comentario es opcional (nota #80). */
 async function completeAction(actionId, { result, userId }) {
     await ensureSchema();
-    const texto = String(result || '').trim().slice(0, 2000);
-    if (!texto) throw new FollowupError('Contá cómo te fue');
+    const texto = String(result || '').trim().slice(0, 2000) || null;
     return withTransaction(async (db) => {
         const { rows: [a] } = await db.query(
             `UPDATE crm_actions SET done = true, done_at = NOW(), done_by = $2, result = $3
@@ -204,6 +264,50 @@ async function completeAction(actionId, { result, userId }) {
             meta: { action_id: a.id, planned: a.note, due_date: a.due_date }, userId,
         });
         return { tipo: target.tipo, id: target.id };
+    });
+}
+
+/**
+ * Carga la respuesta del cliente a un contacto del historial (nota #80).
+ * Queda como evento 'respuesta' apuntando al contacto. Si respondió y estaba en Frío, pasa a Templado.
+ */
+async function setResponse(eventId, { response, text, userId }) {
+    await ensureSchema();
+    if (!RESPONSES.includes(response)) throw new FollowupError('Respuesta inválida');
+    const texto = String(text || '').trim().slice(0, 2000) || null;
+    return withTransaction(async (db) => {
+        const { rows: [ev] } = await db.query(
+            'SELECT id, odoo_partner_id, lead_id, kind FROM crm_events WHERE id = $1 FOR UPDATE',
+            [parseInt(eventId, 10) || 0]);
+        if (!ev || !ACTION_TYPES.includes(ev.kind)) throw new FollowupError('Ese contacto no existe', 404);
+        const { rows: ya } = await db.query(
+            `SELECT 1 FROM crm_events WHERE kind = 'respuesta' AND meta->>'event_id' = $1`, [String(ev.id)]);
+        if (ya.length) throw new FollowupError('Ese contacto ya tiene la respuesta cargada', 409);
+        const target = ev.odoo_partner_id
+            ? { tipo: 'cliente', col: 'odoo_partner_id', id: ev.odoo_partner_id }
+            : { tipo: 'lead', col: 'lead_id', id: ev.lead_id };
+        await insertEvent(db, target, { kind: 'respuesta', text: texto, meta: { event_id: ev.id, response }, userId });
+
+        // Si respondió y seguía en Frío, pasa solo a Templado
+        let stage = null;
+        if (response === 'respondio') {
+            const { rows: [f] } = await db.query(
+                `SELECT stage FROM crm_followups WHERE ${target.col} = $1 FOR UPDATE`, [target.id]);
+            if ((f?.stage || DEFAULT_STAGE) === 'frio') {
+                await db.query(
+                    `INSERT INTO crm_followups (${target.col}, stage, stage_changed_at, stage_changed_by)
+                     VALUES ($1, 'templado', NOW(), $2)
+                     ON CONFLICT (${target.col}) DO UPDATE
+                     SET stage = 'templado', discard_reason = NULL, stage_changed_at = NOW(),
+                         stage_changed_by = EXCLUDED.stage_changed_by`,
+                    [target.id, userId]);
+                await insertEvent(db, target, {
+                    kind: 'etapa', text: 'Respondió', meta: { from: 'frio', to: 'templado', auto: true }, userId,
+                });
+                stage = 'templado';
+            }
+        }
+        return { tipo: target.tipo, id: target.id, stage };
     });
 }
 
@@ -314,15 +418,22 @@ module.exports = {
     MANUAL_STAGES,
     ACTION_TYPES,
     EVENT_KINDS,
+    IMPORTANCE_MAX,
+    RESPONSES,
     FollowupError,
+    parseImportance,
+    parsePartnerIds,
     shouldWin,
     toTarget,
     getFollowup,
     setStage,
+    setImportance,
+    setImportanceMany,
     addEvent,
     createAction,
     updateAction,
     completeAction,
+    setResponse,
     myDay,
     afterSync,
 };

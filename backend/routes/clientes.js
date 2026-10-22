@@ -1,7 +1,9 @@
 // Rutas del CRM de clientes
-// GET    /api/clientes?search=&city=&rubro=&health=&stage=&open=1&sort=prioridad|facturacion|ultima|nombre|accion&limit=&offset=
+// GET    /api/clientes?search=&city=&rubro=&health=&stage=&open=1&importancia=&sort=prioridad|importancia|facturacion|ultima|compras|nombre|accion&limit=&offset=
 // GET    /api/clientes/resumen        — contadores por estado y etapa, facturación, ciudades, rubros y última actualización
 // POST   /api/clientes/sync           — vuelve a calcular las métricas desde Odoo
+// El listado también acepta cercanos=1: solo la lista de seguimiento cercano
+// PUT    /api/clientes/cercanos/:partnerId — { cercano: true|false } suma o saca de esa lista
 //
 // Posibles clientes (D11)
 // GET    /api/clientes/leads?search=&status=&stage=&city=&sort=recientes|nombre|accion&limit=&offset=
@@ -14,10 +16,13 @@
 // GET    /api/clientes/mi-dia?mias=1
 // GET    /api/clientes/seguimiento/:tipo/:id           — etapa, acciones pendientes e historial
 // PUT    /api/clientes/seguimiento/:tipo/:id/etapa     — { stage, reason }
+// PUT    /api/clientes/seguimiento/:tipo/:id/importancia — { importance } de 0 a 5
+// PUT    /api/clientes/importancia                     — { partner_ids, importance }: varios clientes juntos
 // POST   /api/clientes/seguimiento/:tipo/:id/eventos   — { kind, text }
 // POST   /api/clientes/seguimiento/:tipo/:id/acciones  — { type, due_date, note }
 // PUT    /api/clientes/acciones/:actionId              — { type, due_date, note }
-// POST   /api/clientes/acciones/:actionId/hecha        — { result }
+// POST   /api/clientes/acciones/:actionId/hecha        — { result? }
+// POST   /api/clientes/eventos/:eventId/respuesta      — { response: respondio|no_interesa, text? }
 //
 // GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
 
@@ -49,6 +54,8 @@ router.get('/', ...auth, async (req, res) => {
             health: req.query.health,
             stage: req.query.stage,
             open: req.query.open === '1' || req.query.open === 'true',
+            cercanos: req.query.cercanos === '1' || req.query.cercanos === 'true',
+            importancia: req.query.importancia,
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -165,6 +172,25 @@ router.put('/seguimiento/:tipo/:id/etapa', ...auth, async (req, res) => {
     }
 });
 
+router.put('/seguimiento/:tipo/:id/importancia', ...auth, async (req, res) => {
+    try {
+        const target = followups.toTarget(req.params.tipo, req.params.id);
+        const { importance } = req.body || {};
+        return ok(res, await followups.setImportance(target, { importance, userId: req.user.id }));
+    } catch (err) {
+        return handle(res, err, 'No se pudo cambiar la importancia');
+    }
+});
+
+router.put('/importancia', ...auth, async (req, res) => {
+    try {
+        const { partner_ids: partnerIds, importance } = req.body || {};
+        return ok(res, await followups.setImportanceMany(partnerIds, { importance, userId: req.user.id }));
+    } catch (err) {
+        return handle(res, err, 'No se pudo cambiar la importancia');
+    }
+});
+
 router.post('/seguimiento/:tipo/:id/eventos', ...auth, async (req, res) => {
     try {
         const target = followups.toTarget(req.params.tipo, req.params.id);
@@ -200,6 +226,28 @@ router.post('/acciones/:actionId/hecha', ...auth, async (req, res) => {
         return ok(res, await followups.completeAction(req.params.actionId, { result, userId: req.user.id }));
     } catch (err) {
         return handle(res, err, 'No se pudo marcar la acción como hecha');
+    }
+});
+
+// ── Lista de seguimiento cercano ─────────────────────────────────
+
+router.put('/cercanos/:partnerId', ...auth, async (req, res) => {
+    try {
+        const cercano = Boolean(req.body?.cercano);
+        const result = await clientes.setCercano(req.params.partnerId, cercano, req.user.id);
+        if (!result) return fail(res, 'No encontré ese cliente', 404);
+        return ok(res, result);
+    } catch (err) {
+        return handle(res, err, 'No se pudo cambiar la lista de seguimiento cercano');
+    }
+});
+
+router.post('/eventos/:eventId/respuesta', ...auth, async (req, res) => {
+    try {
+        const { response, text } = req.body || {};
+        return ok(res, await followups.setResponse(req.params.eventId, { response, text, userId: req.user.id }), 201);
+    } catch (err) {
+        return handle(res, err, 'No se pudo cargar la respuesta');
     }
 });
 

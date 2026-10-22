@@ -62,6 +62,61 @@ function Vacio({ children, t }) {
     return <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>{children}</div>;
 }
 
+const ORDEN_TOP = [
+    { value: 'monto', label: 'Por monto' },
+    { value: 'cantidad', label: 'Por cantidad' },
+];
+const TOP_VISIBLES = 10;
+
+// Productos más comprados: se ordenan por monto o por unidades y se pueden ver todos
+function TopProductos({ productos, t }) {
+    const [orden, setOrden] = useState('monto');
+    const [todos, setTodos] = useState(false);
+
+    if (productos.length === 0) return <Vacio t={t}>Sin compras en el último año.</Vacio>;
+
+    const ordenados = [...productos].sort((a, b) => (orden === 'cantidad'
+        ? (b.qty - a.qty) || (b.amount - a.amount)
+        : (b.amount - a.amount) || (b.qty - a.qty)));
+    const visibles = todos ? ordenados : ordenados.slice(0, TOP_VISIBLES);
+
+    return (
+        <div>
+            <div style={{ display: 'flex', background: t.color.surface2, borderRadius: t.radius.sm, padding: 3, gap: 3, marginBottom: t.space[2] }}>
+                {ORDEN_TOP.map((o) => {
+                    const activo = o.value === orden;
+                    return (
+                        <button key={o.value} type="button" onClick={() => setOrden(o.value)} style={{
+                            flex: 1, padding: '6px 10px', border: 'none', cursor: 'pointer',
+                            borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: t.font.size.sm,
+                            fontWeight: activo ? t.font.weight.semibold : t.font.weight.medium,
+                            background: activo ? t.color.surface : 'transparent',
+                            color: activo ? t.color.text : t.color.textMuted,
+                            boxShadow: activo ? t.shadow.card : 'none',
+                        }}>
+                            {o.label}
+                        </button>
+                    );
+                })}
+            </div>
+            {visibles.map((p, i) => (
+                <Fila key={p.product_id} t={t}
+                    izquierda={`${i + 1}. ${p.name}`}
+                    abajo={`${fmtInt(p.qty)} u. · última vez ${fmtFecha(p.last_date)}`}
+                    derecha={fmtAR(p.amount)}
+                />
+            ))}
+            {ordenados.length > TOP_VISIBLES && (
+                <div style={{ borderTop: `1px solid ${t.color.border}`, paddingTop: t.space[2] }}>
+                    <Button variant="ghost" size="sm" onClick={() => setTodos(!todos)}>
+                        {todos ? 'Ver menos' : `Ver los ${ordenados.length}`}
+                    </Button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) {
     const { tokens: t } = useTheme();
     const [cliente, setCliente] = useState(null);
@@ -162,19 +217,7 @@ export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) 
                         </Seccion>
 
                         <Seccion titulo="Lo que más compra (12 meses)" t={t}>
-                            {(cliente.top_products || []).length === 0 ? (
-                                <Vacio t={t}>Sin compras en el último año.</Vacio>
-                            ) : (
-                                <div>
-                                    {cliente.top_products.map((p) => (
-                                        <Fila key={p.product_id} t={t}
-                                            izquierda={p.name}
-                                            abajo={`${fmtInt(p.qty)} u. · última vez ${fmtFecha(p.last_date)}`}
-                                            derecha={fmtAR(p.amount)}
-                                        />
-                                    ))}
-                                </div>
-                            )}
+                            <TopProductos productos={cliente.top_products || []} t={t} />
                         </Seccion>
 
                         <Seccion titulo="Últimos tickets" t={t}>
@@ -194,6 +237,23 @@ export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) 
                                 </div>
                             )}
                         </Seccion>
+
+                        {(cliente.merged_partners || []).length > 1 && (
+                            <Seccion titulo="Fichas unificadas" t={t}>
+                                <div>
+                                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: t.space[2] }}>
+                                        En Odoo este cliente está cargado {cliente.merged_partners.length} veces. Acá se muestra como uno solo y se suman sus compras.
+                                    </div>
+                                    {cliente.merged_partners.map((p) => (
+                                        <Fila key={p.id} t={t}
+                                            izquierda={p.name}
+                                            abajo={<span style={{ fontFamily: t.font.mono }}>#{p.id}</span>}
+                                            derecha={`${fmtInt(p.tickets)} compra${p.tickets === 1 ? '' : 's'}`}
+                                        />
+                                    ))}
+                                </div>
+                            </Seccion>
+                        )}
                     </>
                 )}
             </div>

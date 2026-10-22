@@ -207,7 +207,7 @@ router.get('/odoo/link-suggestions', authenticate, async (req, res) => {
 // =============================================
 // PATCH /api/products/odoo/:odooId/archive
 // Archiva el producto en Odoo (active=false) y lo marca localmente.
-// El sync respeta locally_archived y no lo sobrescribe.
+// El sync respeta locally_archived mientras siga archivado en Odoo; si lo reactivan allá, lo limpia.
 // =============================================
 
 router.patch('/odoo/:odooId/archive', authenticate, async (req, res) => {

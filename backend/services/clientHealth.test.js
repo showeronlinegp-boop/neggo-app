@@ -147,6 +147,12 @@ function testTopProducts() {
     assert.strictEqual(top.length, 2);
     assert.deepStrictEqual(top[0], { product_id: 1, name: 'Vasos', qty: 5, amount: 1100, last_date: '2026-10-01' });
     assert.strictEqual(top[1].product_id, 2);
+
+    // Por defecto se guardan hasta 40 para que la ficha muestre una lista larga
+    const muchos = Array.from({ length: 50 }, (_, i) => ({ product_id: i + 1, name: `P${i}`, qty: 1, amount: i + 1 }));
+    const largo = topProducts(muchos);
+    assert.strictEqual(largo.length, 40);
+    assert.strictEqual(largo[0].product_id, 50);
 }
 
 function testRubro() {

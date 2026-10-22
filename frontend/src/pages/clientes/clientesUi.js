@@ -16,6 +16,7 @@ export const SORT_OPTIONS = [
     { value: 'prioridad',   label: 'Prioridad para llamar' },
     { value: 'facturacion', label: 'Más facturación' },
     { value: 'ultima',      label: 'Compra más reciente' },
+    { value: 'compras',     label: 'Más compras' },
     { value: 'nombre',      label: 'Nombre' },
 ];
 
@@ -87,20 +88,29 @@ export const MANUAL_STAGES = ['frio', 'templado', 'caliente', 'descartado'];
 
 // Tipos de acción y de contacto registrado
 export const ACTION_META = {
-    llamar:   { label: 'Llamar',       verbo: 'Llamada' },
-    whatsapp: { label: 'WhatsApp',     verbo: 'WhatsApp' },
-    visitar:  { label: 'Visitar',      verbo: 'Visita' },
-    lista:    { label: 'Mandar lista', verbo: 'Lista enviada' },
-    otra:     { label: 'Otra',         verbo: 'Otro contacto' },
+    presentacion: { label: 'Mensaje de presentación', verbo: 'Mensaje de presentación' },
+    llamar:       { label: 'Llamar',       verbo: 'Llamada' },
+    whatsapp:     { label: 'WhatsApp',     verbo: 'WhatsApp' },
+    visitar:      { label: 'Visitar',      verbo: 'Visita' },
+    lista:        { label: 'Mandar lista', verbo: 'Lista enviada' },
+    otra:         { label: 'Otra',         verbo: 'Otro contacto' },
 };
-export const ACTION_ORDER = ['llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
+export const ACTION_ORDER = ['presentacion', 'llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
 
 export const EVENT_META = {
-    nota:   { label: 'Nota' },
-    etapa:  { label: 'Cambio de etapa' },
-    compra: { label: 'Compra' },
+    nota:      { label: 'Nota' },
+    etapa:     { label: 'Cambio de etapa' },
+    compra:    { label: 'Compra' },
+    respuesta: { label: 'Respuesta' },
     ...Object.fromEntries(Object.entries(ACTION_META).map(([k, v]) => [k, { label: v.verbo }])),
 };
+
+// Respuesta del cliente a un contacto (nota #80). Sin cargar = todavía no respondió.
+export const RESPONSE_META = {
+    respondio:   { label: 'Respondió',      tone: 'success' },
+    no_interesa: { label: 'No le interesa', tone: 'danger' },
+};
+export const RESPONSE_ORDER = ['respondio', 'no_interesa'];
 
 // Estado que traían los contactos de la agenda ("Estado: NRI NLD-21")
 export const SOURCE_STATUS_META = {
@@ -134,6 +144,17 @@ export function fmtFechaHora(iso) {
     if (!iso) return '—';
     return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
+
+// Importancia que marca el equipo (nota #71): 0 = sin marcar, 5 = la más alta
+export const IMPORTANCIA_MAX = 5;
+export const IMPORTANCIA_LABEL = ['Sin marcar', 'Muy baja', 'Baja', 'Media', 'Alta', 'Muy alta'];
+export const IMPORTANCIA_FILTRO = [
+    { value: '', label: 'Cualquier importancia' },
+    ...[5, 4, 3, 2, 1].map((n) => ({
+        value: String(n),
+        label: n === IMPORTANCIA_MAX ? `${IMPORTANCIA_LABEL[n]} (${n})` : `${IMPORTANCIA_LABEL[n]} o más (${n}+)`,
+    })),
+];
 
 // Nombre para mostrar de un posible cliente sin nombre en la agenda
 export function nombreLead(l) {

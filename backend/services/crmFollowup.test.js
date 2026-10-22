@@ -2,7 +2,10 @@
 // node backend/services/crmFollowup.test.js
 
 const assert = require('assert');
-const { shouldWin, toTarget, FollowupError, STAGES, MANUAL_STAGES } = require('./crmFollowupService');
+const {
+    shouldWin, toTarget, parseImportance, parsePartnerIds, FollowupError, STAGES, MANUAL_STAGES, IMPORTANCE_MAX,
+    ACTION_TYPES, EVENT_KINDS, RESPONSES,
+} = require('./crmFollowupService');
 
 function testShouldWin() {
     // Pasó a Caliente el 20/10 a las 15 h (hora AR = 18 h UTC)
@@ -32,7 +35,40 @@ function testEtapas() {
     assert.deepStrictEqual(STAGES, ['frio', 'templado', 'caliente', 'ganado', 'descartado']);
 }
 
+function testImportancia() {
+    // De 0 (sin marcar) a 5 cuadraditos; llega como número o como texto
+    assert.strictEqual(IMPORTANCE_MAX, 5);
+    assert.strictEqual(parseImportance(0), 0);
+    assert.strictEqual(parseImportance(5), 5);
+    assert.strictEqual(parseImportance('3'), 3);
+    for (const mala of [6, -1, 2.5, 'mucha', null, undefined, '']) {
+        assert.throws(() => parseImportance(mala), FollowupError);
+    }
+}
+
+function testVariosClientes() {
+    // Marcar varios juntos (nota #75): ids enteros, sin repetir, al menos uno
+    assert.deepStrictEqual(parsePartnerIds([3, '3', 7]), [3, 7]);
+    for (const mala of [[], null, 'x', [0], [-2], [1.5], ['abc']]) {
+        assert.throws(() => parsePartnerIds(mala), FollowupError);
+    }
+    assert.throws(() => parsePartnerIds(Array.from({ length: 501 }, (_, i) => i + 1)), FollowupError);
+}
+
 testShouldWin();
 testToTarget();
+function testAccionesYRespuestas() {
+    // Nota #80: mensaje de presentación como acción; la respuesta va aparte y no es un contacto
+    assert.strictEqual(ACTION_TYPES.includes('presentacion'), true);
+    assert.strictEqual(EVENT_KINDS.includes('presentacion'), true);
+    assert.deepStrictEqual(RESPONSES, ['respondio', 'no_interesa']);
+    assert.strictEqual(EVENT_KINDS.includes('respuesta'), false);
+    // Entra en las columnas VARCHAR(20) de crm_actions y crm_events
+    assert.ok(ACTION_TYPES.every((k) => k.length <= 20));
+}
+
 testEtapas();
+testImportancia();
+testVariosClientes();
+testAccionesYRespuestas();
 console.log('ok crmFollowup.test.js');
