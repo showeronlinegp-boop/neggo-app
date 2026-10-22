@@ -11,6 +11,7 @@
 // POST   /api/clientes/leads          — alta a mano { name, phone, email, city }
 // POST   /api/clientes/leads/importar — { csv, dry_run } CSV de Google Contacts (solo admin)
 // GET    /api/clientes/leads/:id
+// POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
 //
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
@@ -139,6 +140,15 @@ router.get('/leads/:id', ...auth, async (req, res) => {
         return ok(res, lead);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar el posible cliente');
+    }
+});
+
+router.post('/leads/:id/asignar', ...auth, async (req, res) => {
+    try {
+        const { partner_id: partnerId } = req.body || {};
+        return ok(res, await followups.assignLead(req.params.id, partnerId, req.user.id));
+    } catch (err) {
+        return handle(res, err, 'No se pudo asignar el posible cliente');
     }
 });
 
