@@ -206,9 +206,10 @@ function buildMetrics(purchases, today) {
 
 /**
  * Productos más comprados (por importe) a partir de líneas de ticket.
+ * Se guardan varios para que la ficha también pueda ordenarlos por cantidad.
  * @param {Array<{ product_id: number, name: string, qty: number, amount: number, date: string }>} lines
  */
-function topProducts(lines, limit = 5) {
+function topProducts(lines, limit = 40) {
     const byProduct = new Map();
     for (const l of lines) {
         if (!l || !l.product_id) continue;
