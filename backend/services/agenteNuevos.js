@@ -1,14 +1,31 @@
-// API del agente (Grok Bot): cálculo de clientes nuevos a partir de los tickets del POS.
+// API del agente (Grok Bot): cálculo de clientes nuevos y de la cadencia de mensajes.
 // Lógica pura, sin base ni Odoo. Tests en agenteNuevos.test.js.
 // Compra = ticket del POS de Neggo en paid/done/invoiced (misma definición que el CRM).
 // Los tickets que cobran un mismo pedido de venta (seña y saldo) son una sola compra.
+//
+// Cadencia: día N = fecha de la primera compra + N (en hora de Argentina). La etapa guardada
+// es la ÚLTIMA ENVIADA: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. finalizado = cerrado
+// (no contactar o lo cerró el equipo). Si el cliente vuelve a comprar, la cadencia sigue igual.
 
 const health = require('./clientHealth');
 
 const ETAPAS = ['pendiente', 'dia_1', 'dia_7', 'dia_15', 'finalizado'];
 const POS_STATES = ['paid', 'done', 'invoiced'];
-const DIAS_DEFAULT = 15;
+// Cada etapa se puede mandar desde su día hasta el día anterior a la siguiente. El día 15 tiene
+// margen hasta el 20 para cubrir fines de semana y feriados (solo se manda de lunes a viernes).
+const CADENCIA = [
+    { etapa: 'dia_1', desde: 1, hasta: 6 },
+    { etapa: 'dia_7', desde: 7, hasta: 14 },
+    { etapa: 'dia_15', desde: 15, hasta: 20 },
+];
+// Por defecto la ventana cubre hasta el último día en que se puede mandar el día 15
+const DIAS_DEFAULT = 21;
 const DIAS_MAX = 90;
+// Horario de envío (Argentina): lunes a viernes de 9 a 18. Sin feriados (decisión del equipo)
+const VENTANA_ENVIO = { dias: [1, 2, 3, 4, 5], desde: 9, hasta: 18, texto: 'lunes a viernes de 9 a 18 (hora de Argentina)' };
+// Una reserva de envío vale 10 minutos: si no se confirma, la etapa se libera.
+// AGENTE_RESERVA_SEGUNDOS lo acorta para pruebas (mínimo 10 s)
+const RESERVA_SEGUNDOS = Math.max(10, parseInt(process.env.AGENTE_RESERVA_SEGUNDOS, 10) || 600);
 // No son clientes: mismas cuentas que excluye el CRM (EXCLUDED_NAMES y GENERIC_NAMES)
 const NOMBRES_EXCLUIDOS = ['rma', 'consumidor final'];
 
@@ -60,6 +77,130 @@ function esExcluido(nombre) {
     return NOMBRES_EXCLUIDOS.includes(normName(nombre));
 }
 
+/** Nombre de producto sin el código interno que Odoo pone adelante: "[BB88150] Cable" → "Cable". */
+function limpiarNombre(nombre) {
+    return String(nombre || '').replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
+}
+
+// =============================================
+// Cadencia
+// =============================================
+
+function ordenEtapa(etapa) {
+    return ETAPAS.indexOf(etapa);
+}
+
+/**
+ * Qué mensaje le toca hoy al cliente: la última etapa de la cadencia cuyo rango de días
+ * incluye hoy y que todavía no se mandó. Si entra tarde (por ejemplo, el día 9) le toca el
+ * día 7 y el día 1 se saltea. Null si no le toca nada.
+ */
+function tocaHoy({ fechaPrimeraCompra, hoy, etapa = 'pendiente', noContactar = false }) {
+    if (!fechaPrimeraCompra || noContactar || etapa === 'finalizado') return null;
+    const dias = health.daysBetween(fechaPrimeraCompra, hoy);
+    const paso = CADENCIA.find((p) => dias >= p.desde && dias <= p.hasta);
+    if (!paso || ordenEtapa(paso.etapa) <= ordenEtapa(etapa)) return null;
+    return paso.etapa;
+}
+
+/** Último día en que se puede mandar `etapa` (fin de su rango), o null. */
+function vence(fechaPrimeraCompra, etapa) {
+    const paso = CADENCIA.find((p) => p.etapa === etapa);
+    return fechaPrimeraCompra && paso ? health.addDays(fechaPrimeraCompra, paso.hasta) : null;
+}
+
+/** Fecha en que se puede mandar el mensaje siguiente a `etapaEnviada`, o null si no hay más. */
+function proximaAccion(fechaPrimeraCompra, etapaEnviada) {
+    if (!fechaPrimeraCompra) return null;
+    const i = CADENCIA.findIndex((p) => p.etapa === etapaEnviada);
+    const siguiente = etapaEnviada === 'pendiente' ? CADENCIA[0] : (i >= 0 ? CADENCIA[i + 1] : null);
+    return siguiente ? health.addDays(fechaPrimeraCompra, siguiente.desde) : null;
+}
+
+/** true si `fecha` cae en el horario de envío (lunes a viernes, 9 a 18, hora de Argentina). */
+function ventanaAbierta(fecha = new Date()) {
+    const ar = new Date(fecha.getTime() + AR_OFFSET_MS);
+    const hora = ar.getUTCHours() + ar.getUTCMinutes() / 60;
+    return VENTANA_ENVIO.dias.includes(ar.getUTCDay()) && hora >= VENTANA_ENVIO.desde && hora < VENTANA_ENVIO.hasta;
+}
+
+/** Cuándo vuelve a abrir el horario de envío (ISO con -03:00). Null si está abierto ahora. */
+function abreA(fecha = new Date()) {
+    if (ventanaAbierta(fecha)) return null;
+    const ar = new Date(fecha.getTime() + AR_OFFSET_MS);
+    for (let i = 0; i < 8; i++) {
+        const dia = new Date(Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate() + i, VENTANA_ENVIO.desde));
+        // dia está en "hora de Argentina expresada como UTC": se vuelve a UTC real sumando 3 h
+        const real = new Date(dia.getTime() - AR_OFFSET_MS);
+        if (real > fecha && VENTANA_ENVIO.dias.includes(dia.getUTCDay())) return toArIso(real);
+    }
+    return null;
+}
+
+/**
+ * Hay una respuesta del cliente sin atender: el último recibido es posterior al último enviado
+ * y a la última vez que el agente la marcó como revisada.
+ */
+function respuestaPendiente({ ultimoRecibido, ultimoEnviado, revisadoHasta }) {
+    if (!ultimoRecibido) return false;
+    const r = new Date(ultimoRecibido).getTime();
+    const atendido = Math.max(ultimoEnviado ? new Date(ultimoEnviado).getTime() : 0, revisadoHasta ? new Date(revisadoHasta).getTime() : 0);
+    return r > atendido;
+}
+
+/**
+ * Cambio de etapa pedido por PATCH seguimiento. Devuelve un mensaje de error (409) o null si vale.
+ * Solo se avanza; nunca se sale de finalizado; con no contactar solo se puede finalizar.
+ */
+function errorTransicion({ actual = 'pendiente', nueva, noContactar = false }) {
+    if (nueva === undefined || nueva === actual) return null;
+    if (noContactar && nueva !== 'finalizado') return 'El cliente pidió no recibir mensajes: la etapa solo puede ser finalizado';
+    if (actual === 'finalizado') return 'La cadencia ya está finalizada';
+    if (ordenEtapa(nueva) < ordenEtapa(actual)) return `No se puede volver de ${actual} a ${nueva}`;
+    return null;
+}
+
+// =============================================
+// Rubro
+// =============================================
+
+/**
+ * Rubro con la regla del módulo comercial (topRubro: la categoría en la que más gastó), para un
+ * cliente que todavía no está en el cálculo diario.
+ */
+function rubroDeCompras(compras, rubroPorProducto) {
+    return health.topRubro(compras.flatMap((c) => c.productos.map((p) => ({
+        category: rubroPorProducto.get(p.id) || null,
+        amount: p.precio * p.cantidad,
+    }))));
+}
+
+/**
+ * Categorías que compró el cliente, con el monto y el porcentaje, de mayor a menor.
+ * @param {object[]} compras — compras con productos { id, cantidad, precio }
+ * @param {Map<number, string>} rubroPorProducto — product.product → rubro
+ */
+function categoriasCompradas(compras, rubroPorProducto) {
+    const porRubro = new Map();
+    let total = 0;
+    for (const c of compras) {
+        for (const p of c.productos) {
+            const rubro = rubroPorProducto.get(p.id);
+            if (!rubro) continue;
+            const monto = p.precio * p.cantidad;
+            porRubro.set(rubro, (porRubro.get(rubro) || 0) + monto);
+            total += monto;
+        }
+    }
+    return [...porRubro.entries()]
+        .map(([rubro, monto]) => ({ rubro, monto: round2(monto), porcentaje: total ? Math.round((monto / total) * 100) : 0 }))
+        .sort((a, b) => b.monto - a.monto);
+}
+
+// =============================================
+// Compras
+// =============================================
+
 /**
  * Tickets de los clientes cuya primera compra cae en la ventana. Sirve para leer
  * las líneas solo de esos tickets y no de toda la historia de los clientes viejos.
@@ -89,7 +230,7 @@ function armarProductos(lineas) {
         const total = Number(l.price_subtotal_incl) || 0;
         const precio = round2(total / qty);
         const clave = `${id}|${precio}`;
-        const prev = porClave.get(clave) || { id, nombre: m2oName(l.product_id), cantidad: 0, precio };
+        const prev = porClave.get(clave) || { id, nombre: limpiarNombre(m2oName(l.product_id)), cantidad: 0, precio };
         prev.cantidad += qty;
         porClave.set(clave, prev);
     }
@@ -98,11 +239,16 @@ function armarProductos(lineas) {
 
 const ESTADOS = { paid: 'pagado', done: 'pagado', invoiced: 'facturado' };
 
+function unicos(lista) {
+    return [...new Set(lista.filter(Boolean))];
+}
+
 /**
  * Clientes nuevos: primera compra válida (en toda la historia) dentro de los últimos `dias` días.
  * @param {{ tickets: object[], lineas: object[], hoy: string, dias: number }} input
- *   tickets: pos.order con id, name, pos_reference, partner_id, date_order, amount_total, state
- *            y sale_order_origin_id (m2o del pedido que cobra, o false).
+ *   tickets: pos.order con id, name, pos_reference, partner_id, date_order, amount_total, state,
+ *            sale_order_origin_id (m2o del pedido que cobra, o false), user_id (vendedor, m2o)
+ *            y formas_pago (nombres de los medios de pago).
  *   lineas: como las arma readPosLines (las del pedido van en el primer ticket que lo cobra).
  * @returns {object[]} un elemento por cliente, ordenado por fecha_primera_compra desc y id
  */
@@ -147,6 +293,8 @@ function calcularClientesNuevos({ tickets, lineas = [], hoy, dias = DIAS_DEFAULT
                 fecha: toArIso(primero.ms),
                 monto: round2(ts.reduce((s, t) => s + (Number(t.amount_total) || 0), 0)),
                 estado: ESTADOS[ultimo.state] || 'pagado',
+                vendedor: m2oName(primero.user_id) || null,
+                formas_pago: unicos(ts.flatMap((t) => t.formas_pago || [])),
                 productos: armarProductos(ts.flatMap((t) => lineasPorTicket.get(t.id) || [])),
                 _ms: primero.ms,
             };
@@ -169,14 +317,27 @@ function calcularClientesNuevos({ tickets, lineas = [], hoy, dias = DIAS_DEFAULT
 module.exports = {
     ETAPAS,
     POS_STATES,
+    CADENCIA,
     DIAS_DEFAULT,
     DIAS_MAX,
+    VENTANA_ENVIO,
+    RESERVA_SEGUNDOS,
     NOMBRES_EXCLUIDOS,
     m2oId,
     m2oName,
     toArIso,
     desdeVentana,
     inicioDiaUtc,
+    limpiarNombre,
+    tocaHoy,
+    proximaAccion,
+    vence,
+    ventanaAbierta,
+    abreA,
+    respuestaPendiente,
+    errorTransicion,
+    rubroDeCompras,
+    categoriasCompradas,
     ticketsDeNuevos,
     armarProductos,
     calcularClientesNuevos,

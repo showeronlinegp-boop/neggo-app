@@ -2,7 +2,10 @@
 // Cada validador devuelve { value, errors }, con errors = [{ campo, error }].
 // Tests en agenteValidacion.test.js.
 
-const { ETAPAS, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
+const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
+
+const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
+const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 
 const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 100;
@@ -97,15 +100,22 @@ function validarQueryNuevos(query = {}) {
     const dias = validarDias(query.dias);
     const pag = validarPaginacion(query);
     const errors = [...dias.errors, ...pag.errors];
-    const value = { dias: dias.value, ...pag.value, refresh: query.refresh === '1' || query.refresh === 'true' };
+    // Por defecto no vienen los que pidieron no recibir mensajes (no_contactar=todos los trae a todos)
+    const value = { dias: dias.value, ...pag.value, refresh: query.refresh === '1' || query.refresh === 'true', no_contactar: false };
     if (query.etapa !== undefined) {
         if (ETAPAS.includes(query.etapa)) value.etapa = query.etapa;
         else errors.push({ campo: 'etapa', error: `Tiene que ser uno de: ${ETAPAS.join(', ')}` });
     }
     if (query.no_contactar !== undefined) {
-        const b = booleanoQuery(query.no_contactar);
-        if (b === undefined) errors.push({ campo: 'no_contactar', error: 'Tiene que ser true o false' });
+        const b = query.no_contactar === 'todos' ? null : booleanoQuery(query.no_contactar);
+        if (b === undefined) errors.push({ campo: 'no_contactar', error: 'Tiene que ser true, false o todos' });
         else value.no_contactar = b;
+    }
+    for (const campo of ['para_hoy', 'con_respuesta_pendiente']) {
+        if (query[campo] === undefined) continue;
+        const b = booleanoQuery(query[campo]);
+        if (b === undefined) errors.push({ campo, error: 'Tiene que ser true o false' });
+        else value[campo] = b;
     }
     return { value, errors };
 }
@@ -115,12 +125,36 @@ function validarQueryProductos(query = {}) {
     const pag = validarPaginacion(query);
     const errors = [...pag.errors];
     const value = { ...pag.value };
-    if (query.rubro !== undefined && String(query.rubro).trim()) value.rubro = String(query.rubro).trim();
+    // rubro=Bazar,Tecnología: los 2 o 3 rubros que más compró el cliente
+    if (query.rubro !== undefined && String(query.rubro).trim()) {
+        value.rubros = String(query.rubro).split(',').map((r) => r.trim()).filter(Boolean);
+        if (value.rubros.length > 5) errors.push({ campo: 'rubro', error: 'Hasta 5 rubros separados por coma' });
+    }
+    if (query.precio_min !== undefined && query.precio_min !== '') {
+        const n = Number(query.precio_min);
+        if (!Number.isFinite(n) || n < 0) errors.push({ campo: 'precio_min', error: 'Tiene que ser un número mayor o igual a 0' });
+        else value.precio_min = n;
+    }
     if (query.q !== undefined && String(query.q).trim()) value.q = String(query.q).trim().slice(0, 100);
     if (query.stock !== undefined) {
         const b = booleanoQuery(query.stock);
         if (b === undefined) errors.push({ campo: 'stock', error: 'Tiene que ser true o false' });
         else value.stock = b;
+    }
+    if (query.solo_publicados !== undefined) {
+        const b = booleanoQuery(query.solo_publicados);
+        if (b === undefined) errors.push({ campo: 'solo_publicados', error: 'Tiene que ser true o false' });
+        else value.solo_publicados = b;
+    }
+    value.orden = 'facturacion';
+    if (query.orden !== undefined) {
+        if (['facturacion', 'vendidos', 'nombre'].includes(query.orden)) value.orden = query.orden;
+        else errors.push({ campo: 'orden', error: 'Tiene que ser facturacion, vendidos o nombre' });
+    }
+    if (query.excluir_compras_de !== undefined) {
+        const id = entero(query.excluir_compras_de, { min: 1, max: 2147483647 });
+        if (id === null) errors.push({ campo: 'excluir_compras_de', error: 'Tiene que ser el id de un cliente' });
+        else value.excluir_compras_de = id;
     }
     return { value, errors };
 }
@@ -158,11 +192,9 @@ function validarSeguimiento(body, now = new Date()) {
         else errors.push({ campo: 'etapa', error: `Tiene que ser uno de: ${ETAPAS.join(', ')}` });
     }
     if ('ultimo_contacto' in body) {
-        if (body.ultimo_contacto === null) value.ultimo_contacto = null;
-        else {
-            const d = validarFechaPasada('ultimo_contacto', body.ultimo_contacto, now, errors);
-            if (d) value.ultimo_contacto = d;
-        }
+        // No se borra ni retrocede: el servicio se queda con el más nuevo
+        const d = validarFechaPasada('ultimo_contacto', body.ultimo_contacto, now, errors);
+        if (d) value.ultimo_contacto = d;
     }
     if ('proxima_accion' in body) {
         if (body.proxima_accion === null || esFechaSimple(body.proxima_accion)) value.proxima_accion = body.proxima_accion;
@@ -188,16 +220,28 @@ function validarTexto(campo, value, { obligatorio }, errors) {
     return s || null;
 }
 
-/** Body de POST clientes/:id/interacciones: { fecha?, tipo, etapa?, mensaje, respuesta? }. */
+function validarIdExterno(value, { obligatorio }, errors) {
+    if (value === undefined || value === null) {
+        if (obligatorio) errors.push({ campo: 'id_externo', error: 'Es obligatorio' });
+        return null;
+    }
+    if (typeof value !== 'string' || !ID_EXTERNO_RE.test(value)) {
+        errors.push({ campo: 'id_externo', error: 'Hasta 100 caracteres: letras, números, punto, guion, guion bajo o dos puntos' });
+        return null;
+    }
+    return value;
+}
+
+/** Body de POST clientes/:id/interacciones: { fecha?, tipo, etapa?, mensaje, id_externo? }. */
 function validarInteraccion(body, now = new Date()) {
     if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
-    const errors = camposDesconocidos(body, ['fecha', 'tipo', 'etapa', 'mensaje', 'respuesta']);
+    const errors = camposDesconocidos(body, ['fecha', 'tipo', 'etapa', 'mensaje', 'id_externo']);
     const value = { fecha: now, etapa: null };
     if (!['enviado', 'recibido'].includes(body.tipo)) {
         errors.push({ campo: 'tipo', error: 'Es obligatorio y tiene que ser enviado o recibido' });
     } else value.tipo = body.tipo;
     value.mensaje = validarTexto('mensaje', body.mensaje, { obligatorio: true }, errors);
-    value.respuesta = validarTexto('respuesta', body.respuesta, { obligatorio: false }, errors);
+    value.id_externo = validarIdExterno(body.id_externo, { obligatorio: false }, errors);
     if (body.etapa !== undefined && body.etapa !== null) {
         if (ETAPAS.includes(body.etapa)) value.etapa = body.etapa;
         else errors.push({ campo: 'etapa', error: `Tiene que ser uno de: ${ETAPAS.join(', ')}` });
@@ -207,6 +251,34 @@ function validarInteraccion(body, now = new Date()) {
         if (d) value.fecha = d;
     }
     return { value, errors };
+}
+
+/**
+ * Body de POST clientes/:id/envios (reserva): { etapa, mensaje, id_externo, productos_recomendados? }.
+ * No lleva fecha: los controles y las fechas usan siempre la hora del servidor.
+ */
+function validarEnvio(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['etapa', 'mensaje', 'id_externo', 'productos_recomendados']);
+    const value = { productos_recomendados: [] };
+    if (ETAPAS_ENVIO.includes(body.etapa)) value.etapa = body.etapa;
+    else errors.push({ campo: 'etapa', error: `Es obligatorio y tiene que ser uno de: ${ETAPAS_ENVIO.join(', ')}` });
+    value.mensaje = validarTexto('mensaje', body.mensaje, { obligatorio: true }, errors);
+    value.id_externo = validarIdExterno(body.id_externo, { obligatorio: true }, errors);
+    if (body.productos_recomendados !== undefined && body.productos_recomendados !== null) {
+        const lista = body.productos_recomendados;
+        if (!Array.isArray(lista) || lista.length > 20 || !lista.every((x) => Number.isInteger(x) && x > 0)) {
+            errors.push({ campo: 'productos_recomendados', error: 'Tiene que ser una lista de hasta 20 product_id' });
+        } else value.productos_recomendados = [...new Set(lista)];
+    }
+    return { value, errors };
+}
+
+/** id_externo en la ruta (envios/:idExterno). */
+function validarIdExternoRuta(value) {
+    const errors = [];
+    const v = validarIdExterno(value, { obligatorio: true }, errors);
+    return { value: v, errors };
 }
 
 /** Body de PATCH clientes/:id: { no_contactar?, contacto? }. */
@@ -260,6 +332,8 @@ module.exports = {
     validarId,
     validarSeguimiento,
     validarInteraccion,
+    validarEnvio,
+    validarIdExternoRuta,
     validarClientePatch,
     validarFeedback,
 };

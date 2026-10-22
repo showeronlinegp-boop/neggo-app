@@ -19,17 +19,32 @@ function testDias() {
     for (const [bueno, n] of [['1', 1], ['15', 15], ['90', 90]]) {
         assert.deepStrictEqual(v.validarDias(bueno), { value: n, errors: [] });
     }
-    assert.strictEqual(v.validarDias(undefined).value, 15);
+    assert.strictEqual(v.validarDias(undefined).value, 21);
 }
 
 function testQueryNuevos() {
     const ok = v.validarQueryNuevos({ dias: '7', etapa: 'dia_7', no_contactar: 'false', page: '2', limit: '50' });
     assert.deepStrictEqual(ok.errors, []);
     assert.deepStrictEqual(ok.value, { dias: 7, page: 2, limit: 50, offset: 50, refresh: false, etapa: 'dia_7', no_contactar: false });
+    // Por defecto no vienen los que pidieron no recibir mensajes; todos los trae a todos
+    assert.strictEqual(v.validarQueryNuevos({}).value.no_contactar, false);
+    assert.strictEqual(v.validarQueryNuevos({}).value.dias, 21);
+    assert.strictEqual(v.validarQueryNuevos({ no_contactar: 'todos' }).value.no_contactar, null);
+    assert.strictEqual(v.validarQueryNuevos({ para_hoy: 'true' }).value.para_hoy, true);
+    assert.deepStrictEqual(campos(v.validarQueryNuevos({ para_hoy: 'hoy' }).errors), ['para_hoy']);
+    const prod = v.validarQueryProductos({ orden: 'nombre', excluir_compras_de: '1596', solo_publicados: 'true', rubro: 'Bazar, Tecnología', precio_min: '1000' });
+    assert.deepStrictEqual(prod.errors, []);
+    assert.strictEqual(prod.value.excluir_compras_de, 1596);
+    assert.deepStrictEqual(prod.value.rubros, ['Bazar', 'Tecnología']);
+    assert.strictEqual(prod.value.precio_min, 1000);
+    assert.strictEqual(v.validarQueryProductos({}).value.orden, 'facturacion');
+    assert.deepStrictEqual(campos(v.validarQueryProductos({ orden: 'precio', excluir_compras_de: 'x', precio_min: '-1' }).errors), ['excluir_compras_de', 'orden', 'precio_min']);
+    assert.strictEqual(v.validarQueryNuevos({ con_respuesta_pendiente: 'true' }).value.con_respuesta_pendiente, true);
+    assert.deepStrictEqual(campos(v.validarQueryProductos({ rubro: 'a,b,c,d,e,f' }).errors), ['rubro']);
     const mal = v.validarQueryNuevos({ etapa: 'dia_3', no_contactar: 'si', limit: '101', page: '0' });
     assert.deepStrictEqual(campos(mal.errors), ['etapa', 'limit', 'no_contactar', 'page']);
     assert.strictEqual(v.validarQueryProductos({ stock: 'quizas' }).errors[0].campo, 'stock');
-    assert.strictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubro, 'Librería');
+    assert.deepStrictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubros, ['Librería']);
 }
 
 function testFechasIso() {
@@ -51,6 +66,8 @@ function testSeguimiento() {
     assert.strictEqual(ok.value.ultimo_contacto.toISOString(), '2026-10-17T13:00:00.000Z');
     // Solo los campos que vinieron
     assert.deepStrictEqual(Object.keys(v.validarSeguimiento({ proxima_accion: null }, NOW).value), ['proxima_accion']);
+    // ultimo_contacto no se puede borrar
+    assert.deepStrictEqual(campos(v.validarSeguimiento({ ultimo_contacto: null }, NOW).errors), ['ultimo_contacto']);
     assert.deepStrictEqual(campos(v.validarSeguimiento({}, NOW).errors), ['body']);
     assert.deepStrictEqual(campos(v.validarSeguimiento({ etapa: 'dia_3' }, NOW).errors), ['etapa']);
     assert.deepStrictEqual(campos(v.validarSeguimiento({ etapa: 'dia_1', notas: 'x' }, NOW).errors), ['notas']);
@@ -62,18 +79,36 @@ function testSeguimiento() {
 }
 
 function testInteraccion() {
-    const ok = v.validarInteraccion({ tipo: 'enviado', etapa: 'dia_7', mensaje: ' Hola José ', respuesta: null }, NOW);
+    const ok = v.validarInteraccion({ tipo: 'enviado', etapa: 'dia_7', mensaje: ' Hola José ', id_externo: 'wa:ABC-123' }, NOW);
     assert.deepStrictEqual(ok.errors, []);
     assert.strictEqual(ok.value.mensaje, 'Hola José');
     assert.strictEqual(ok.value.fecha, NOW);
+    assert.strictEqual(ok.value.id_externo, 'wa:ABC-123');
+    assert.strictEqual(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x' }, NOW).value.id_externo, null);
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', id_externo: 'con espacio' }, NOW).errors), ['id_externo']);
     assert.deepStrictEqual(campos(v.validarInteraccion({ mensaje: 'x' }, NOW).errors), ['tipo']);
     assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'leido', mensaje: '' }, NOW).errors), ['mensaje', 'tipo']);
     assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x'.repeat(4001) }, NOW).errors), ['mensaje']);
-    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', respuesta: 5 }, NOW).errors), ['respuesta']);
+    // respuesta ya no existe: la respuesta del cliente es otra interacción con tipo recibido
+    assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', respuesta: 'y' }, NOW).errors), ['respuesta']);
     assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'enviado', mensaje: 'Hola! �C�mo' }, NOW).errors), ['mensaje']);
     assert.deepStrictEqual(v.validarInteraccion({ tipo: 'enviado', mensaje: 'Hola! ¿Cómo te fue?' }, NOW).errors, []);
     assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', fecha: 'hoy' }, NOW).errors), ['fecha']);
     assert.deepStrictEqual(campos(v.validarInteraccion({ tipo: 'recibido', mensaje: 'x', canal: 'wa' }, NOW).errors), ['canal']);
+}
+
+function testEnvio() {
+    const ok = v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'grok-1001-dia_7', productos_recomendados: [12473, 12473, 9] });
+    assert.deepStrictEqual(ok.errors, []);
+    assert.deepStrictEqual(ok.value.productos_recomendados, [12473, 9]);
+    // La fecha ya no se acepta: manda la hora del servidor
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'x', fecha: '2026-10-22' }).errors), ['fecha']);
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'x', productos_recomendados: ['a'] }).errors), ['productos_recomendados']);
+    assert.deepStrictEqual(v.validarIdExternoRuta('grok-1-dia_1').errors, []);
+    assert.strictEqual(v.validarIdExternoRuta('con espacio').errors.length, 1);
+    // Solo etapas de la cadencia, y el id_externo es obligatorio
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'finalizado', mensaje: 'Hola' }, NOW).errors), ['etapa', 'id_externo']);
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_1', mensaje: '', id_externo: 'x', tipo: 'enviado' }, NOW).errors), ['mensaje', 'tipo']);
 }
 
 function testClientePatch() {
@@ -121,6 +156,7 @@ function testAuth() {
         let r = correrAuth(`Bearer ${clave}`);
         assert.strictEqual(r.res.statusCode, 503);
         assert.strictEqual(r.res.body.error, 'API del agente deshabilitada');
+        assert.strictEqual(r.res.body.codigo, 'deshabilitada');
 
         process.env.AGENTE_API_KEY = 'corta';
         assert.strictEqual(correrAuth('Bearer corta').res.statusCode, 503);
@@ -128,7 +164,7 @@ function testAuth() {
         process.env.AGENTE_API_KEY = clave;
         r = correrAuth(null);
         assert.strictEqual(r.res.statusCode, 401);
-        assert.deepStrictEqual(r.res.body, { success: false, error: 'API key inválida' });
+        assert.deepStrictEqual(r.res.body, { success: false, error: 'API key inválida', codigo: 'api_key_invalida' });
         assert.strictEqual(correrAuth(`Bearer ${'b'.repeat(64)}`).res.statusCode, 401);
         assert.strictEqual(correrAuth('Bearer otra').res.statusCode, 401);
         assert.strictEqual(correrAuth(clave).res.statusCode, 401);
@@ -142,6 +178,6 @@ function testAuth() {
     }
 }
 
-const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testClientePatch, testId, testTelefonos, testAuth];
+const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth];
 for (const t of tests) t();
 console.log(`✅ agenteValidacion: ${tests.length} tests OK`);
