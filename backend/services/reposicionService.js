@@ -2,7 +2,7 @@
 // Orígenes: archivado (sync / baja), reponer (manual), recorrida (escáner).
 // De la cola pueden pasar a 'encargado' (se pidió al proveedor) y, si no llega,
 // volver a pendiente. Se cierran como repuesto o descartado.
-// Un ingreso con el producto activo para Neggo se marca llego_ingreso.
+// Un ingreso con el producto activo para Neggo lo cierra solo como repuesto (llego_ingreso).
 // Neggo no lleva stock en Odoo: archivar = dar de baja. No hay origen bajo_stock.
 // Lee Odoo vía cache. Archivar/activar escriben en Odoo solo a pedido de la UI.
 // No genera OC: no usamos el módulo de compras (por ahora).
@@ -187,13 +187,8 @@ function cruzaIngresoActivoNeggo({
     return true;
 }
 
-const INGRESO_LATERAL = `
-    LEFT JOIN LATERAL (
-        SELECT im.id AS ingreso_id,
-               im.comprobante_numero AS ingreso_comprobante,
-               im.created_at AS ingreso_at,
-               im.estado AS ingreso_estado,
-               ii.cantidad AS ingreso_qty
+// Mismo criterio que cruzaIngresoActivoNeggo, en SQL (ri = reposicion_items).
+const INGRESO_CRUZA_SQL = `
         FROM ingreso_items ii
         JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
         WHERE ii.odoo_product_id = ri.odoo_id
@@ -203,10 +198,37 @@ const INGRESO_LATERAL = `
           AND im.estado IS DISTINCT FROM 'rechazado'
           AND COALESCE(ii.preventa_qty_confirmed, 0) < ii.cantidad
           AND im.created_at >= ri.created_at
+`;
+
+const INGRESO_LATERAL = `
+    LEFT JOIN LATERAL (
+        SELECT im.id AS ingreso_id,
+               im.comprobante_numero AS ingreso_comprobante,
+               im.created_at AS ingreso_at,
+               im.estado AS ingreso_estado,
+               ii.cantidad AS ingreso_qty
+        ${INGRESO_CRUZA_SQL}
         ORDER BY im.created_at DESC
         LIMIT 1
     ) ing ON TRUE
 `;
+
+/**
+ * Lo que ya llegó en un ingreso sale solo de la cola: pendiente o encargado pasan a
+ * 'repuesto' y quedan en Resueltos con el link al ingreso. Se corre antes de listar o contar.
+ */
+async function cerrarLlegados(db = pool) {
+    const { rowCount } = await db.query(
+        `UPDATE reposicion_items ri
+         SET estado = 'repuesto', resolved_at = NOW(), resolved_by = NULL
+         WHERE ri.company = 'neggo'
+           AND ri.estado = ANY($1::text[])
+           AND EXISTS (SELECT 1 ${INGRESO_CRUZA_SQL})`,
+        [ESTADOS_ABIERTOS]
+    );
+    if (rowCount) console.log(`✅ Reposición: ${rowCount} ítem(s) llegaron en un ingreso → repuesto`);
+    return rowCount;
+}
 
 const SELECT_ITEM = `
     SELECT ri.id, ri.odoo_id, ri.origen, ri.estado, ri.qty_decidida, ri.qty_sugerida, ri.nota,
@@ -232,10 +254,11 @@ const SELECT_ITEM = `
  * Lista la cola. estado: 'pendiente' (default), 'encargado' o 'resueltos' (los últimos 200).
  */
 async function listar({ estado = 'pendiente' } = {}) {
+    await cerrarLlegados();
     if (estado === 'resueltos') {
         const { rows } = await pool.query(
             `${SELECT_ITEM} WHERE ri.estado = ANY($1::text[])
-             ORDER BY (ing.ingreso_id IS NOT NULL) DESC, ri.resolved_at DESC NULLS LAST
+             ORDER BY ri.resolved_at DESC NULLS LAST
              LIMIT 200`,
             [ESTADOS_FINALES]
         );
@@ -478,6 +501,7 @@ const SELECT_PROD = `
  * Todos los proveedores de Neggo en el cache (salvo Liquidar), con conteos.
  */
 async function listarProveedores() {
+    await cerrarLlegados();
     const { rows } = await pool.query(
         `SELECT ${VENDOR_SQL} AS vendor_name,
                 COUNT(*) FILTER (WHERE opc.active) AS n_activos,
@@ -594,6 +618,7 @@ function clasificarAbc(itemsConQty) {
 }
 
 async function colaConMetricas(vendor) {
+    await cerrarLlegados();
     const { rows: items } = await pool.query(
         `${SELECT_ITEM}
          WHERE ri.estado = 'pendiente'
@@ -711,6 +736,7 @@ module.exports = {
     registrarArchivados,
     resolverReactivados,
     procesarSync,
+    cerrarLlegados,
     listar,
     agregarReponer,
     archivarYEncolar,

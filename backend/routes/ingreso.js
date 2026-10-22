@@ -1095,8 +1095,7 @@ router.post('/:ingresoId/items/:itemId/reactivate', authenticate, requireRole('a
             [item.odoo_product_id]
         );
 
-        // No cerramos la cola acá: Reposición destaca el ítem (llego_ingreso) para que
-        // el operador lo saque de pendientes o encargados con «Ya llegó».
+        // La cola de Reposición se cierra sola al listarla (reposicionService.cerrarLlegados).
 
         console.log(`✅ Producto ${item.odoo_product_id} (template ${templateId}) reactivado en Odoo`);
 
