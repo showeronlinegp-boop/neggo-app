@@ -21,7 +21,8 @@
 // POST   /api/clientes/seguimiento/:tipo/:id/eventos   — { kind, text }
 // POST   /api/clientes/seguimiento/:tipo/:id/acciones  — { type, due_date, note }
 // PUT    /api/clientes/acciones/:actionId              — { type, due_date, note }
-// POST   /api/clientes/acciones/:actionId/hecha        — { result }
+// POST   /api/clientes/acciones/:actionId/hecha        — { result? }
+// POST   /api/clientes/eventos/:eventId/respuesta      — { response: respondio|no_interesa, text? }
 //
 // GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
 
@@ -238,6 +239,15 @@ router.put('/cercanos/:partnerId', ...auth, async (req, res) => {
         return ok(res, result);
     } catch (err) {
         return handle(res, err, 'No se pudo cambiar la lista de seguimiento cercano');
+    }
+});
+
+router.post('/eventos/:eventId/respuesta', ...auth, async (req, res) => {
+    try {
+        const { response, text } = req.body || {};
+        return ok(res, await followups.setResponse(req.params.eventId, { response, text, userId: req.user.id }), 201);
+    } catch (err) {
+        return handle(res, err, 'No se pudo cargar la respuesta');
     }
 });
 
