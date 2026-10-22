@@ -16,6 +16,8 @@ const DEFAULT_STAGE = 'frio';
 const ACTION_TYPES = ['llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
 const EVENT_KINDS = ['nota', ...ACTION_TYPES];
 const TARGET_COLUMN = { cliente: 'odoo_partner_id', lead: 'lead_id' };
+// Importancia que marca el equipo: 0 = sin marcar, 5 = la más alta (nota #71)
+const IMPORTANCE_MAX = 5;
 
 class FollowupError extends Error {
     constructor(message, status = 400) {
@@ -45,6 +47,15 @@ function shouldWin(followup, lastPurchaseDate) {
     return Boolean(since) && String(lastPurchaseDate).slice(0, 10) >= since;
 }
 
+/** Valida la importancia (entero de 0 a IMPORTANCE_MAX). */
+function parseImportance(value) {
+    const n = Number(value);
+    if (value === null || value === '' || !Number.isInteger(n) || n < 0 || n > IMPORTANCE_MAX) {
+        throw new FollowupError('Importancia inválida');
+    }
+    return n;
+}
+
 /** Valida y normaliza { tipo, id } → { tipo, col, id }. */
 function toTarget(tipo, id) {
     const col = TARGET_COLUMN[tipo];
@@ -66,7 +77,8 @@ async function assertTargetExists(target, db = pool) {
 async function getFollowup(target) {
     await ensureSchema();
     const { rows: [f] } = await pool.query(
-        `SELECT f.stage, f.discard_reason, f.stage_changed_at, u.display_name AS stage_changed_by_name
+        `SELECT f.stage, f.discard_reason, f.stage_changed_at, u.display_name AS stage_changed_by_name,
+                f.importance
          FROM crm_followups f LEFT JOIN users u ON u.id = f.stage_changed_by
          WHERE f.${target.col} = $1`, [target.id]);
     const { rows: actions } = await pool.query(
@@ -86,6 +98,7 @@ async function getFollowup(target) {
         discard_reason: f?.discard_reason || null,
         stage_changed_at: f?.stage_changed_at || null,
         stage_changed_by_name: f?.stage_changed_by_name || null,
+        importance: f?.importance || 0,
         actions,
         events,
     };
@@ -134,6 +147,51 @@ async function setStage(target, { stage, reason, userId }) {
         await insertEvent(db, target, { kind: 'etapa', text: motivo, meta: { from, to: stage }, userId });
         return { stage, changed: true };
     });
+}
+
+/** Marca la importancia (0 a 5). Si no tenía seguimiento, lo crea en Frío sin fecha de etapa. */
+async function setImportance(target, { importance, userId }) {
+    await ensureSchema();
+    const n = parseImportance(importance);
+    await assertTargetExists(target);
+    await pool.query(
+        `INSERT INTO crm_followups (${target.col}, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         VALUES ($1, $2, NOW(), $3, NULL)
+         ON CONFLICT (${target.col}) DO UPDATE
+         SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
+             importance_changed_by = EXCLUDED.importance_changed_by`,
+        [target.id, n, userId]);
+    return { importance: n };
+}
+
+// Tope de clientes por pedido al marcar varios juntos (la lista carga de a 50)
+const BULK_MAX = 500;
+
+/** Valida la lista de clientes elegidos: enteros positivos, sin repetir. */
+function parsePartnerIds(value) {
+    if (!Array.isArray(value) || !value.length) throw new FollowupError('Elegí al menos un cliente');
+    const ids = [...new Set(value.map((v) => Number(v)))];
+    if (ids.some((n) => !Number.isInteger(n) || n <= 0)) throw new FollowupError('Cliente inválido');
+    if (ids.length > BULK_MAX) throw new FollowupError(`Elegí hasta ${BULK_MAX} clientes por vez`);
+    return ids;
+}
+
+/** Pone la misma importancia a varios clientes de una vez (nota #75). Ignora los que no existen. */
+async function setImportanceMany(partnerIds, { importance, userId }) {
+    await ensureSchema();
+    const n = parseImportance(importance);
+    const ids = parsePartnerIds(partnerIds);
+    const { rowCount } = await pool.query(
+        `INSERT INTO crm_followups (odoo_partner_id, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         SELECT DISTINCT c.odoo_partner_id, $3::smallint, NOW(), $4::int, NULL::timestamp
+           FROM client_metrics_cache c
+          WHERE c.company = $1 AND c.odoo_partner_id = ANY($2::int[]) AND c.is_generic = false
+         ON CONFLICT (odoo_partner_id) DO UPDATE
+         SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
+             importance_changed_by = EXCLUDED.importance_changed_by`,
+        [COMPANY, ids, n, userId]);
+    if (!rowCount) throw new FollowupError('No encontré esos clientes', 404);
+    return { importance: n, updated: rowCount };
 }
 
 /** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. */
@@ -314,11 +372,16 @@ module.exports = {
     MANUAL_STAGES,
     ACTION_TYPES,
     EVENT_KINDS,
+    IMPORTANCE_MAX,
     FollowupError,
+    parseImportance,
+    parsePartnerIds,
     shouldWin,
     toTarget,
     getFollowup,
     setStage,
+    setImportance,
+    setImportanceMany,
     addEvent,
     createAction,
     updateAction,

@@ -103,6 +103,14 @@ function leerGruposAbiertos() {
     try { return JSON.parse(localStorage.getItem(NAV_STORAGE_KEY)) || {}; } catch { return {}; }
 }
 
+// Menú lateral comprimido (solo íconos) en la compu: también se recuerda
+const NAV_COMPACTO_KEY = 'neggo.nav.compacto';
+const SIDEBAR_COMPACTO = 68;
+
+function leerCompacto() {
+    try { return localStorage.getItem(NAV_COMPACTO_KEY) === '1'; } catch { return false; }
+}
+
 function isPathActive(item, currentPath) {
     if (currentPath === item.path) return true;
     if (item.exact || item.path === '/') return false;
@@ -253,6 +261,16 @@ export default function Layout() {
     const [alertCount, setAlertCount] = useState(0);
     const [unmappedCount, setUnmappedCount] = useState(0);
     const [openGroups, setOpenGroups] = useState(leerGruposAbiertos);
+    const [compactoGuardado, setCompactoGuardado] = useState(leerCompacto);
+    // En el celular el menú se abre entero sobre la pantalla: nunca va comprimido
+    const compacto = compactoGuardado && !isMobile;
+
+    const toggleCompacto = useCallback(() => {
+        setCompactoGuardado(prev => {
+            try { localStorage.setItem(NAV_COMPACTO_KEY, prev ? '0' : '1'); } catch { /* sin storage: queda en memoria */ }
+            return !prev;
+        });
+    }, []);
 
     const toggleGroup = useCallback((label, isOpen) => {
         setOpenGroups(prev => {
@@ -305,7 +323,8 @@ export default function Layout() {
 
             {/* ── SIDEBAR ── */}
             <aside style={{
-                width: t.layout.sidebarWidth,
+                width: compacto ? SIDEBAR_COMPACTO : t.layout.sidebarWidth,
+                transition: 'width 180ms ease',
                 background: t.color.surface,
                 borderRight: `1px solid ${t.color.border}`,
                 display: 'flex',
@@ -325,26 +344,33 @@ export default function Layout() {
                     zIndex: 70,
                 }),
             }}>
-                {/* Marca */}
-                <div style={{ padding: '20px 22px 18px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                {/* Marca + botón para comprimir el menú (solo en la compu) */}
+                <div style={{
+                    padding: compacto ? '20px 0 12px' : '20px 12px 18px 22px',
+                    display: 'flex', flexDirection: compacto ? 'column' : 'row', alignItems: 'center', gap: 10, flexShrink: 0,
+                }}>
                     <div style={{
-                        width: 30, height: 30, borderRadius: t.radius.sm,
+                        width: 30, height: 30, borderRadius: t.radius.sm, flexShrink: 0,
                         background: t.color.primary,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         color: '#fff', fontWeight: t.font.weight.bold, fontSize: 14, letterSpacing: '-0.02em',
                     }}>n</div>
-                    <div>
-                        <div style={{ fontWeight: t.font.weight.semibold, fontSize: 15, letterSpacing: '-0.01em', color: t.color.text }}>Neggo</div>
-                        <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: -2 }}>mayorista · pergamino</div>
-                    </div>
+                    {!compacto && (
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: t.font.weight.semibold, fontSize: 15, letterSpacing: '-0.01em', color: t.color.text }}>Neggo</div>
+                            <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: -2, whiteSpace: 'nowrap' }}>mayorista · pergamino</div>
+                        </div>
+                    )}
+                    {!isMobile && <BotonCompacto compacto={compacto} onToggle={toggleCompacto} tokens={t} />}
                 </div>
 
                 {/* Nav items */}
-                <div style={{ padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflowY: 'auto' }}>
+                <div style={{ padding: compacto ? '0 8px' : '0 10px', display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                     <NavItem
                         item={NAV_HOME}
                         currentPath={location.pathname}
                         onNavigate={isMobile ? toggleSidebar : undefined}
+                        compacto={compacto}
                         tokens={t}
                     />
                     {NAV_GROUPS.map(group => (
@@ -358,6 +384,7 @@ export default function Layout() {
                             alertCount={alertCount}
                             unmappedCount={unmappedCount}
                             onNavigate={isMobile ? toggleSidebar : undefined}
+                            compacto={compacto}
                             tokens={t}
                         />
                     ))}
@@ -367,10 +394,10 @@ export default function Layout() {
                 <div style={{
                     padding: 12,
                     borderTop: `1px solid ${t.color.border}`,
-                    display: 'flex', alignItems: 'center', gap: 10,
+                    display: 'flex', flexDirection: compacto ? 'column' : 'row', alignItems: 'center', gap: 10,
                     flexShrink: 0,
                 }}>
-                    <div style={{
+                    <div title={compacto ? `${displayName} · ${user?.role || ''}` : undefined} style={{
                         width: 32, height: 32, borderRadius: t.radius.full,
                         background: t.color.primarySoft,
                         color: t.color.primary, fontWeight: t.font.weight.semibold, fontSize: 12,
@@ -379,12 +406,14 @@ export default function Layout() {
                     }}>
                         {initials}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {displayName}
+                    {!compacto && (
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {displayName}
+                            </div>
+                            <div style={{ fontSize: 11, color: t.color.textFaint }}>{user?.role}</div>
                         </div>
-                        <div style={{ fontSize: 11, color: t.color.textFaint }}>{user?.role}</div>
-                    </div>
+                    )}
                     <LogoutButton onLogout={handleLogout} tokens={t} />
 
                 </div>
@@ -431,10 +460,31 @@ function getBadgeCount(item, alertCount, unmappedCount) {
 
 // Grupo plegable: el de la pantalla actual siempre está abierto; los demás recuerdan
 // cómo los dejó el usuario. Cerrado, muestra la suma de avisos de sus ítems.
-function NavGroup({ group, userRole, currentPath, openGroups, onToggle, alertCount, unmappedCount, onNavigate, tokens: t }) {
+// Comprimido: sin títulos ni pliegues, todos los íconos separados por una línea por grupo.
+function NavGroup({ group, userRole, currentPath, openGroups, onToggle, alertCount, unmappedCount, onNavigate, compacto = false, tokens: t }) {
     const [hovered, setHovered] = useState(false);
     const visibleItems = group.items.filter(i => !i.roles || i.roles.includes(userRole));
     if (visibleItems.length === 0) return null;
+
+    if (compacto) {
+        return (
+            <>
+                <div role="separator" title={group.label} style={{ height: 1, background: t.color.border, margin: '8px 6px' }} />
+                {visibleItems.map(item => (
+                    <NavItem
+                        key={item.path}
+                        item={item}
+                        alertCount={alertCount}
+                        unmappedCount={unmappedCount}
+                        currentPath={currentPath}
+                        onNavigate={onNavigate}
+                        compacto
+                        tokens={t}
+                    />
+                ))}
+            </>
+        );
+    }
 
     const hasActiveItem = visibleItems.some(i => isPathActive(i, currentPath));
     const isOpen = hasActiveItem || !!openGroups[group.label];
@@ -491,10 +541,39 @@ function NavGroup({ group, userRole, currentPath, openGroups, onToggle, alertCou
     );
 }
 
-function NavItem({ item, alertCount = 0, unmappedCount = 0, currentPath, onNavigate, isChild = false, tokens: t }) {
+function NavItem({ item, alertCount = 0, unmappedCount = 0, currentPath, onNavigate, isChild = false, compacto = false, tokens: t }) {
     const [hovered, setHovered] = useState(false);
     const isActive = isPathActive(item, currentPath);
     const badgeCount = getBadgeCount(item, alertCount, unmappedCount);
+
+    // Comprimido: solo el ícono, con el nombre al pasar el mouse y un punto si hay avisos
+    if (compacto) {
+        return (
+            <NavLink to={item.path} style={{ textDecoration: 'none' }} onClick={onNavigate}
+                title={badgeCount > 0 ? `${item.label} (${badgeCount})` : item.label} aria-label={item.label}>
+                <div
+                    onMouseEnter={() => setHovered(true)}
+                    onMouseLeave={() => setHovered(false)}
+                    style={{
+                        position: 'relative', height: 38, borderRadius: t.radius.sm,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: isActive ? t.color.primarySoft : hovered ? t.color.surface2 : 'transparent',
+                        color: isActive ? t.color.primary : t.color.textMuted,
+                        transition: 'all 120ms',
+                    }}
+                >
+                    <item.icon size={18} color="currentColor" />
+                    {badgeCount > 0 && (
+                        <span style={{
+                            position: 'absolute', top: 6, right: 10, width: 8, height: 8, borderRadius: t.radius.full,
+                            background: item.badge ? t.color.danger : t.color.accent,
+                            border: `2px solid ${t.color.surface}`,
+                        }} />
+                    )}
+                </div>
+            </NavLink>
+        );
+    }
 
     return (
         <NavLink to={item.path} style={{ textDecoration: 'none' }} onClick={onNavigate}>
@@ -531,6 +610,32 @@ function NavItem({ item, alertCount = 0, unmappedCount = 0, currentPath, onNavig
                 )}
             </div>
         </NavLink>
+    );
+}
+
+function BotonCompacto({ compacto, onToggle, tokens: t }) {
+    const [hovered, setHovered] = useState(false);
+    const texto = compacto ? 'Mostrar el menú completo' : 'Comprimir el menú';
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            title={texto}
+            aria-label={texto}
+            aria-pressed={compacto}
+            style={{
+                width: 28, height: 28, borderRadius: t.radius.sm, flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: hovered ? t.color.text : t.color.textMuted,
+                background: hovered ? t.color.surface2 : 'transparent',
+                border: 'none', cursor: 'pointer',
+                transition: 'background 120ms',
+            }}
+        >
+            <Icon.PanelLeft size={16} />
+        </button>
     );
 }
 

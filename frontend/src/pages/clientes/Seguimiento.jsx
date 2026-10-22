@@ -7,8 +7,9 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
+import Importancia from './Importancia';
 import {
-    STAGE_META, MANUAL_STAGES, ACTION_META, ACTION_ORDER, EVENT_META,
+    STAGE_META, MANUAL_STAGES, ACTION_META, ACTION_ORDER, EVENT_META, IMPORTANCIA_LABEL,
     hoyAr, fmtProxima, fmtFecha, fmtFechaHora,
 } from './clientesUi';
 
@@ -130,6 +131,10 @@ export default function Seguimiento({ tipo, id, onCambio }) {
         enviar(() => api.put(`${base}/etapa`, { stage }), `Pasó a ${STAGE_META[stage].label}`);
     };
 
+    const cambiarImportancia = (importance) => {
+        enviar(() => api.put(`${base}/importancia`, { importance }), `Importancia: ${IMPORTANCIA_LABEL[importance]}`);
+    };
+
     const confirmarDescarte = async () => {
         const ok = await enviar(() => api.put(`${base}/etapa`, { stage: 'descartado', reason: motivo }), 'Descartado');
         if (ok) { setDescartando(false); setMotivo(''); }
@@ -171,6 +176,19 @@ export default function Seguimiento({ tipo, id, onCambio }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[10] }}>
+            <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+                <Titulo t={t}>Importancia</Titulo>
+                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3] }}>
+                    <Importancia value={data.importance} size={24} disabled={guardando} onChange={cambiarImportancia} />
+                    <span style={{ fontSize: t.font.size.sm, color: data.importance ? t.color.text : t.color.textMuted }}>
+                        {IMPORTANCIA_LABEL[data.importance || 0]}
+                    </span>
+                </div>
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                    Tocá el cuadradito de más a la derecha para subirla. Los más importantes suben en «Prioridad para llamar».
+                </div>
+            </section>
+
             <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                 <Titulo t={t}>Etapa</Titulo>
                 <div role="group" aria-label="Etapa del seguimiento" style={{ display: 'flex', flexWrap: 'wrap', gap: t.space[2] }}>
