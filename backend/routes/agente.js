@@ -1,8 +1,10 @@
 // Rutas de la API del agente (Grok Bot). Auth con API key (AGENTE_API_KEY), sin usuarios de la app.
-// GET    /api/agente/clientes/nuevos?dias=15&etapa=&no_contactar=&page=&limit=&refresh=1
-// GET    /api/agente/productos?rubro=&stock=&q=&page=&limit=
+// GET    /api/agente/clientes/nuevos?dias=21&etapa=&no_contactar=false|true|todos&para_hoy=&page=&limit=&refresh=1
+// GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar)
+// GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
+// POST   /api/agente/clientes/:id/envios         — { etapa, mensaje, id_externo, fecha } mensaje de la cadencia
 // PATCH  /api/agente/clientes/:id/seguimiento    — { etapa, ultimo_contacto, proxima_accion }
-// POST   /api/agente/clientes/:id/interacciones  — { fecha, tipo, etapa, mensaje, respuesta }
+// POST   /api/agente/clientes/:id/interacciones  — { fecha, tipo, etapa, mensaje, id_externo }
 // GET    /api/agente/clientes/:id/interacciones?page=&limit=
 // PATCH  /api/agente/clientes/:id                — { no_contactar, contacto }
 // POST   /api/agente/feedback                    — { tipo, endpoint, mensaje } lo que el agente quiere que cambie
@@ -20,11 +22,12 @@ const v = require('../services/agenteValidacion');
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
 const SWAGGER_VERSION = '5.17.14';
 
-function sendPage(res, { data, total, page, limit }, status = 200) {
+function sendPage(res, { data, total, page, limit, meta }, status = 200) {
     return res.status(status).json({
         success: true,
         data,
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+        ...(meta ? { meta } : {}),
     });
 }
 
@@ -91,6 +94,17 @@ router.get('/clientes/nuevos', async (req, res) => {
     }
 });
 
+router.get('/clientes/:id', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        const { data, meta } = await agente.obtenerCliente(p.id);
+        return res.json({ success: true, data, meta });
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer el cliente');
+    }
+});
+
 router.get('/productos', async (req, res) => {
     const { value, errors } = v.validarQueryProductos(req.query);
     if (errors.length) return invalid(res, errors);
@@ -111,11 +125,24 @@ router.patch('/clientes/:id/seguimiento', async (req, res) => {
     }
 });
 
+// Un reintento con el mismo id_externo devuelve lo ya guardado con 200 y repetido: true
+router.post('/clientes/:id/envios', async (req, res) => {
+    const p = parse(req, res, (b) => v.validarEnvio(b));
+    if (!p) return undefined;
+    try {
+        const { data, repetida } = await agente.registrarEnvio(p.id, p.value);
+        return res.status(repetida ? 200 : 201).json({ success: true, data, repetido: repetida });
+    } catch (err) {
+        return handle(res, err, 'No se pudo registrar el envío');
+    }
+});
+
 router.post('/clientes/:id/interacciones', async (req, res) => {
     const p = parse(req, res, (b) => v.validarInteraccion(b));
     if (!p) return undefined;
     try {
-        return res.status(201).json({ success: true, data: await agente.registrarInteraccion(p.id, p.value) });
+        const { data, repetida } = await agente.registrarInteraccion(p.id, p.value);
+        return res.status(repetida ? 200 : 201).json({ success: true, data, repetido: repetida });
     } catch (err) {
         return handle(res, err, 'No se pudo guardar la interacción');
     }

@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "API del agente de Neggo (Grok Bot)",
-    "version": "1.0.0",
-    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: los que hicieron su primera compra en los últimos N días.\n\n- No escribe nada en Odoo: solo lo lee. Lo que guarda (etapa, mensajes, no contactar) queda en la base de la app.\n- Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Fechas en hora de Argentina (UTC−3): `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`."
+    "version": "2.0.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Flujo recomendado:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente `GET /clientes/{id}` justo antes de mandar → mandar el WhatsApp → `POST /clientes/{id}/envios` con un `id_externo` propio. Si la llamada falla, reintentá con el mismo `id_externo`: no se duplica.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar.\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: precio final, con IVA incluido.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`."
   },
   "servers": [
     {
@@ -19,11 +19,11 @@
   "tags": [
     {
       "name": "Clientes",
-      "description": "Clientes nuevos, seguimiento y no contactar"
+      "description": "Clientes nuevos, ficha, seguimiento y no contactar"
     },
     {
-      "name": "Interacciones",
-      "description": "Mensajes enviados y recibidos"
+      "name": "Envíos",
+      "description": "Mensajes de la cadencia y conversación"
     },
     {
       "name": "Productos",
@@ -46,7 +46,7 @@
         ],
         "operationId": "listarClientesNuevos",
         "summary": "Clientes con primera compra en los últimos N días",
-        "description": "Se calcula en vivo contra Odoo (caché de 5 minutos; `refresh=1` la saltea). Un cliente es nuevo si su primera compra válida, en toda la historia, cae entre hoy y los `dias - 1` días anteriores. Orden: `fecha_primera_compra` desc. Excluye \"Consumidor Final\", \"RMA\" y los tickets sin cliente.",
+        "description": "Las compras se leen en vivo de Odoo con una caché de 5 minutos (`refresh=1` la saltea). La etapa, `no_contactar` y `toca_hoy` se leen siempre al momento: la caché no los afecta. Orden estable: `fecha_primera_compra` desc y después `id` asc. Por defecto no vienen los que pidieron no recibir mensajes.",
         "parameters": [
           {
             "name": "dias",
@@ -56,10 +56,20 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 90,
-              "default": 15
+              "default": 21
             },
-            "description": "Ventana en días, contando hoy",
-            "example": 15
+            "description": "Ventana en días, contando hoy. 21 cubre todo el rango del día 15",
+            "example": 21
+          },
+          {
+            "name": "para_hoy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = solo los que tienen un mensaje para hoy (toca_hoy no null)",
+            "example": true
           },
           {
             "name": "etapa",
@@ -75,17 +85,22 @@
                 "finalizado"
               ]
             },
-            "description": "Solo los clientes en esta etapa del bot"
+            "description": "Solo los clientes con esta última etapa enviada"
           },
           {
             "name": "no_contactar",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "boolean"
+              "type": "string",
+              "enum": [
+                "false",
+                "true",
+                "todos"
+              ],
+              "default": "false"
             },
-            "description": "Mandá false para traer solo los que se pueden contactar",
-            "example": false
+            "description": "false (por defecto) = los que se pueden contactar; true = solo los que pidieron no; todos = todos"
           },
           {
             "name": "page",
@@ -120,7 +135,7 @@
                 "1"
               ]
             },
-            "description": "Saltea la caché de 5 minutos"
+            "description": "Saltea la caché de 5 minutos de las compras"
           }
         ],
         "responses": {
@@ -132,8 +147,7 @@
                   "type": "object",
                   "required": [
                     "success",
-                    "data",
-                    "pagination"
+                    "data"
                   ],
                   "properties": {
                     "success": {
@@ -143,11 +157,14 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/ClienteNuevo"
+                        "$ref": "#/components/schemas/Cliente"
                       }
                     },
                     "pagination": {
                       "$ref": "#/components/schemas/Paginacion"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
                     }
                   }
                 },
@@ -155,36 +172,52 @@
                   "success": true,
                   "data": [
                     {
-                      "id": 123,
-                      "nombre": "Kiosco Don Pepe",
+                      "id": 1596,
+                      "nombre": "Tik Tok VT BELGRANO 599",
                       "contacto": "José Pérez",
-                      "telefono": "+5492477000000",
+                      "telefono": "+5493462262222",
                       "ciudad": "Pergamino",
-                      "rubro": "Librería",
+                      "rubro": "Tecnología",
+                      "categorias_compradas": [
+                        {
+                          "rubro": "Tecnología",
+                          "monto": 82070.24,
+                          "porcentaje": 100
+                        }
+                      ],
                       "no_contactar": false,
+                      "no_contactar_at": null,
                       "fecha_primera_compra": "2026-10-10",
-                      "cantidad_compras": 2,
+                      "dias_desde_compra": 12,
+                      "toca_hoy": "dia_7",
+                      "puede_enviar_ahora": true,
+                      "cantidad_compras": 1,
                       "compras": [
                         {
-                          "id": "pos-555",
-                          "referencia": "Pedido 00012-003-0004",
-                          "fecha": "2026-10-10T16:20:00-03:00",
-                          "monto": 45000,
+                          "id": "pos-2247",
+                          "referencia": "2618-1-000055",
+                          "fecha": "2026-10-10T17:48:59-03:00",
+                          "monto": 82070.25,
                           "estado": "pagado",
+                          "vendedor": "Mariano Menendez",
+                          "formas_pago": [
+                            "Efectivo"
+                          ],
                           "productos": [
                             {
-                              "id": 10,
-                              "nombre": "Producto X",
-                              "cantidad": 3,
-                              "precio": 15000
+                              "id": 65733,
+                              "nombre": "Cargador Ultra Rapido 150W QC/PD Art.HY87",
+                              "cantidad": 4,
+                              "precio": 8376.16
                             }
                           ]
                         }
                       ],
                       "seguimiento": {
-                        "etapa": "dia_7",
-                        "ultimo_contacto": "2026-10-17T10:00:00-03:00",
-                        "proxima_accion": "2026-10-25"
+                        "etapa": "dia_1",
+                        "ultimo_contacto": "2026-10-11T10:00:00-03:00",
+                        "proxima_accion": "2026-10-17",
+                        "actualizado": "2026-10-11T10:00:01-03:00"
                       }
                     }
                   ],
@@ -193,6 +226,12 @@
                     "limit": 20,
                     "total": 1,
                     "pages": 1
+                  },
+                  "meta": {
+                    "hoy": "2026-10-22",
+                    "ahora": "2026-10-22T10:15:00-03:00",
+                    "ventana_envio": "lunes a viernes de 9 a 18 (hora de Argentina)",
+                    "ventana_abierta": true
                   }
                 }
               }
@@ -217,13 +256,138 @@
       }
     },
     "/clientes/{id}": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "obtenerCliente",
+        "summary": "Ficha del cliente en vivo, sin caché",
+        "description": "Leé esto justo antes de mandar un mensaje: no_contactar, etapa y toca_hoy al momento, con toda la historia de compras. Un cliente sin compras viene con `compras: []` y `toca_hoy: null`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Cliente"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1596,
+                    "nombre": "Tik Tok VT BELGRANO 599",
+                    "contacto": "José Pérez",
+                    "telefono": "+5493462262222",
+                    "ciudad": "Pergamino",
+                    "rubro": "Tecnología",
+                    "categorias_compradas": [
+                      {
+                        "rubro": "Tecnología",
+                        "monto": 82070.24,
+                        "porcentaje": 100
+                      }
+                    ],
+                    "no_contactar": false,
+                    "no_contactar_at": null,
+                    "fecha_primera_compra": "2026-10-10",
+                    "dias_desde_compra": 12,
+                    "toca_hoy": "dia_7",
+                    "puede_enviar_ahora": true,
+                    "cantidad_compras": 1,
+                    "compras": [
+                      {
+                        "id": "pos-2247",
+                        "referencia": "2618-1-000055",
+                        "fecha": "2026-10-10T17:48:59-03:00",
+                        "monto": 82070.25,
+                        "estado": "pagado",
+                        "vendedor": "Mariano Menendez",
+                        "formas_pago": [
+                          "Efectivo"
+                        ],
+                        "productos": [
+                          {
+                            "id": 65733,
+                            "nombre": "Cargador Ultra Rapido 150W QC/PD Art.HY87",
+                            "cantidad": 4,
+                            "precio": 8376.16
+                          }
+                        ]
+                      }
+                    ],
+                    "seguimiento": {
+                      "etapa": "dia_1",
+                      "ultimo_contacto": "2026-10-11T10:00:00-03:00",
+                      "proxima_accion": "2026-10-17",
+                      "actualizado": "2026-10-11T10:00:01-03:00"
+                    }
+                  },
+                  "meta": {
+                    "hoy": "2026-10-22",
+                    "ahora": "2026-10-22T10:15:00-03:00",
+                    "ventana_envio": "lunes a viernes de 9 a 18 (hora de Argentina)",
+                    "ventana_abierta": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
       "patch": {
         "tags": [
           "Clientes"
         ],
         "operationId": "actualizarCliente",
         "summary": "Marcar no contactar o guardar el nombre del contacto",
-        "description": "Tiene que venir al menos un campo. Si `no_contactar` pasa a true, la etapa queda en `finalizado` y se deja una nota en la ficha del cliente para el equipo. Desmarcarlo no cambia la etapa.",
+        "description": "Tiene que venir al menos un campo. Con `no_contactar: true` la etapa queda en `finalizado`, se borra la próxima acción y se deja una nota en la ficha del cliente para el equipo. **El agente no puede desmarcarlo** (`no_contactar: false` sobre un cliente marcado → 409).",
         "parameters": [
           {
             "name": "id",
@@ -267,21 +431,23 @@
                       "example": true
                     },
                     "data": {
-                      "$ref": "#/components/schemas/ClienteActualizado"
+                      "$ref": "#/components/schemas/ClienteEstado"
                     }
                   }
                 },
                 "example": {
                   "success": true,
                   "data": {
-                    "id": 123,
-                    "nombre": "Kiosco Don Pepe",
+                    "id": 1596,
+                    "nombre": "Tik Tok VT BELGRANO 599",
                     "contacto": "José Pérez",
                     "no_contactar": true,
+                    "no_contactar_at": "2026-10-22T10:30:00-03:00",
                     "seguimiento": {
                       "etapa": "finalizado",
-                      "ultimo_contacto": "2026-10-17T10:00:00-03:00",
-                      "proxima_accion": "2026-10-25"
+                      "ultimo_contacto": "2026-10-11T10:00:00-03:00",
+                      "proxima_accion": null,
+                      "actualizado": "2026-10-11T10:00:01-03:00"
                     }
                   }
                 }
@@ -293,6 +459,128 @@
           },
           "404": {
             "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}/envios": {
+      "post": {
+        "tags": [
+          "Envíos"
+        ],
+        "operationId": "registrarEnvio",
+        "summary": "Registrar el mensaje de una etapa de la cadencia",
+        "description": "En una sola operación: chequea el horario, no contactar y que la etapa sea la que toca hoy; guarda el mensaje, avanza la etapa, actualiza el último contacto y calcula la próxima acción. Mandá un `id_externo` único por envío (por ejemplo `grok-<cliente>-<etapa>`): si reintentás con el mismo, devuelve lo ya guardado con **200** y `repetido: true`. Cada etapa se registra una sola vez por cliente. 409 si: fuera de horario, no contactar, la etapa no es la que toca hoy o ya se envió.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvioNuevo"
+              },
+              "example": {
+                "etapa": "dia_7",
+                "mensaje": "¡Hola José! ¿Cómo te fue con los cargadores?",
+                "id_externo": "grok-1596-dia_7"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reintento con el mismo id_externo: devuelve lo ya registrado (repetido: true)"
+          },
+          "201": {
+            "description": "Registrado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/EnvioRegistrado"
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "envio": {
+                      "id": 8,
+                      "cliente_id": 1596,
+                      "fecha": "2026-10-22T10:15:00-03:00",
+                      "tipo": "enviado",
+                      "etapa": "dia_7",
+                      "envio_de_etapa": true,
+                      "mensaje": "¡Hola José! ¿Cómo te fue con los cargadores?",
+                      "id_externo": "grok-1596-dia_7"
+                    },
+                    "cliente": {
+                      "id": 1596,
+                      "nombre": "Tik Tok VT BELGRANO 599",
+                      "contacto": "José Pérez",
+                      "no_contactar": false,
+                      "no_contactar_at": null,
+                      "seguimiento": {
+                        "etapa": "dia_7",
+                        "ultimo_contacto": "2026-10-11T10:00:00-03:00",
+                        "proxima_accion": "2026-10-25",
+                        "actualizado": "2026-10-11T10:00:01-03:00"
+                      }
+                    }
+                  },
+                  "repetido": false
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
           },
           "422": {
             "$ref": "#/components/responses/Validacion"
@@ -315,8 +603,8 @@
           "Clientes"
         ],
         "operationId": "actualizarSeguimiento",
-        "summary": "Actualizar etapa, último contacto o próxima acción",
-        "description": "Solo cambia los campos que mandás; tiene que venir al menos uno. `ultimo_contacto` no puede ser futuro (hay 5 minutos de margen). `ultimo_contacto` y `proxima_accion` aceptan null para borrarlos.",
+        "summary": "Corregir a mano la etapa o la próxima acción",
+        "description": "Para casos fuera de la cadencia (por ejemplo, cerrar la cadencia con `finalizado`). Para registrar un mensaje usá `POST envios`. Reglas (409 si no se cumplen): la etapa solo avanza; de `finalizado` no se sale; con no contactar solo vale `finalizado`; un cliente finalizado no lleva próxima acción. `ultimo_contacto` nunca retrocede: se guarda el más nuevo.",
         "parameters": [
           {
             "name": "id",
@@ -338,9 +626,7 @@
                 "$ref": "#/components/schemas/SeguimientoPatch"
               },
               "example": {
-                "etapa": "dia_7",
-                "ultimo_contacto": "2026-10-17T10:00:00-03:00",
-                "proxima_accion": "2026-10-25"
+                "etapa": "finalizado"
               }
             }
           }
@@ -362,21 +648,24 @@
                       "example": true
                     },
                     "data": {
-                      "$ref": "#/components/schemas/SeguimientoCompleto"
+                      "$ref": "#/components/schemas/ClienteEstado"
                     }
                   }
                 },
                 "example": {
                   "success": true,
                   "data": {
-                    "id": 123,
-                    "etapa": "dia_7",
-                    "ultimo_contacto": "2026-10-17T10:00:00-03:00",
-                    "proxima_accion": "2026-10-25",
+                    "id": 1596,
+                    "nombre": "Tik Tok VT BELGRANO 599",
+                    "contacto": "José Pérez",
                     "no_contactar": false,
                     "no_contactar_at": null,
-                    "contacto": "José Pérez",
-                    "actualizado": "2026-10-17T10:00:05-03:00"
+                    "seguimiento": {
+                      "etapa": "finalizado",
+                      "ultimo_contacto": "2026-10-11T10:00:00-03:00",
+                      "proxima_accion": null,
+                      "actualizado": "2026-10-11T10:00:01-03:00"
+                    }
                   }
                 }
               }
@@ -387,6 +676,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
           },
           "422": {
             "$ref": "#/components/responses/Validacion"
@@ -406,11 +698,11 @@
     "/clientes/{id}/interacciones": {
       "post": {
         "tags": [
-          "Interacciones"
+          "Envíos"
         ],
         "operationId": "registrarInteraccion",
-        "summary": "Registrar un mensaje enviado o recibido",
-        "description": "Un `enviado` actualiza `ultimo_contacto` del seguimiento (si es más nuevo que el que había). Un `enviado` a un cliente con `no_contactar` → 409; los `recibido` se guardan igual.",
+        "summary": "Registrar un mensaje de la conversación",
+        "description": "Los mensajes que te manda el cliente (`recibido`) y lo que le contestás fuera de la cadencia (`enviado`). Un `enviado` a un cliente con no contactar → 409; los `recibido` se guardan igual. Con `id_externo` (por ejemplo el id del mensaje de WhatsApp) un reintento no se duplica: devuelve 200 y `repetido: true`.",
         "parameters": [
           {
             "name": "id",
@@ -432,11 +724,9 @@
                 "$ref": "#/components/schemas/InteraccionNueva"
               },
               "example": {
-                "fecha": "2026-10-17T10:00:00-03:00",
-                "tipo": "enviado",
-                "etapa": "dia_7",
-                "mensaje": "Hola José, ¿qué tal te fue con...?",
-                "respuesta": null
+                "tipo": "recibido",
+                "mensaje": "Bien, gracias. ¿Tenés pilas AA?",
+                "id_externo": "wa-3EB0C1"
               }
             }
           }
@@ -459,20 +749,25 @@
                     },
                     "data": {
                       "$ref": "#/components/schemas/Interaccion"
+                    },
+                    "repetido": {
+                      "type": "boolean"
                     }
                   }
                 },
                 "example": {
                   "success": true,
                   "data": {
-                    "id": 1,
-                    "cliente_id": 123,
-                    "fecha": "2026-10-17T10:00:00-03:00",
-                    "tipo": "enviado",
-                    "etapa": "dia_7",
-                    "mensaje": "Hola José, ¿qué tal te fue con...?",
-                    "respuesta": null
-                  }
+                    "id": 7,
+                    "cliente_id": 1596,
+                    "fecha": "2026-10-22T10:20:00-03:00",
+                    "tipo": "recibido",
+                    "etapa": null,
+                    "envio_de_etapa": false,
+                    "mensaje": "Bien, gracias. ¿Tenés pilas AA?",
+                    "id_externo": "wa-3EB0C1"
+                  },
+                  "repetido": false
                 }
               }
             }
@@ -484,7 +779,7 @@
             "$ref": "#/components/responses/NoEncontrado"
           },
           "409": {
-            "$ref": "#/components/responses/NoContactar"
+            "$ref": "#/components/responses/Conflicto"
           },
           "422": {
             "$ref": "#/components/responses/Validacion"
@@ -502,11 +797,11 @@
       },
       "get": {
         "tags": [
-          "Interacciones"
+          "Envíos"
         ],
         "operationId": "listarInteracciones",
         "summary": "Historial de mensajes del cliente",
-        "description": "De la más nueva a la más vieja.",
+        "description": "De la más nueva a la más vieja; a igual fecha, la última registrada primero.",
         "parameters": [
           {
             "name": "id",
@@ -552,8 +847,7 @@
                   "type": "object",
                   "required": [
                     "success",
-                    "data",
-                    "pagination"
+                    "data"
                   ],
                   "properties": {
                     "success": {
@@ -575,13 +869,14 @@
                   "success": true,
                   "data": [
                     {
-                      "id": 1,
-                      "cliente_id": 123,
-                      "fecha": "2026-10-17T10:00:00-03:00",
+                      "id": 8,
+                      "cliente_id": 1596,
+                      "fecha": "2026-10-22T10:15:00-03:00",
                       "tipo": "enviado",
                       "etapa": "dia_7",
-                      "mensaje": "Hola José, ¿qué tal te fue con...?",
-                      "respuesta": null
+                      "envio_de_etapa": true,
+                      "mensaje": "¡Hola José! ¿Cómo te fue con los cargadores?",
+                      "id_externo": "grok-1596-dia_7"
                     }
                   ],
                   "pagination": {
@@ -622,7 +917,7 @@
         ],
         "operationId": "listarProductos",
         "summary": "Productos de Neggo para recomendar",
-        "description": "Productos de Neggo con precio de venta. Neggo no lleva stock en Odoo: un producto agotado se archiva. Por eso `stock: true` quiere decir disponible (activo y no archivado). Sin el parámetro vienen solo los disponibles; `stock=false` trae los agotados. `rubro` acepta el mismo valor que viene en el cliente e ignora tildes y \"de\" (\"Tecnologia\" = \"Tecnología\"). Orden: con stock primero, después por nombre.",
+        "description": "Precio final con IVA incluido. Neggo no lleva stock en Odoo: un producto agotado se archiva, así que `stock: true` quiere decir disponible. Sin el parámetro vienen solo los disponibles; `stock=false` trae los agotados. Orden por defecto: los más vendidos de los últimos 90 días primero. `rubro` acepta el `rubro` del cliente o uno de sus `categorias_compradas` (ignora tildes y \"de\"). `excluir_compras_de` saca lo que ese cliente ya compró.",
         "parameters": [
           {
             "name": "rubro",
@@ -631,8 +926,8 @@
             "schema": {
               "type": "string"
             },
-            "description": "Rubro, tal cual viene en el cliente",
-            "example": "Librería"
+            "description": "Rubro",
+            "example": "Tecnología"
           },
           {
             "name": "stock",
@@ -653,7 +948,42 @@
               "maxLength": 100
             },
             "description": "Búsqueda por nombre",
-            "example": "cargador"
+            "example": "pilas"
+          },
+          {
+            "name": "orden",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "vendidos",
+                "nombre"
+              ],
+              "default": "vendidos"
+            },
+            "description": "vendidos = más vendidos de los últimos 90 días primero"
+          },
+          {
+            "name": "excluir_compras_de",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID de un cliente: saca los productos que ya compró",
+            "example": 1596
+          },
+          {
+            "name": "solo_publicados",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = solo los publicados en la tienda (con url e imagen)",
+            "example": true
           },
           {
             "name": "page",
@@ -688,8 +1018,7 @@
                   "type": "object",
                   "required": [
                     "success",
-                    "data",
-                    "pagination"
+                    "data"
                   ],
                   "properties": {
                     "success": {
@@ -711,14 +1040,16 @@
                   "success": true,
                   "data": [
                     {
-                      "id": 32400,
-                      "nombre": "Auricular inalámbrico c/pantalla JK-604",
-                      "precio": 5474,
+                      "product_id": 12473,
+                      "template_id": 17688,
+                      "nombre": "Pilas AA",
+                      "precio": 215,
                       "rubro": "Tecnología",
-                      "categoria": "Tecnología",
+                      "categoria": "Tecnologia",
                       "stock": true,
-                      "url": "https://neggo.odoo.com/shop/itm10-auricular-inalambrico-c-pantalla-jk-604-33275",
-                      "imagen": "https://neggo.odoo.com/web/image/product.template/33275/image_512"
+                      "vendidos_90d": 1232,
+                      "url": "https://neggo.odoo.com/shop/pilas-aa-17688",
+                      "imagen": "https://neggo.odoo.com/web/image/product.template/17688/image_512"
                     }
                   ],
                   "pagination": {
@@ -734,11 +1065,17 @@
           "401": {
             "$ref": "#/components/responses/NoAutorizado"
           },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
           "422": {
             "$ref": "#/components/responses/Validacion"
           },
           "500": {
             "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
           },
           "503": {
             "$ref": "#/components/responses/Deshabilitada"
@@ -764,7 +1101,7 @@
               "example": {
                 "tipo": "falta",
                 "endpoint": "/productos",
-                "mensaje": "Me sirve tener el stock real por producto"
+                "mensaje": "Me sirve el precio por bulto"
               }
             }
           }
@@ -796,7 +1133,7 @@
                     "id": 1,
                     "tipo": "falta",
                     "endpoint": "/productos",
-                    "mensaje": "Me sirve tener el stock real por producto",
+                    "mensaje": "Me sirve el precio por bulto",
                     "fecha": "2026-10-22T10:30:00-03:00"
                   }
                 }
@@ -857,8 +1194,7 @@
                   "type": "object",
                   "required": [
                     "success",
-                    "data",
-                    "pagination"
+                    "data"
                   ],
                   "properties": {
                     "success": {
@@ -883,7 +1219,7 @@
                       "id": 1,
                       "tipo": "falta",
                       "endpoint": "/productos",
-                      "mensaje": "Me sirve tener el stock real por producto",
+                      "mensaje": "Me sirve el precio por bulto",
                       "fecha": "2026-10-22T10:30:00-03:00"
                     }
                   ],
@@ -965,7 +1301,7 @@
           "dia_15",
           "finalizado"
         ],
-        "description": "Etapa de la cadencia del bot. Sin registro = pendiente."
+        "description": "Última etapa enviada. pendiente = nada todavía; finalizado = cadencia cerrada."
       },
       "Paginacion": {
         "type": "object",
@@ -986,11 +1322,35 @@
           },
           "total": {
             "type": "integer",
-            "example": 16
+            "example": 19
           },
           "pages": {
             "type": "integer",
             "example": 1
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "properties": {
+          "hoy": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-25",
+            "description": "Fecha de hoy en Argentina"
+          },
+          "ahora": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00"
+          },
+          "ventana_envio": {
+            "type": "string",
+            "example": "lunes a viernes de 9 a 18 (hora de Argentina)"
+          },
+          "ventana_abierta": {
+            "type": "boolean",
+            "description": "true si ahora se pueden registrar envíos"
           }
         }
       },
@@ -1005,17 +1365,18 @@
         "properties": {
           "id": {
             "type": "integer",
-            "description": "product.product de Odoo"
+            "description": "product.product de Odoo (el mismo que product_id en /productos)"
           },
           "nombre": {
-            "type": "string"
+            "type": "string",
+            "description": "Sin el código interno"
           },
           "cantidad": {
             "type": "number"
           },
           "precio": {
             "type": "number",
-            "description": "Precio unitario con impuestos, 2 decimales"
+            "description": "Precio unitario final (con IVA), 2 decimales"
           }
         }
       },
@@ -1027,6 +1388,8 @@
           "fecha",
           "monto",
           "estado",
+          "vendedor",
+          "formas_pago",
           "productos"
         ],
         "properties": {
@@ -1047,7 +1410,7 @@
           },
           "monto": {
             "type": "number",
-            "description": "Total cobrado con impuestos (suma de los tickets)"
+            "description": "Total cobrado, con IVA (suma de los tickets)"
           },
           "estado": {
             "type": "string",
@@ -1056,6 +1419,20 @@
               "facturado"
             ],
             "description": "En una compra agrupada, el del último ticket"
+          },
+          "vendedor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Quién cobró el primer ticket"
+          },
+          "formas_pago": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Efectivo"
+            ]
           },
           "productos": {
             "type": "array",
@@ -1071,7 +1448,8 @@
         "required": [
           "etapa",
           "ultimo_contacto",
-          "proxima_accion"
+          "proxima_accion",
+          "actualizado"
         ],
         "properties": {
           "etapa": {
@@ -1081,17 +1459,40 @@
             "type": "string",
             "format": "date-time",
             "example": "2026-10-17T10:00:00-03:00",
-            "nullable": true
+            "nullable": true,
+            "description": "Último mensaje enviado"
           },
           "proxima_accion": {
             "type": "string",
             "format": "date",
             "example": "2026-10-25",
+            "nullable": true,
+            "description": "Desde cuándo se puede mandar el próximo mensaje de la cadencia"
+          },
+          "actualizado": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
             "nullable": true
           }
         }
       },
-      "ClienteNuevo": {
+      "CategoriaComprada": {
+        "type": "object",
+        "properties": {
+          "rubro": {
+            "type": "string"
+          },
+          "monto": {
+            "type": "number"
+          },
+          "porcentaje": {
+            "type": "integer",
+            "description": "% del monto en productos"
+          }
+        }
+      },
+      "Cliente": {
         "type": "object",
         "required": [
           "id",
@@ -1100,8 +1501,13 @@
           "telefono",
           "ciudad",
           "rubro",
+          "categorias_compradas",
           "no_contactar",
+          "no_contactar_at",
           "fecha_primera_compra",
+          "dias_desde_compra",
+          "toca_hoy",
+          "puede_enviar_ahora",
           "cantidad_compras",
           "compras",
           "seguimiento"
@@ -1118,30 +1524,64 @@
           "contacto": {
             "type": "string",
             "nullable": true,
-            "description": "Nombre de la persona: el que guardó el agente o, si no hay, el primer contacto del cliente en Odoo"
+            "description": "Nombre de la persona: el que guardaste vos o, si no hay, el primer contacto del cliente en Odoo. null = saludá sin nombre"
           },
           "telefono": {
             "type": "string",
             "nullable": true,
-            "description": "Celular argentino +549…; null si el número no es válido",
+            "description": "Celular argentino +549…; null si el número de Odoo no es válido (no le escribas)",
             "example": "+5492477000000"
           },
           "ciudad": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Ciudad del cliente en Odoo (no necesariamente la de entrega)"
           },
           "rubro": {
             "type": "string",
             "nullable": true,
-            "description": "Categoría en la que más compró. Sirve tal cual para GET /productos?rubro="
+            "description": "Rubro del módulo comercial de Neggo: la categoría en la que más compró (últimos 12 meses). Es lo que compra, no necesariamente el tipo de comercio: mirá categorias_compradas para ver si es un solo rubro o varios. Sirve tal cual para GET /productos?rubro="
+          },
+          "categorias_compradas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoriaComprada"
+            },
+            "description": "Lo que compró, por rubro, de mayor a menor monto"
           },
           "no_contactar": {
             "type": "boolean"
           },
+          "no_contactar_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "nullable": true
+          },
           "fecha_primera_compra": {
             "type": "string",
             "format": "date",
-            "example": "2026-10-25"
+            "example": "2026-10-25",
+            "nullable": true
+          },
+          "dias_desde_compra": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Días desde la primera compra (0 = compró hoy)"
+          },
+          "toca_hoy": {
+            "type": "string",
+            "enum": [
+              "dia_1",
+              "dia_7",
+              "dia_15"
+            ],
+            "nullable": true,
+            "description": "El mensaje de la cadencia que le toca hoy, o null"
+          },
+          "puede_enviar_ahora": {
+            "type": "boolean",
+            "description": "toca_hoy no es null, tiene teléfono y estamos en horario"
           },
           "cantidad_compras": {
             "type": "integer"
@@ -1158,81 +1598,9 @@
           }
         }
       },
-      "SeguimientoPatch": {
+      "ClienteEstado": {
         "type": "object",
-        "additionalProperties": false,
-        "minProperties": 1,
-        "properties": {
-          "etapa": {
-            "$ref": "#/components/schemas/Etapa"
-          },
-          "ultimo_contacto": {
-            "type": "string",
-            "format": "date-time",
-            "example": "2026-10-17T10:00:00-03:00",
-            "nullable": true,
-            "description": "ISO 8601 (fecha o datetime); no futuro"
-          },
-          "proxima_accion": {
-            "type": "string",
-            "format": "date",
-            "example": "2026-10-25",
-            "nullable": true
-          }
-        }
-      },
-      "SeguimientoCompleto": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Seguimiento"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "no_contactar": {
-                "type": "boolean"
-              },
-              "no_contactar_at": {
-                "type": "string",
-                "format": "date-time",
-                "example": "2026-10-17T10:00:00-03:00",
-                "nullable": true
-              },
-              "contacto": {
-                "type": "string",
-                "nullable": true
-              },
-              "actualizado": {
-                "type": "string",
-                "format": "date-time",
-                "example": "2026-10-17T10:00:00-03:00",
-                "nullable": true
-              }
-            }
-          }
-        ]
-      },
-      "ClientePatch": {
-        "type": "object",
-        "additionalProperties": false,
-        "minProperties": 1,
-        "properties": {
-          "no_contactar": {
-            "type": "boolean"
-          },
-          "contacto": {
-            "type": "string",
-            "nullable": true,
-            "maxLength": 200,
-            "description": "Nombre de la persona con la que hablás; null o \"\" lo borra"
-          }
-        }
-      },
-      "ClienteActualizado": {
-        "type": "object",
+        "description": "Estado local del cliente (respuesta de los PATCH y de los envíos)",
         "properties": {
           "id": {
             "type": "integer"
@@ -1247,8 +1615,101 @@
           "no_contactar": {
             "type": "boolean"
           },
+          "no_contactar_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "nullable": true
+          },
           "seguimiento": {
             "$ref": "#/components/schemas/Seguimiento"
+          }
+        }
+      },
+      "SeguimientoPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "etapa": {
+            "$ref": "#/components/schemas/Etapa"
+          },
+          "ultimo_contacto": {
+            "type": "string",
+            "description": "Fecha o datetime ISO 8601; no futuro. Nunca retrocede",
+            "example": "2026-10-17T10:00:00-03:00"
+          },
+          "proxima_accion": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-10-25",
+            "nullable": true
+          }
+        }
+      },
+      "ClientePatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "no_contactar": {
+            "type": "boolean",
+            "description": "Solo se puede marcar (true); desmarcarlo lo hace el equipo"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 200,
+            "description": "Nombre de la persona con la que hablás; null o \"\" lo borra"
+          }
+        }
+      },
+      "EnvioNuevo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "etapa",
+          "mensaje",
+          "id_externo"
+        ],
+        "properties": {
+          "etapa": {
+            "type": "string",
+            "enum": [
+              "dia_1",
+              "dia_7",
+              "dia_15"
+            ],
+            "description": "Tiene que ser la de toca_hoy"
+          },
+          "mensaje": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "El texto que mandaste"
+          },
+          "id_externo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,100}$",
+            "description": "Único por envío; el mismo en los reintentos",
+            "example": "grok-1596-dia_7"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "description": "Cuándo lo mandaste. Por defecto, ahora. No futuro"
+          }
+        }
+      },
+      "EnvioRegistrado": {
+        "type": "object",
+        "properties": {
+          "envio": {
+            "$ref": "#/components/schemas/Interaccion"
+          },
+          "cliente": {
+            "$ref": "#/components/schemas/ClienteEstado"
           }
         }
       },
@@ -1260,12 +1721,6 @@
           "mensaje"
         ],
         "properties": {
-          "fecha": {
-            "type": "string",
-            "format": "date-time",
-            "example": "2026-10-17T10:00:00-03:00",
-            "description": "Por defecto, ahora. No futuro."
-          },
           "tipo": {
             "type": "string",
             "enum": [
@@ -1273,18 +1728,25 @@
               "recibido"
             ]
           },
-          "etapa": {
-            "$ref": "#/components/schemas/Etapa"
-          },
           "mensaje": {
             "type": "string",
             "minLength": 1,
             "maxLength": 4000
           },
-          "respuesta": {
+          "etapa": {
+            "$ref": "#/components/schemas/Etapa",
+            "description": "Opcional: en qué etapa de la conversación"
+          },
+          "id_externo": {
             "type": "string",
-            "nullable": true,
-            "maxLength": 4000
+            "pattern": "^[A-Za-z0-9._:-]{1,100}$",
+            "description": "Opcional, recomendado: id del mensaje de WhatsApp"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-17T10:00:00-03:00",
+            "description": "Por defecto, ahora. No futuro"
           }
         }
       },
@@ -1320,10 +1782,14 @@
             ],
             "nullable": true
           },
+          "envio_de_etapa": {
+            "type": "boolean",
+            "description": "true = mensaje de la cadencia (POST envios)"
+          },
           "mensaje": {
             "type": "string"
           },
-          "respuesta": {
+          "id_externo": {
             "type": "string",
             "nullable": true
           }
@@ -1332,30 +1798,39 @@
       "Producto": {
         "type": "object",
         "required": [
-          "id",
+          "product_id",
+          "template_id",
           "nombre",
           "precio",
           "rubro",
           "categoria",
           "stock",
+          "vendidos_90d",
           "url",
           "imagen"
         ],
         "properties": {
-          "id": {
+          "product_id": {
             "type": "integer",
-            "description": "product.product de Odoo"
+            "description": "product.product de Odoo: el mismo id que ProductoComprado.id"
+          },
+          "template_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "product.template de Odoo: el que usan url e imagen"
           },
           "nombre": {
-            "type": "string"
+            "type": "string",
+            "description": "Sin el código interno"
           },
           "precio": {
             "type": "number",
-            "description": "Precio de venta de Odoo"
+            "description": "Precio final, con IVA"
           },
           "rubro": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Rubro normalizado (sin duplicados de tildes)"
           },
           "categoria": {
             "type": "string",
@@ -1364,7 +1839,11 @@
           },
           "stock": {
             "type": "boolean",
-            "description": "true = disponible (no archivado)"
+            "description": "true = disponible (no archivado). No es stock real"
+          },
+          "vendidos_90d": {
+            "type": "number",
+            "description": "Unidades vendidas en los últimos 90 días"
           },
           "url": {
             "type": "string",
@@ -1544,8 +2023,8 @@
           }
         }
       },
-      "NoContactar": {
-        "description": "El cliente pidió no recibir mensajes",
+      "Conflicto": {
+        "description": "La operación no corresponde: no contactar, fuera de horario, la etapa no es la que toca, ya se envió, o un cambio de etapa no permitido",
         "content": {
           "application/json": {
             "schema": {
