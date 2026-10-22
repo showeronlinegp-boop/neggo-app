@@ -2,7 +2,7 @@
 // node backend/services/crmFollowup.test.js
 
 const assert = require('assert');
-const { shouldWin, toTarget, parseImportance, FollowupError, STAGES, MANUAL_STAGES, IMPORTANCE_MAX } = require('./crmFollowupService');
+const { shouldWin, toTarget, parseImportance, parsePartnerIds, FollowupError, STAGES, MANUAL_STAGES, IMPORTANCE_MAX } = require('./crmFollowupService');
 
 function testShouldWin() {
     // Pasó a Caliente el 20/10 a las 15 h (hora AR = 18 h UTC)
@@ -43,8 +43,18 @@ function testImportancia() {
     }
 }
 
+function testVariosClientes() {
+    // Marcar varios juntos (nota #75): ids enteros, sin repetir, al menos uno
+    assert.deepStrictEqual(parsePartnerIds([3, '3', 7]), [3, 7]);
+    for (const mala of [[], null, 'x', [0], [-2], [1.5], ['abc']]) {
+        assert.throws(() => parsePartnerIds(mala), FollowupError);
+    }
+    assert.throws(() => parsePartnerIds(Array.from({ length: 501 }, (_, i) => i + 1)), FollowupError);
+}
+
 testShouldWin();
 testToTarget();
 testEtapas();
 testImportancia();
+testVariosClientes();
 console.log('ok crmFollowup.test.js');

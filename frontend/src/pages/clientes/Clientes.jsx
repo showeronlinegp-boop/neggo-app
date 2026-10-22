@@ -236,6 +236,40 @@ function BotonCercano({ c, onToggle, modo, t }) {
     );
 }
 
+// En modo "Elegir varios" la estrella cede su lugar a una casilla
+function CasillaElegir({ c, elegido, onToggle, modo, t }) {
+    const isMobile = modo === 'tarjeta';
+    return (
+        <label title={elegido ? 'Quitar de los elegidos' : 'Elegir'}
+            style={{
+                width: 40, flexShrink: 0, boxSizing: 'border-box', borderTop: `1px solid ${t.color.border}`, cursor: 'pointer',
+                padding: isMobile ? '14px 0 0 8px' : '0 0 0 8px',
+                display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center',
+            }}>
+            <input type="checkbox" checked={elegido} onChange={() => onToggle(c)} aria-label={`Elegir a ${c.partner_name}`}
+                style={{ width: 18, height: 18, margin: 0, cursor: 'pointer', accentColor: t.color.primary }} />
+        </label>
+    );
+}
+
+// Encabezado de columna que ordena la lista; tocarlo de nuevo vuelve a la prioridad para llamar
+function Encabezado({ children, valor, sort, onSort, align = 'left', title, t }) {
+    const activo = sort === valor;
+    return (
+        <button type="button" onClick={() => onSort(activo ? 'prioridad' : valor)} aria-pressed={activo}
+            title={title ? `${title}. Tocá para ordenar` : 'Tocá para ordenar'}
+            style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: align === 'right' ? 'end' : 'start',
+                padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: t.font.family,
+                fontSize: 'inherit', fontWeight: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit',
+                color: activo ? t.color.primary : 'inherit', textAlign: align,
+            }}>
+            {children}
+            {activo && <Icon.ChevronDown size={12} />}
+        </button>
+    );
+}
+
 function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
     const meta = HEALTH_META[valor];
     const tones = {
@@ -289,6 +323,10 @@ export default function Clientes() {
     const [soloAbiertas, setSoloAbiertas] = useState(false);
     const [soloCercanos, setSoloCercanos] = useState(false);
     const [sort, setSort] = useState('prioridad');
+    // Elegir varios clientes para ponerles la misma importancia (nota #75)
+    const [eligiendo, setEligiendo] = useState(false);
+    const [elegidos, setElegidos] = useState(() => new Set());
+    const [aplicando, setAplicando] = useState(false);
     const pollRef = useRef(null);
 
     // La tabla se arma según el ancho que tiene (cambia con la ventana y con el menú lateral)
@@ -329,6 +367,8 @@ export default function Clientes() {
         const res = await api.get('/clientes', filtros(0));
         setLoading(false);
         if (!res.success) { setError(res.error || 'No se pudo cargar la lista de clientes'); return; }
+        // Con otros filtros u otro orden, la elección arranca de cero: nada elegido fuera de la vista
+        setElegidos(new Set());
         setRows(res.data || []);
         setTotal(res.pagination?.total ?? (res.data || []).length);
     }, [filtros]);
@@ -421,6 +461,31 @@ export default function Clientes() {
             poner(antes);
             showToast(res.error || 'No se pudo cambiar la importancia', 'error');
         }
+    };
+
+    const toggleElegido = (c) => setElegidos((prev) => {
+        const sig = new Set(prev);
+        if (sig.has(c.odoo_partner_id)) sig.delete(c.odoo_partner_id); else sig.add(c.odoo_partner_id);
+        return sig;
+    });
+    const todosElegidos = rows.length > 0 && rows.every((r) => elegidos.has(r.odoo_partner_id));
+    const elegirTodos = () => setElegidos(todosElegidos ? new Set() : new Set(rows.map((r) => r.odoo_partner_id)));
+    const salirDeElegir = () => { setEligiendo(false); setElegidos(new Set()); };
+
+    // La misma importancia a todos los elegidos; la lista se actualiza sin recargar
+    const importanciaAElegidos = async (n) => {
+        const ids = [...elegidos];
+        if (!ids.length || aplicando) return;
+        setAplicando(true);
+        const res = await api.put('/clientes/importancia', { partner_ids: ids, importance: n });
+        setAplicando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo cambiar la importancia', 'error'); return; }
+        setRows((prev) => prev.map((r) => (elegidos.has(r.odoo_partner_id) ? { ...r, importance: n } : r)));
+        const cuantos = res.data?.updated ?? ids.length;
+        showToast(n
+            ? `Importancia ${n} para ${fmtInt(cuantos)} ${cuantos === 1 ? 'cliente' : 'clientes'}`
+            : `Sin importancia para ${fmtInt(cuantos)} ${cuantos === 1 ? 'cliente' : 'clientes'}`, 'success');
+        salirDeElegir();
     };
 
     // Lo que se cambia en la ficha (etapa, acciones) se ve en la lista al cerrarla
@@ -518,7 +583,41 @@ export default function Clientes() {
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>
                 )}
+                {!eligiendo && (
+                    <Button variant="secondary" size="sm" leftIcon={<Icon.Check size={14} />} onClick={() => setEligiendo(true)}
+                        title="Elegí varios clientes para ponerles la misma importancia">
+                        Elegir varios
+                    </Button>
+                )}
             </Card>
+
+            {eligiendo && (
+                <Card padding={false} style={{
+                    padding: '10px 14px', display: 'flex', gap: t.space[4], flexWrap: 'wrap', alignItems: 'center',
+                    marginBottom: t.space[4], border: `1px solid ${t.color.primary}`, background: t.color.primarySoft,
+                }}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer', ...t.numericStyle }}>
+                        <input type="checkbox" checked={todosElegidos} onChange={elegirTodos} disabled={!rows.length}
+                            style={{ width: 18, height: 18, margin: 0, cursor: 'pointer', accentColor: t.color.primary }} />
+                        <span>
+                            <strong>{fmtInt(elegidos.size)}</strong> {elegidos.size === 1 ? 'elegido' : 'elegidos'}
+                            <span style={{ color: t.color.textMuted }}> · {todosElegidos ? 'quitar todos' : `elegir los ${fmtInt(rows.length)} que se ven`}</span>
+                        </span>
+                    </label>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: t.space[3], fontSize: t.font.size.sm, color: elegidos.size ? t.color.text : t.color.textFaint }}>
+                        Ponerles importancia
+                        <Importancia value={0} size={isMobile ? 22 : 18} disabled={!elegidos.size || aplicando} onChange={importanciaAElegidos} />
+                        <Button variant="ghost" size="sm" disabled={!elegidos.size || aplicando} onClick={() => importanciaAElegidos(0)}>
+                            Sin importancia
+                        </Button>
+                    </div>
+                    <div style={{ marginLeft: 'auto' }}>
+                        <Button variant="secondary" size="sm" leftIcon={<Icon.X size={14} />} onClick={salirDeElegir}>
+                            Terminar
+                        </Button>
+                    </div>
+                </Card>
+            )}
 
             {error && (
                 <div role="alert" style={{
@@ -538,16 +637,16 @@ export default function Clientes() {
                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
                         textTransform: 'uppercase', letterSpacing: '0.04em',
                     }}>
-                        <span>Cliente</span>
+                        <Encabezado valor="nombre" sort={sort} onSort={setSort} t={t}>Cliente</Encabezado>
                         <span>Estado</span>
                         <span>Etapa</span>
-                        <span>Última compra</span>
-                        <span style={{ textAlign: 'right' }}>Compras</span>
+                        <Encabezado valor="ultima" sort={sort} onSort={setSort} title="Compra más reciente primero" t={t}>Última compra</Encabezado>
+                        <Encabezado valor="compras" sort={sort} onSort={setSort} align="right" title="Más compras primero" t={t}>Compras</Encabezado>
                         {modo === 'medio' ? (
-                            <span style={{ textAlign: 'right' }} title="Facturación de los últimos 12 meses y tendencia">12 meses</span>
+                            <Encabezado valor="facturacion" sort={sort} onSort={setSort} align="right" title="Facturación de los últimos 12 meses y tendencia" t={t}>12 meses</Encabezado>
                         ) : (
                             <>
-                                <span style={{ textAlign: 'right' }}>Últimos 12 meses</span>
+                                <Encabezado valor="facturacion" sort={sort} onSort={setSort} align="right" title="Más facturación de los últimos 12 meses primero" t={t}>Últimos 12 meses</Encabezado>
                                 <span style={{ textAlign: 'right' }}>Tendencia</span>
                             </>
                         )}
@@ -576,14 +675,19 @@ export default function Clientes() {
                         </div>
                     </div>
                 ) : (
-                    rows.map((c) => (
-                        <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch' }}>
-                            <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                                <FilaCliente c={c} onAbrir={setAbierto} onImportancia={cambiarImportancia} modo={modo} t={t} />
+                    rows.map((c) => {
+                        const elegido = elegidos.has(c.odoo_partner_id);
+                        return (
+                            <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch', background: elegido ? t.color.primarySoft : undefined }}>
+                                {eligiendo
+                                    ? <CasillaElegir c={c} elegido={elegido} onToggle={toggleElegido} modo={modo} t={t} />
+                                    : <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <FilaCliente c={c} onAbrir={eligiendo ? toggleElegido : setAbierto} onImportancia={cambiarImportancia} modo={modo} t={t} />
+                                </div>
                             </div>
-                        </div>
-                    ))
+                        );
+                    })
                 )}
 
                 {!loading && rows.length > 0 && (

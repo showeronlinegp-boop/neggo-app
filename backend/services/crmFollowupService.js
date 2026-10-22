@@ -164,6 +164,36 @@ async function setImportance(target, { importance, userId }) {
     return { importance: n };
 }
 
+// Tope de clientes por pedido al marcar varios juntos (la lista carga de a 50)
+const BULK_MAX = 500;
+
+/** Valida la lista de clientes elegidos: enteros positivos, sin repetir. */
+function parsePartnerIds(value) {
+    if (!Array.isArray(value) || !value.length) throw new FollowupError('Elegí al menos un cliente');
+    const ids = [...new Set(value.map((v) => Number(v)))];
+    if (ids.some((n) => !Number.isInteger(n) || n <= 0)) throw new FollowupError('Cliente inválido');
+    if (ids.length > BULK_MAX) throw new FollowupError(`Elegí hasta ${BULK_MAX} clientes por vez`);
+    return ids;
+}
+
+/** Pone la misma importancia a varios clientes de una vez (nota #75). Ignora los que no existen. */
+async function setImportanceMany(partnerIds, { importance, userId }) {
+    await ensureSchema();
+    const n = parseImportance(importance);
+    const ids = parsePartnerIds(partnerIds);
+    const { rowCount } = await pool.query(
+        `INSERT INTO crm_followups (odoo_partner_id, importance, importance_changed_at, importance_changed_by, stage_changed_at)
+         SELECT DISTINCT c.odoo_partner_id, $3::smallint, NOW(), $4::int, NULL::timestamp
+           FROM client_metrics_cache c
+          WHERE c.company = $1 AND c.odoo_partner_id = ANY($2::int[]) AND c.is_generic = false
+         ON CONFLICT (odoo_partner_id) DO UPDATE
+         SET importance = EXCLUDED.importance, importance_changed_at = NOW(),
+             importance_changed_by = EXCLUDED.importance_changed_by`,
+        [COMPANY, ids, n, userId]);
+    if (!rowCount) throw new FollowupError('No encontré esos clientes', 404);
+    return { importance: n, updated: rowCount };
+}
+
 /** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. */
 async function addEvent(target, { kind, text, userId }) {
     await ensureSchema();
@@ -345,11 +375,13 @@ module.exports = {
     IMPORTANCE_MAX,
     FollowupError,
     parseImportance,
+    parsePartnerIds,
     shouldWin,
     toTarget,
     getFollowup,
     setStage,
     setImportance,
+    setImportanceMany,
     addEvent,
     createAction,
     updateAction,

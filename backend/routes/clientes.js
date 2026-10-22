@@ -17,6 +17,7 @@
 // GET    /api/clientes/seguimiento/:tipo/:id           — etapa, acciones pendientes e historial
 // PUT    /api/clientes/seguimiento/:tipo/:id/etapa     — { stage, reason }
 // PUT    /api/clientes/seguimiento/:tipo/:id/importancia — { importance } de 0 a 5
+// PUT    /api/clientes/importancia                     — { partner_ids, importance }: varios clientes juntos
 // POST   /api/clientes/seguimiento/:tipo/:id/eventos   — { kind, text }
 // POST   /api/clientes/seguimiento/:tipo/:id/acciones  — { type, due_date, note }
 // PUT    /api/clientes/acciones/:actionId              — { type, due_date, note }
@@ -175,6 +176,15 @@ router.put('/seguimiento/:tipo/:id/importancia', ...auth, async (req, res) => {
         const target = followups.toTarget(req.params.tipo, req.params.id);
         const { importance } = req.body || {};
         return ok(res, await followups.setImportance(target, { importance, userId: req.user.id }));
+    } catch (err) {
+        return handle(res, err, 'No se pudo cambiar la importancia');
+    }
+});
+
+router.put('/importancia', ...auth, async (req, res) => {
+    try {
+        const { partner_ids: partnerIds, importance } = req.body || {};
+        return ok(res, await followups.setImportanceMany(partnerIds, { importance, userId: req.user.id }));
     } catch (err) {
         return handle(res, err, 'No se pudo cambiar la importancia');
     }
