@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('../config/database');
 
-const SCHEMA = ['042_clientes_crm.sql', '043_clientes_rubro.sql', '044_crm_seguimiento.sql']
+const SCHEMA = ['042_clientes_crm.sql', '043_clientes_rubro.sql', '044_crm_seguimiento.sql', '048_agente_bot.sql']
     .map((file) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', file), 'utf8'))
     .join('\n');
 

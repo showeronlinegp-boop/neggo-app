@@ -39,6 +39,9 @@ services:
       - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-neggo}
       - EVOLUTION_STATUS_INSTANCE=${EVOLUTION_STATUS_INSTANCE:-neggo-estados}
       - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
+      # API del agente (Grok Bot). Sin clave (o con menos de 32 caracteres) la API queda deshabilitada
+      - AGENTE_API_KEY=${AGENTE_API_KEY:-}
+      - WHATSAPP_SHOP_URL=${WHATSAPP_SHOP_URL:-}
     volumes:
       - ./volumes/storage:/app/storage
       # Carpeta compartida con db-backup: el botón de Admin deja el pedido acá y lee el estado

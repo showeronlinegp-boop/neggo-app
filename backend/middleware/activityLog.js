@@ -42,7 +42,8 @@ function activityLog(req, res, next) {
     res.on('finish', () => {
         // Solo loguear si hay usuario autenticado y no es un GET a listados
         // (para no llenar el log con cada consulta)
-        const shouldLog = req.user && (
+        // El agente (Grok Bot) no es un usuario: va con user_id NULL y actor 'agente'
+        const shouldLog = (req.user || req.agente) && (
             req.method !== 'GET' ||
             req.path.includes('/login') ||
             req.path.includes('/run')
@@ -58,13 +59,14 @@ function activityLog(req, res, next) {
             `INSERT INTO activity_log (user_id, module, action, entity_type, entity_id, metadata, ip_address)
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [
-                req.user.id,
-                getModule(req.path),
+                req.user ? req.user.id : null,
+                req.agente ? 'agente' : getModule(req.path),
                 req.method,
                 entity_type,
                 entity_id,
                 JSON.stringify({
                     path: req.path,
+                    ...(req.agente ? { actor: 'agente' } : {}),
                     status: res.statusCode,
                     duration_ms: duration
                 }),
