@@ -64,13 +64,29 @@ export function iniciales(nombre) {
     return (partes[0][0] + (partes[1]?.[0] || '')).toUpperCase();
 }
 
-// Link de WhatsApp a partir del teléfono de Odoo (asume Argentina si no trae código de país)
-export function linkWhatsApp(phone) {
+// Link de WhatsApp a partir del teléfono de Odoo (asume Argentina si no trae código de país).
+// Con texto, el chat se abre con el mensaje ya escrito.
+export function linkWhatsApp(phone, text) {
     let digits = String(phone || '').replace(/\D/g, '');
     if (!digits) return null;
     if (digits.startsWith('0')) digits = digits.slice(1);
     if (!digits.startsWith('54')) digits = `549${digits}`;
-    return `https://wa.me/${digits}`;
+    return `https://wa.me/${digits}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+}
+
+// Mensaje de presentación para los posibles clientes (nota #81). Saluda por el nombre si lo tiene.
+export function mensajePresentacion(nombre) {
+    const n = String(nombre || '').trim();
+    return [
+        n ? `Buenas ${n}, ¿todo bien?` : 'Buenas, ¿todo bien?',
+        'Soy Mariano de Neggo Mayorista, polirrubros de Pergamino. Te dejo nuestro contacto por si algún día precisás algo:',
+        'https://neggo.odoo.com',
+        'El mínimo de compra es $50.000.',
+        '',
+        'Nuestro horario comercial es:',
+        'Lunes a viernes: 9:00 a 18:00',
+        'Sábado: 9:00 a 14:00',
+    ].join('\n');
 }
 
 // ── Fase 2: seguimiento ─────────────────────────────────────────

@@ -208,6 +208,31 @@ async function addEvent(target, { kind, text, userId }) {
     return { ok: true };
 }
 
+/**
+ * Anota que se le mandó el mensaje de presentación por WhatsApp (nota #81).
+ * Si tenía una presentación programada, la da por hecha en vez de dejarla colgada.
+ */
+async function markPresentation(target, { userId }) {
+    await ensureSchema();
+    await assertTargetExists(target);
+    return withTransaction(async (db) => {
+        const { rows: pendientes } = await db.query(
+            `UPDATE crm_actions SET done = true, done_at = NOW(), done_by = $2
+             WHERE ${target.col} = $1 AND action_type = 'presentacion' AND done = false
+             RETURNING id, note, due_date::text AS due_date`,
+            [target.id, userId]);
+        const accion = pendientes[0];
+        await insertEvent(db, target, {
+            kind: 'presentacion',
+            meta: accion
+                ? { via: 'whatsapp', action_id: accion.id, planned: accion.note, due_date: accion.due_date }
+                : { via: 'whatsapp' },
+            userId,
+        });
+        return { ok: true, acciones_cerradas: pendientes.length };
+    });
+}
+
 /** Programa la próxima acción. */
 async function createAction(target, { type, dueDate, note, userId }) {
     await ensureSchema();
@@ -430,6 +455,7 @@ module.exports = {
     setImportance,
     setImportanceMany,
     addEvent,
+    markPresentation,
     createAction,
     updateAction,
     completeAction,
