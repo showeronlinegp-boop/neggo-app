@@ -194,6 +194,23 @@ export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) 
                                 </div>
                             )}
                         </Seccion>
+
+                        {(cliente.merged_partners || []).length > 1 && (
+                            <Seccion titulo="Fichas unificadas" t={t}>
+                                <div>
+                                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: t.space[2] }}>
+                                        En Odoo este cliente está cargado {cliente.merged_partners.length} veces. Acá se muestra como uno solo y se suman sus compras.
+                                    </div>
+                                    {cliente.merged_partners.map((p) => (
+                                        <Fila key={p.id} t={t}
+                                            izquierda={p.name}
+                                            abajo={<span style={{ fontFamily: t.font.mono }}>#{p.id}</span>}
+                                            derecha={`${fmtInt(p.tickets)} compra${p.tickets === 1 ? '' : 's'}`}
+                                        />
+                                    ))}
+                                </div>
+                            </Seccion>
+                        )}
                     </>
                 )}
             </div>
