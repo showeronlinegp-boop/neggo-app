@@ -1089,9 +1089,9 @@ router.post('/:ingresoId/items/:itemId/reactivate', authenticate, requireRole('a
             [itemId]
         );
 
-        // Actualizar cache de Odoo
+        // Actualizar cache de Odoo (y sacar la marca de archivado desde Reposición)
         await pool.query(
-            `UPDATE odoo_products_cache SET active = true WHERE odoo_id = $1 AND company = 'neggo'`,
+            `UPDATE odoo_products_cache SET active = true, locally_archived = false WHERE odoo_id = $1 AND company = 'neggo'`,
             [item.odoo_product_id]
         );
 
