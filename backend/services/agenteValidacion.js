@@ -127,7 +127,8 @@ function validarQueryProductos(query = {}) {
     const value = { ...pag.value };
     // rubro=Bazar,Tecnología: los 2 o 3 rubros que más compró el cliente
     if (query.rubro !== undefined && String(query.rubro).trim()) {
-        value.rubros = String(query.rubro).split(',').map((r) => r.trim()).filter(Boolean).slice(0, 5);
+        value.rubros = String(query.rubro).split(',').map((r) => r.trim()).filter(Boolean);
+        if (value.rubros.length > 5) errors.push({ campo: 'rubro', error: 'Hasta 5 rubros separados por coma' });
     }
     if (query.precio_min !== undefined && query.precio_min !== '') {
         const n = Number(query.precio_min);

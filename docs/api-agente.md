@@ -51,7 +51,14 @@ Así un mensaje no sale sin poder registrarse:
    - `cancelado` o `vencido`: no lo tiene que mandar.
 3. **Confirmar** con `POST /envios/{id_externo}/confirmar`. Guarda la hora del servidor, avanza la etapa y calcula la próxima acción. Se confirma aunque la reserva haya vencido o el cliente haya pedido no contactar en el medio: el mensaje salió y tiene que quedar registrado. Si el WhatsApp no salió, `POST /envios/{id_externo}/cancelar` libera la etapa.
 
-Todos los pasos se pueden reintentar con el mismo `id_externo`: devuelven lo ya hecho con `repetido: true` y no duplican nada. Un índice único impide tener dos reservas o envíos activos de la misma etapa.
+Todos los pasos se pueden reintentar con el mismo `id_externo` y el mismo contenido: devuelven lo ya hecho con `repetido: true` y no duplican nada. Un índice único impide tener dos reservas o envíos activos de la misma etapa.
+
+- Si se repite el `id_externo` con otro mensaje, otra etapa u otros productos, la API responde 409 `id_externo_distinto`.
+- Una reserva cancelada (409 `reserva_cancelada`) o vencida (409 `reserva_vencida`) no se reusa: hay que reservar con un `id_externo` nuevo.
+- Si el cliente pide no contactar mientras tiene una reserva activa, la reserva pasa a `cancelado` con `motivo_cancelacion: no_contactar` y el bot no la manda. Si ya la había mandado, se puede confirmar igual.
+- La ficha muestra `reserva_activa`, y mientras exista, `puede_enviar_ahora` es false.
+- Confirmar y cancelar responden 200; `repetido` dice si ya estaba hecho.
+- `AGENTE_RESERVA_SEGUNDOS` acorta el tiempo de la reserva para pruebas (por defecto, 600).
 
 `POST /clientes/{id}/interacciones` queda para la conversación: las respuestas del cliente (`recibido`) y lo que Grok contesta fuera de la cadencia. Acepta `id_externo` opcional para no duplicar.
 
@@ -71,7 +78,7 @@ Todos los pasos se pueden reintentar con el mismo `id_externo`: devuelven lo ya 
 - Quedan afuera "Consumidor Final", "RMA" y los tickets sin cliente. Preventas no cuenta.
 - **Rubro:** es el del **módulo comercial** (Clientes): la categoría en la que más compró en los últimos 12 meses. Si el cliente todavía no está en el cálculo diario (compró por primera vez hoy), se calcula con la misma regla. `categorias_compradas` muestra el reparto por rubro con porcentajes.
 - **Precios:** son el precio final, con IVA incluido.
-- **Productos:** se ordenan por facturación de los últimos 90 días (`orden=vendidos` ordena por unidades). `rubro` acepta varios rubros separados por coma. `precio_min` filtra por precio. `excluir_compras_de={cliente}` saca lo que el cliente ya compró y `solo_publicados=true` deja los que tienen link e imagen. Cada producto trae `precio_actualizado`, que es cuándo se leyó el precio de Odoo. En Odoo no hay presentación mayorista (bulto, cantidad mínima): si existe, está en el nombre. Vienen `product_id`, que es el mismo id que los productos de las compras, y `template_id`, que es el de la URL y la imagen. Los nombres llegan sin el código interno `[BB88150]`.
+- **Productos:** se ordenan por facturación de los últimos 90 días (`orden=vendidos` ordena por unidades). `rubro` acepta hasta 5 rubros separados por coma; uno que no existe da 422 con la lista de los válidos. `precio_min` filtra por precio. `excluir_compras_de={cliente}` saca lo que el cliente ya compró y `solo_publicados=true` deja los que tienen link e imagen. Cada producto trae `precio_actualizado`, que es cuándo se leyó el precio de Odoo. En Odoo no hay presentación mayorista (bulto, cantidad mínima): si existe, está en el nombre. Vienen `product_id`, que es el mismo id que los productos de las compras, y `template_id`, que es el de la URL y la imagen. Los nombres llegan sin el código interno `[BB88150]`.
 - **Stock:** Neggo no lleva stock en Odoo (archivar = agotado). `stock: true` quiere decir "disponible".
 - `clientes/nuevos` lee las compras en vivo de Odoo con una caché de 5 minutos (`?refresh=1` la saltea). La etapa, `no_contactar` y `toca_hoy` se leen siempre al momento. Por defecto no vienen los que pidieron no recibir mensajes (`no_contactar=todos` trae a todos). Con `para_hoy=true` vienen solo los que tienen un mensaje para hoy. El orden es estable: fecha de primera compra desc y después id.
 - Fechas en hora de Argentina (UTC−3): `YYYY-MM-DD` y datetimes `2026-10-22T10:15:00-03:00`. `ultimo_contacto` nunca retrocede.
@@ -92,7 +99,7 @@ Todos los pasos se pueden reintentar con el mismo `id_externo`: devuelven lo ya 
 
 Todos los errores traen `codigo`, que es estable:
 
-- **En los 409:** `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `transicion_invalida`, `id_externo_usado`.
+- **En los 409:** `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`.
 - **El resto:** `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.
 
 ## Ejemplos curl

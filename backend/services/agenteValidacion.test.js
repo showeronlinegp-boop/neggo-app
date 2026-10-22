@@ -40,6 +40,7 @@ function testQueryNuevos() {
     assert.strictEqual(v.validarQueryProductos({}).value.orden, 'facturacion');
     assert.deepStrictEqual(campos(v.validarQueryProductos({ orden: 'precio', excluir_compras_de: 'x', precio_min: '-1' }).errors), ['excluir_compras_de', 'orden', 'precio_min']);
     assert.strictEqual(v.validarQueryNuevos({ con_respuesta_pendiente: 'true' }).value.con_respuesta_pendiente, true);
+    assert.deepStrictEqual(campos(v.validarQueryProductos({ rubro: 'a,b,c,d,e,f' }).errors), ['rubro']);
     const mal = v.validarQueryNuevos({ etapa: 'dia_3', no_contactar: 'si', limit: '101', page: '0' });
     assert.deepStrictEqual(campos(mal.errors), ['etapa', 'limit', 'no_contactar', 'page']);
     assert.strictEqual(v.validarQueryProductos({ stock: 'quizas' }).errors[0].campo, 'stock');

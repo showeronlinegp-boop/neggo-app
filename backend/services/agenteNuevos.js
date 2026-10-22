@@ -23,8 +23,9 @@ const DIAS_DEFAULT = 21;
 const DIAS_MAX = 90;
 // Horario de envío (Argentina): lunes a viernes de 9 a 18. Sin feriados (decisión del equipo)
 const VENTANA_ENVIO = { dias: [1, 2, 3, 4, 5], desde: 9, hasta: 18, texto: 'lunes a viernes de 9 a 18 (hora de Argentina)' };
-// Una reserva de envío vale 10 minutos: si no se confirma, la etapa se libera
-const RESERVA_MINUTOS = 10;
+// Una reserva de envío vale 10 minutos: si no se confirma, la etapa se libera.
+// AGENTE_RESERVA_SEGUNDOS lo acorta para pruebas (mínimo 10 s)
+const RESERVA_SEGUNDOS = Math.max(10, parseInt(process.env.AGENTE_RESERVA_SEGUNDOS, 10) || 600);
 // No son clientes: mismas cuentas que excluye el CRM (EXCLUDED_NAMES y GENERIC_NAMES)
 const NOMBRES_EXCLUIDOS = ['rma', 'consumidor final'];
 
@@ -320,7 +321,7 @@ module.exports = {
     DIAS_DEFAULT,
     DIAS_MAX,
     VENTANA_ENVIO,
-    RESERVA_MINUTOS,
+    RESERVA_SEGUNDOS,
     NOMBRES_EXCLUIDOS,
     m2oId,
     m2oName,

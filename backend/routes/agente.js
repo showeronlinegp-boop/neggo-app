@@ -237,4 +237,9 @@ router.get('/feedback', async (req, res) => {
     }
 });
 
+// Ruta inexistente (con API key válida): 404 con código, como el resto de los errores
+router.use((req, res) => res.status(404).json({
+    success: false, error: `Ruta no encontrada: ${req.method} ${req.originalUrl}`, codigo: 'no_encontrado',
+}));
+
 module.exports = router;
