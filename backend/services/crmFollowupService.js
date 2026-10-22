@@ -13,8 +13,11 @@ const STAGES = ['frio', 'templado', 'caliente', 'ganado', 'descartado'];
 const MANUAL_STAGES = ['frio', 'templado', 'caliente', 'descartado'];
 const DEFAULT_STAGE = 'frio';
 // Tipos de acción y de contacto registrado (D12; el envío por mail queda para después)
-const ACTION_TYPES = ['llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
+const ACTION_TYPES = ['presentacion', 'llamar', 'whatsapp', 'visitar', 'lista', 'otra'];
 const EVENT_KINDS = ['nota', ...ACTION_TYPES];
+// Respuesta del cliente a un contacto (nota #80): va aparte de lo que hicimos.
+// Sin respuesta cargada = todavía no respondió, no hace falta escribirlo.
+const RESPONSES = ['respondio', 'no_interesa'];
 const TARGET_COLUMN = { cliente: 'odoo_partner_id', lead: 'lead_id' };
 
 class FollowupError extends Error {
@@ -136,12 +139,12 @@ async function setStage(target, { stage, reason, userId }) {
     });
 }
 
-/** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. */
+/** Registra un contacto hecho (llamada, WhatsApp, visita…) o una nota. Solo la nota pide texto. */
 async function addEvent(target, { kind, text, userId }) {
     await ensureSchema();
     if (!EVENT_KINDS.includes(kind)) throw new FollowupError('Tipo de contacto inválido');
-    const texto = String(text || '').trim().slice(0, 2000);
-    if (!texto) throw new FollowupError('Escribí qué pasó');
+    const texto = String(text || '').trim().slice(0, 2000) || null;
+    if (kind === 'nota' && !texto) throw new FollowupError('Escribí qué pasó');
     await assertTargetExists(target);
     await insertEvent(pool, target, { kind, text: texto, userId });
     return { ok: true };
@@ -184,11 +187,10 @@ async function updateAction(actionId, { type, dueDate, note }) {
     return { ok: true };
 }
 
-/** Marca la acción como hecha y registra el resultado en el historial. */
+/** Marca la acción como hecha y la deja en el historial. El comentario es opcional (nota #80). */
 async function completeAction(actionId, { result, userId }) {
     await ensureSchema();
-    const texto = String(result || '').trim().slice(0, 2000);
-    if (!texto) throw new FollowupError('Contá cómo te fue');
+    const texto = String(result || '').trim().slice(0, 2000) || null;
     return withTransaction(async (db) => {
         const { rows: [a] } = await db.query(
             `UPDATE crm_actions SET done = true, done_at = NOW(), done_by = $2, result = $3
@@ -204,6 +206,50 @@ async function completeAction(actionId, { result, userId }) {
             meta: { action_id: a.id, planned: a.note, due_date: a.due_date }, userId,
         });
         return { tipo: target.tipo, id: target.id };
+    });
+}
+
+/**
+ * Carga la respuesta del cliente a un contacto del historial (nota #80).
+ * Queda como evento 'respuesta' apuntando al contacto. Si respondió y estaba en Frío, pasa a Templado.
+ */
+async function setResponse(eventId, { response, text, userId }) {
+    await ensureSchema();
+    if (!RESPONSES.includes(response)) throw new FollowupError('Respuesta inválida');
+    const texto = String(text || '').trim().slice(0, 2000) || null;
+    return withTransaction(async (db) => {
+        const { rows: [ev] } = await db.query(
+            'SELECT id, odoo_partner_id, lead_id, kind FROM crm_events WHERE id = $1 FOR UPDATE',
+            [parseInt(eventId, 10) || 0]);
+        if (!ev || !ACTION_TYPES.includes(ev.kind)) throw new FollowupError('Ese contacto no existe', 404);
+        const { rows: ya } = await db.query(
+            `SELECT 1 FROM crm_events WHERE kind = 'respuesta' AND meta->>'event_id' = $1`, [String(ev.id)]);
+        if (ya.length) throw new FollowupError('Ese contacto ya tiene la respuesta cargada', 409);
+        const target = ev.odoo_partner_id
+            ? { tipo: 'cliente', col: 'odoo_partner_id', id: ev.odoo_partner_id }
+            : { tipo: 'lead', col: 'lead_id', id: ev.lead_id };
+        await insertEvent(db, target, { kind: 'respuesta', text: texto, meta: { event_id: ev.id, response }, userId });
+
+        // Si respondió y seguía en Frío, pasa solo a Templado
+        let stage = null;
+        if (response === 'respondio') {
+            const { rows: [f] } = await db.query(
+                `SELECT stage FROM crm_followups WHERE ${target.col} = $1 FOR UPDATE`, [target.id]);
+            if ((f?.stage || DEFAULT_STAGE) === 'frio') {
+                await db.query(
+                    `INSERT INTO crm_followups (${target.col}, stage, stage_changed_at, stage_changed_by)
+                     VALUES ($1, 'templado', NOW(), $2)
+                     ON CONFLICT (${target.col}) DO UPDATE
+                     SET stage = 'templado', discard_reason = NULL, stage_changed_at = NOW(),
+                         stage_changed_by = EXCLUDED.stage_changed_by`,
+                    [target.id, userId]);
+                await insertEvent(db, target, {
+                    kind: 'etapa', text: 'Respondió', meta: { from: 'frio', to: 'templado', auto: true }, userId,
+                });
+                stage = 'templado';
+            }
+        }
+        return { tipo: target.tipo, id: target.id, stage };
     });
 }
 
@@ -314,6 +360,7 @@ module.exports = {
     MANUAL_STAGES,
     ACTION_TYPES,
     EVENT_KINDS,
+    RESPONSES,
     FollowupError,
     shouldWin,
     toTarget,
@@ -323,6 +370,7 @@ module.exports = {
     createAction,
     updateAction,
     completeAction,
+    setResponse,
     myDay,
     afterSync,
 };
