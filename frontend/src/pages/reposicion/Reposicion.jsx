@@ -18,7 +18,7 @@ import ReposicionOrdenes from './ReposicionOrdenes';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
 // Lista de proveedores + catálogo; de pendientes se pueden encargar (se pidió).
-// Un ingreso con el producto activo para Neggo se destaca para sacarlo de la cola.
+// Un ingreso con el producto activo para Neggo lo saca solo de la cola (queda en Resueltos).
 
 const ORIGEN = {
     archivado:  { label: 'Agotado',    tone: 'danger' },
@@ -880,7 +880,7 @@ export default function Reposicion() {
                     fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family,
                     marginTop: -4, padding: isMobile ? '0 12px' : undefined,
                 }}>
-                    Pedidos que hiciste y todavía no cerraste. Si un ingreso lo trae activo para Neggo, aparece en verde: tocá «Ya llegó». Si no llega, volvelo a pendientes.
+                    Pedidos que hiciste y todavía no cerraste. Si un ingreso lo trae activo para Neggo, sale solo y queda en Resueltos con el link al ingreso. Si no llega, volvelo a pendientes.
                 </div>
             )}
 
