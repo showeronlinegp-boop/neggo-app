@@ -136,6 +136,17 @@ export function fmtFechaHora(iso) {
     return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+// Importancia que marca el equipo (nota #71): 0 = sin marcar, 5 = la más alta
+export const IMPORTANCIA_MAX = 5;
+export const IMPORTANCIA_LABEL = ['Sin marcar', 'Muy baja', 'Baja', 'Media', 'Alta', 'Muy alta'];
+export const IMPORTANCIA_FILTRO = [
+    { value: '', label: 'Cualquier importancia' },
+    ...[5, 4, 3, 2, 1].map((n) => ({
+        value: String(n),
+        label: n === IMPORTANCIA_MAX ? `${IMPORTANCIA_LABEL[n]} (${n})` : `${IMPORTANCIA_LABEL[n]} o más (${n}+)`,
+    })),
+];
+
 // Nombre para mostrar de un posible cliente sin nombre en la agenda
 export function nombreLead(l) {
     return l?.name || l?.phone || l?.email || 'Sin nombre';

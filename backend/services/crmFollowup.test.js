@@ -2,7 +2,7 @@
 // node backend/services/crmFollowup.test.js
 
 const assert = require('assert');
-const { shouldWin, toTarget, FollowupError, STAGES, MANUAL_STAGES } = require('./crmFollowupService');
+const { shouldWin, toTarget, parseImportance, FollowupError, STAGES, MANUAL_STAGES, IMPORTANCE_MAX } = require('./crmFollowupService');
 
 function testShouldWin() {
     // Pasó a Caliente el 20/10 a las 15 h (hora AR = 18 h UTC)
@@ -32,7 +32,19 @@ function testEtapas() {
     assert.deepStrictEqual(STAGES, ['frio', 'templado', 'caliente', 'ganado', 'descartado']);
 }
 
+function testImportancia() {
+    // De 0 (sin marcar) a 5 cuadraditos; llega como número o como texto
+    assert.strictEqual(IMPORTANCE_MAX, 5);
+    assert.strictEqual(parseImportance(0), 0);
+    assert.strictEqual(parseImportance(5), 5);
+    assert.strictEqual(parseImportance('3'), 3);
+    for (const mala of [6, -1, 2.5, 'mucha', null, undefined, '']) {
+        assert.throws(() => parseImportance(mala), FollowupError);
+    }
+}
+
 testShouldWin();
 testToTarget();
 testEtapas();
+testImportancia();
 console.log('ok crmFollowup.test.js');

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
+import { useToast } from '../../context/ToastContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
 import useIsMobile from '../../hooks/useIsMobile';
 import Card from '../../components/common/Card';
@@ -13,9 +14,10 @@ import Tabs from '../../components/common/Tabs';
 import * as Icon from '../../components/common/icons';
 import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
+import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
 import {
-    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER,
+    HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
 } from './clientesUi';
 
@@ -45,7 +47,7 @@ function useAnchoDe(el) {
     return ancho;
 }
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
-const SORTS = [...SORT_OPTIONS, { value: 'accion', label: 'Próxima acción' }];
+const SORTS = [...SORT_OPTIONS, { value: 'importancia', label: 'Más importantes' }, { value: 'accion', label: 'Próxima acción' }];
 
 function Etapa({ c, t }) {
     const meta = STAGE_META[c.stage] || STAGE_META.frio;
@@ -90,7 +92,7 @@ function Avatar({ nombre, size, t }) {
 }
 
 // modo: ancho (todas las columnas) · medio (más compacta) · tarjeta (celular o pantalla angosta)
-function FilaCliente({ c, onAbrir, modo, t }) {
+function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
     const isMobile = modo === 'tarjeta';
     const medio = modo === 'medio';
     const meta = HEALTH_META[c.health] || HEALTH_META.sin_compras;
@@ -111,6 +113,9 @@ function FilaCliente({ c, onAbrir, modo, t }) {
                     <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
                     {c.city && <span>{c.city}</span>}
                     {c.rubro && <span>{c.rubro}</span>}
+                </div>
+                <div style={{ marginTop: isMobile ? 6 : 4 }}>
+                    <Importancia value={c.importance} size={isMobile ? 20 : 13} onChange={(n) => onImportancia(c, n)} />
                 </div>
             </div>
         </div>
@@ -139,17 +144,21 @@ function FilaCliente({ c, onAbrir, modo, t }) {
     ) : null;
 
     const estilosBoton = {
-        width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
+        width: '100%', boxSizing: 'border-box', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
         fontFamily: t.font.family, borderTop: `1px solid ${t.color.border}`,
     };
+    // La fila es un div clickeable (no un <button>) porque adentro van los botones de importancia
     const hover = {
+        role: 'button',
+        tabIndex: 0,
+        onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAbrir(c); } },
         onMouseEnter: (e) => { e.currentTarget.style.background = t.color.surface2; },
         onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
     };
 
     if (isMobile) {
         return (
-            <button type="button" onClick={() => onAbrir(c)} {...hover}
+            <div onClick={() => onAbrir(c)} {...hover}
                 style={{ ...estilosBoton, padding: '12px', display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                 <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', width: '100%' }}>
                     {nombre}
@@ -173,12 +182,12 @@ function FilaCliente({ c, onAbrir, modo, t }) {
                     <Etapa c={c} t={t} />
                     {cotizacion}
                 </div>
-            </button>
+            </div>
         );
     }
 
     return (
-        <button type="button" onClick={() => onAbrir(c)} {...hover}
+        <div onClick={() => onAbrir(c)} {...hover}
             style={{
                 ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: medio ? t.space[3] : t.space[4],
                 gridTemplateColumns: medio ? COLUMNAS_MEDIO : COLUMNAS,
@@ -205,7 +214,7 @@ function FilaCliente({ c, onAbrir, modo, t }) {
             </>
             )}
             <span style={{ textAlign: 'right', minWidth: 0 }}>{cotizacion}</span>
-        </button>
+        </div>
     );
 }
 
@@ -257,6 +266,7 @@ function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
 export default function Clientes() {
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
+    const { showToast } = useToast();
     const [resumen, setResumen] = useState(null);
     const [rows, setRows] = useState([]);
     const [total, setTotal] = useState(0);
@@ -272,6 +282,7 @@ export default function Clientes() {
     const [rubro, setRubro] = useState('');
     const [health, setHealth] = useState('');
     const [stage, setStage] = useState('');
+    const [importancia, setImportancia] = useState('');
     const [tab, setTab] = useState('clientes');
     const [leadsTotal, setLeadsTotal] = useState(null);
     const huboCambios = useRef(false);
@@ -300,10 +311,11 @@ export default function Clientes() {
         stage: stage || undefined,
         open: soloAbiertas ? 1 : undefined,
         cercanos: soloCercanos ? 1 : undefined,
+        importancia: importancia || undefined,
         sort,
         limit: PAGE,
         offset,
-    }), [busqueda, city, rubro, health, stage, soloAbiertas, soloCercanos, sort]);
+    }), [busqueda, city, rubro, health, stage, importancia, soloAbiertas, soloCercanos, sort]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/resumen');
@@ -380,8 +392,8 @@ export default function Clientes() {
         ? Math.round(((resumen.revenue_90d - resumen.revenue_prev_90d) / resumen.revenue_prev_90d) * 100)
         : null;
 
-    const filtrosActivos = busqueda || city || rubro || health || stage || soloAbiertas || soloCercanos;
-    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setSoloAbiertas(false); setSoloCercanos(false); };
+    const filtrosActivos = busqueda || city || rubro || health || stage || importancia || soloAbiertas || soloCercanos;
+    const limpiar = () => { setSearch(''); setCity(''); setRubro(''); setHealth(''); setStage(''); setImportancia(''); setSoloAbiertas(false); setSoloCercanos(false); };
 
     // Estrella: se ve al instante y vuelve atrás si el backend no lo guarda.
     // Si se saca uno con el filtro puesto, queda en pantalla para poder deshacerlo.
@@ -396,6 +408,18 @@ export default function Clientes() {
         if (!res.success) {
             aplicar(!cercano);
             setError(res.error || 'No se pudo cambiar la lista de seguimiento cercano');
+        }
+    };
+
+    // Cambia la importancia desde la fila: se ve al instante y vuelve atrás si falla
+    const cambiarImportancia = async (c, n) => {
+        const antes = c.importance || 0;
+        const poner = (valor) => setRows((prev) => prev.map((r) => (r.odoo_partner_id === c.odoo_partner_id ? { ...r, importance: valor } : r)));
+        poner(n);
+        const res = await api.put(`/clientes/seguimiento/cliente/${c.odoo_partner_id}/importancia`, { importance: n });
+        if (!res.success) {
+            poner(antes);
+            showToast(res.error || 'No se pudo cambiar la importancia', 'error');
         }
     };
 
@@ -479,6 +503,7 @@ export default function Clientes() {
                 <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={stage} onChange={setStage} options={ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 170 }} />
+                <Select value={importancia} onChange={setImportancia} options={IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : 200 }} />
                 <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 210 }} />
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}>
                     <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
@@ -555,7 +580,7 @@ export default function Clientes() {
                         <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch' }}>
                             <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                                <FilaCliente c={c} onAbrir={setAbierto} modo={modo} t={t} />
+                                <FilaCliente c={c} onAbrir={setAbierto} onImportancia={cambiarImportancia} modo={modo} t={t} />
                             </div>
                         </div>
                     ))
