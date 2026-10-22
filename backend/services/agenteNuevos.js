@@ -21,8 +21,10 @@ const CADENCIA = [
 // Por defecto la ventana cubre hasta el último día en que se puede mandar el día 15
 const DIAS_DEFAULT = 21;
 const DIAS_MAX = 90;
-// Horario de envío (Argentina): lunes a viernes de 9 a 18
+// Horario de envío (Argentina): lunes a viernes de 9 a 18. Sin feriados (decisión del equipo)
 const VENTANA_ENVIO = { dias: [1, 2, 3, 4, 5], desde: 9, hasta: 18, texto: 'lunes a viernes de 9 a 18 (hora de Argentina)' };
+// Una reserva de envío vale 10 minutos: si no se confirma, la etapa se libera
+const RESERVA_MINUTOS = 10;
 // No son clientes: mismas cuentas que excluye el CRM (EXCLUDED_NAMES y GENERIC_NAMES)
 const NOMBRES_EXCLUIDOS = ['rma', 'consumidor final'];
 
@@ -100,6 +102,12 @@ function tocaHoy({ fechaPrimeraCompra, hoy, etapa = 'pendiente', noContactar = f
     return paso.etapa;
 }
 
+/** Último día en que se puede mandar `etapa` (fin de su rango), o null. */
+function vence(fechaPrimeraCompra, etapa) {
+    const paso = CADENCIA.find((p) => p.etapa === etapa);
+    return fechaPrimeraCompra && paso ? health.addDays(fechaPrimeraCompra, paso.hasta) : null;
+}
+
 /** Fecha en que se puede mandar el mensaje siguiente a `etapaEnviada`, o null si no hay más. */
 function proximaAccion(fechaPrimeraCompra, etapaEnviada) {
     if (!fechaPrimeraCompra) return null;
@@ -113,6 +121,30 @@ function ventanaAbierta(fecha = new Date()) {
     const ar = new Date(fecha.getTime() + AR_OFFSET_MS);
     const hora = ar.getUTCHours() + ar.getUTCMinutes() / 60;
     return VENTANA_ENVIO.dias.includes(ar.getUTCDay()) && hora >= VENTANA_ENVIO.desde && hora < VENTANA_ENVIO.hasta;
+}
+
+/** Cuándo vuelve a abrir el horario de envío (ISO con -03:00). Null si está abierto ahora. */
+function abreA(fecha = new Date()) {
+    if (ventanaAbierta(fecha)) return null;
+    const ar = new Date(fecha.getTime() + AR_OFFSET_MS);
+    for (let i = 0; i < 8; i++) {
+        const dia = new Date(Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate() + i, VENTANA_ENVIO.desde));
+        // dia está en "hora de Argentina expresada como UTC": se vuelve a UTC real sumando 3 h
+        const real = new Date(dia.getTime() - AR_OFFSET_MS);
+        if (real > fecha && VENTANA_ENVIO.dias.includes(dia.getUTCDay())) return toArIso(real);
+    }
+    return null;
+}
+
+/**
+ * Hay una respuesta del cliente sin atender: el último recibido es posterior al último enviado
+ * y a la última vez que el agente la marcó como revisada.
+ */
+function respuestaPendiente({ ultimoRecibido, ultimoEnviado, revisadoHasta }) {
+    if (!ultimoRecibido) return false;
+    const r = new Date(ultimoRecibido).getTime();
+    const atendido = Math.max(ultimoEnviado ? new Date(ultimoEnviado).getTime() : 0, revisadoHasta ? new Date(revisadoHasta).getTime() : 0);
+    return r > atendido;
 }
 
 /**
@@ -288,6 +320,7 @@ module.exports = {
     DIAS_DEFAULT,
     DIAS_MAX,
     VENTANA_ENVIO,
+    RESERVA_MINUTOS,
     NOMBRES_EXCLUIDOS,
     m2oId,
     m2oName,
@@ -297,7 +330,10 @@ module.exports = {
     limpiarNombre,
     tocaHoy,
     proximaAccion,
+    vence,
     ventanaAbierta,
+    abreA,
+    respuestaPendiente,
     errorTransicion,
     rubroDeCompras,
     categoriasCompradas,

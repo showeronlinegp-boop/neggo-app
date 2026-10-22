@@ -2,7 +2,11 @@
 // GET    /api/agente/clientes/nuevos?dias=21&etapa=&no_contactar=false|true|todos&para_hoy=&page=&limit=&refresh=1
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
-// POST   /api/agente/clientes/:id/envios         — { etapa, mensaje, id_externo, fecha } mensaje de la cadencia
+// POST   /api/agente/clientes/:id/envios         — { etapa, mensaje, id_externo, productos_recomendados } RESERVA el mensaje de la cadencia
+// GET    /api/agente/envios/:idExterno           — estado del envío (reservado | enviado | cancelado | vencido)
+// POST   /api/agente/envios/:idExterno/confirmar — el WhatsApp salió: avanza la etapa
+// POST   /api/agente/envios/:idExterno/cancelar  — el WhatsApp no salió: libera la etapa
+// POST   /api/agente/clientes/:id/revisado       — el agente leyó las respuestas del cliente
 // PATCH  /api/agente/clientes/:id/seguimiento    — { etapa, ultimo_contacto, proxima_accion }
 // POST   /api/agente/clientes/:id/interacciones  — { fecha, tipo, etapa, mensaje, id_externo }
 // GET    /api/agente/clientes/:id/interacciones?page=&limit=
@@ -32,17 +36,17 @@ function sendPage(res, { data, total, page, limit, meta }, status = 200) {
 }
 
 function invalid(res, errors) {
-    return res.status(422).json({ success: false, error: 'Datos inválidos', details: errors });
+    return res.status(422).json({ success: false, error: 'Datos inválidos', codigo: 'datos_invalidos', details: errors });
 }
 
 function handle(res, err, generic) {
     if (err instanceof agente.AgenteError) {
-        const body = { success: false, error: err.message };
+        const body = { success: false, error: err.message, codigo: err.codigo || null };
         if (err.details) body.details = err.details;
         return res.status(err.status).json(body);
     }
     console.error(`❌ Agente: ${generic}:`, err.message);
-    return res.status(500).json({ success: false, error: generic });
+    return res.status(500).json({ success: false, error: generic, codigo: 'error_interno' });
 }
 
 /** Valida :id y, si viene, el body. Devuelve null si ya respondió 422. */
@@ -130,10 +134,53 @@ router.post('/clientes/:id/envios', async (req, res) => {
     const p = parse(req, res, (b) => v.validarEnvio(b));
     if (!p) return undefined;
     try {
-        const { data, repetida } = await agente.registrarEnvio(p.id, p.value);
+        const { data, repetida } = await agente.reservarEnvio(p.id, p.value);
         return res.status(repetida ? 200 : 201).json({ success: true, data, repetido: repetida });
     } catch (err) {
-        return handle(res, err, 'No se pudo registrar el envío');
+        return handle(res, err, 'No se pudo reservar el envío');
+    }
+});
+
+function parseIdExterno(req, res) {
+    const { value, errors } = v.validarIdExternoRuta(req.params.idExterno);
+    if (errors.length) {
+        invalid(res, errors);
+        return null;
+    }
+    return value;
+}
+
+router.get('/envios/:idExterno', async (req, res) => {
+    const idExterno = parseIdExterno(req, res);
+    if (!idExterno) return undefined;
+    try {
+        return res.json({ success: true, data: await agente.estadoEnvio(idExterno) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer el envío');
+    }
+});
+
+for (const accion of ['confirmar', 'cancelar']) {
+    router.post(`/envios/:idExterno/${accion}`, async (req, res) => {
+        const idExterno = parseIdExterno(req, res);
+        if (!idExterno) return undefined;
+        try {
+            const fn = accion === 'confirmar' ? agente.confirmarEnvio : agente.cancelarEnvio;
+            const { data, repetida } = await fn(idExterno);
+            return res.json({ success: true, data, repetido: repetida });
+        } catch (err) {
+            return handle(res, err, `No se pudo ${accion} el envío`);
+        }
+    });
+}
+
+router.post('/clientes/:id/revisado', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agente.marcarRevisado(p.id) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo marcar como revisado');
     }
 });
 

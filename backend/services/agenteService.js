@@ -22,11 +22,13 @@ const TODA_LA_HISTORIA = 100000;
 const TEXTO_NO_CONTACTAR = 'Pidió por WhatsApp que no le escriban más (Grok Bot)';
 const TICKET_FIELDS = ['id', 'name', 'pos_reference', 'partner_id', 'date_order', 'amount_total', 'state', 'user_id', 'payment_ids'];
 
+// Cada error lleva un código estable para que el agente decida si reintenta, cierra o avisa
 class AgenteError extends Error {
-    constructor(status, message, details) {
+    constructor(status, message, codigo, details) {
         super(message);
         this.name = 'AgenteError';
         this.status = status;
+        this.codigo = codigo;
         this.details = details;
     }
 }
@@ -38,7 +40,7 @@ async function odoo(fn) {
     } catch (err) {
         if (err instanceof AgenteError) throw err;
         console.error('❌ Agente: error leyendo Odoo:', err.message);
-        throw new AgenteError(502, 'No pude leer Odoo');
+        throw new AgenteError(502, 'No pude leer Odoo', 'odoo_caido');
     }
 }
 
@@ -290,7 +292,7 @@ function formatSeguimiento(row) {
 }
 
 const SEG_SELECT = `SELECT odoo_partner_id, etapa, ultimo_contacto, proxima_accion::text AS proxima_accion,
-                           no_contactar, no_contactar_at, contacto, updated_at
+                           no_contactar, no_contactar_at, contacto, revisado_hasta, updated_at
                     FROM crm_bot_seguimiento`;
 
 async function seguimientos(ids, db = pool) {
@@ -298,11 +300,31 @@ async function seguimientos(ids, db = pool) {
     return new Map(rows.map((r) => [r.odoo_partner_id, r]));
 }
 
+/** Último mensaje recibido y último enviado (confirmado) de cada cliente. */
+async function conversaciones(ids, db = pool) {
+    const { rows } = await db.query(
+        `SELECT odoo_partner_id,
+                MAX(fecha) FILTER (WHERE tipo = 'recibido') AS ultimo_recibido,
+                MAX(fecha) FILTER (WHERE tipo = 'enviado' AND estado = 'enviado') AS ultimo_enviado
+         FROM crm_bot_interacciones WHERE odoo_partner_id = ANY($1::int[])
+         GROUP BY odoo_partner_id`, [ids]);
+    return new Map(rows.map((r) => [r.odoo_partner_id, r]));
+}
+
+function hayRespuestaPendiente(row, conv) {
+    return nuevos.respuestaPendiente({
+        ultimoRecibido: conv && conv.ultimo_recibido,
+        ultimoEnviado: conv && conv.ultimo_enviado,
+        revisadoHasta: row && row.revisado_hasta,
+    });
+}
+
 /** Cliente completo: lo de Odoo + lo local + qué le toca hoy. Mismo formato en la lista y en la ficha. */
-function armarCliente(base, row, hoy, ventanaAbierta) {
+function armarCliente(base, row, hoy, ventanaAbierta, conv) {
     const noContactar = Boolean(row && row.no_contactar);
     const seguimiento = formatSeguimiento(row);
     const toca = nuevos.tocaHoy({ fechaPrimeraCompra: base.fecha_primera_compra, hoy, etapa: seguimiento.etapa, noContactar });
+    const pendiente = hayRespuestaPendiente(row, conv);
     return {
         id: base.id,
         nombre: base.nombre,
@@ -316,7 +338,10 @@ function armarCliente(base, row, hoy, ventanaAbierta) {
         fecha_primera_compra: base.fecha_primera_compra,
         dias_desde_compra: base.fecha_primera_compra ? health.daysBetween(base.fecha_primera_compra, hoy) : null,
         toca_hoy: toca,
-        puede_enviar_ahora: Boolean(toca && base.telefono && ventanaAbierta),
+        vence: toca ? nuevos.vence(base.fecha_primera_compra, toca) : null,
+        respuesta_pendiente: pendiente,
+        ultimo_recibido: conv && conv.ultimo_recibido ? nuevos.toArIso(conv.ultimo_recibido) : null,
+        puede_enviar_ahora: Boolean(toca && base.telefono && ventanaAbierta && !pendiente),
         cantidad_compras: base.cantidad_compras,
         compras: base.compras,
         seguimiento,
@@ -329,20 +354,24 @@ function meta(hoy, ahora = new Date()) {
         ahora: nuevos.toArIso(ahora),
         ventana_envio: nuevos.VENTANA_ENVIO.texto,
         ventana_abierta: nuevos.ventanaAbierta(ahora),
+        abre_a: nuevos.abreA(ahora),
     };
 }
 
 /** GET clientes/nuevos. */
-async function listarNuevos({ dias, etapa, no_contactar: noContactar, para_hoy: paraHoy, page, limit, offset, refresh }) {
+async function listarNuevos({ dias, etapa, no_contactar: noContactar, para_hoy: paraHoy, con_respuesta_pendiente: conRespuesta, page, limit, offset, refresh }) {
     await ensureSchema();
     const base = await nuevosDesdeOdoo(dias, refresh);
-    const segs = await seguimientos(base.map((c) => c.id));
+    const ids = base.map((c) => c.id);
+    const segs = await seguimientos(ids);
+    const convs = await conversaciones(ids);
     const hoy = hoyAr();
     const info = meta(hoy);
-    let lista = base.map((c) => armarCliente(c, segs.get(c.id), hoy, info.ventana_abierta));
+    let lista = base.map((c) => armarCliente(c, segs.get(c.id), hoy, info.ventana_abierta, convs.get(c.id)));
     if (etapa) lista = lista.filter((c) => c.seguimiento.etapa === etapa);
     if (noContactar !== null && noContactar !== undefined) lista = lista.filter((c) => c.no_contactar === noContactar);
     if (paraHoy !== undefined) lista = lista.filter((c) => Boolean(c.toca_hoy) === paraHoy);
+    if (conRespuesta !== undefined) lista = lista.filter((c) => c.respuesta_pendiente === conRespuesta);
     return { data: lista.slice(offset, offset + limit), total: lista.length, page, limit, meta: info };
 }
 
@@ -351,9 +380,10 @@ async function obtenerCliente(id) {
     await exigirCliente(id);
     const ficha = await odoo(() => fichaOdoo(id));
     const row = (await seguimientos([id])).get(id);
+    const conv = (await conversaciones([id])).get(id);
     const hoy = hoyAr();
     const info = meta(hoy);
-    return { data: armarCliente(ficha, row, hoy, info.ventana_abierta), meta: info };
+    return { data: armarCliente(ficha, row, hoy, info.ventana_abierta, conv), meta: info };
 }
 
 // =============================================
@@ -374,7 +404,7 @@ async function clienteBasico(id) {
 
 async function exigirCliente(id) {
     const cliente = await clienteBasico(id);
-    if (!cliente) throw new AgenteError(404, 'Cliente inexistente');
+    if (!cliente) throw new AgenteError(404, 'Cliente inexistente', 'no_encontrado');
     return cliente;
 }
 
@@ -417,10 +447,10 @@ async function actualizarSeguimiento(id, value) {
     const row = await enTransaccion(async (db) => {
         const prev = await lockSeguimiento(db, id);
         const error = nuevos.errorTransicion({ actual: prev.etapa, nueva: value.etapa, noContactar: prev.no_contactar });
-        if (error) throw new AgenteError(409, error);
+        if (error) throw new AgenteError(409, error, prev.no_contactar ? 'no_contactar' : 'transicion_invalida');
         const etapa = value.etapa || prev.etapa;
         if ((prev.no_contactar || etapa === 'finalizado') && value.proxima_accion) {
-            throw new AgenteError(409, 'Un cliente finalizado o que pidió no recibir mensajes no lleva próxima acción');
+            throw new AgenteError(409, 'Un cliente finalizado o que pidió no recibir mensajes no lleva próxima acción', 'transicion_invalida');
         }
         const sets = ['updated_at = NOW()'];
         const params = [id];
@@ -452,7 +482,7 @@ async function actualizarCliente(id, value) {
     const row = await enTransaccion(async (db) => {
         const prev = await lockSeguimiento(db, id);
         if (value.no_contactar === false && prev.no_contactar) {
-            throw new AgenteError(409, 'El cliente pidió no recibir mensajes: solo lo puede desmarcar el equipo de Neggo');
+            throw new AgenteError(409, 'El cliente pidió no recibir mensajes: solo lo puede desmarcar el equipo de Neggo', 'no_contactar');
         }
         const sets = ['updated_at = NOW()'];
         const params = [id];
@@ -486,7 +516,10 @@ function formatInteraccion(r) {
         tipo: r.tipo,
         etapa: r.etapa,
         envio_de_etapa: r.envio_etapa,
+        estado: r.envio_etapa ? r.estado : null,
+        reservado_hasta: r.estado === 'reservado' && r.reservado_hasta ? nuevos.toArIso(r.reservado_hasta) : null,
         mensaje: r.mensaje,
+        productos_recomendados: r.productos_recomendados || [],
         id_externo: r.id_externo,
     };
 }
@@ -499,7 +532,7 @@ async function porIdExterno(db, id, idExterno) {
     if (!idExterno) return null;
     const { rows: [r] } = await db.query('SELECT * FROM crm_bot_interacciones WHERE id_externo = $1', [idExterno]);
     if (!r) return null;
-    if (r.odoo_partner_id !== id) throw new AgenteError(409, 'Ese id_externo ya se usó con otro cliente');
+    if (id !== null && r.odoo_partner_id !== id) throw new AgenteError(409, 'Ese id_externo ya se usó con otro cliente', 'id_externo_usado');
     return r;
 }
 
@@ -527,7 +560,7 @@ async function registrarInteraccion(id, value) {
             const repetida = await porIdExterno(db, id, value.id_externo);
             if (repetida) return { data: formatInteraccion(repetida), repetida: true };
             const seg = await lockSeguimiento(db, id);
-            if (value.tipo === 'enviado' && seg.no_contactar) throw new AgenteError(409, 'El cliente pidió no recibir mensajes');
+            if (value.tipo === 'enviado' && seg.no_contactar) throw new AgenteError(409, 'El cliente pidió no recibir mensajes', 'no_contactar');
             const { rows: [row] } = await db.query(
                 `INSERT INTO crm_bot_interacciones (odoo_partner_id, fecha, tipo, etapa, mensaje, id_externo)
                  VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -545,57 +578,154 @@ async function registrarInteraccion(id, value) {
     }
 }
 
+/** Marca como vencidas las reservas del cliente que pasaron su tiempo sin confirmarse. */
+async function vencerReservas(db, id) {
+    await db.query(
+        `UPDATE crm_bot_interacciones SET estado = 'vencido'
+         WHERE odoo_partner_id = $1 AND estado = 'reservado' AND reservado_hasta < NOW()`, [id]);
+}
+
+async function respuestaEnvio(cliente, r, repetida) {
+    const row = (await seguimientos([cliente.id])).get(cliente.id);
+    return { data: { envio: formatInteraccion(r), cliente: await estadoCliente(cliente, row) }, repetida };
+}
+
 /**
- * POST clientes/:id/envios. Registra el mensaje de una etapa de la cadencia en una sola
- * transacción: chequea horario, no contactar y que esa etapa sea la que toca hoy, guarda el
- * mensaje, avanza la etapa y calcula la próxima acción. Con el mismo id_externo no se duplica.
+ * POST clientes/:id/envios: RESERVA el mensaje de una etapa de la cadencia, antes de mandarlo.
+ * Chequea todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente,
+ * etapa que toca, ya enviada o reservada) y bloquea la etapa por RESERVA_MINUTOS. Después de
+ * mandar el WhatsApp se confirma con POST envios/:idExterno/confirmar; si no salió, se cancela.
+ * Con el mismo id_externo devuelve la reserva ya hecha (200, repetido).
  */
-async function registrarEnvio(id, value) {
+async function reservarEnvio(id, value) {
     const cliente = await exigirCliente(id);
     const repetida = await porIdExterno(pool, id, value.id_externo);
-    if (repetida) {
-        const row = (await seguimientos([id])).get(id);
-        return { data: { envio: formatInteraccion(repetida), cliente: await estadoCliente(cliente, row) }, repetida: true };
-    }
-    if (!nuevos.ventanaAbierta(value.fecha)) {
-        throw new AgenteError(409, `Fuera del horario de envío: ${nuevos.VENTANA_ENVIO.texto}`);
+    if (repetida) return respuestaEnvio(cliente, repetida, true);
+    const ahora = new Date();
+    if (!nuevos.ventanaAbierta(ahora)) {
+        throw new AgenteError(409, `Fuera del horario de envío: ${nuevos.VENTANA_ENVIO.texto}. Abre: ${nuevos.abreA(ahora)}`, 'fuera_de_horario');
     }
     const ficha = await odoo(() => fichaOdoo(id));
+    if (!ficha.telefono) throw new AgenteError(409, 'El cliente no tiene un celular válido en Odoo', 'sin_telefono');
     const hoy = hoyAr();
     try {
-        const out = await enTransaccion(async (db) => {
+        const r = await enTransaccion(async (db) => {
             const seg = await lockSeguimiento(db, id);
-            if (seg.no_contactar) throw new AgenteError(409, 'El cliente pidió no recibir mensajes');
+            if (seg.no_contactar) throw new AgenteError(409, 'El cliente pidió no recibir mensajes', 'no_contactar');
+            await vencerReservas(db, id);
+            const { rows: previas } = await db.query(
+                `SELECT estado, id_externo FROM crm_bot_interacciones
+                 WHERE odoo_partner_id = $1 AND envio_etapa AND etapa = $2 AND estado IN ('reservado', 'enviado')`, [id, value.etapa]);
+            if (previas.some((x) => x.estado === 'enviado')) {
+                throw new AgenteError(409, `La etapa ${value.etapa} ya se envió a este cliente`, 'ya_enviado');
+            }
+            if (previas.length) {
+                throw new AgenteError(409, `La etapa ${value.etapa} está reservada por otro envío (${previas[0].id_externo})`, 'etapa_reservada');
+            }
+            const conv = (await conversaciones([id], db)).get(id);
+            if (hayRespuestaPendiente(seg, conv)) {
+                throw new AgenteError(409, 'El cliente contestó y todavía no se revisó su respuesta', 'respuesta_pendiente');
+            }
             const toca = nuevos.tocaHoy({ fechaPrimeraCompra: ficha.fecha_primera_compra, hoy, etapa: seg.etapa, noContactar: false });
             if (value.etapa !== toca) {
                 const dia = ficha.fecha_primera_compra ? health.daysBetween(ficha.fecha_primera_compra, hoy) : '-';
                 throw new AgenteError(409, toca
                     ? `Hoy no le toca ${value.etapa}: le toca ${toca}`
-                    : `Hoy no le toca ningún mensaje de la cadencia (etapa ${seg.etapa}, día ${dia})`);
+                    : `Hoy no le toca ningún mensaje de la cadencia (etapa ${seg.etapa}, día ${dia})`, 'etapa_no_corresponde');
             }
             const { rows: [row] } = await db.query(
-                `INSERT INTO crm_bot_interacciones (odoo_partner_id, fecha, tipo, etapa, mensaje, id_externo, envio_etapa)
-                 VALUES ($1, $2, 'enviado', $3, $4, $5, true) RETURNING *`,
-                [id, value.fecha, value.etapa, value.mensaje, value.id_externo]);
-            await db.query(
-                `UPDATE crm_bot_seguimiento
-                 SET etapa = $2, proxima_accion = $3, ultimo_contacto = GREATEST(ultimo_contacto, $4), updated_at = NOW()
-                 WHERE odoo_partner_id = $1`,
-                [id, value.etapa, nuevos.proximaAccion(ficha.fecha_primera_compra, value.etapa), value.fecha]);
-            return { row, seg: (await seguimientos([id], db)).get(id) };
+                `INSERT INTO crm_bot_interacciones
+                    (odoo_partner_id, fecha, tipo, etapa, mensaje, id_externo, envio_etapa, estado, reservado_hasta, productos_recomendados)
+                 VALUES ($1, NOW(), 'enviado', $2, $3, $4, true, 'reservado', NOW() + ($5::int * INTERVAL '1 minute'), $6)
+                 RETURNING *`,
+                [id, value.etapa, value.mensaje, value.id_externo, nuevos.RESERVA_MINUTOS, value.productos_recomendados]);
+            return row;
         });
-        console.log(`📦 Agente: envío ${value.etapa} a ${id}`);
-        return { data: { envio: formatInteraccion(out.row), cliente: await estadoCliente(cliente, out.seg) }, repetida: false };
+        console.log(`📦 Agente: reserva ${value.etapa} para ${id} (${value.id_externo})`);
+        return respuestaEnvio(cliente, r, false);
     } catch (err) {
         if (!esDuplicado(err)) throw err;
-        // Mismo id_externo en paralelo: devuelve el que se guardó. Si no, esa etapa ya se mandó
+        // Mismo id_externo en paralelo: devuelve el que se guardó. Si no, otro proceso tomó la etapa
         const r = await porIdExterno(pool, id, value.id_externo);
-        if (r) {
-            const row = (await seguimientos([id])).get(id);
-            return { data: { envio: formatInteraccion(r), cliente: await estadoCliente(cliente, row) }, repetida: true };
-        }
-        throw new AgenteError(409, `La etapa ${value.etapa} ya se envió a este cliente`);
+        if (r) return respuestaEnvio(cliente, r, true);
+        throw new AgenteError(409, `La etapa ${value.etapa} ya está reservada o enviada`, 'etapa_reservada');
     }
+}
+
+async function exigirEnvio(db, idExterno) {
+    const r = await porIdExterno(db, null, idExterno);
+    if (!r || !r.envio_etapa) throw new AgenteError(404, 'No hay un envío con ese id_externo', 'no_encontrado');
+    return r;
+}
+
+/**
+ * POST envios/:idExterno/confirmar: el WhatsApp ya salió. Registra el envío con la hora del
+ * servidor, avanza la etapa y calcula la próxima acción. Se confirma aunque la reserva haya
+ * vencido o el cliente haya pedido no contactar después: el mensaje salió y tiene que quedar.
+ * Solo falla si la reserva se canceló o si otro envío ya ocupó la etapa.
+ */
+async function confirmarEnvio(idExterno) {
+    const previa = await exigirEnvio(pool, idExterno);
+    const cliente = await exigirCliente(previa.odoo_partner_id);
+    if (previa.estado === 'enviado') return respuestaEnvio(cliente, previa, true);
+    if (previa.estado === 'cancelado') throw new AgenteError(409, 'Ese envío se canceló: no se puede confirmar', 'reserva_cancelada');
+    const ficha = await odoo(() => fichaOdoo(cliente.id));
+    try {
+        const r = await enTransaccion(async (db) => {
+            const seg = await lockSeguimiento(db, cliente.id);
+            const { rows: [row] } = await db.query(
+                `UPDATE crm_bot_interacciones SET estado = 'enviado', fecha = NOW(), reservado_hasta = NULL
+                 WHERE id = $1 AND estado IN ('reservado', 'vencido') RETURNING *`, [previa.id]);
+            if (!row) throw new AgenteError(409, 'El envío cambió de estado mientras se confirmaba', 'reserva_cancelada');
+            // La etapa solo avanza: si ya estaba más adelante (o finalizado), queda como está
+            const avanza = !nuevos.errorTransicion({ actual: seg.etapa, nueva: row.etapa, noContactar: seg.no_contactar });
+            await db.query(
+                `UPDATE crm_bot_seguimiento
+                 SET ultimo_contacto = GREATEST(ultimo_contacto, NOW()), updated_at = NOW()
+                     ${avanza ? ', etapa = $2, proxima_accion = $3' : ''}
+                 WHERE odoo_partner_id = $1`,
+                avanza ? [cliente.id, row.etapa, nuevos.proximaAccion(ficha.fecha_primera_compra, row.etapa)] : [cliente.id]);
+            return row;
+        });
+        console.log(`✅ Agente: envío ${r.etapa} confirmado para ${cliente.id}`);
+        return respuestaEnvio(cliente, r, false);
+    } catch (err) {
+        if (esDuplicado(err)) throw new AgenteError(409, `Otro envío ya ocupó la etapa ${previa.etapa}`, 'ya_enviado');
+        throw err;
+    }
+}
+
+/** POST envios/:idExterno/cancelar: el WhatsApp no salió. Libera la etapa. */
+async function cancelarEnvio(idExterno) {
+    const previa = await exigirEnvio(pool, idExterno);
+    const cliente = await exigirCliente(previa.odoo_partner_id);
+    if (previa.estado === 'cancelado') return respuestaEnvio(cliente, previa, true);
+    if (previa.estado === 'enviado') throw new AgenteError(409, 'Ese envío ya se confirmó: no se puede cancelar', 'ya_enviado');
+    const { rows: [r] } = await pool.query(
+        `UPDATE crm_bot_interacciones SET estado = 'cancelado', reservado_hasta = NULL
+         WHERE id = $1 AND estado IN ('reservado', 'vencido') RETURNING *`, [previa.id]);
+    if (!r) throw new AgenteError(409, 'Ese envío ya se confirmó: no se puede cancelar', 'ya_enviado');
+    return respuestaEnvio(cliente, r, false);
+}
+
+/** GET envios/:idExterno: para que el bot de WhatsApp chequee antes de mandar (o reintentar). */
+async function estadoEnvio(idExterno) {
+    await ensureSchema();
+    const previa = await exigirEnvio(pool, idExterno);
+    await vencerReservas(pool, previa.odoo_partner_id);
+    const r = await exigirEnvio(pool, idExterno);
+    return formatInteraccion(r);
+}
+
+/** POST clientes/:id/revisado: el agente leyó las respuestas del cliente (no hace falta contestar). */
+async function marcarRevisado(id) {
+    const cliente = await exigirCliente(id);
+    const row = await enTransaccion(async (db) => {
+        await lockSeguimiento(db, id);
+        await db.query('UPDATE crm_bot_seguimiento SET revisado_hasta = NOW(), updated_at = NOW() WHERE odoo_partner_id = $1', [id]);
+        return (await seguimientos([id], db)).get(id);
+    });
+    return estadoCliente(cliente, row);
 }
 
 /** GET clientes/:id/interacciones, de la más nueva a la más vieja (a igual fecha, la última cargada primero). */
@@ -655,7 +785,7 @@ function urlImagen(templateId) {
     return base && templateId ? `${base}/web/image/product.template/${templateId}/image_512` : null;
 }
 
-// Unidades vendidas por producto en los últimos 90 días (tickets del POS de Neggo), caché de 6 h
+// Unidades y facturación por producto en los últimos 90 días (tickets del POS de Neggo), caché de 6 h
 let vendidosCache = null;
 
 async function vendidos90() {
@@ -669,7 +799,11 @@ async function vendidos90() {
     const data = new Map();
     for (const l of lineas) {
         const pid = nuevos.m2oId(l.product_id);
-        if (pid) data.set(pid, (data.get(pid) || 0) + (Number(l.qty) || 0));
+        if (!pid) continue;
+        const prev = data.get(pid) || { qty: 0, monto: 0 };
+        prev.qty += Number(l.qty) || 0;
+        prev.monto += Number(l.price_subtotal_incl) || 0;
+        data.set(pid, prev);
     }
     vendidosCache = { at: Date.now(), data };
     console.log(`📦 Agente: ventas de ${VENDIDOS_DIAS} días cargadas (${data.size} productos)`);
@@ -680,7 +814,7 @@ async function vendidos90() {
  * GET productos. Neggo no lleva stock en Odoo: archivar = agotado. Por eso "con stock" es
  * activo y no archivado en la app; stock=false devuelve los agotados. El precio es el final.
  */
-async function listarProductos({ rubro, stock, q, solo_publicados: soloPublicados, orden, excluir_compras_de: excluirDe, page, limit, offset }) {
+async function listarProductos({ rubros, stock, q, precio_min: precioMin, solo_publicados: soloPublicados, orden, excluir_compras_de: excluirDe, page, limit, offset }) {
     const nombres = await categoriasDeProductos();
     const labels = health.rubroLabels(nombres);
 
@@ -689,12 +823,16 @@ async function listarProductos({ rubro, stock, q, solo_publicados: soloPublicado
     where.push(stock === false
         ? '(p.active = false OR p.locally_archived = true)'
         : '(p.active = true AND p.locally_archived = false)');
-    if (rubro) {
-        const key = health.rubroKey(rubro);
-        const match = key ? nombres.filter((n) => health.rubroKey(n) === key) : [];
+    if (rubros && rubros.length) {
+        const keys = new Set(rubros.map((r) => health.rubroKey(r)).filter(Boolean));
+        const match = nombres.filter((n) => keys.has(health.rubroKey(n)));
         if (!match.length) return { data: [], total: 0, page, limit };
         params.push(match);
         where.push(`p.categ_name = ANY($${params.length}::text[])`);
+    }
+    if (precioMin !== undefined) {
+        params.push(precioMin);
+        where.push(`p.list_price >= $${params.length}`);
     }
     if (q) {
         params.push(`%${q}%`);
@@ -716,7 +854,7 @@ async function listarProductos({ rubro, stock, q, solo_publicados: soloPublicado
 
     // Más vendidos primero. Si Odoo no responde, se ordena por nombre y se avisa en el log
     let vendidos = new Map();
-    if (orden === 'vendidos') {
+    if (orden !== 'nombre') {
         try {
             vendidos = await vendidos90();
         } catch (err) {
@@ -724,15 +862,18 @@ async function listarProductos({ rubro, stock, q, solo_publicados: soloPublicado
         }
     }
     const disponible = '(p.active = true AND p.locally_archived = false)';
-    const ordenSql = orden === 'vendidos'
-        ? `${disponible} DESC, COALESCE(v.qty, 0) DESC, p.name ASC, p.odoo_id ASC`
-        : `${disponible} DESC, p.name ASC, p.odoo_id ASC`;
-    const qParams = [...params, [...vendidos.keys()], [...vendidos.values()]];
+    const ordenSql = {
+        facturacion: `${disponible} DESC, COALESCE(v.monto, 0) DESC, p.name ASC, p.odoo_id ASC`,
+        vendidos: `${disponible} DESC, COALESCE(v.qty, 0) DESC, p.name ASC, p.odoo_id ASC`,
+        nombre: `${disponible} DESC, p.name ASC, p.odoo_id ASC`,
+    }[orden];
+    const qParams = [...params, [...vendidos.keys()], [...vendidos.values()].map((x) => x.qty), [...vendidos.values()].map((x) => x.monto)];
     const { rows } = await pool.query(
         `SELECT p.odoo_id, p.name, p.list_price, p.categ_name, p.template_id, p.is_published,
-                ${disponible} AS stock, COALESCE(v.qty, 0) AS vendidos
+                ${disponible} AS stock, COALESCE(v.qty, 0) AS vendidos, COALESCE(v.monto, 0) AS facturado, p.synced_at
          FROM odoo_products_cache p
-         LEFT JOIN unnest($${qParams.length - 1}::int[], $${qParams.length}::numeric[]) AS v(pid, qty) ON v.pid = p.odoo_id
+         LEFT JOIN unnest($${qParams.length - 2}::int[], $${qParams.length - 1}::numeric[], $${qParams.length}::numeric[]) AS v(pid, qty, monto)
+           ON v.pid = p.odoo_id
          WHERE ${whereSql}
          ORDER BY ${ordenSql}
          LIMIT ${limit} OFFSET ${offset}`, qParams);
@@ -758,6 +899,8 @@ async function listarProductos({ rubro, stock, q, solo_publicados: soloPublicado
             categoria: r.categ_name || null,
             stock: r.stock,
             vendidos_90d: Math.round(Number(r.vendidos) * 100) / 100,
+            facturado_90d: Math.round(Number(r.facturado) * 100) / 100,
+            precio_actualizado: r.synced_at ? nuevos.toArIso(r.synced_at) : null,
             url: w && w.is_published ? productLink(w.website_url) : null,
             imagen: publicado ? urlImagen(r.template_id) : null,
         };
@@ -798,7 +941,11 @@ module.exports = {
     actualizarSeguimiento,
     actualizarCliente,
     registrarInteraccion,
-    registrarEnvio,
+    reservarEnvio,
+    confirmarEnvio,
+    cancelarEnvio,
+    estadoEnvio,
+    marcarRevisado,
     listarInteracciones,
     listarProductos,
     registrarFeedback,

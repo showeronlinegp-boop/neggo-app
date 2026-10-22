@@ -32,15 +32,18 @@ function testQueryNuevos() {
     assert.strictEqual(v.validarQueryNuevos({ no_contactar: 'todos' }).value.no_contactar, null);
     assert.strictEqual(v.validarQueryNuevos({ para_hoy: 'true' }).value.para_hoy, true);
     assert.deepStrictEqual(campos(v.validarQueryNuevos({ para_hoy: 'hoy' }).errors), ['para_hoy']);
-    const prod = v.validarQueryProductos({ orden: 'nombre', excluir_compras_de: '1596', solo_publicados: 'true' });
+    const prod = v.validarQueryProductos({ orden: 'nombre', excluir_compras_de: '1596', solo_publicados: 'true', rubro: 'Bazar, Tecnología', precio_min: '1000' });
     assert.deepStrictEqual(prod.errors, []);
     assert.strictEqual(prod.value.excluir_compras_de, 1596);
-    assert.strictEqual(v.validarQueryProductos({}).value.orden, 'vendidos');
-    assert.deepStrictEqual(campos(v.validarQueryProductos({ orden: 'precio', excluir_compras_de: 'x' }).errors), ['excluir_compras_de', 'orden']);
+    assert.deepStrictEqual(prod.value.rubros, ['Bazar', 'Tecnología']);
+    assert.strictEqual(prod.value.precio_min, 1000);
+    assert.strictEqual(v.validarQueryProductos({}).value.orden, 'facturacion');
+    assert.deepStrictEqual(campos(v.validarQueryProductos({ orden: 'precio', excluir_compras_de: 'x', precio_min: '-1' }).errors), ['excluir_compras_de', 'orden', 'precio_min']);
+    assert.strictEqual(v.validarQueryNuevos({ con_respuesta_pendiente: 'true' }).value.con_respuesta_pendiente, true);
     const mal = v.validarQueryNuevos({ etapa: 'dia_3', no_contactar: 'si', limit: '101', page: '0' });
     assert.deepStrictEqual(campos(mal.errors), ['etapa', 'limit', 'no_contactar', 'page']);
     assert.strictEqual(v.validarQueryProductos({ stock: 'quizas' }).errors[0].campo, 'stock');
-    assert.strictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubro, 'Librería');
+    assert.deepStrictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubros, ['Librería']);
 }
 
 function testFechasIso() {
@@ -94,9 +97,14 @@ function testInteraccion() {
 }
 
 function testEnvio() {
-    const ok = v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'grok-1001-dia_7' }, NOW);
+    const ok = v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'grok-1001-dia_7', productos_recomendados: [12473, 12473, 9] });
     assert.deepStrictEqual(ok.errors, []);
-    assert.strictEqual(ok.value.fecha, NOW);
+    assert.deepStrictEqual(ok.value.productos_recomendados, [12473, 9]);
+    // La fecha ya no se acepta: manda la hora del servidor
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'x', fecha: '2026-10-22' }).errors), ['fecha']);
+    assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_7', mensaje: 'Hola', id_externo: 'x', productos_recomendados: ['a'] }).errors), ['productos_recomendados']);
+    assert.deepStrictEqual(v.validarIdExternoRuta('grok-1-dia_1').errors, []);
+    assert.strictEqual(v.validarIdExternoRuta('con espacio').errors.length, 1);
     // Solo etapas de la cadencia, y el id_externo es obligatorio
     assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'finalizado', mensaje: 'Hola' }, NOW).errors), ['etapa', 'id_externo']);
     assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_1', mensaje: '', id_externo: 'x', tipo: 'enviado' }, NOW).errors), ['mensaje', 'tipo']);
@@ -147,6 +155,7 @@ function testAuth() {
         let r = correrAuth(`Bearer ${clave}`);
         assert.strictEqual(r.res.statusCode, 503);
         assert.strictEqual(r.res.body.error, 'API del agente deshabilitada');
+        assert.strictEqual(r.res.body.codigo, 'deshabilitada');
 
         process.env.AGENTE_API_KEY = 'corta';
         assert.strictEqual(correrAuth('Bearer corta').res.statusCode, 503);
@@ -154,7 +163,7 @@ function testAuth() {
         process.env.AGENTE_API_KEY = clave;
         r = correrAuth(null);
         assert.strictEqual(r.res.statusCode, 401);
-        assert.deepStrictEqual(r.res.body, { success: false, error: 'API key inválida' });
+        assert.deepStrictEqual(r.res.body, { success: false, error: 'API key inválida', codigo: 'api_key_invalida' });
         assert.strictEqual(correrAuth(`Bearer ${'b'.repeat(64)}`).res.statusCode, 401);
         assert.strictEqual(correrAuth('Bearer otra').res.statusCode, 401);
         assert.strictEqual(correrAuth(clave).res.statusCode, 401);

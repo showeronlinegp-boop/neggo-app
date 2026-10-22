@@ -3,6 +3,7 @@
 const assert = require('assert');
 const {
     calcularClientesNuevos, ticketsDeNuevos, toArIso, tocaHoy, proximaAccion, ventanaAbierta, errorTransicion,
+    vence, abreA, respuestaPendiente,
     limpiarNombre, rubroDeCompras, categoriasCompradas,
 } = require('./agenteNuevos');
 
@@ -182,6 +183,27 @@ function testVentana() {
     assert.ok(!ventanaAbierta(new Date('2026-10-26T02:00:00Z')));  // domingo 23:00 en Argentina
 }
 
+function testVenceYAbre() {
+    assert.strictEqual(vence('2026-10-10', 'dia_1'), '2026-10-16');
+    assert.strictEqual(vence('2026-10-10', 'dia_7'), '2026-10-24');
+    assert.strictEqual(vence('2026-10-10', 'dia_15'), '2026-10-30');
+    assert.strictEqual(vence('2026-10-10', null), null);
+    // Abierto: null. Jueves 19:00 → viernes 9:00. Viernes 18:30 → lunes 9:00. Jueves 7:00 → ese día 9:00
+    assert.strictEqual(abreA(new Date('2026-10-22T15:00:00Z')), null);
+    assert.strictEqual(abreA(new Date('2026-10-22T22:00:00Z')), '2026-10-23T09:00:00-03:00');
+    assert.strictEqual(abreA(new Date('2026-10-23T21:30:00Z')), '2026-10-26T09:00:00-03:00');
+    assert.strictEqual(abreA(new Date('2026-10-22T10:00:00Z')), '2026-10-22T09:00:00-03:00');
+}
+
+function testRespuestaPendiente() {
+    const t = (r, e, v) => respuestaPendiente({ ultimoRecibido: r, ultimoEnviado: e, revisadoHasta: v });
+    assert.strictEqual(t(null, '2026-10-22T13:00:00Z', null), false);
+    assert.strictEqual(t('2026-10-22T14:00:00Z', '2026-10-22T13:00:00Z', null), true);
+    assert.strictEqual(t('2026-10-22T12:00:00Z', '2026-10-22T13:00:00Z', null), false);
+    // La marcó como revisada después de recibirla
+    assert.strictEqual(t('2026-10-22T14:00:00Z', '2026-10-22T13:00:00Z', '2026-10-22T14:05:00Z'), false);
+}
+
 function testTransiciones() {
     assert.strictEqual(errorTransicion({ actual: 'pendiente', nueva: 'dia_7' }), null);
     assert.strictEqual(errorTransicion({ actual: 'dia_7', nueva: 'dia_7' }), null);
@@ -207,7 +229,8 @@ function testNombresYRubro() {
 }
 
 const tests = [
-    testDiaQuinceNoSePierde, testTocaHoy, testProximaAccion, testVentana, testTransiciones, testNombresYRubro,
+    testDiaQuinceNoSePierde, testTocaHoy, testProximaAccion, testVentana, testVenceYAbre, testRespuestaPendiente,
+    testTransiciones, testNombresYRubro,
     testPrimeraCompraReciente, testBordeInclusivo, testPrimeraCompraVieja, testVariasComprasEnLaVentana,
     testZonaHoraria, testSenaYSaldo, testExcluidos, testDiasUno, testOrden, testProductosJuntados,
 ];
