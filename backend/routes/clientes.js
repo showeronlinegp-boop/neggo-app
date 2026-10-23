@@ -25,6 +25,7 @@
 // POST   /api/clientes/eventos/:eventId/respuesta      — { response: respondio|no_interesa, text? }
 //
 // GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
+// PUT    /api/clientes/:partnerId/contacto — { phone, city }: los escribe en el contacto de Odoo
 
 const express = require('express');
 const router = express.Router();
@@ -262,6 +263,17 @@ router.get('/:partnerId', ...auth, async (req, res) => {
         return ok(res, cliente);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar la ficha del cliente');
+    }
+});
+
+router.put('/:partnerId/contacto', ...auth, async (req, res) => {
+    try {
+        const { phone, city } = req.body || {};
+        const result = await clientes.setContacto(req.params.partnerId, { phone, city });
+        if (!result) return fail(res, 'No encontré ese cliente', 404);
+        return ok(res, result);
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el contacto en Odoo');
     }
 });
 

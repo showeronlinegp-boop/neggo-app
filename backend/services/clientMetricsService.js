@@ -593,6 +593,45 @@ async function setCercano(partnerId, cercano, userId = null) {
     return { odoo_partner_id: id, cercano: Boolean(cercano) };
 }
 
+const CONTACT_MAX = { phone: 40, city: 80 };
+
+/**
+ * Carga el teléfono y la ciudad del cliente: los escribe en el contacto de Odoo (res.partner)
+ * y en client_metrics_cache, para que la lista y la ficha los muestren sin esperar el sync.
+ * Un campo vacío lo borra en Odoo; uno que no viene no se toca.
+ * @returns {Promise<{ odoo_partner_id: number, phone: string|null, city: string|null } | null>} null si el cliente no existe
+ */
+async function setContacto(partnerId, { phone, city } = {}) {
+    await ensureSchema();
+    const id = parseInt(partnerId, 10);
+    if (!Number.isInteger(id) || id <= 0) return null;
+    const values = {};
+    for (const [field, raw] of Object.entries({ phone, city })) {
+        if (raw === undefined) continue;
+        const value = String(raw ?? '').trim().replace(/\s+/g, ' ');
+        if (value.length > CONTACT_MAX[field]) {
+            throw new followups.FollowupError(field === 'phone' ? 'El teléfono es demasiado largo' : 'La ciudad es demasiado larga');
+        }
+        values[field] = value || null;
+    }
+    if (!Object.keys(values).length) throw new followups.FollowupError('No mandaste ni teléfono ni ciudad');
+    const { rows: [existe] } = await pool.query(
+        'SELECT 1 FROM client_metrics_cache WHERE company = $1 AND odoo_partner_id = $2', [COMPANY, id]);
+    if (!existe) return null;
+
+    const odooValues = Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v || false]));
+    await callOdoo('res.partner', 'write', [[id], odooValues]);
+    console.log(`✅ CRM: contacto de ${id} actualizado en Odoo (${Object.keys(values).join(', ')})`);
+
+    const sets = Object.keys(values).map((col, i) => `${col} = $${i + 3}`);
+    const { rows: [row] } = await pool.query(
+        `UPDATE client_metrics_cache SET ${sets.join(', ')}
+         WHERE company = $1 AND odoo_partner_id = $2
+         RETURNING odoo_partner_id, phone, city`,
+        [COMPANY, id, ...Object.values(values)]);
+    return row;
+}
+
 /** Ficha del cliente: métricas guardadas + últimos tickets en vivo. */
 async function getClient(partnerId) {
     await ensureSchema();
@@ -622,6 +661,7 @@ module.exports = {
     listClients,
     summary,
     setCercano,
+    setContacto,
     getClient,
     EXCLUDED_NAMES,
     GENERIC_NAMES,
