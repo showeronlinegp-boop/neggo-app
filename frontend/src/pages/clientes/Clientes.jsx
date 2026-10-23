@@ -91,6 +91,16 @@ function Avatar({ nombre, size, t }) {
     );
 }
 
+// Fondo verde para los clientes con un contacto cargado: fuerte el mismo día y más claro
+// a medida que pasan los días, hasta desaparecer a los DIAS_VERDE (así se ve con quién ya se habló)
+const DIAS_VERDE = 14;
+const VERDE_MAX = 24; // % de verde sobre el fondo el día del contacto
+function fondoContacto(dias, t) {
+    if (dias == null || dias >= DIAS_VERDE) return undefined;
+    const pct = Math.round(VERDE_MAX * (1 - Math.max(dias, 0) / DIAS_VERDE));
+    return `color-mix(in srgb, ${t.color.success} ${pct}%, ${t.color.surface})`;
+}
+
 // modo: ancho (todas las columnas) · medio (más compacta) · tarjeta (celular o pantalla angosta)
 function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
     const isMobile = modo === 'tarjeta';
@@ -678,7 +688,10 @@ export default function Clientes() {
                     rows.map((c) => {
                         const elegido = elegidos.has(c.odoo_partner_id);
                         return (
-                            <div key={c.odoo_partner_id} style={{ display: 'flex', alignItems: 'stretch', background: elegido ? t.color.primarySoft : undefined }}>
+                            <div key={c.odoo_partner_id}
+                                title={c.days_since_contact != null && c.days_since_contact < DIAS_VERDE
+                                    ? `Último contacto: ${fmtHace(Math.floor(c.days_since_contact)).toLowerCase()}` : undefined}
+                                style={{ display: 'flex', alignItems: 'stretch', background: elegido ? t.color.primarySoft : fondoContacto(c.days_since_contact, t) }}>
                                 {eligiendo
                                     ? <CasillaElegir c={c} elegido={elegido} onToggle={toggleElegido} modo={modo} t={t} />
                                     : <BotonCercano c={c} onToggle={toggleCercano} modo={modo} t={t} />}
