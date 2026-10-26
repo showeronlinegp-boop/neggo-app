@@ -30,10 +30,12 @@ export const FORMATOS = {
     },
 };
 
-// Saca códigos internos del nombre: [CY003], {WD931}, "Art. CT30CM" al final, asteriscos.
+// Saca códigos internos del nombre: [CY003], {WD931}, (HAT11), (218194), "Art. CT30CM" al final,
+// asteriscos. Los paréntesis con texto normal, como "(22 cm)" o "(Set Diamante)", quedan.
 export function limpiarNombre(nombre) {
     return String(nombre || '')
         .replace(/\[[^\]]*\]|\{[^}]*\}/g, ' ')
+        .replace(/\(\s*[A-Z0-9-]*\d[A-Z0-9-]*\s*\)/g, ' ')
         .replace(/\bArt\.?\s*\S+\s*$/i, ' ')
         .replace(/\*+/g, ' ')
         .replace(/\s+/g, ' ')
