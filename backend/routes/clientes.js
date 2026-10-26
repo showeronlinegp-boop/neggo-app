@@ -24,6 +24,9 @@
 // POST   /api/clientes/acciones/:actionId/hecha        — { result? }
 // POST   /api/clientes/eventos/:eventId/respuesta      — { response: respondio|no_interesa, text? }
 //
+// Bot de seguimiento (Grok Bot), solo lectura:
+// GET    /api/clientes/bot?dias=7&refresh=1 — cola de hoy, actividad, contactos, rechazos y feedback
+//
 // GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
 
 const express = require('express');
@@ -33,6 +36,7 @@ const { ok, fail, paginated } = require('../utils/response');
 const clientes = require('../services/clientMetricsService');
 const followups = require('../services/crmFollowupService');
 const leads = require('../services/crmLeadService');
+const botMonitor = require('../services/agenteMonitorService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -248,6 +252,19 @@ router.post('/eventos/:eventId/respuesta', ...auth, async (req, res) => {
         return ok(res, await followups.setResponse(req.params.eventId, { response, text, userId: req.user.id }), 201);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar la respuesta');
+    }
+});
+
+// ── Monitoreo del bot de seguimiento (Grok Bot) ──────────────────
+
+router.get('/bot', ...auth, async (req, res) => {
+    try {
+        return ok(res, await botMonitor.monitor({
+            dias: req.query.dias,
+            refresh: req.query.refresh === '1' || req.query.refresh === 'true',
+        }));
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer la actividad del bot');
     }
 });
 

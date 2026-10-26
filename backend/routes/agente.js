@@ -88,6 +88,17 @@ window.ui = SwaggerUIBundle({ url: 'openapi.json', dom_id: '#swagger', persistAu
 
 router.use(agenteAuth);
 
+// El código de error de cada respuesta queda en el activity log: la pestaña del bot en Clientes
+// muestra por qué se rechazó cada pedido
+router.use((req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (body) => {
+        if (body && body.codigo) res.locals.agenteCodigo = body.codigo;
+        return json(body);
+    };
+    next();
+});
+
 router.get('/clientes/nuevos', async (req, res) => {
     const { value, errors } = v.validarQueryNuevos(req.query);
     if (errors.length) return invalid(res, errors);
