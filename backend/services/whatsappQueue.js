@@ -9,6 +9,11 @@ const { isTimeoutError } = require('./evolutionClient');
 
 const ART = 'America/Argentina/Buenos_Aires';
 const LOCK_KEY = 842190;
+// Cuando cortamos por timeout, Evolution sigue con ese envío por detrás (un estado se cifra
+// para toda la agenda). Con rate-overlimit es WhatsApp pidiendo bajar el ritmo.
+// En los dos casos no sale nada más, de ninguna tanda, durante este tiempo.
+const BUSY_AFTER_TIMEOUT_SECONDS = 10 * 60;
+const BUSY_AFTER_RATE_LIMIT_SECONDS = 15 * 60;
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, '..', 'sql', 'whatsapp.sql'), 'utf8');
 
 function clampInterval(value, fallback = 90) {
@@ -264,7 +269,39 @@ async function listQueue(pool, now = new Date()) {
     const last = await pool.query(
         'SELECT MAX(updated_at) AS at FROM whatsapp_messages WHERE attempts > 0'
     );
-    return estimateDepartures(rows, last.rows[0].at, now);
+    // Si Evolution está ocupado, nada sale antes de que se libere.
+    const busyUntil = await getBusyUntil(pool, now);
+    return estimateDepartures(rows, last.rows[0].at, busyUntil || now);
+}
+
+async function getBusyUntil(pool, now = new Date()) {
+    const { rows } = await pool.query(
+        'SELECT evolution_busy_until AS at FROM whatsapp_settings WHERE id = 1 AND evolution_busy_until > $1',
+        [now]
+    );
+    return rows.length ? new Date(rows[0].at) : null;
+}
+
+function busySecondsFor(err) {
+    if (isTimeoutError(err)) return BUSY_AFTER_TIMEOUT_SECONDS;
+    if (/rate-overlimit/i.test(String(err && err.message))) return BUSY_AFTER_RATE_LIMIT_SECONDS;
+    return 0;
+}
+
+async function markEvolutionBusy(pool, message, seconds, from) {
+    const until = new Date(from.getTime() + seconds * 1000);
+    await pool.query(`
+        UPDATE whatsapp_settings
+        SET evolution_busy_until = GREATEST(COALESCE(evolution_busy_until, $1), $1)
+        WHERE id = 1
+    `, [until]);
+    await logEvent(pool, {
+        batchId: message.batch_id,
+        messageId: message.id,
+        level: 'warn',
+        message: `Evolution sigue ocupado: la cola espera ${Math.round(seconds / 60)} min antes del próximo envío.`,
+    });
+    return until;
 }
 
 async function setBatchStatus(pool, id, from, to, logMessage) {
@@ -358,6 +395,10 @@ async function claimNext(pool, now) {
               AND NOT EXISTS (
                   SELECT 1 FROM whatsapp_messages inflight
                   WHERE inflight.status = 'enviando'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM whatsapp_settings s
+                  WHERE s.evolution_busy_until > $1
               )
               AND NOT EXISTS (
                   SELECT 1 FROM whatsapp_messages recent
@@ -461,6 +502,9 @@ async function tick(pool, deps, now = new Date()) {
         await recoverStuck(pool, now);
         const message = await claimNext(pool, now);
         if (!message) return { action: 'idle' };
+        // La espera hasta el próximo cuenta desde que Evolution respondió, no desde que arrancó.
+        const started = Date.now();
+        const finishedAt = () => new Date(now.getTime() + (Date.now() - started));
         try {
             const media = await deps.loadImage(message);
             // Nunca sale un mensaje sin texto o sin foto, ni a un grupo ni a los estados.
@@ -478,14 +522,17 @@ async function tick(pool, deps, now = new Date()) {
                     mimetype: ready.mimetype,
                     fileName: `producto-${message.odoo_id}.${ready.mimetype.split('/')[1]}`,
                 });
-            await markSent(pool, message, evolutionId, now);
+            await markSent(pool, message, evolutionId, finishedAt());
             return { action: 'enviado', id: message.id };
         } catch (err) {
+            const ended = finishedAt();
             const retry = !(message.destino === 'estado' && isTimeoutError(err));
             const errorText = !retry
                 ? `Timeout de Evolution: el estado pudo haberse publicado. No se reintenta para no duplicarlo. (${err.message || 'timeout'})`
                 : (err.message || 'Error al enviar');
-            await markFailed(pool, message, errorText, now, { retry });
+            await markFailed(pool, message, errorText, ended, { retry });
+            const busySeconds = busySecondsFor(err);
+            if (busySeconds > 0) await markEvolutionBusy(pool, message, busySeconds, ended);
             return { action: 'error', id: message.id, error: err.message };
         }
     } finally {
@@ -503,6 +550,7 @@ module.exports = {
     createBatch,
     listBatches,
     listQueue,
+    getBusyUntil,
     estimateDepartures,
     jitterGaps,
     getBatch,
