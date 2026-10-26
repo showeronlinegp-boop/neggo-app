@@ -427,11 +427,15 @@ const SORTS = {
 };
 const STAGE_VALUES = followups.STAGES;
 // Cliente + etapa del funnel (sin fila = Frío) + importancia + fecha de la próxima acción pendiente
-// + si está en la lista de seguimiento cercano
+// + si está en la lista de seguimiento cercano + días (con decimales) desde el último contacto
+// cargado (los cambios de etapa y las compras los anota el sistema: no cuentan)
 const CLIENTS_FROM = `(
     SELECT c.*, COALESCE(f.stage, 'frio') AS stage, COALESCE(f.importance, 0) AS importance,
            (SELECT MIN(a.due_date)::text FROM crm_actions a
             WHERE a.odoo_partner_id = c.odoo_partner_id AND a.done = false) AS next_action_date,
+           (SELECT ROUND((EXTRACT(EPOCH FROM NOW()::timestamp - MAX(e.created_at)) / 86400)::numeric, 2)::float
+            FROM crm_events e
+            WHERE e.odoo_partner_id = c.odoo_partner_id AND e.kind NOT IN ('etapa', 'compra')) AS days_since_contact,
            (w.id IS NOT NULL) AS cercano
     FROM client_metrics_cache c
     LEFT JOIN crm_followups f ON f.odoo_partner_id = c.odoo_partner_id
@@ -495,7 +499,7 @@ async function listClients(f = {}) {
         `SELECT odoo_partner_id, partner_name, phone, city, tags, rubro, health, trend, trend_pct,
                 purchase_count, avg_ticket, revenue_12m, revenue_90d, last_purchase_date,
                 days_since_last_purchase, median_interval_days, interval_is_default,
-                monthly_revenue, open_quotations, priority, stage, importance, next_action_date, cercano
+                monthly_revenue, open_quotations, priority, stage, importance, next_action_date, cercano, days_since_contact
          FROM ${CLIENTS_FROM}
          WHERE ${whereSql}
          ORDER BY ${order}
