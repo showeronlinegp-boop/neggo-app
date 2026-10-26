@@ -2451,7 +2451,7 @@
           "categoria": {
             "type": "string",
             "nullable": true,
-            "description": "Categoría tal cual está en Odoo (puede venir sin tilde: usá rubro, que está normalizado)"
+            "description": "Categoría del producto, unificada como el rubro (con tilde y sin duplicados de Odoo como Tecnologia/Tecnología). Si Odoo no la reconoce como rubro, viene tal cual."
           },
           "stock": {
             "type": "boolean",
