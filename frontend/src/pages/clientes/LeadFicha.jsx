@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import Drawer from '../../components/common/Drawer';
+import AsignarCliente from './AsignarCliente';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
@@ -83,6 +84,10 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
                         Cuando compre y aparezca en Odoo con este mismo teléfono, pasa solo a Clientes con todo su seguimiento.
                     </div>
+                )}
+                {leadId && (
+                    <AsignarCliente leadId={leadId} nombre={datos ? nombreLead(datos) : null} t={t}
+                        onAsignado={() => { onCambio?.(); onClose(); }} />
                 )}
                 {leadId && <Seguimiento key={version} tipo="lead" id={leadId} onCambio={onCambio} />}
             </div>

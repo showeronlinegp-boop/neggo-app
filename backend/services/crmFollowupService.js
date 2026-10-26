@@ -423,8 +423,13 @@ async function afterSync() {
     return { vinculados, ganados };
 }
 
-async function linkLead(leadId, partnerId) {
-    await withTransaction(async (db) => {
+/**
+ * Pasa un posible cliente a un cliente de Odoo con todo su seguimiento.
+ * Sin `note` es el vínculo automático (mismo teléfono); con `note`, una asignación a mano.
+ */
+async function linkLead(leadId, partnerId, { note = null, userId = null, db: outer = null } = {}) {
+    const run = outer ? (fn) => fn(outer) : withTransaction;
+    await run(async (db) => {
         await db.query('UPDATE crm_leads SET odoo_partner_id = $2, linked_at = NOW() WHERE id = $1', [leadId, partnerId]);
         await db.query('UPDATE crm_events SET odoo_partner_id = $2, lead_id = NULL WHERE lead_id = $1', [leadId, partnerId]);
         await db.query('UPDATE crm_actions SET odoo_partner_id = $2, lead_id = NULL WHERE lead_id = $1', [leadId, partnerId]);
@@ -432,9 +437,36 @@ async function linkLead(leadId, partnerId) {
         if (own) await db.query('DELETE FROM crm_followups WHERE lead_id = $1', [leadId]);
         else await db.query('UPDATE crm_followups SET odoo_partner_id = $2, lead_id = NULL WHERE lead_id = $1', [leadId, partnerId]);
         await insertEvent(db, { col: 'odoo_partner_id', id: partnerId }, {
-            kind: 'nota', text: 'Apareció en Odoo con el mismo teléfono: pasa de posible cliente a cliente',
-            meta: { lead_id: leadId, auto: true },
+            kind: 'nota', text: note || 'Apareció en Odoo con el mismo teléfono: pasa de posible cliente a cliente',
+            meta: note ? { lead_id: leadId, manual: true } : { lead_id: leadId, auto: true },
+            userId,
         });
+    });
+}
+
+/**
+ * Asignación a mano (nota #82): el posible cliente es otro contacto de un cliente que ya está
+ * en Odoo (otro celular, un empleado, la pareja). Queda anotado en el historial del cliente.
+ */
+async function assignLead(leadId, partnerId, userId = null) {
+    await ensureSchema();
+    const lead = parseInt(leadId, 10);
+    if (!lead) throw new FollowupError('Posible cliente inválido');
+    const target = toTarget('cliente', partnerId);
+    return withTransaction(async (db) => {
+        const { rows: [row] } = await db.query(
+            'SELECT id, name, phone, email, odoo_partner_id FROM crm_leads WHERE id = $1 FOR UPDATE', [lead]);
+        if (!row) throw new FollowupError('No encontré ese posible cliente', 404);
+        if (row.odoo_partner_id) throw new FollowupError('Ya está asignado a un cliente', 409);
+        const { rows: [cliente] } = await db.query(
+            `SELECT partner_name FROM client_metrics_cache
+             WHERE company = $1 AND odoo_partner_id = $2 AND is_generic = false`, [COMPANY, target.id]);
+        if (!cliente) throw new FollowupError('No encontré ese cliente', 404);
+        const contacto = [row.name, row.phone || row.email].filter(Boolean).join(' · ');
+        await linkLead(lead, target.id, {
+            db, userId, note: `Se le asignó un contacto que estaba como posible cliente: ${contacto}`,
+        });
+        return { lead_id: lead, odoo_partner_id: target.id, partner_name: cliente.partner_name };
     });
 }
 
@@ -462,4 +494,5 @@ module.exports = {
     setResponse,
     myDay,
     afterSync,
+    assignLead,
 };
