@@ -6,7 +6,7 @@
 // PUT    /api/clientes/cercanos/:partnerId — { cercano: true|false } suma o saca de esa lista
 //
 // Posibles clientes (D11)
-// GET    /api/clientes/leads?search=&status=&stage=&city=&sort=recientes|nombre|accion&limit=&offset=
+// GET    /api/clientes/leads?search=&status=&stage=&city=&presentacion=sin|con&celular=1&sort=recientes|nombre|accion&limit=&offset=
 // GET    /api/clientes/leads/resumen
 // POST   /api/clientes/leads          — alta a mano { name, phone, email, city }
 // POST   /api/clientes/leads/importar — { csv, dry_run } CSV de Google Contacts (solo admin)
@@ -19,6 +19,7 @@
 // PUT    /api/clientes/seguimiento/:tipo/:id/importancia — { importance } de 0 a 5
 // PUT    /api/clientes/importancia                     — { partner_ids, importance }: varios clientes juntos
 // POST   /api/clientes/seguimiento/:tipo/:id/eventos   — { kind, text }
+// POST   /api/clientes/seguimiento/:tipo/:id/presentacion — anota el mensaje de presentación mandado por WhatsApp
 // POST   /api/clientes/seguimiento/:tipo/:id/acciones  — { type, due_date, note }
 // PUT    /api/clientes/acciones/:actionId              — { type, due_date, note }
 // POST   /api/clientes/acciones/:actionId/hecha        — { result? }
@@ -94,6 +95,8 @@ router.get('/leads', ...auth, async (req, res) => {
             status: req.query.status,
             stage: req.query.stage,
             city: req.query.city,
+            presentacion: req.query.presentacion,
+            celular: req.query.celular === '1' || req.query.celular === 'true',
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -201,7 +204,16 @@ router.post('/seguimiento/:tipo/:id/eventos', ...auth, async (req, res) => {
     }
 });
 
-router.post('/seguimiento/:tipo/:id/acciones', ...auth, async (req, res) => {
+router.post('/seguimiento/:tipo/:id/presentacion', ...auth, async (req, res) => {
+    try {
+        const target = followups.toTarget(req.params.tipo, req.params.id);
+        return ok(res, await followups.markPresentation(target, { userId: req.user.id }), 201);
+    } catch (err) {
+        return handle(res, err, 'No se pudo anotar la presentación');
+    }
+});
+
+router.post('/seguimiento/:tipo/:id/acciones',...auth, async (req, res) => {
     try {
         const target = followups.toTarget(req.params.tipo, req.params.id);
         const { type, due_date: dueDate, note } = req.body || {};
