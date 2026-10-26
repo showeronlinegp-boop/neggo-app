@@ -32,6 +32,7 @@ const routeTitles = {
     '/admin':                        'Panel de administración',
     '/admin/odoo-products':          'Productos Odoo',
     '/admin/whatsapp':               'WhatsApp',
+    '/admin/estados':                'Imágenes para estados',
     '/usuarios':                     'Usuarios',
     '/actividad':                    'Log de actividad',
 };
@@ -81,6 +82,7 @@ const NAV_GROUPS = [
         items: [
             { icon: Icon.BookOpen,      label: 'Catálogos PDF',         path: '/preventas/catalogos',      roles: ['admin', 'vendedor'] },
             { icon: Icon.MessageCircle, label: 'WhatsApp',              path: '/admin/whatsapp',           roles: ['admin'] },
+            { icon: Icon.Image,         label: 'Imágenes para estados', path: '/admin/estados',            roles: ['admin'] },
         ],
     },
     {
