@@ -16,6 +16,7 @@ import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
 import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
+import BotSeguimiento from './BotSeguimiento';
 import {
     HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
@@ -23,7 +24,7 @@ import {
 
 // CRM de clientes: quién compra, a qué ritmo, quién se está enfriando y en qué etapa
 // del seguimiento está cada uno (fase 2). La pestaña Posibles clientes tiene los que
-// todavía no están en Odoo.
+// todavía no están en Odoo. La pestaña Bot de seguimiento monitorea al bot de WhatsApp (Grok Bot).
 // Las métricas salen de los tickets del POS de Neggo; las cotizaciones abiertas de los últimos
 // 60 días, de Neggo y Preventas, aparecen como motivo para hablarle al cliente.
 
@@ -532,11 +533,14 @@ export default function Clientes() {
                 tabs={[
                     { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
                     { value: 'leads', label: 'Posibles clientes', icon: <Icon.Plus size={16} />, count: leadsTotal },
+                    { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
                 ]}
             />
 
             {tab === 'leads' ? (
                 <PosiblesClientes onResumen={(r) => setLeadsTotal(r.total)} />
+            ) : tab === 'bot' ? (
+                <BotSeguimiento />
             ) : (
             <>
 

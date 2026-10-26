@@ -67,6 +67,7 @@ function activityLog(req, res, next) {
                 JSON.stringify({
                     path: req.path,
                     ...(req.agente ? { actor: 'agente' } : {}),
+                    ...(res.locals.agenteCodigo ? { codigo: res.locals.agenteCodigo } : {}),
                     status: res.statusCode,
                     duration_ms: duration
                 }),
