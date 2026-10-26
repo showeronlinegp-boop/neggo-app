@@ -6,11 +6,12 @@
 // PUT    /api/clientes/cercanos/:partnerId — { cercano: true|false } suma o saca de esa lista
 //
 // Posibles clientes (D11)
-// GET    /api/clientes/leads?search=&status=&stage=&city=&sort=recientes|nombre|accion&limit=&offset=
+// GET    /api/clientes/leads?search=&status=&stage=&city=&presentacion=sin|con&celular=1&sort=recientes|nombre|accion&limit=&offset=
 // GET    /api/clientes/leads/resumen
 // POST   /api/clientes/leads          — alta a mano { name, phone, email, city }
 // POST   /api/clientes/leads/importar — { csv, dry_run } CSV de Google Contacts (solo admin)
 // GET    /api/clientes/leads/:id
+// POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
 //
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
@@ -19,12 +20,17 @@
 // PUT    /api/clientes/seguimiento/:tipo/:id/importancia — { importance } de 0 a 5
 // PUT    /api/clientes/importancia                     — { partner_ids, importance }: varios clientes juntos
 // POST   /api/clientes/seguimiento/:tipo/:id/eventos   — { kind, text }
+// POST   /api/clientes/seguimiento/:tipo/:id/presentacion — anota el mensaje de presentación mandado por WhatsApp
 // POST   /api/clientes/seguimiento/:tipo/:id/acciones  — { type, due_date, note }
 // PUT    /api/clientes/acciones/:actionId              — { type, due_date, note }
 // POST   /api/clientes/acciones/:actionId/hecha        — { result? }
 // POST   /api/clientes/eventos/:eventId/respuesta      — { response: respondio|no_interesa, text? }
 //
+// Bot de seguimiento (Grok Bot), solo lectura:
+// GET    /api/clientes/bot?dias=7&refresh=1 — cola de hoy, actividad, contactos, rechazos y feedback
+//
 // GET    /api/clientes/:partnerId     — ficha: métricas, cotizaciones recientes y últimos tickets
+// PUT    /api/clientes/:partnerId/contacto — { phone, city }: los escribe en el contacto de Odoo
 
 const express = require('express');
 const router = express.Router();
@@ -33,6 +39,7 @@ const { ok, fail, paginated } = require('../utils/response');
 const clientes = require('../services/clientMetricsService');
 const followups = require('../services/crmFollowupService');
 const leads = require('../services/crmLeadService');
+const botMonitor = require('../services/agenteMonitorService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -94,6 +101,8 @@ router.get('/leads', ...auth, async (req, res) => {
             status: req.query.status,
             stage: req.query.stage,
             city: req.query.city,
+            presentacion: req.query.presentacion,
+            celular: req.query.celular === '1' || req.query.celular === 'true',
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -139,6 +148,15 @@ router.get('/leads/:id', ...auth, async (req, res) => {
         return ok(res, lead);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar el posible cliente');
+    }
+});
+
+router.post('/leads/:id/asignar', ...auth, async (req, res) => {
+    try {
+        const { partner_id: partnerId } = req.body || {};
+        return ok(res, await followups.assignLead(req.params.id, partnerId, req.user.id));
+    } catch (err) {
+        return handle(res, err, 'No se pudo asignar el posible cliente');
     }
 });
 
@@ -201,7 +219,16 @@ router.post('/seguimiento/:tipo/:id/eventos', ...auth, async (req, res) => {
     }
 });
 
-router.post('/seguimiento/:tipo/:id/acciones', ...auth, async (req, res) => {
+router.post('/seguimiento/:tipo/:id/presentacion', ...auth, async (req, res) => {
+    try {
+        const target = followups.toTarget(req.params.tipo, req.params.id);
+        return ok(res, await followups.markPresentation(target, { userId: req.user.id }), 201);
+    } catch (err) {
+        return handle(res, err, 'No se pudo anotar la presentación');
+    }
+});
+
+router.post('/seguimiento/:tipo/:id/acciones',...auth, async (req, res) => {
     try {
         const target = followups.toTarget(req.params.tipo, req.params.id);
         const { type, due_date: dueDate, note } = req.body || {};
@@ -251,6 +278,19 @@ router.post('/eventos/:eventId/respuesta', ...auth, async (req, res) => {
     }
 });
 
+// ── Monitoreo del bot de seguimiento (Grok Bot) ──────────────────
+
+router.get('/bot', ...auth, async (req, res) => {
+    try {
+        return ok(res, await botMonitor.monitor({
+            dias: req.query.dias,
+            refresh: req.query.refresh === '1' || req.query.refresh === 'true',
+        }));
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer la actividad del bot');
+    }
+});
+
 // ── Ficha del cliente (al final: /:partnerId atrapa cualquier ruta) ──
 
 router.get('/:partnerId', ...auth, async (req, res) => {
@@ -262,6 +302,17 @@ router.get('/:partnerId', ...auth, async (req, res) => {
         return ok(res, cliente);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar la ficha del cliente');
+    }
+});
+
+router.put('/:partnerId/contacto', ...auth, async (req, res) => {
+    try {
+        const { phone, city } = req.body || {};
+        const result = await clientes.setContacto(req.params.partnerId, { phone, city });
+        if (!result) return fail(res, 'No encontré ese cliente', 404);
+        return ok(res, result);
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el contacto en Odoo');
     }
 });
 

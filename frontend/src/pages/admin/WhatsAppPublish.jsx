@@ -335,14 +335,6 @@ export default function WhatsAppPublish() {
                 onNotice={setNotice}
             />
 
-            <WhatsAppRandomPicker
-                destino="estado"
-                intervalSeconds={intervalSeconds}
-                onScheduled={onRandomScheduled}
-                onError={setError}
-                onNotice={setNotice}
-            />
-
             <WhatsAppQueue refreshKey={queueKey} />
 
             <Card>

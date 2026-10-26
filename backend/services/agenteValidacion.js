@@ -12,6 +12,8 @@ const LIMIT_MAX = 100;
 const TEXTO_MAX = 4000;
 const CONTACTO_MAX = 200;
 const FEEDBACK_TIPOS = ['falta', 'error', 'mejora', 'comentario'];
+// Los mensajes no hablan del IVA ni de impuestos: los precios son finales (nota #93)
+const MENCIONA_IVA_RE = /\b(?:iva|i\.v\.a|impuestos?)\b/i;
 // Margen para relojes desfasados: una fecha puede estar hasta 5 minutos en el futuro
 const FUTURO_MAX_MS = 5 * 60 * 1000;
 
@@ -264,6 +266,9 @@ function validarEnvio(body) {
     if (ETAPAS_ENVIO.includes(body.etapa)) value.etapa = body.etapa;
     else errors.push({ campo: 'etapa', error: `Es obligatorio y tiene que ser uno de: ${ETAPAS_ENVIO.join(', ')}` });
     value.mensaje = validarTexto('mensaje', body.mensaje, { obligatorio: true }, errors);
+    if (value.mensaje && MENCIONA_IVA_RE.test(value.mensaje)) {
+        errors.push({ campo: 'mensaje', error: 'No menciones el IVA ni impuestos: los precios son finales, poné solo el precio' });
+    }
     value.id_externo = validarIdExterno(body.id_externo, { obligatorio: true }, errors);
     if (body.productos_recomendados !== undefined && body.productos_recomendados !== null) {
         const lista = body.productos_recomendados;

@@ -134,13 +134,19 @@ const LEAD_SELECT = `
     SELECT l.id, l.name, l.phone, l.email, l.city, l.source, l.source_status, l.source_list, l.created_at,
            COALESCE(f.stage, 'frio') AS stage,
            (SELECT MIN(a.due_date)::text FROM crm_actions a WHERE a.lead_id = l.id AND a.done = false) AS next_action_date,
-           (SELECT MAX(e.created_at) FROM crm_events e WHERE e.lead_id = l.id) AS last_event_at
+           (SELECT MAX(e.created_at) FROM crm_events e WHERE e.lead_id = l.id) AS last_event_at,
+           (SELECT MAX(e.created_at) FROM crm_events e WHERE e.lead_id = l.id AND e.kind = 'presentacion') AS presentacion_at
     FROM crm_leads l
     LEFT JOIN crm_followups f ON f.lead_id = l.id`;
 
+// Ya recibió el mensaje de presentación (nota #81). Antes no se anotaba: arrancan todos sin.
+const PRESENTACION_EXISTS = `EXISTS (SELECT 1 FROM crm_events e WHERE e.lead_id = l.id AND e.kind = 'presentacion')`;
+
 /**
  * Listado de posibles clientes (sin los que ya pasaron a Odoo).
- * @param {{ search?: string, status?: string, stage?: string, city?: string, sort?: string, limit?: number, offset?: number }} f
+ * presentacion: 'sin' | 'con' según si ya se le mandó el mensaje de presentación (nota #81);
+ * celular: solo los que tienen celular (para mandarles por WhatsApp).
+ * @param {{ search?: string, status?: string, stage?: string, city?: string, presentacion?: string, celular?: boolean, sort?: string, limit?: number, offset?: number }} f
  */
 async function listLeads(f = {}) {
     await ensureSchema();
@@ -161,6 +167,9 @@ async function listLeads(f = {}) {
     else if (SOURCE_STATUSES.includes(f.status)) { params.push(f.status); where.push(`l.source_status = $${params.length}`); }
     if (f.stage) { params.push(f.stage); where.push(`COALESCE(f.stage, 'frio') = $${params.length}`); }
     if (f.city) { params.push(String(f.city).trim()); where.push(`LOWER(TRIM(l.city)) = LOWER($${params.length})`); }
+    if (f.presentacion === 'sin') where.push(`NOT ${PRESENTACION_EXISTS}`);
+    else if (f.presentacion === 'con') where.push(PRESENTACION_EXISTS);
+    if (f.celular) where.push('l.phone IS NOT NULL');
 
     const whereSql = where.join(' AND ');
     const limit = Math.min(Math.max(parseInt(f.limit, 10) || 50, 1), 200);
@@ -190,7 +199,12 @@ async function leadsSummary() {
          GROUP BY LOWER(TRIM(city)) ORDER BY n DESC, city ASC`);
     const { rows: [conv] } = await pool.query(
         'SELECT COUNT(*)::int AS n FROM crm_leads WHERE odoo_partner_id IS NOT NULL');
+    const { rows: [pres] } = await pool.query(
+        `SELECT COUNT(*) FILTER (WHERE ${PRESENTACION_EXISTS})::int AS con,
+                COUNT(*) FILTER (WHERE NOT ${PRESENTACION_EXISTS})::int AS sin
+         FROM crm_leads l WHERE l.odoo_partner_id IS NULL`);
     return {
+        presentacion: { con: pres.con, sin: pres.sin },
         total: byStatus.reduce((s, r) => s + r.n, 0),
         status: Object.fromEntries(byStatus.map((r) => [r.status, r.n])),
         stages: Object.fromEntries(byStage.map((r) => [r.stage, r.n])),

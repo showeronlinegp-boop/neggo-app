@@ -38,6 +38,16 @@ const NOT_RECENT = `
     )
 `;
 
+// Ni lo descargado como imagen de estado en los últimos $2 días (tabla de sql/estados_imagenes.sql).
+const NOT_DOWNLOADED = `
+    NOT EXISTS (
+        SELECT 1 FROM estado_imagenes_descargas eid
+        WHERE eid.odoo_id = opc.odoo_id
+          AND eid.company = opc.company
+          AND eid.created_at > NOW() - ($2::int * INTERVAL '1 day')
+    )
+`;
+
 function toProduct(row) {
     const amount = Math.ceil(Number(row.list_price) - 1e-9);
     const label = formatMoneyAR(amount);
@@ -97,7 +107,7 @@ async function listCategories(pool, company) {
     return rows;
 }
 
-async function pickRandom(pool, { company, category, count = 20, excludeIds = [] }) {
+async function pickRandom(pool, { company, category, count = 20, excludeIds = [], excludeDownloaded = false }) {
     assertCompany(company);
     if (!category) throw new Error('Elegí al menos una categoría');
     const n = Number(count);
@@ -112,6 +122,7 @@ async function pickRandom(pool, { company, category, count = 20, excludeIds = []
           AND opc.categ_name = $3
           AND NOT (opc.odoo_id = ANY($4::int[]))
           AND ${NOT_RECENT}
+          ${excludeDownloaded ? `AND ${NOT_DOWNLOADED}` : ''}
         ORDER BY random()
         LIMIT $5
     `, [company, RECENT_DAYS, String(category), exclude, n]);

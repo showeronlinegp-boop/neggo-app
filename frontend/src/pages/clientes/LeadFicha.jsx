@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import Drawer from '../../components/common/Drawer';
+import AsignarCliente from './AsignarCliente';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
 import Seguimiento from './Seguimiento';
+import { BotonPresentacion, fmtDia } from './Presentacion';
 import { SOURCE_STATUS_META, fmtFecha, linkWhatsApp, nombreLead } from './clientesUi';
 
 // Ficha de un posible cliente: datos de contacto, de dónde vino y su seguimiento.
@@ -13,6 +15,14 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
     const { tokens: t } = useTheme();
     const [lead, setLead] = useState(null);
     const [error, setError] = useState(null);
+    // Para que el historial muestre la presentación recién anotada
+    const [version, setVersion] = useState(0);
+
+    const presentada = (at) => {
+        setLead((l) => (l ? { ...l, presentacion_at: at } : l));
+        setVersion((v) => v + 1);
+        onCambio?.();
+    };
 
     useEffect(() => {
         if (!leadId) return undefined;
@@ -45,9 +55,10 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                             <Button variant="secondary">Escribile un mail</Button>
                         </a>
                     )}
+                    {wa && lead && <BotonPresentacion lead={lead} size="md" reenviar onEnviada={presentada} />}
                     {wa && (
                         <a href={wa} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-                            <Button variant="primary" leftIcon={<Icon.MessageCircle size={16} />}>Escribile por WhatsApp</Button>
+                            <Button variant={lead?.presentacion_at ? 'primary' : 'secondary'} leftIcon={<Icon.MessageCircle size={16} />}>Escribile por WhatsApp</Button>
                         </a>
                     )}
                 </div>
@@ -64,6 +75,9 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
                             {datos.source === 'google_contacts' ? 'Importado de los contactos' : 'Cargado a mano'} el {fmtFecha(String(datos.created_at).slice(0, 10))}
                         </span>
+                        {lead && (lead.presentacion_at
+                            ? <Badge tone="success">{`Presentación enviada el ${fmtDia(lead.presentacion_at)}`}</Badge>
+                            : <Badge tone="muted">Sin presentación</Badge>)}
                     </div>
                 )}
                 {datos && (
@@ -71,7 +85,11 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                         Cuando compre y aparezca en Odoo con este mismo teléfono, pasa solo a Clientes con todo su seguimiento.
                     </div>
                 )}
-                {leadId && <Seguimiento tipo="lead" id={leadId} onCambio={onCambio} />}
+                {leadId && (
+                    <AsignarCliente leadId={leadId} nombre={datos ? nombreLead(datos) : null} t={t}
+                        onAsignado={() => { onCambio?.(); onClose(); }} />
+                )}
+                {leadId && <Seguimiento key={version} tipo="lead" id={leadId} onCambio={onCambio} />}
             </div>
         </Drawer>
     );

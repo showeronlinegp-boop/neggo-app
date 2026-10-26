@@ -271,7 +271,8 @@ async function testQueue(pool) {
     const paused = await queue.tick(pool, senderOk(), new Date(base.getTime() + 90_000));
     assert.strictEqual(paused.action, 'idle');
     await queue.resumeBatch(pool, created.batch.id);
-    const second = await queue.tick(pool, senderOk(), new Date(base.getTime() + 90_000));
+    // Los 90 s cuentan desde que terminó el envío anterior (unos ms después de base).
+    const second = await queue.tick(pool, senderOk(), new Date(base.getTime() + 91_000));
     assert.strictEqual(second.action, 'enviado');
     const done = await queue.getBatch(pool, created.batch.id);
     assert.strictEqual(done.status, 'completada');
@@ -292,7 +293,7 @@ async function testQueue(pool) {
     for (let i = 0; i < 3; i++) {
         const r = await queue.tick(pool, senderFail(), t);
         assert.strictEqual(r.action, 'error');
-        t = new Date(t.getTime() + 90_000);
+        t = new Date(t.getTime() + 91_000);
     }
     const after = await stateOf(pool, retry.batch.id);
     assert.ok(after.every((m) => m.status === 'error'));
@@ -404,6 +405,47 @@ async function testQueue(pool) {
     }, new Date(tTimeout.getTime() + 90_000));
     assert.strictEqual(noRetry.action, 'idle');
     assert.strictEqual(statusTimeoutCalls, 1);
+
+    // Tras el timeout Evolution sigue con ese estado: la cola entera espera 10 min, grupos incluidos.
+    const busyUntil = await queue.getBusyUntil(pool, tTimeout);
+    assert.ok(busyUntil);
+    assert.ok(Math.abs(busyUntil.getTime() - (tTimeout.getTime() + 10 * 60_000)) < 5_000);
+    const waiting = await queue.createBatch(pool, {
+        company: 'preventas',
+        groupJid: '120363001@g.us',
+        products: [{ ...oneStatus, odoo_id: 10, name: 'Vaso largo', caption: 'Vaso largo\n$1.523' }],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-06T00:00',
+    });
+    const blocked = await queue.tick(pool, senderOk(), new Date(tTimeout.getTime() + 9 * 60_000));
+    assert.strictEqual(blocked.action, 'idle');
+    const queued = await queue.listQueue(pool, new Date(tTimeout.getTime() + 9 * 60_000));
+    assert.strictEqual(queued[0].eta, busyUntil.toISOString());
+    const freed = await queue.tick(pool, senderOk(), new Date(busyUntil.getTime() + 1_000));
+    assert.strictEqual(freed.action, 'enviado');
+    assert.strictEqual((await stateOf(pool, waiting.batch.id))[0].status, 'enviado');
+
+    // rate-overlimit de WhatsApp: 15 min sin mandar nada.
+    const limited = await queue.createBatch(pool, {
+        company: 'preventas',
+        groupJid: '120363001@g.us',
+        products: [oneStatus],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-07T00:00',
+    });
+    const tLimit = new Date('2020-01-07T03:00:00.000Z');
+    const limitTick = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
+        sendImage: async () => { throw new Error('Evolution API 400: Error: rate-overlimit'); },
+    }, tLimit);
+    assert.strictEqual(limitTick.action, 'error');
+    const limitUntil = await queue.getBusyUntil(pool, tLimit);
+    assert.ok(Math.abs(limitUntil.getTime() - (tLimit.getTime() + 15 * 60_000)) < 5_000);
+    const retryLimited = await queue.tick(pool, senderOk(), new Date(tLimit.getTime() + 14 * 60_000));
+    assert.strictEqual(retryLimited.action, 'idle');
+    const afterLimit = await queue.tick(pool, senderOk(), new Date(limitUntil.getTime() + 1_000));
+    assert.strictEqual(afterLimit.action, 'enviado');
+    assert.strictEqual((await stateOf(pool, limited.batch.id))[0].status, 'enviado');
 
     const stuckStatus = await queue.createBatch(pool, {
         company: 'preventas',

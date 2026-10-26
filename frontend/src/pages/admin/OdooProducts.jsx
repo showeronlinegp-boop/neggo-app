@@ -31,6 +31,7 @@ export default function OdooProducts() {
     const [searchInput, setSearchInput] = useState('');
     const [search, setSearch] = useState('');
     const [includeInactive, setIncludeInactive] = useState(false);
+    const [sinImagen, setSinImagen] = useState(false);
     const [page, setPage] = useState(0);
     const [products, setProducts] = useState([]);
     const [total, setTotal] = useState(0);
@@ -50,6 +51,7 @@ export default function OdooProducts() {
             const res = await api.get('/products/odoo', {
                 company, search: search || undefined,
                 include_inactive: includeInactive ? 'true' : 'false',
+                sin_imagen: sinImagen ? 'true' : 'false',
                 limit: LIMIT, offset: page * LIMIT,
             });
             if (res.success) {
@@ -59,7 +61,7 @@ export default function OdooProducts() {
             } else setError(res.error || 'Error cargando productos');
         } catch (err) { setError(err.message); }
         finally { setLoading(false); }
-    }, [company, search, includeInactive, page]);
+    }, [company, search, includeInactive, sinImagen, page]);
 
     useEffect(() => { load(); }, [load]);
 
@@ -221,6 +223,10 @@ export default function OdooProducts() {
                         <Toggle checked={includeInactive} onChange={v => { setIncludeInactive(v); setPage(0); }} size="sm" />
                         Incluir inactivos
                     </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: t.space[2], fontSize: t.font.size.sm, color: t.color.textMuted, cursor: 'pointer', fontFamily: t.font.family }}>
+                        <Toggle checked={sinImagen} onChange={v => { setSinImagen(v); setPage(0); }} size="sm" />
+                        Solo sin imagen
+                    </label>
                 </div>
             </Card>
 
@@ -246,7 +252,7 @@ export default function OdooProducts() {
                     <div style={{ padding: 60, textAlign: 'center', color: t.color.textFaint }}>
                         <div style={{ fontSize: 40, marginBottom: 12 }}>📦</div>
                         <div style={{ fontWeight: t.font.weight.medium, fontFamily: t.font.family, color: t.color.textMuted }}>
-                            No hay productos{search ? ' que coincidan con la búsqueda' : ''}
+                            No hay productos{sinImagen ? ' sin imagen' : ''}{search ? ' que coincidan con la búsqueda' : ''}
                         </div>
                     </div>
                 ) : isMobile ? (
