@@ -97,6 +97,15 @@ function validarPaginacion(query = {}) {
     return { value: { page, limit, offset: ((page || 1) - 1) * (limit || LIMIT_DEFAULT) }, errors };
 }
 
+/** Query de GET reposicion/*: ?proveedor opcional (nombre exacto, sin distinguir mayúsculas). */
+function validarQueryReposicion(query = {}) {
+    if (query.proveedor === undefined || !String(query.proveedor).trim()) return { value: { proveedor: null }, errors: [] };
+    const proveedor = String(query.proveedor).trim();
+    return proveedor.length > 100
+        ? { value: null, errors: [{ campo: 'proveedor', error: 'Hasta 100 caracteres' }] }
+        : { value: { proveedor }, errors: [] };
+}
+
 /** Query de GET clientes/nuevos. */
 function validarQueryNuevos(query = {}) {
     const dias = validarDias(query.dias);
@@ -334,6 +343,7 @@ module.exports = {
     validarPaginacion,
     validarQueryNuevos,
     validarQueryProductos,
+    validarQueryReposicion,
     validarId,
     validarSeguimiento,
     validarInteraccion,

@@ -13,6 +13,10 @@
 // PATCH  /api/agente/clientes/:id                — { no_contactar, contacto }
 // POST   /api/agente/feedback                    — { tipo, endpoint, mensaje } lo que el agente quiere que cambie
 // GET    /api/agente/feedback?page=&limit=
+// GET    /api/agente/reposicion/proveedores      — proveedores con algo pendiente o encargado
+// GET    /api/agente/reposicion/pendientes?proveedor=   — cola para reponer, con ventas y cantidad sugerida
+// GET    /api/agente/reposicion/encargados?proveedor=   — lo que ya se pidió y todavía no llegó
+// GET    /api/agente/reposicion/cotizaciones?proveedor= — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
 //
 // Públicas (sin datos): GET /api/agente/openapi.json y GET /api/agente/docs (Swagger UI)
 
@@ -21,6 +25,7 @@ const path = require('path');
 const router = express.Router();
 const { agenteAuth } = require('../middleware/agenteAuth');
 const agente = require('../services/agenteService');
+const agenteReposicion = require('../services/agenteReposicion');
 const v = require('../services/agenteValidacion');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
@@ -247,6 +252,35 @@ router.get('/feedback', async (req, res) => {
         return handle(res, err, 'No se pudo leer el feedback');
     }
 });
+
+// ── Reposición (solo lectura) ───────────────────────────────
+
+router.get('/reposicion/proveedores', async (req, res) => {
+    try {
+        return res.json({ success: true, data: await agenteReposicion.listarProveedores() });
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer los proveedores de reposición');
+    }
+});
+
+const LISTAS_REPOSICION = {
+    pendientes: agenteReposicion.listarPendientes,
+    encargados: agenteReposicion.listarEncargados,
+    cotizaciones: agenteReposicion.listarCotizaciones,
+};
+
+for (const [lista, fn] of Object.entries(LISTAS_REPOSICION)) {
+    router.get(`/reposicion/${lista}`, async (req, res) => {
+        const { value, errors } = v.validarQueryReposicion(req.query);
+        if (errors.length) return invalid(res, errors);
+        try {
+            const { data, meta } = await fn(value);
+            return res.json({ success: true, data, meta });
+        } catch (err) {
+            return handle(res, err, `No se pudieron leer los ${lista} de reposición`);
+        }
+    });
+}
 
 // Ruta inexistente (con API key válida): 404 con código, como el resto de los errores
 router.use((req, res) => res.status(404).json({

@@ -5,6 +5,7 @@
 // GET    /api/reposicion/proveedores
 // GET    /api/reposicion/proveedor?nombre=           — catálogo + cola con métricas
 // GET    /api/reposicion/ordenes?dias=7&refrescar=1  — ventas y POS de Neggo: pendientes y revisadas
+// GET    /api/reposicion/cotizaciones?refrescar=1    — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
 // POST   /api/reposicion/ordenes/revisar             — { origen: venta|pos, odoo_order_id, order_name? }
 // POST   /api/reposicion/ordenes/reabrir             — { origen, odoo_order_id }
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
@@ -24,6 +25,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const reposicion = require('../services/reposicionService');
 const ordenes = require('../services/reposicionOrdenesService');
+const cotizaciones = require('../services/reposicionCotizacionesService');
 const { detectMime } = require('../services/whatsappMessage');
 const { writeOdooImage } = require('../services/odooImageService');
 
@@ -97,6 +99,15 @@ router.get('/ordenes', async (req, res) => {
         return ok(res, await ordenes.listar({ dias: req.query.dias, refrescar: req.query.refrescar === '1' }));
     } catch (err) {
         console.error('❌ Error listando órdenes para reposición:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+router.get('/cotizaciones', async (req, res) => {
+    try {
+        return ok(res, await cotizaciones.listar({ refrescar: req.query.refrescar === '1' }));
+    } catch (err) {
+        console.error('❌ Error listando cotizaciones pendientes:', err.message);
         return fail(res, err.message, 500);
     }
 });

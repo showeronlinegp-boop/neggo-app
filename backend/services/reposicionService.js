@@ -617,16 +617,11 @@ function clasificarAbc(itemsConQty) {
     return labels;
 }
 
-async function colaConMetricas(vendor) {
-    await cerrarLlegados();
-    const { rows: items } = await pool.query(
-        `${SELECT_ITEM}
-         WHERE ri.estado = 'pendiente'
-           AND ${VENDOR_SQL} = $1
-         ORDER BY ri.created_at`,
-        [vendor]
-    );
-
+/**
+ * Ítems de la cola con ventas de las últimas semanas, ABC y cantidad sugerida
+ * (venta semanal × semanas de cobertura). Refresca ventas si están viejas.
+ */
+async function conMetricas(items) {
     let ventasMeta = null;
     try {
         ventasMeta = await require('../jobs/salesWeeklySync').ensureFresh(12);
@@ -658,6 +653,19 @@ async function colaConMetricas(vendor) {
             qty_sugerida_calc: sugerida,
         };
     });
+    return { items: enriched, ventas: ventasMeta, cobertura_semanas: cobertura };
+}
+
+async function colaConMetricas(vendor) {
+    await cerrarLlegados();
+    const { rows } = await pool.query(
+        `${SELECT_ITEM}
+         WHERE ri.estado = 'pendiente'
+           AND ${VENDOR_SQL} = $1
+         ORDER BY ri.created_at`,
+        [vendor]
+    );
+    const { items: enriched, ventas: ventasMeta } = await conMetricas(rows);
 
     return {
         items: enriched,
@@ -669,6 +677,28 @@ async function colaConMetricas(vendor) {
             sin_datos: enriched.filter(i => i.ritmo === 'sin_datos').length,
         },
     };
+}
+
+/**
+ * Pendientes o encargados de todos los proveedores (o de uno) con métricas de venta.
+ * Es lo que lee la IA que ayuda a armar la reposición de la semana.
+ */
+async function colaParaAgente({ estado = 'pendiente', proveedor = null } = {}) {
+    if (!ESTADOS_ABIERTOS.includes(estado)) throw httpError('Estado inválido: usá pendiente o encargado', 400);
+    await cerrarLlegados();
+    const params = [estado];
+    let filtro = '';
+    if (proveedor) {
+        params.push(String(proveedor).trim());
+        filtro = `AND LOWER(${VENDOR_SQL}) = LOWER($2)`;
+    }
+    const { rows } = await pool.query(
+        `${SELECT_ITEM}
+         WHERE ri.estado = $1 ${filtro}
+         ORDER BY vendor_name, ri.created_at`,
+        params
+    );
+    return conMetricas(rows);
 }
 
 /**
@@ -747,6 +777,7 @@ module.exports = {
     buscarPorBarcode,
     listarProveedores,
     detalleProveedor,
+    colaParaAgente,
     resolverLote,
     metricasVenta,
     clasificarAbc,
