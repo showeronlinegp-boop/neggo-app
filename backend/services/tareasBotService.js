@@ -143,11 +143,13 @@ async function pedirEjecucion(pool, id) {
         const ctx = n.contexto;
         const ejecucion = ctx.ejecucion || {};
         if (ESTADOS_CERRADOS.includes(n.estado)) throw tareaError(409, 'La tarea está cerrada: creá una nueva', 'tarea_cerrada');
-        if (n.estado === 'en_curso' || ejecucion.estado === 'lanzada') throw tareaError(409, 'Claude ya la está trabajando', 'en_curso');
-        if (ejecucion.estado === 'pedida') throw tareaError(409, 'Ya está pedida: esperá que Claude la tome', 'ya_pedida');
+        if (n.estado === 'en_curso') throw tareaError(409, 'Claude ya la está trabajando', 'en_curso');
         if (n.estado !== 'abierta') {
             throw tareaError(409, 'No hay nada nuevo para Claude: contestale con POST /notas/{id}/mensajes antes de pedir otra ejecución', 'sin_novedad');
         }
+        // Abierta y lanzada: Claude ya la abrió y todavía no la tomó
+        if (ejecucion.estado === 'lanzada') throw tareaError(409, 'Claude ya la está trabajando', 'en_curso');
+        if (ejecucion.estado === 'pedida') throw tareaError(409, 'Ya está pedida: esperá que Claude la tome', 'ya_pedida');
         const ahora = Date.now();
         const max = maxPorDia();
         if (await pedidasUltimoDia(client, ahora) >= max) {
