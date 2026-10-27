@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "API del agente de Neggo (Grok Bot)",
-    "version": "3.2.0",
-    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`."
+    "version": "3.3.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API."
   },
   "servers": [
     {
@@ -36,6 +36,10 @@
     {
       "name": "Reposición",
       "description": "Datos para armar los pedidos a proveedores (solo lectura)"
+    },
+    {
+      "name": "Tareas para Claude",
+      "description": "Indicación → discusión → acuerdo → ejecución → respuesta final"
     },
     {
       "name": "Documentación",
@@ -1781,6 +1785,473 @@
         }
       }
     },
+    "/notas": {
+      "post": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "crearTarea",
+        "summary": "Crear una tarea para Claude (indicación)",
+        "description": "Arranca en fase `discusion`. No se ejecuta sola: pedila con `POST /notas/{id}/ejecutar`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TareaNueva"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Creada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Tarea"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "listarTareas",
+        "summary": "Tus tareas",
+        "parameters": [
+          {
+            "name": "vivas",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true
+            },
+            "description": "false = también las cerradas"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tarea"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/notas/{id}": {
+      "get": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "obtenerTarea",
+        "summary": "Estado, conversación y respuesta de Claude",
+        "description": "Consultalo cada tanto después de pedir la ejecución (por ejemplo cada 1 o 2 minutos) hasta que `esperando` sea `bot`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "example": 101
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Tarea"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "description": "Tarea inexistente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Tarea inexistente",
+                  "codigo": "no_encontrado"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/notas/{id}/mensajes": {
+      "post": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "mensajeTarea",
+        "summary": "Contestarle a Claude (discusión o acuerdo)",
+        "description": "Suma tu mensaje a la conversación y deja la tarea esperando a Claude (`estado: abierta`). Con `acordado: true` pasa a la fase `acordada`. Después pedí la ejecución.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "example": 101
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TareaMensaje"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Guardado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Tarea"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "description": "Tarea inexistente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Tarea inexistente",
+                  "codigo": "no_encontrado"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Claude la está trabajando: esperá su respuesta (también tarea_cerrada, hilo_lleno)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Claude la está trabajando: esperá su respuesta (también tarea_cerrada, hilo_lleno)",
+                  "codigo": "en_curso"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/notas/{id}/ejecutar": {
+      "post": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "ejecutarTarea",
+        "summary": "Pedir que Claude la trabaje",
+        "description": "Queda en cola (`ejecucion.estado: pedida`) y Claude la abre en cuanto esté libre (`lanzada`). Solo se puede pedir si hay algo nuevo para Claude: una tarea recién creada o con un mensaje tuyo sin contestar.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "example": 101
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Pedida",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Tarea"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "description": "Tarea inexistente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Tarea inexistente",
+                  "codigo": "no_encontrado"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No hay nada nuevo para Claude (también ya_pedida, en_curso, tarea_cerrada)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "No hay nada nuevo para Claude (también ya_pedida, en_curso, tarea_cerrada)",
+                  "codigo": "sin_novedad"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Se llegó al máximo de ejecuciones en 24 horas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Se llegó al máximo de ejecuciones en 24 horas",
+                  "codigo": "limite_diario"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/notas/{id}/cerrar": {
+      "post": {
+        "tags": [
+          "Tareas para Claude"
+        ],
+        "operationId": "cerrarTarea",
+        "summary": "Cerrar la tarea",
+        "description": "`ok` = te sirvió la respuesta; `descartada` = no sigue.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "example": 101
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TareaCierre"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cerrada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Tarea"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "description": "Tarea inexistente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Tarea inexistente",
+                  "codigo": "no_encontrado"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Claude la está trabajando",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "success": false,
+                  "error": "Claude la está trabajando",
+                  "codigo": "en_curso"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
     "/reposicion/proveedores": {
       "get": {
         "tags": [
@@ -3237,6 +3708,186 @@
                 }
               }
             }
+          }
+        }
+      },
+      "TareaNueva": {
+        "type": "object",
+        "required": [
+          "texto"
+        ],
+        "properties": {
+          "texto": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "La indicación: qué querés que investigue, diseñe o busque y para qué",
+            "example": "Buscá 3 proveedores mayoristas de pilas en Buenos Aires con precios publicados y armá una tabla comparativa."
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "duda",
+              "mejora",
+              "error"
+            ],
+            "default": "duda"
+          },
+          "titulo": {
+            "type": "string",
+            "maxLength": 100,
+            "example": "Proveedores de pilas"
+          }
+        }
+      },
+      "TareaMensaje": {
+        "type": "object",
+        "required": [
+          "texto"
+        ],
+        "properties": {
+          "texto": {
+            "type": "string",
+            "maxLength": 4000,
+            "example": "Dale, pero sumá también Rosario."
+          },
+          "acordado": {
+            "type": "boolean",
+            "default": false,
+            "description": "true = está acordado: en la próxima ejecución Claude hace la tarea y da la respuesta final"
+          }
+        }
+      },
+      "TareaCierre": {
+        "type": "object",
+        "required": [
+          "resultado"
+        ],
+        "properties": {
+          "resultado": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "descartada"
+            ]
+          }
+        }
+      },
+      "Tarea": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 101
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "duda",
+              "mejora",
+              "error"
+            ]
+          },
+          "titulo": {
+            "type": "string",
+            "nullable": true
+          },
+          "estado": {
+            "type": "string",
+            "enum": [
+              "abierta",
+              "en_curso",
+              "consulta",
+              "para_revisar",
+              "corregida",
+              "descartada"
+            ],
+            "description": "abierta = espera a Claude; en_curso = Claude trabajando; consulta = Claude contestó en la discusión; para_revisar = respuesta final; corregida/descartada = cerrada"
+          },
+          "fase": {
+            "type": "string",
+            "enum": [
+              "discusion",
+              "acordada"
+            ]
+          },
+          "esperando": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "bot",
+              "nadie"
+            ],
+            "description": "A quién le toca mover"
+          },
+          "texto": {
+            "type": "string",
+            "description": "La indicación original"
+          },
+          "respuesta": {
+            "type": "string",
+            "nullable": true,
+            "description": "Última respuesta de Claude"
+          },
+          "hilo": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "autor": {
+                  "type": "string",
+                  "enum": [
+                    "bot",
+                    "claude"
+                  ]
+                },
+                "fecha": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "texto": {
+                  "type": "string"
+                },
+                "estado": {
+                  "type": "string",
+                  "description": "En los mensajes de Claude: consulta o para_revisar"
+                },
+                "acordado": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "ejecucion": {
+            "type": "object",
+            "properties": {
+              "estado": {
+                "type": "string",
+                "enum": [
+                  "sin_pedir",
+                  "pedida",
+                  "lanzada"
+                ],
+                "description": "pedida = en cola; lanzada = Claude la abrió"
+              },
+              "pedida_at": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              },
+              "lanzada_at": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              }
+            }
+          },
+          "creada": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actualizada": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

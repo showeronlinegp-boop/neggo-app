@@ -200,6 +200,30 @@ function testFeedbackNota() {
     assert.strictEqual(notaDeFeedback({ id: 8, tipo: 'comentario', modulo: 'clientes', mensaje: 'x' }).tipo, 'duda');
 }
 
-const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota];
+// Tareas del bot para Claude: validación del body y formato de la respuesta
+function testTareas() {
+    assert.deepStrictEqual(campos(v.validarTareaNueva({}).errors), ['texto']);
+    assert.deepStrictEqual(v.validarTareaNueva({ texto: ' Buscá precios ' }).value, { tipo: 'duda', texto: 'Buscá precios' });
+    assert.deepStrictEqual(campos(v.validarTareaNueva({ texto: 'x', tipo: 'tarea', otro: 1 }).errors), ['otro', 'tipo']);
+    assert.strictEqual(v.validarMensajeTarea({ texto: 'dale' }).value.acordado, false);
+    assert.deepStrictEqual(campos(v.validarMensajeTarea({ texto: 'dale', acordado: 'si' }).errors), ['acordado']);
+    assert.deepStrictEqual(campos(v.validarCierreTarea({}).errors), ['resultado']);
+    assert.deepStrictEqual(v.validarCierreTarea({ resultado: 'ok' }).errors, []);
+    assert.strictEqual(v.validarQueryTareas({ vivas: 'false' }).value.vivas, false);
+
+    const { formatTarea } = require('./agenteNotas');
+    const t = formatTarea({
+        id: 5, tipo: 'duda', estado: 'consulta', texto: 'Buscá', respuesta: 'Propongo X', pantalla: 'Tarea del bot · Pilas',
+        created_at: new Date('2026-10-27T13:00:00Z'), updated_at: new Date('2026-10-27T13:05:00Z'),
+        contexto: { origen: 'agente', tarea: true, fase: 'discusion', ejecucion: { estado: 'lanzada', lanzada_at: '2026-10-27T13:01:00Z' },
+            hilo: [{ autor: 'bot', fecha: '2026-10-27T13:00:00Z', texto: 'Buscá' }, { autor: 'claude', fecha: '2026-10-27T13:05:00Z', texto: 'Propongo X', estado: 'consulta' }] },
+    });
+    assert.strictEqual(t.titulo, 'Pilas');
+    assert.strictEqual(t.esperando, 'bot', 'en consulta le toca al bot');
+    assert.strictEqual(t.hilo[1].estado, 'consulta');
+    assert.strictEqual(t.ejecucion.lanzada_at, '2026-10-27T10:01:00-03:00');
+}
+
+const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota, testTareas];
 for (const t of tests) t();
 console.log(`✅ agenteValidacion: ${tests.length} tests OK`);

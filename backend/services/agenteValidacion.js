@@ -13,6 +13,8 @@ const TEXTO_MAX = 4000;
 const CONTACTO_MAX = 200;
 const FEEDBACK_TIPOS = ['falta', 'error', 'mejora', 'comentario'];
 const FEEDBACK_MODULOS = ['clientes', 'reposicion'];
+// Los tipos de las notas de prueba (test_notes)
+const TAREA_TIPOS = ['duda', 'mejora', 'error'];
 // Los mensajes no hablan del IVA ni de impuestos: los precios son finales (nota #93)
 const MENCIONA_IVA_RE = /\b(?:iva|i\.v\.a|impuestos?)\b/i;
 // Margen para relojes desfasados: una fecha puede estar hasta 5 minutos en el futuro
@@ -337,6 +339,57 @@ function validarFeedback(body) {
     return { value, errors };
 }
 
+/** Body de POST notas: { texto, tipo?, titulo? }. La indicación de una tarea para Claude. */
+function validarTareaNueva(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['texto', 'tipo', 'titulo']);
+    const value = { tipo: 'duda' };
+    value.texto = validarTexto('texto', body.texto, { obligatorio: true }, errors);
+    if (body.tipo !== undefined && body.tipo !== null) {
+        if (TAREA_TIPOS.includes(body.tipo)) value.tipo = body.tipo;
+        else errors.push({ campo: 'tipo', error: `Tiene que ser uno de: ${TAREA_TIPOS.join(', ')}` });
+    }
+    if (body.titulo !== undefined && body.titulo !== null) {
+        if (typeof body.titulo !== 'string' || !body.titulo.trim() || body.titulo.length > 100) {
+            errors.push({ campo: 'titulo', error: 'Tiene que ser texto de 1 a 100 caracteres' });
+        } else value.titulo = body.titulo.trim();
+    }
+    return { value, errors };
+}
+
+/** Body de POST notas/:id/mensajes: { texto, acordado? }. */
+function validarMensajeTarea(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['texto', 'acordado']);
+    const value = { texto: validarTexto('texto', body.texto, { obligatorio: true }, errors), acordado: false };
+    if (body.acordado !== undefined && body.acordado !== null) {
+        if (typeof body.acordado === 'boolean') value.acordado = body.acordado;
+        else errors.push({ campo: 'acordado', error: 'Tiene que ser true o false' });
+    }
+    return { value, errors };
+}
+
+/** Body de POST notas/:id/cerrar: { resultado: ok | descartada }. */
+function validarCierreTarea(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['resultado']);
+    if (!['ok', 'descartada'].includes(body.resultado)) errors.push({ campo: 'resultado', error: 'Es obligatorio y tiene que ser ok o descartada' });
+    return { value: { resultado: body.resultado }, errors };
+}
+
+/** Query de GET notas: ?vivas=true|false + paginación. */
+function validarQueryTareas(query = {}) {
+    const pag = validarPaginacion(query);
+    const errors = [...pag.errors];
+    const value = { ...pag.value, vivas: true };
+    if (query.vivas !== undefined) {
+        const b = booleanoQuery(query.vivas);
+        if (b === undefined) errors.push({ campo: 'vivas', error: 'Tiene que ser true o false' });
+        else value.vivas = b;
+    }
+    return { value, errors };
+}
+
 module.exports = {
     LIMIT_DEFAULT,
     LIMIT_MAX,
@@ -357,4 +410,8 @@ module.exports = {
     validarIdExternoRuta,
     validarClientePatch,
     validarFeedback,
+    validarTareaNueva,
+    validarMensajeTarea,
+    validarCierreTarea,
+    validarQueryTareas,
 };
