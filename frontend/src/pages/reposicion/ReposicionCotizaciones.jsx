@@ -8,6 +8,7 @@ import Button from '../../components/common/Button';
 import ProductThumb from '../../components/common/ProductThumb';
 import FotoAmpliada from '../../components/common/FotoAmpliada';
 import * as Icon from '../../components/common/icons';
+import { descargarPedidoPDF } from './pedidoPdf';
 
 // Pestaña «Cotizaciones» de Reposición: cotizaciones de Odoo con la etiqueta «Pendiente»
 // (encargues de clientes y mercadería que faltó en un pedido), de Neggo y de Preventas.
@@ -157,8 +158,9 @@ function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onVerF
     );
 }
 
-// Total por producto, agrupado por proveedor: lo que hay que conseguir
-function VistaProductos({ productos, isMobile, t }) {
+// Total por producto, agrupado por proveedor: lo que hay que conseguir.
+// Cada proveedor baja su pedido en PDF con el total de cada producto.
+function VistaProductos({ productos, generando, onPdf, onVerFoto, isMobile, t }) {
     const grupos = [];
     for (const p of productos) {
         const ultimo = grupos[grupos.length - 1];
@@ -173,8 +175,17 @@ function VistaProductos({ productos, isMobile, t }) {
                 fontFamily: t.font.family, ...t.numericStyle,
             }}>
                 <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm }}>{g.vendor}</span>
-                <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
-                    {g.items.length} producto{g.items.length === 1 ? '' : 's'}
+                <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}>
+                    <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                        {g.items.length} producto{g.items.length === 1 ? '' : 's'}
+                    </span>
+                    <Button size="sm" variant="ghost" leftIcon={<Icon.FileText size={13} />}
+                        disabled={generando === g.vendor}
+                        title="Descargar el pedido en PDF para encargarle al proveedor, con el total de cada producto"
+                        onClick={() => onPdf(g.vendor, g.items)}
+                        style={isMobile ? { height: 36 } : undefined}>
+                        {generando === g.vendor ? 'Generando…' : 'PDF'}
+                    </Button>
                 </span>
             </div>
             {g.items.map(p => {
@@ -185,6 +196,12 @@ function VistaProductos({ productos, isMobile, t }) {
                         padding: isMobile ? '10px 12px' : '8px 16px', borderTop: `1px solid ${t.color.border}`,
                         fontFamily: t.font.family,
                     }}>
+                        {p.image_url ? (
+                            <button type="button" onClick={() => onVerFoto(p)} aria-label={`Ver foto de ${p.name}`} title="Ver foto en grande"
+                                style={{ padding: 0, border: 'none', background: 'none', cursor: 'zoom-in', lineHeight: 0, flexShrink: 0 }}>
+                                <ProductThumb imageUrl={p.image_url} size={isMobile ? 44 : 36} />
+                            </button>
+                        ) : <ProductThumb imageUrl={p.image_url} size={isMobile ? 44 : 36} />}
                         <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text }}>
                                 {p.name || `Producto ${p.odoo_id}`}
@@ -263,6 +280,19 @@ export default function ReposicionCotizaciones({ recargar, onCambioCola, onAviso
         onCambioCola();
     };
 
+    // Pedido al proveedor: total pendiente de cada producto y de qué cotizaciones sale
+    const [generandoPdf, setGenerandoPdf] = useState(null);
+    const pdfProveedor = async (vendor, items) => {
+        setGenerandoPdf(vendor);
+        try {
+            await descargarPedidoPDF(vendor, items.map(p => ({ ...p, qty: p.qty_total })), { prefijo: 'cotizaciones' });
+        } catch (err) {
+            onError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setGenerandoPdf(null);
+        }
+    };
+
     const deEmpresa = (company) => empresa === 'todas' || company === empresa;
     const cotizaciones = data.cotizaciones.filter(c => deEmpresa(c.company));
     const productos = data.productos.filter(p => deEmpresa(p.company));
@@ -323,7 +353,8 @@ export default function ReposicionCotizaciones({ recargar, onCambioCola, onAviso
                     </div>
                 </Card>
             ) : vista === 'productos' ? (
-                <VistaProductos productos={productos} isMobile={isMobile} t={t} />
+                <VistaProductos productos={productos} generando={generandoPdf} onPdf={pdfProveedor}
+                    onVerFoto={setFoto} isMobile={isMobile} t={t} />
             ) : (
                 cotizaciones.map(c => (
                     <TarjetaCotizacion
