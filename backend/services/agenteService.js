@@ -1,5 +1,6 @@
 // API del agente (Grok Bot): lectura de Odoo y de la base, y armado de las respuestas.
-// Regla dura: no escribe nada en Odoo. Solo escribe en las tablas crm_bot_* y en crm_events.
+// Regla dura: no escribe nada en Odoo. Solo escribe en las tablas crm_bot_* y en crm_events
+// (y el feedback, además, como nota de prueba).
 // El cálculo de clientes nuevos y la cadencia están en agenteNuevos.js (lógica pura).
 
 const pool = require('../config/database');
@@ -9,6 +10,7 @@ const { ensureSchema } = require('./crmSchema');
 const { phoneKey, phoneDisplay } = require('./crmContacts');
 const { productLink } = require('./whatsappMessage');
 const nuevos = require('./agenteNuevos');
+const testNotes = require('./testNotesService');
 
 const COMPANY = 'neggo';
 const PAGE = 2000;
@@ -967,13 +969,45 @@ async function listarProductos({ rubros, stock, q, precio_min: precioMin, solo_p
 // Feedback del agente sobre la API
 // =============================================
 
-async function registrarFeedback({ tipo, endpoint, mensaje }) {
+// El feedback del bot también entra como nota de prueba de la pantalla del módulo, para
+// verlo en el panel «Notas» y mandarlo a Claude. Entra en modo DEBATIR: una idea del bot
+// no se implementa sin que el equipo la mire.
+const FEEDBACK_NOTA = {
+    clientes:   { ruta: '/clientes',   pantalla: 'Clientes · Bot de seguimiento', autor: 'Bot de seguimiento' },
+    reposicion: { ruta: '/reposicion', pantalla: 'Reposición · Bot',              autor: 'Bot de reposición' },
+};
+const FEEDBACK_TIPO_NOTA = { error: 'error', falta: 'mejora', mejora: 'mejora', comentario: 'duda' };
+
+function notaDeFeedback({ id, tipo, modulo, endpoint, mensaje }) {
+    const destino = FEEDBACK_NOTA[modulo] || FEEDBACK_NOTA.clientes;
+    return {
+        tipo: FEEDBACK_TIPO_NOTA[tipo] || 'mejora',
+        texto: `[Feedback del bot · ${tipo}${endpoint ? ` · ${endpoint}` : ''}]\n${mensaje}`,
+        modo: ['debatir'],
+        ruta: destino.ruta,
+        pantalla: destino.pantalla,
+        contexto: { origen: 'agente', autor: destino.autor, feedback: { id, tipo, modulo, endpoint } },
+    };
+}
+
+async function registrarFeedback({ tipo, modulo = 'clientes', endpoint, mensaje }) {
     await ensureSchema();
-    const { rows: [r] } = await pool.query(
-        'INSERT INTO crm_bot_feedback (tipo, endpoint, mensaje) VALUES ($1, $2, $3) RETURNING *',
-        [tipo, endpoint, mensaje]);
-    console.log(`📦 Agente: feedback nuevo (${tipo}) ${endpoint || ''}`);
-    return { id: r.id, tipo: r.tipo, endpoint: r.endpoint, mensaje: r.mensaje, fecha: nuevos.toArIso(r.created_at) };
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows: [r] } = await client.query(
+            'INSERT INTO crm_bot_feedback (tipo, endpoint, mensaje) VALUES ($1, $2, $3) RETURNING *',
+            [tipo, endpoint, mensaje]);
+        const nota = await testNotes.crear(client, notaDeFeedback({ id: r.id, tipo, modulo, endpoint, mensaje }), null);
+        await client.query('COMMIT');
+        console.log(`📦 Agente: feedback nuevo (${tipo}, ${modulo}) ${endpoint || ''} → nota #${nota.id}`);
+        return { id: r.id, tipo: r.tipo, modulo, endpoint: r.endpoint, mensaje: r.mensaje, nota_id: nota.id, fecha: nuevos.toArIso(r.created_at) };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 async function listarFeedback({ page, limit, offset }) {
@@ -1005,4 +1039,6 @@ module.exports = {
     listarProductos,
     registrarFeedback,
     listarFeedback,
+    // Puro, para tests
+    notaDeFeedback,
 };

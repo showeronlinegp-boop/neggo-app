@@ -127,6 +127,9 @@ function testClientePatch() {
     assert.deepStrictEqual(campos(v.validarClientePatch({ no_contactar: true, etapa: 'finalizado' }).errors), ['etapa']);
     assert.deepStrictEqual(campos(v.validarFeedback({ tipo: 'mejora' }).errors), ['mensaje']);
     assert.deepStrictEqual(v.validarFeedback({ tipo: 'falta', endpoint: '/productos', mensaje: 'Quiero el stock' }).errors, []);
+    assert.strictEqual(v.validarFeedback({ tipo: 'falta', mensaje: 'x' }).value.modulo, 'clientes', 'sin módulo es clientes');
+    assert.strictEqual(v.validarFeedback({ tipo: 'error', modulo: 'reposicion', mensaje: 'x' }).value.modulo, 'reposicion');
+    assert.deepStrictEqual(campos(v.validarFeedback({ tipo: 'error', modulo: 'ventas', mensaje: 'x' }).errors), ['modulo']);
 }
 
 function testId() {
@@ -185,6 +188,18 @@ function testAuth() {
     }
 }
 
-const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth];
+// El feedback entra como nota de prueba de la pantalla del módulo, en modo debatir
+function testFeedbackNota() {
+    const { notaDeFeedback } = require('./agenteService');
+    const n = notaDeFeedback({ id: 7, tipo: 'falta', modulo: 'reposicion', endpoint: '/reposicion/pendientes', mensaje: 'Quiero el stock' });
+    assert.strictEqual(n.tipo, 'mejora');
+    assert.strictEqual(n.ruta, '/reposicion');
+    assert.deepStrictEqual(n.modo, ['debatir']);
+    assert.strictEqual(n.contexto.autor, 'Bot de reposición');
+    assert.ok(n.texto.includes('/reposicion/pendientes') && n.texto.endsWith('Quiero el stock'));
+    assert.strictEqual(notaDeFeedback({ id: 8, tipo: 'comentario', modulo: 'clientes', mensaje: 'x' }).tipo, 'duda');
+}
+
+const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota];
 for (const t of tests) t();
 console.log(`✅ agenteValidacion: ${tests.length} tests OK`);

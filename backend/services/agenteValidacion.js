@@ -12,6 +12,7 @@ const LIMIT_MAX = 100;
 const TEXTO_MAX = 4000;
 const CONTACTO_MAX = 200;
 const FEEDBACK_TIPOS = ['falta', 'error', 'mejora', 'comentario'];
+const FEEDBACK_MODULOS = ['clientes', 'reposicion'];
 // Los mensajes no hablan del IVA ni de impuestos: los precios son finales (nota #93)
 const MENCIONA_IVA_RE = /\b(?:iva|i\.v\.a|impuestos?)\b/i;
 // Margen para relojes desfasados: una fecha puede estar hasta 5 minutos en el futuro
@@ -316,13 +317,17 @@ function validarClientePatch(body) {
     return { value, errors };
 }
 
-/** Body de POST feedback: { tipo, endpoint?, mensaje }. Lo que Grok quiere que cambie. */
+/** Body de POST feedback: { tipo, modulo?, endpoint?, mensaje }. Lo que el bot quiere que cambie. */
 function validarFeedback(body) {
     if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
-    const errors = camposDesconocidos(body, ['tipo', 'endpoint', 'mensaje']);
+    const errors = camposDesconocidos(body, ['tipo', 'modulo', 'endpoint', 'mensaje']);
     const value = {};
     if (FEEDBACK_TIPOS.includes(body.tipo)) value.tipo = body.tipo;
     else errors.push({ campo: 'tipo', error: `Es obligatorio y tiene que ser uno de: ${FEEDBACK_TIPOS.join(', ')}` });
+    // Sin módulo es el seguimiento de clientes (lo que mandaba Grok antes de la nota #96)
+    if (body.modulo === undefined || body.modulo === null) value.modulo = 'clientes';
+    else if (FEEDBACK_MODULOS.includes(body.modulo)) value.modulo = body.modulo;
+    else errors.push({ campo: 'modulo', error: `Tiene que ser uno de: ${FEEDBACK_MODULOS.join(', ')}` });
     value.mensaje = validarTexto('mensaje', body.mensaje, { obligatorio: true }, errors);
     if (body.endpoint !== undefined && body.endpoint !== null) {
         if (typeof body.endpoint !== 'string' || body.endpoint.length > 200) {
@@ -337,6 +342,7 @@ module.exports = {
     LIMIT_MAX,
     TEXTO_MAX,
     FEEDBACK_TIPOS,
+    FEEDBACK_MODULOS,
     parseIso,
     esFechaSimple,
     validarDias,

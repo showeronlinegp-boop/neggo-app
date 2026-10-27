@@ -33,8 +33,9 @@ function normalizarContexto(contexto) {
     return json2.length <= MAX_CONTEXTO_CHARS ? reducido : { recortado: true };
 }
 
+// Las notas que deja un bot (feedback de la API del agente) no tienen usuario: el autor va en el contexto
 const SELECT = `
-    SELECT n.*, u.username AS autor
+    SELECT n.*, COALESCE(u.username, n.contexto->>'autor') AS autor
     FROM test_notes n
     LEFT JOIN users u ON u.id = n.user_id`;
 
