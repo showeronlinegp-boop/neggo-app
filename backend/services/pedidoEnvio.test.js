@@ -4,6 +4,7 @@
 const assert = require('assert');
 const {
     clampQty,
+    qtyEntera,
     tabDeEstado,
     normalizarCode,
     itemPorCodigo,
@@ -644,6 +645,58 @@ function testPlanQtyMovesArmado() {
     assert.strictEqual(salida.hayFaltante, true);
 }
 
+// Nota #97: se pueden cargar unidades de más; salen en el envío y la orden sube al igualar
+function testUnidadesExtra() {
+    assert.strictEqual(qtyEntera(7), 7);
+    assert.strictEqual(qtyEntera(-2), 0);
+    assert.strictEqual(qtyEntera('2.6'), 3);
+
+    // Las extra van al último move de la línea
+    const plan = planQtyMovesArmado(
+        [
+            { id: 1, sale_line_id: 10, product_id: 100, product_uom_qty: 3, state: 'assigned' },
+            { id: 2, sale_line_id: 10, product_id: 100, product_uom_qty: 2, state: 'assigned' },
+            { id: 3, sale_line_id: 11, product_id: 101, product_uom_qty: 1, state: 'assigned' },
+        ],
+        [
+            { odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 7 },
+            { odoo_line_id: 11, odoo_product_id: 101, qty_pedida: 1, qty_armada: 1 },
+        ]
+    );
+    assert.deepStrictEqual(plan.writes.map((w) => [w.id, w.quantity]), [[1, 3], [2, 4], [3, 1]]);
+    assert.strictEqual(plan.hayFaltante, false);
+
+    // Por producto (move sin línea de venta)
+    const porProducto = planQtyMovesArmado(
+        [{ id: 8, sale_line_id: null, product_id: 100, product_uom_qty: 5, state: 'assigned' }],
+        [{ odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5, qty_armada: 6 }]
+    );
+    assert.strictEqual(porProducto.writes[0].quantity, 6);
+
+    // Lo hecho en Odoo con extra no se recorta al leerlo
+    const leidas = qtyDesdeMoves(
+        [{ id: 1, odoo_line_id: 10, odoo_product_id: 100, qty_pedida: 5 }],
+        [{ id: 1, sale_line_id: 10, product_id: 100, quantity: 5 }, { id: 2, sale_line_id: 10, product_id: 100, quantity: 2 }]
+    );
+    assert.strictEqual(leidas[0].qty, 7);
+
+    // Control con extra: la orden sube, sin pendientes
+    const prev = previewSaldar([
+        { id: 1, odoo_line_id: 10, odoo_product_id: 100, product_name: 'A', qty_pedida: 5, qty_controlada: 7, price_unit: 10 },
+    ]);
+    assert.deepStrictEqual(prev.queda.map((l) => [l.odoo_line_id, l.qty_nueva]), [[10, 7]]);
+    assert.strictEqual(prev.pendientes.length, 0);
+
+    const igualar = planIgualar({
+        lines: [
+            { id: 1, product_id: 10, product_name: 'Taza', quantity: 6, qty_delivered: 8, unit_price: 100 },
+            { id: 2, product_id: 11, product_name: 'Vaso', quantity: 4, qty_delivered: 1, unit_price: 50 },
+        ],
+    });
+    assert.deepStrictEqual(igualar.writes.map((w) => [w.odoo_line_id, w.qty]), [[1, 8], [2, 1]]);
+    assert.deepStrictEqual(igualar.pendientes.map((p) => [p.odoo_line_id, p.qty_pendiente]), [[2, 3]]);
+}
+
 function testWizardBackorder() {
     assert.strictEqual(esWizardBackorder(true), false);
     assert.strictEqual(esWizardBackorder(null), false);
@@ -810,6 +863,7 @@ testPlanIgualar();
 testConfirmarAlEmpezar();
 testPrimerPickingSalida();
 testPlanQtyMovesArmado();
+testUnidadesExtra();
 testWizardBackorder();
 testMockOdooValidateFlow();
 testAuditarTerminarArmado();
