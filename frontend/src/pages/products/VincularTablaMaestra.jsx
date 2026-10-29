@@ -18,6 +18,8 @@ const DIFERENCIA_PRECIO = 0.3;
 // Tamaño de las fotos de las tarjetas: la de Neggo y la de cada oferta, para compararlas
 const FOTO_NEGGO = 120;
 const FOTO_OFERTA = 96;
+// Fotos de las filas de las tablas y de los conflictos (nota 115)
+export const FOTO_FILA = 48;
 
 function diferenciaPrecio(neto, costo) {
     const n = Number(neto), c = Number(costo);
@@ -34,6 +36,7 @@ export function LoteCodigo({ tokens: t, onCambio }) {
     const [destildados, setDestildados] = useState(() => new Set());
     const [rechazarDestildados, setRechazarDestildados] = useState(false);
     const [guardando, setGuardando] = useState(false);
+    const [foto, setFoto] = useState(null);
 
     const cargar = useCallback(async () => {
         setCargando(true);
@@ -154,12 +157,14 @@ export function LoteCodigo({ tokens: t, onCambio }) {
                                         <input type="checkbox" checked={tildado} onChange={() => alternar(f.id)} onClick={e => e.stopPropagation()} />
                                     </Td>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.oferta_nombre} codigo={f.sku} extra={f.proveedor} />
-                                        {!f.available && <Badge tone="muted" style={{ marginTop: 4 }}>No disponible</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.image_url} nombre={f.oferta_nombre} codigo={f.sku} extra={f.proveedor} onFoto={setFoto}>
+                                            {!f.available && <Badge tone="muted" style={{ marginTop: 4 }}>No disponible</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.odoo_nombre} codigo={f.internal_ref} />
-                                        {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.odoo_image_url} nombre={f.odoo_nombre} codigo={f.internal_ref} onFoto={setFoto}>
+                                            {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t} right>
                                         <span style={t.numericStyle}>{f.neto ? fmtAR(f.neto) : '—'}</span>
@@ -175,6 +180,8 @@ export function LoteCodigo({ tokens: t, onCambio }) {
                     </tbody>
                 </table>
             </Card>
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }
@@ -364,14 +371,15 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     );
 }
 
-// Foto de la tarjeta: se toca para verla en grande (sin foto, solo la inicial)
-function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
+// Foto de la tarjeta: se toca para verla en grande (sin foto, solo la inicial). No propaga el clic
+// para no tildar la fila ni elegir el ítem en el que está.
+export function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
     const thumb = <ProductThumb imageUrl={imageUrl} emoji={nombre?.[0]} size={size} />;
     if (!imageUrl) return thumb;
     return (
         <button
             type="button"
-            onClick={onAbrir}
+            onClick={e => { e.stopPropagation(); onAbrir(); }}
             title="Ver foto en grande"
             aria-label={`Ver foto de ${nombre || 'producto'}`}
             style={{ padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in', flexShrink: 0, borderRadius: t.radius.sm }}
@@ -381,10 +389,66 @@ function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
     );
 }
 
+// Foto + nombre + código para las filas; onFoto recibe { imageUrl, nombre, detalle } para ampliarla
+export function ConFoto({ tokens: t, imageUrl, nombre, codigo, extra, onFoto, size = FOTO_FILA, children }) {
+    return (
+        <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', minWidth: 0 }}>
+            <FotoBoton
+                tokens={t}
+                imageUrl={imageUrl}
+                nombre={nombre}
+                size={size}
+                onAbrir={() => onFoto({ imageUrl, nombre, detalle: [codigo, extra].filter(Boolean).join(' · ') })}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <Nombre tokens={t} nombre={nombre} codigo={codigo} extra={extra} />
+                {children}
+            </div>
+        </div>
+    );
+}
+
 // ─── Conflictos ──────────────────────────────────────────────────────────────────
+// Cómo se armó cada vínculo, en criollo
+const METODO_LABEL = {
+    codigo: 'por código',
+    nombre: 'por nombre',
+    ingreso: 'por ingreso',
+    ingreso_manual: 'ingreso a mano',
+    factura: 'por factura',
+    semilla_neggo: 'importado',
+    semilla_preventas: 'importado',
+};
+
+// Por qué la oferta quedó con varios productos: misma referencia en Odoo o vínculos de distinto origen
+function motivoConflicto(productos) {
+    const refs = [...new Set(productos.map(p => p.internal_ref).filter(Boolean))];
+    if (refs.length === 1 && productos.every(p => p.internal_ref)) {
+        const archivados = productos.filter(p => p.activo === false).length;
+        return `Todos tienen la misma referencia en Odoo (${refs[0]}), por eso el lote por código los unió a todos.`
+            + (archivados ? ' Seguramente uno es un producto viejo que se archivó y se reemplazó por otro.' : '');
+    }
+    return null;
+}
+
+// Si hay un solo producto activo y el resto está archivado, ese es el candidato natural
+function productoSugerido(productos) {
+    const activos = productos.filter(p => p.activo !== false);
+    return activos.length === 1 && activos.length < productos.length ? activos[0].odoo_id : null;
+}
+
+function Rotulo({ tokens: t, children }) {
+    return (
+        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: t.space[2], fontFamily: t.font.family }}>
+            {children}
+        </div>
+    );
+}
+
 export function Conflictos({ tokens: t, onCambio }) {
     const { showToast } = useToast();
     const [filas, setFilas] = useState(null);
+    const [foto, setFoto] = useState(null);
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/conflictos');
@@ -394,10 +458,30 @@ export function Conflictos({ tokens: t, onCambio }) {
 
     useEffect(() => { cargar(); }, [cargar]);
 
+    // Oferta que se está guardando (los botones de esa tarjeta quedan deshabilitados)
+    const [guardando, setGuardando] = useState(null);
+
     async function noEsEste(supplierProductId, odooProductId) {
+        setGuardando(supplierProductId);
         const res = await api.post('/mappings/vincular/rechazar', { supplierProductId, odooProductId });
+        setGuardando(null);
         if (res.success) { showToast('Vínculo rechazado', 'success'); cargar(); onCambio?.(); }
         else showToast(res.error || 'Error al rechazar', 'error');
+    }
+
+    // "Es este": deja ese producto y rechaza los demás vinculados a la misma oferta
+    async function esEste(c, odooProductId) {
+        setGuardando(c.supplier_product_id);
+        const otros = c.productos.filter(p => p.odoo_id !== odooProductId);
+        let error = null;
+        for (const p of otros) {
+            const res = await api.post('/mappings/vincular/rechazar', { supplierProductId: c.supplier_product_id, odooProductId: p.odoo_id });
+            if (!res.success) { error = res.error || 'Error al rechazar'; break; }
+        }
+        setGuardando(null);
+        if (error) showToast(error, 'error');
+        else showToast(otros.length === 1 ? 'Listo: quedó solo ese producto' : `Listo: se sacaron ${otros.length} vínculos`, 'success');
+        cargar(); onCambio?.();
     }
 
     if (!filas) return <Centrado><LoadingSpinner size="md" color={t.color.primary} /></Centrado>;
@@ -406,29 +490,46 @@ export function Conflictos({ tokens: t, onCambio }) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
             <Ayuda tokens={t}>
-                Una misma oferta quedó confirmada con dos o más productos de Neggo. Suele ser un producto duplicado en
-                Odoo o un código que el proveedor reusó. Tocá "No es este" en el que no corresponda.
+                Cada oferta de un proveedor tiene que corresponder a <b>un solo</b> producto de Neggo, pero estas quedaron
+                vinculadas a dos o más. Mirá las fotos y los nombres y tocá <b>"Es este"</b> en el producto que es el mismo
+                artículo de la oferta: los demás se desvinculan. Si ninguno corresponde, tocá "No es este" en cada uno.
+                No cambia nada en Odoo.
             </Ayuda>
-            {filas.map(c => (
-                <Card key={c.supplier_product_id} padding={false} style={{ padding: t.space[5] }}>
-                    <Nombre tokens={t} nombre={c.name} codigo={c.sku} extra={c.proveedor} />
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: t.space[4] }}>
-                        {c.productos.map(p => (
-                            <div key={p.odoo_id} style={{
-                                display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap',
-                                padding: '10px 12px', borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`,
-                            }}>
-                                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                                    <Nombre tokens={t} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} />
+            {filas.map(c => {
+                const motivo = motivoConflicto(c.productos);
+                const sugerido = productoSugerido(c.productos);
+                const ocupado = guardando === c.supplier_product_id;
+                return (
+                    <Card key={c.supplier_product_id} padding={false} style={{ padding: t.space[5] }}>
+                        <Rotulo tokens={t}>Oferta de {c.proveedor}</Rotulo>
+                        <ConFoto tokens={t} imageUrl={c.image_url} nombre={c.name} codigo={c.sku} extra={c.proveedor} onFoto={setFoto} size={FOTO_OFERTA} />
+                        <div style={{ marginTop: t.space[4] }}>
+                            <Rotulo tokens={t}>Vinculada a estos {c.productos.length} productos de Neggo — ¿cuál es?</Rotulo>
+                            {motivo && <Ayuda tokens={t}>{motivo}</Ayuda>}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: t.space[3] }}>
+                            {c.productos.map(p => (
+                                <div key={p.odoo_id} style={{
+                                    display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap',
+                                    padding: '10px 12px', borderRadius: t.radius.sm,
+                                    border: `1px solid ${p.odoo_id === sugerido ? t.color.success : t.color.border}`,
+                                }}>
+                                    <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                                        <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto} />
+                                    </div>
+                                    {p.odoo_id === sugerido && <Badge tone="success">Sugerido: es el activo</Badge>}
+                                    {p.activo === false && <Badge tone="muted">Archivado en Odoo</Badge>}
+                                    <Badge tone="muted">{METODO_LABEL[p.metodo] || p.metodo}</Badge>
+                                    <Button size="sm" variant="primary" leftIcon={<Icon.Check size={14} />} disabled={ocupado} onClick={() => esEste(c, p.odoo_id)}>Es este</Button>
+                                    <Button size="sm" variant="ghost" disabled={ocupado} onClick={() => noEsEste(c.supplier_product_id, p.odoo_id)}>No es este</Button>
                                 </div>
-                                {p.activo === false && <Badge tone="muted">Archivado</Badge>}
-                                <Badge tone="muted">{p.metodo}</Badge>
-                                <Button size="sm" variant="danger" onClick={() => noEsEste(c.supplier_product_id, p.odoo_id)}>No es este</Button>
-                            </div>
-                        ))}
-                    </div>
-                </Card>
-            ))}
+                            ))}
+                        </div>
+                    </Card>
+                );
+            })}
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }
@@ -437,6 +538,7 @@ export function Conflictos({ tokens: t, onCambio }) {
 export function SinHabitual({ tokens: t }) {
     const { showToast } = useToast();
     const [filas, setFilas] = useState(null);
+    const [foto, setFoto] = useState(null);
 
     useEffect(() => {
         api.get('/mappings/vincular/sin-habitual').then(res => {
@@ -469,8 +571,9 @@ export function SinHabitual({ tokens: t }) {
                             {filas.map(f => (
                                 <tr key={f.odoo_id} style={{ borderTop: `1px solid ${t.color.border}` }}>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.odoo_nombre} codigo={f.internal_ref} />
-                                        {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.odoo_image_url} nombre={f.odoo_nombre} codigo={f.internal_ref} onFoto={setFoto}>
+                                            {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t}>{f.vendor_name || <span style={{ color: t.color.textFaint }}>sin principal</span>}</Td>
                                     <Td tokens={t}>{(f.proveedores_vinculados || []).join(', ')}</Td>
@@ -481,6 +584,8 @@ export function SinHabitual({ tokens: t }) {
                     </table>
                 </Card>
             )}
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }

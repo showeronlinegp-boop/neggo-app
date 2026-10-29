@@ -155,6 +155,7 @@ router.get('/', authenticate, async (req, res) => {
                 sp.raw_price,
                 sp.source_category,
                 sp.available    AS supplier_available,
+                sp.image_url    AS supplier_image_url,
                 s.id            AS supplier_id,
                 s.name          AS supplier_name_full,
                 -- Datos del producto Odoo (cache)
@@ -163,7 +164,8 @@ router.get('/', authenticate, async (req, res) => {
                 opc.list_price  AS odoo_list_price,
                 opc.standard_price AS odoo_standard_price,
                 opc.qty_available AS odoo_qty,
-                opc.categ_name  AS odoo_category
+                opc.categ_name  AS odoo_category,
+                opc.image_url   AS odoo_image_url
              FROM product_mappings pm
              JOIN supplier_products sp ON pm.supplier_product_id = sp.id
              JOIN suppliers s ON sp.supplier_id = s.id
@@ -273,6 +275,7 @@ router.get('/comparison', authenticate, async (req, res) => {
                 sp.source_category,
                 sp.available,
                 sp.last_scraped_at,
+                sp.image_url,
                 -- Mapeo Neggo
                 pm_n.id            AS neggo_mapping_id,
                 pm_n.match_type    AS neggo_match_type,
@@ -281,6 +284,7 @@ router.get('/comparison', authenticate, async (req, res) => {
                 opc_n.internal_ref AS neggo_ref,
                 opc_n.list_price   AS neggo_list_price,
                 opc_n.standard_price AS neggo_cost,
+                opc_n.image_url    AS neggo_image_url,
                 -- Mapeo Preventas
                 pm_p.id            AS prev_mapping_id,
                 pm_p.match_type    AS prev_match_type,
@@ -288,7 +292,8 @@ router.get('/comparison', authenticate, async (req, res) => {
                 opc_p.name         AS prev_odoo_name,
                 opc_p.internal_ref AS prev_ref,
                 opc_p.list_price   AS prev_list_price,
-                opc_p.standard_price AS prev_cost
+                opc_p.standard_price AS prev_cost,
+                opc_p.image_url    AS prev_image_url
             ${baseFrom}
             ORDER BY sp.name ASC
             LIMIT $${idx} OFFSET $${idx + 1}`,

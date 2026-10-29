@@ -733,7 +733,7 @@ async function rechazarVinculo({ supplierProductId, odooProductId, odooCompany =
  */
 async function listarConflictos(db = pool) {
     const { rows } = await db.query(
-        `SELECT sp.id AS supplier_product_id, s.name AS proveedor, sp.sku, sp.name,
+        `SELECT sp.id AS supplier_product_id, s.name AS proveedor, sp.sku, sp.name, sp.image_url,
                 array_agg(pm.odoo_product_id ORDER BY pm.odoo_product_id) AS odoo_ids
          FROM product_mappings pm
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source = 'web'

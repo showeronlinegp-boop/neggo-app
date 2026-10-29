@@ -301,7 +301,7 @@ async function runAutoMatch(supplierId) {
 async function getUnmappedProducts(supplierId) {
     const { rows } = await pool.query(
         `SELECT sp.id, sp.sku, sp.name, sp.raw_price, sp.source_category,
-                sp.available, sp.last_scraped_at
+                sp.available, sp.last_scraped_at, sp.image_url
          FROM supplier_products sp
          WHERE sp.supplier_id = $1
            AND NOT EXISTS (
