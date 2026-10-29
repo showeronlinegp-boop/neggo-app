@@ -13,6 +13,22 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { runAutoMatch, getUnmappedProducts } = require('../services/matchingService');
 
+// Guarda en match_decisiones lo que decidió una persona sobre un vínculo.
+// Si falla no frena la operación: es solo para medir el acierto.
+async function registrarDecision(mapping, decision, userId) {
+    try {
+        await pool.query(
+            `INSERT INTO match_decisiones
+                (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [mapping.supplier_product_id, mapping.odoo_product_id, mapping.odoo_company,
+             decision, mapping.metodo || mapping.match_type, mapping.match_confidence, userId]
+        );
+    } catch (err) {
+        console.error('⚠️ Error al registrar la decisión del vínculo:', err.message);
+    }
+}
+
 // =============================================
 // GET /api/mappings
 // Lista de mappings con JOIN a supplier_products y odoo_products_cache
@@ -321,20 +337,27 @@ router.post('/', authenticate, requireRole('admin', 'operador'), async (req, res
             return fail(res, `Producto Odoo ${odooProductId} [${odooCompany}] no encontrado en cache`, 404);
         }
 
-        // Insertar mapping manual
+        // Insertar mapping manual (lo hace una persona: queda confirmado)
         const { rows: inserted } = await pool.query(
             `INSERT INTO product_mappings
                 (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
-                 match_type, match_confidence, active)
-             VALUES ($1, $2, $3, $4, 'manual', 1.0, true)
+                 match_type, match_confidence, active, estado, metodo, confirmado_por, confirmado_at)
+             VALUES ($1, $2, $3, $4, 'manual', 1.0, true, 'confirmado', 'manual', $5, NOW())
              ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company)
              DO UPDATE SET
                 match_type = 'manual',
                 match_confidence = 1.0,
-                active = true
+                active = true,
+                estado = 'confirmado',
+                metodo = COALESCE(product_mappings.metodo, 'manual'),
+                confirmado_por = $5,
+                confirmado_at = NOW()
              RETURNING *`,
-            [supplierProductId, odooProductId, odooCompany, opRows[0].internal_ref]
+            [supplierProductId, odooProductId, odooCompany, opRows[0].internal_ref, req.user.id]
         );
+
+        // Decisión para medir el acierto por método
+        await registrarDecision(inserted[0], 'confirmado', req.user.id);
 
         console.log(`✅ Mapping manual creado: supplier_product ${supplierProductId} <-> odoo ${odooProductId} [${odooCompany}]`);
 
@@ -376,7 +399,7 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
 
     try {
         const { rows } = await pool.query(
-            'SELECT id FROM product_mappings WHERE id = $1',
+            'SELECT * FROM product_mappings WHERE id = $1',
             [mappingId]
         );
 
@@ -384,11 +407,14 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
             return fail(res, `Mapping ${mappingId} no encontrado`, 404);
         }
 
-        // Desactivar en lugar de borrar físicamente para mantener historial
+        // Desactivar en lugar de borrar físicamente para mantener historial.
+        // Queda rechazado: así no se vuelve a proponer.
         await pool.query(
-            'UPDATE product_mappings SET active = false WHERE id = $1',
+            `UPDATE product_mappings SET active = false, estado = 'rechazado', es_habitual = false
+             WHERE id = $1`,
             [mappingId]
         );
+        await registrarDecision(rows[0], 'rechazado', req.user.id);
 
         // Registrar en activity_log
         try {
