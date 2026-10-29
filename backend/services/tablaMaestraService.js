@@ -746,8 +746,105 @@ async function listarConflictos(db = pool) {
     return rows;
 }
 
+// =============================================
+// Más económico en Reposición (nota 107, punto 5) — solo lectura
+// =============================================
+
+// Un precio sin scrapear hace más de estos días se muestra como "precio viejo"
+const DIAS_PRECIO_VIEJO = 7;
+
+const redondear1 = (n) => Math.round(n * 10) / 10;
+
+/**
+ * Arma lo que ve Reposición para un producto a partir de sus ofertas web confirmadas.
+ *   mas_economico: la oferta disponible con el menor precio por unidad (a igual precio, la del principal)
+ *   conviene: si el más económico no es el proveedor del pedido y es más barato que su oferta
+ *             (o, si el principal no tiene oferta web, que el costo actual de Odoo). Cualquier diferencia.
+ * @param {Array} filas — ofertas de v_ofertas_comparables (precio_comparable, available, es_principal...)
+ * @param {{ costo?: number, ahora?: Date }} opts — costo actual de Odoo (standard_price)
+ */
+function resumirOfertas(filas, { costo = null, ahora = new Date() } = {}) {
+    const limite = ahora.getTime() - DIAS_PRECIO_VIEJO * 24 * 3600 * 1000;
+    const ofertas = filas
+        .map(f => ({
+            supplier_product_id: f.supplier_product_id,
+            proveedor: f.proveedor,
+            nombre: f.name,
+            sku: f.sku,
+            url: f.product_url || null,
+            precio: f.precio_comparable == null ? null : Number(f.precio_comparable),
+            pack: f.pack_cantidad || 1,
+            disponible: !!f.available,
+            precio_viejo: !f.last_scraped_at || new Date(f.last_scraped_at).getTime() < limite,
+            scrapeado_at: f.last_scraped_at || null,
+            es_principal: !!f.es_principal,
+            es_habitual: !!f.es_habitual,
+        }))
+        // Sin precio (ZLE sin sesión) no se puede comparar
+        .filter(o => o.precio != null && o.precio > 0)
+        .sort((a, b) => (b.disponible - a.disponible) || (a.precio - b.precio) || (b.es_principal - a.es_principal));
+
+    const masEconomico = ofertas.find(o => o.disponible) || null;
+    const principal = ofertas.find(o => o.es_principal && o.disponible) || null;
+    const costoNum = costo == null ? null : Number(costo);
+    const pctVs = (ref) => (masEconomico && ref > 0 ? redondear1((masEconomico.precio / ref - 1) * 100) : null);
+
+    let conviene = null;
+    if (masEconomico && !masEconomico.es_principal) {
+        const referencia = principal ? principal.precio : costoNum;
+        if (referencia > 0 && masEconomico.precio < referencia) {
+            conviene = {
+                proveedor: masEconomico.proveedor,
+                pct: pctVs(referencia),
+                contra: principal ? 'proveedor_del_pedido' : 'costo_actual',
+            };
+        }
+    }
+    return {
+        costo_actual: costoNum,
+        mas_economico: masEconomico,
+        pct_vs_costo: pctVs(costoNum),
+        conviene,
+        ofertas,
+    };
+}
+
+/**
+ * Ofertas web confirmadas de cada producto de Neggo (Precompras queda afuera: es solo base de costos).
+ * Lee los vínculos confirmados aunque estén inactivos: no escribe nada.
+ * @param {Array<{ odoo_id: number, standard_price?: number }>} productos
+ * @returns {Promise<Map<number, object>>} odoo_id → resumirOfertas(...)
+ */
+async function ofertasPorProducto(productos, db = pool) {
+    const ids = [...new Set(productos.map(p => p.odoo_id).filter(Boolean))];
+    const resultado = new Map();
+    if (!ids.length) return resultado;
+    const { rows } = await db.query(
+        `SELECT pm.odoo_product_id, v.supplier_product_id, v.proveedor, v.name, v.sku, v.precio_comparable,
+                v.pack_cantidad, v.available, v.last_scraped_at, sp.product_url, pm.es_habitual,
+                (opc.vendor_name = v.proveedor) AS es_principal
+         FROM product_mappings pm
+         JOIN v_ofertas_comparables v ON v.supplier_product_id = pm.supplier_product_id
+         JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+         JOIN odoo_products_cache opc ON opc.odoo_id = pm.odoo_product_id AND opc.company = 'neggo'
+         WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado' AND v.source <> 'neggo'
+           AND pm.odoo_product_id = ANY($1::int[])`,
+        [ids]
+    );
+    const porProducto = new Map();
+    for (const r of rows) {
+        if (!porProducto.has(r.odoo_product_id)) porProducto.set(r.odoo_product_id, []);
+        porProducto.get(r.odoo_product_id).push(r);
+    }
+    for (const p of productos) {
+        const filas = porProducto.get(p.odoo_id);
+        if (filas) resultado.set(p.odoo_id, resumirOfertas(filas, { costo: p.standard_price }));
+    }
+    return resultado;
+}
+
 module.exports = {
     primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos, marcarHabituales,
-    recalcularHabituales, sincronizarActivos, tablaActiva, activar,
+    recalcularHabituales, sincronizarActivos, tablaActiva, activar, ofertasPorProducto, resumirOfertas,
     packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso
 };

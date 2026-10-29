@@ -25,6 +25,26 @@ function iso(v) {
     return v ? new Date(v).toISOString() : null;
 }
 
+/** Ofertas web del producto (tabla maestra) → formato de la API. Precio por unidad, sin IVA. */
+function formatOfertas(o) {
+    if (!o) return null;
+    const oferta = (x) => x && {
+        proveedor: x.proveedor,
+        producto: x.nombre,
+        precio_unidad: x.precio,
+        pack: x.pack,
+        disponible: x.disponible,
+        precio_viejo: x.precio_viejo,
+        es_proveedor_principal: x.es_principal,
+    };
+    return {
+        mas_economico: oferta(o.mas_economico),
+        diferencia_vs_costo_pct: o.pct_vs_costo,
+        conviene: o.conviene,
+        todas: o.ofertas.map(oferta),
+    };
+}
+
 /** Un ítem de la cola con métricas → formato de la API. */
 function formatItem(it) {
     return {
@@ -54,6 +74,7 @@ function formatItem(it) {
         ritmo: it.ritmo,
         abc: it.abc,
         cantidad_sugerida: it.qty_sugerida_calc,
+        ofertas: formatOfertas(it.ofertas),
         ingreso: it.llego_ingreso
             ? { comprobante: it.ingreso_comprobante, fecha: iso(it.ingreso_at), cantidad: numero(it.ingreso_qty) }
             : null,

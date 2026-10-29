@@ -6,11 +6,13 @@
 // Neggo no lleva stock en Odoo: archivar = dar de baja. No hay origen bajo_stock.
 // Lee Odoo vía cache. Archivar/activar escriben en Odoo solo a pedido de la UI.
 // No genera OC: no usamos el módulo de compras (por ahora).
+// Cada ítem trae `ofertas` (tabla maestra): costo actual, más económico y si conviene otro proveedor.
 
 const fs = require('fs');
 const path = require('path');
 const pool = require('../config/database');
 const odooService = require('./odooService');
+const { ofertasPorProducto } = require('./tablaMaestraService');
 
 const SCHEMA_029 = fs.readFileSync(
     path.join(__dirname, '..', 'sql', 'migrations', '029_reposicion.sql'), 'utf8'
@@ -253,6 +255,19 @@ const SELECT_ITEM = `
 /**
  * Lista la cola. estado: 'pendiente' (default), 'encargado' o 'resueltos' (los últimos 200).
  */
+/**
+ * Suma a cada ítem sus ofertas web confirmadas (solo lectura). Si falla, la cola sale igual.
+ */
+async function conOfertas(items) {
+    try {
+        const ofertas = await ofertasPorProducto(items);
+        return items.map(it => ({ ...it, ofertas: ofertas.get(it.odoo_id) || null }));
+    } catch (err) {
+        console.warn(`⚠️ Reposición: no se pudieron leer las ofertas: ${err.message}`);
+        return items.map(it => ({ ...it, ofertas: null }));
+    }
+}
+
 async function listar({ estado = 'pendiente' } = {}) {
     await cerrarLlegados();
     if (estado === 'resueltos') {
@@ -269,13 +284,13 @@ async function listar({ estado = 'pendiente' } = {}) {
             `${SELECT_ITEM} WHERE ri.estado = 'encargado'
              ORDER BY (ing.ingreso_id IS NOT NULL) DESC, vendor_name, ri.encargado_at NULLS LAST, ri.created_at`
         );
-        return rows;
+        return conOfertas(rows);
     }
     const { rows } = await pool.query(
         `${SELECT_ITEM} WHERE ri.estado = 'pendiente'
          ORDER BY (ing.ingreso_id IS NOT NULL) DESC, vendor_name, ri.created_at`
     );
-    return rows;
+    return conOfertas(rows);
 }
 
 /**
@@ -621,7 +636,8 @@ function clasificarAbc(itemsConQty) {
  * Ítems de la cola con ventas de las últimas semanas, ABC y cantidad sugerida
  * (venta semanal × semanas de cobertura). Refresca ventas si están viejas.
  */
-async function conMetricas(items) {
+async function conMetricas(filas) {
+    const items = await conOfertas(filas);
     let ventasMeta = null;
     try {
         ventasMeta = await require('../jobs/salesWeeklySync').ensureFresh(12);

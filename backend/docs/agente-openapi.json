@@ -3533,6 +3533,38 @@
             "type": "integer",
             "description": "promedio_semanal × cobertura_semanas, redondeado para arriba (0 = sin ventas)"
           },
+          "ofertas": {
+            "type": "object",
+            "nullable": true,
+            "description": "Ofertas web de proveedores vinculadas al producto (null = no tiene). Precio por unidad, sin IVA, con el descuento del proveedor; comparalo con `costo`. Los proveedores de origen Precompras no aparecen: su precio es el mismo costo de Odoo.",
+            "properties": {
+              "mas_economico": {
+                "allOf": [{ "$ref": "#/components/schemas/ReposicionOferta" }],
+                "nullable": true,
+                "description": "La oferta disponible más barata (a igual precio, la del proveedor principal)"
+              },
+              "diferencia_vs_costo_pct": {
+                "type": "number",
+                "nullable": true,
+                "description": "Precio del más económico contra el costo actual de Odoo, en % (negativo = más barato)"
+              },
+              "conviene": {
+                "type": "object",
+                "nullable": true,
+                "description": "Otro proveedor es más barato que el del pedido (o que el costo actual, si el principal no tiene oferta web). Cualquier diferencia.",
+                "properties": {
+                  "proveedor": { "type": "string" },
+                  "pct": { "type": "number", "description": "Diferencia en % (negativa)" },
+                  "contra": { "type": "string", "enum": ["proveedor_del_pedido", "costo_actual"] }
+                }
+              },
+              "todas": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/ReposicionOferta" },
+                "description": "Disponibles primero, de menor a mayor precio"
+              }
+            }
+          },
           "ingreso": {
             "type": "object",
             "nullable": true,
@@ -3550,6 +3582,18 @@
               }
             }
           }
+        }
+      },
+      "ReposicionOferta": {
+        "type": "object",
+        "properties": {
+          "proveedor": { "type": "string" },
+          "producto": { "type": "string", "description": "Nombre en la web del proveedor" },
+          "precio_unidad": { "type": "number", "description": "Sin IVA, con descuento, dividido por el pack" },
+          "pack": { "type": "integer" },
+          "disponible": { "type": "boolean" },
+          "precio_viejo": { "type": "boolean", "description": "Sin scrapear hace más de 7 días" },
+          "es_proveedor_principal": { "type": "boolean" }
         }
       },
       "ReposicionMeta": {

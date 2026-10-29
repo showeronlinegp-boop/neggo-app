@@ -2,7 +2,7 @@
 // node backend/services/tablaMaestra.test.js
 
 const assert = require('assert');
-const { packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso } = require('./tablaMaestraService');
+const { packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso, resumirOfertas } = require('./tablaMaestraService');
 
 function testPackPorNombre() {
     assert.strictEqual(packFromName('Bic Opaca Azul x 50 Un'), 50);
@@ -60,6 +60,41 @@ function testMetodoIngreso() {
     assert.strictEqual(metodoDesdeIngreso({ match_level: null, supplier_match_level: 'exact_code' }), 'ingreso');
 }
 
-const tests = [testPackPorNombre, testRatio, testDecidir, testMetodoIngreso];
+// Reposición: más económico y "conviene otro proveedor"
+function testMasEconomico() {
+    const ahora = new Date('2026-10-29T12:00:00Z');
+    const reciente = '2026-10-28T12:00:00Z';
+    const of = (proveedor, precio, extra = {}) => ({
+        supplier_product_id: proveedor.length, proveedor, name: proveedor, precio_comparable: precio,
+        available: true, last_scraped_at: reciente, es_principal: false, ...extra,
+    });
+
+    // Alif más barato que Babu (principal): conviene Alif −13,1 %
+    let r = resumirOfertas([of('Babu', 2213.4, { es_principal: true }), of('Alif', 1922.8)], { costo: 2000, ahora });
+    assert.strictEqual(r.mas_economico.proveedor, 'Alif');
+    assert.deepStrictEqual(r.conviene, { proveedor: 'Alif', pct: -13.1, contra: 'proveedor_del_pedido' });
+    assert.strictEqual(r.pct_vs_costo, -3.9);
+
+    // A igual precio gana el principal y no hay "conviene"
+    r = resumirOfertas([of('Alif', 100), of('Babu', 100, { es_principal: true })], { ahora });
+    assert.strictEqual(r.mas_economico.proveedor, 'Babu');
+    assert.strictEqual(r.conviene, null);
+
+    // Principal sin oferta web: se compara contra el costo actual
+    r = resumirOfertas([of('Alif', 90)], { costo: 100, ahora });
+    assert.deepStrictEqual(r.conviene, { proveedor: 'Alif', pct: -10, contra: 'costo_actual' });
+    r = resumirOfertas([of('Alif', 110)], { costo: 100, ahora });
+    assert.strictEqual(r.conviene, null);
+
+    // No disponible no compite; sin precio (ZLE) queda afuera; precio viejo a los 7 días
+    r = resumirOfertas([of('Alif', 50, { available: false }), of('ZLE', null),
+        of('Babu', 80, { es_principal: true, last_scraped_at: '2026-10-20T12:00:00Z' })], { ahora });
+    assert.strictEqual(r.mas_economico.proveedor, 'Babu');
+    assert.strictEqual(r.mas_economico.precio_viejo, true);
+    assert.strictEqual(r.ofertas.length, 2);
+    assert.strictEqual(r.conviene, null);
+}
+
+const tests = [testPackPorNombre, testRatio, testDecidir, testMetodoIngreso, testMasEconomico];
 for (const t of tests) t();
 console.log(`✅ tablaMaestra: ${tests.length} tests OK`);
