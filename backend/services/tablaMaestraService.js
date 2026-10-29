@@ -645,6 +645,6 @@ async function listarConflictos(db = pool) {
 }
 
 module.exports = {
-    primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos,
+    primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos, marcarHabituales,
     packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso
 };

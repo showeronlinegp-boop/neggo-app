@@ -9,7 +9,7 @@
 // Ninguna decisión activa vínculos ni escribe en Odoo.
 
 const pool = require('../config/database');
-const { vincularDesdeIngresos, listarConflictos } = require('./tablaMaestraService');
+const { vincularDesdeIngresos, listarConflictos, marcarHabituales } = require('./tablaMaestraService');
 
 // Tarjetas que se muestran por semana (las revisa una sola persona)
 const TARJETAS_POR_SEMANA = 40;
@@ -90,6 +90,8 @@ async function decidirSugeridos(db, ids, decision, userId) {
             [r.supplier_product_id, r.odoo_product_id, r.odoo_company, decision, r.metodo, r.match_confidence, userId]
         );
     }
+    // Si se confirmó la oferta del proveedor principal de Odoo, pasa a ser la habitual
+    if (decision === 'confirmado' && rows.length) await marcarHabituales(db);
     return rows.length;
 }
 
