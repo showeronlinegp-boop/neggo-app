@@ -285,7 +285,9 @@ async function detectarPacks(db) {
 
 // 5. Habitual (máximo uno por producto y empresa), solo entre confirmados: la oferta del proveedor
 //    principal de Odoo. Precompras (origen "neggo") nunca es habitual: es la base de costos, no un
-//    precio de proveedor. Los ingresos no deciden el habitual (vincular no es elegir a quién comprar).
+//    precio de proveedor. Preventas tampoco: sus vínculos (activos y archivados) son solo un dato
+//    para saber de dónde viene cada producto de Neggo. Los ingresos no deciden el habitual
+//    (vincular no es elegir a quién comprar).
 async function marcarHabituales(db) {
     const porOdoo = (await db.query(
         `UPDATE product_mappings pm SET es_habitual = true
@@ -295,7 +297,8 @@ async function marcarHabituales(db) {
              JOIN supplier_products sp ON sp.id = pm2.supplier_product_id
              JOIN suppliers s ON s.id = sp.supplier_id
              JOIN odoo_products_cache opc ON opc.odoo_id = pm2.odoo_product_id AND opc.company = pm2.odoo_company
-             WHERE pm2.estado = 'confirmado' AND opc.vendor_name = s.name AND sp.source <> 'neggo'
+             WHERE pm2.estado = 'confirmado' AND pm2.odoo_company = 'neggo'
+               AND opc.vendor_name = s.name AND sp.source <> 'neggo'
                AND NOT EXISTS (SELECT 1 FROM product_mappings h
                                WHERE h.odoo_product_id = pm2.odoo_product_id
                                  AND h.odoo_company = pm2.odoo_company AND h.es_habitual)
@@ -422,6 +425,12 @@ async function corregirDatos({ aplicar = false } = {}) {
              WHERE sp.id = pm.supplier_product_id AND sp.source = 'neggo' AND pm.es_habitual
              RETURNING pm.odoo_company`
         )).rows.reduce((acc, r) => ({ ...acc, [r.odoo_company]: (acc[r.odoo_company] || 0) + 1 }), {});
+
+        // Preventas es solo un dato de origen: no lleva habitual
+        resumen.habitual_preventas = (await db.query(
+            `UPDATE product_mappings SET es_habitual = false
+             WHERE odoo_company = 'preventas' AND es_habitual`
+        )).rowCount;
 
         resumen.habitual_no_principal = (await db.query(
             `UPDATE product_mappings pm SET es_habitual = false
