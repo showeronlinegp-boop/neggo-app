@@ -6,11 +6,12 @@
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
 // Solo Neggo: Preventas es un dato de origen y Precompras (origen "neggo") es base de costos.
-// Ninguna decisión escribe en Odoo. Con la tabla maestra prendida, lo confirmado queda activo y
+// Ninguna decisión escribe en Odoo, salvo "No usar" (nota 118). Con la tabla maestra prendida, lo confirmado queda activo y
 // el habitual pasa a mover precios (siempre con la alerta de Neggo, que se aprueba a mano).
 
 const pool = require('../config/database');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
+const odooService = require('./odooService');
 
 // Tarjetas que se muestran por semana (las revisa una sola persona)
 const TARJETAS_POR_SEMANA = 40;
@@ -282,6 +283,34 @@ async function rechazarPar({ supplierProductId, odooProductId, userId }) {
 }
 
 /**
+ * "No usar" (nota 118): marca el producto "[NO USAR]" en Odoo (leyenda en el nombre + archivado) y
+ * lo saca de la app: rechaza todos sus vínculos y lo borra del cache sin esperar al sync, que
+ * desde ahora lo deja afuera. Es la única acción de Vincular que escribe en Odoo.
+ * @param {{ odooProductId: number, userId: number }} opts
+ */
+async function marcarNoUsar({ odooProductId, userId }) {
+    const odoo = await odooService.marcarNoUsar(odooProductId, 'neggo');
+    return enTransaccion(async (db) => {
+        const { rows } = await db.query(
+            `UPDATE product_mappings SET estado = 'rechazado', active = false, es_habitual = false
+             WHERE odoo_product_id = $1 AND estado <> 'rechazado'
+             RETURNING supplier_product_id, odoo_company, metodo, match_confidence`,
+            [odooProductId]
+        );
+        for (const r of rows) {
+            await db.query(
+                `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+                 VALUES ($1, $2, $3, 'rechazado', $4, $5, $6)`,
+                [r.supplier_product_id, odooProductId, r.odoo_company, r.metodo, r.match_confidence, userId]
+            );
+        }
+        await db.query('DELETE FROM invoice_code_mappings WHERE odoo_product_id = $1', [odooProductId]);
+        const { rowCount } = await db.query('DELETE FROM odoo_products_cache WHERE odoo_id = $1', [odooProductId]);
+        return { ...odoo, vinculos_rechazados: rows.length, sacado_del_cache: rowCount > 0 };
+    });
+}
+
+/**
  * Productos de Neggo con alguna oferta web confirmada y sin habitual (informativo: el habitual es
  * la oferta del proveedor principal de Odoo; si el principal no tiene oferta, queda sin habitual).
  */
@@ -345,5 +374,5 @@ async function resumen() {
 
 module.exports = {
     listarLoteCodigo, decidirLote, listarTarjetas, decidirTarjeta, listarConflictosDetalle,
-    rechazarPar, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
+    rechazarPar, marcarNoUsar, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
 };

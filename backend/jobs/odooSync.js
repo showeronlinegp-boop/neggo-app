@@ -8,6 +8,7 @@ const pool = require('../config/database');
 const { scheduleRecompute } = require('../services/preventasMatchService');
 const reposicion = require('../services/reposicionService');
 const { recalcularHabituales } = require('../services/tablaMaestraService');
+const { esNoUsar } = require('../utils/noUsar');
 
 const PAGE_SIZE = 200;
 
@@ -398,7 +399,12 @@ async function syncOdooProducts() {
         console.log(`📦 Sync Odoo [${empresa.key}]: iniciando sync completo...`);
 
         try {
-            const products = await fetchAllProducts(empresa.id);
+            const todos = await fetchAllProducts(empresa.id);
+            // Los marcados "[NO USAR]" no entran al cache: el cleanup los saca y la app no los ve (nota 118)
+            const products = todos.filter(p => !esNoUsar(p.name));
+            if (products.length < todos.length) {
+                console.log(`📦 Sync Odoo [${empresa.key}]: ${todos.length - products.length} producto(s) "[NO USAR]" excluidos`);
+            }
 
             // Campos de template no disponibles en product.product
             const templateIds = [...new Set(products.map(p => p.product_tmpl_id?.[0]).filter(Boolean))];

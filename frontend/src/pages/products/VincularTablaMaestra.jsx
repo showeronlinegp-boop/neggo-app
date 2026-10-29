@@ -1,8 +1,10 @@
 // Pestañas de la tabla maestra en /productos/vinculos (nota 107): lote por código, tarjetas por
-// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo.
+// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo,
+// salvo "No usar" en conflictos (nota 118), que renombra y archiva el producto.
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import api from '../../api/client';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
@@ -11,6 +13,7 @@ import Toggle from '../../components/common/Toggle';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ProductThumb from '../../components/common/ProductThumb';
 import FotoAmpliada from '../../components/common/FotoAmpliada';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 
 // Diferencia entre el neto de la oferta y el costo de Odoo a partir de la cual se avisa (posible pack)
@@ -384,7 +387,11 @@ function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
 // ─── Conflictos ──────────────────────────────────────────────────────────────────
 export function Conflictos({ tokens: t, onCambio }) {
     const { showToast } = useToast();
+    const { user } = useAuth();
+    const esAdmin = user?.role === 'admin';
     const [filas, setFilas] = useState(null);
+    const [noUsar, setNoUsar] = useState(null);
+    const [marcando, setMarcando] = useState(false);
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/conflictos');
@@ -400,6 +407,17 @@ export function Conflictos({ tokens: t, onCambio }) {
         else showToast(res.error || 'Error al rechazar', 'error');
     }
 
+    // "No usar" (nota 118): leyenda en el nombre + archivado en Odoo; la app deja de traerlo
+    async function marcarNoUsar() {
+        if (!noUsar || marcando) return;
+        setMarcando(true);
+        const res = await api.post('/mappings/vincular/no-usar', { odooProductId: noUsar.odoo_id });
+        setMarcando(false);
+        setNoUsar(null);
+        if (res.success) { showToast(`"${res.data.nombre}" quedó fuera de la app`, 'success'); cargar(); onCambio?.(); }
+        else showToast(res.error || 'Error al marcar No usar', 'error');
+    }
+
     if (!filas) return <Centrado><LoadingSpinner size="md" color={t.color.primary} /></Centrado>;
     if (!filas.length) return <Vacio tokens={t} msg="No hay conflictos." />;
 
@@ -407,7 +425,8 @@ export function Conflictos({ tokens: t, onCambio }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
             <Ayuda tokens={t}>
                 Una misma oferta quedó confirmada con dos o más productos de Neggo. Suele ser un producto duplicado en
-                Odoo o un código que el proveedor reusó. Tocá "No es este" en el que no corresponda.
+                Odoo o un código que el proveedor reusó. Tocá "No es este" en el que no corresponda. Si es un
+                duplicado que no se usa más, "No usar" lo marca en Odoo y la app deja de traerlo.
             </Ayuda>
             {filas.map(c => (
                 <Card key={c.supplier_product_id} padding={false} style={{ padding: t.space[5] }}>
@@ -423,12 +442,28 @@ export function Conflictos({ tokens: t, onCambio }) {
                                 </div>
                                 {p.activo === false && <Badge tone="muted">Archivado</Badge>}
                                 <Badge tone="muted">{p.metodo}</Badge>
+                                {esAdmin && (
+                                    <Button size="sm" variant="ghost" disabled={marcando} onClick={() => setNoUsar(p)}
+                                        title='Le pone "[NO USAR]" al nombre en Odoo, lo archiva y la app deja de traerlo'>
+                                        No usar
+                                    </Button>
+                                )}
                                 <Button size="sm" variant="danger" onClick={() => noEsEste(c.supplier_product_id, p.odoo_id)}>No es este</Button>
                             </div>
                         ))}
                     </div>
                 </Card>
             ))}
+
+            <ConfirmDialog
+                isOpen={!!noUsar}
+                onClose={() => setNoUsar(null)}
+                onConfirm={marcarNoUsar}
+                title="Marcar como No usar"
+                message={`En Odoo, "${noUsar?.nombre}" pasa a llamarse "[NO USAR] ${noUsar?.nombre}" y queda archivado (precio, foto y categoría no se tocan). La app deja de traerlo y se rechazan todos sus vínculos. Para recuperarlo, sacale la leyenda al nombre en Odoo.`}
+                confirmLabel={marcando ? 'Marcando…' : 'Marcar No usar'}
+                danger
+            />
         </div>
     );
 }
