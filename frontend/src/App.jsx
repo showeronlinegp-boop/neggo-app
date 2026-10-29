@@ -22,6 +22,7 @@ const PricelistManager      = lazy(() => import('./pages/preventas/PricelistMana
 const OdooSupplierBreakdown = lazy(() => import('./pages/preventas/OdooSupplierBreakdown'));
 const PreventasSyncPage     = lazy(() => import('./pages/preventas/PreventasSyncPage'));
 const ProductMappings   = lazy(() => import('./pages/products/ProductMappings'));
+const CompararCompras   = lazy(() => import('./pages/products/CompararCompras'));
 const SupplierRules     = lazy(() => import('./pages/suppliers/SupplierRules'));
 const ScrapingPanel     = lazy(() => import('./pages/scraping/ScrapingPanel'));
 const IngresoList       = lazy(() => import('./pages/IngresoList'));
@@ -67,6 +68,7 @@ export default function App() {
                         {/* Productos */}
                         <Route path="/productos"               element={<SupplierProducts />} />
                         <Route path="/productos/vinculos"      element={<ProductMappings />} />
+                        <Route path="/productos/comparar"      element={<CompararCompras />} />
 
                         {/* Ventas */}
                         <Route path="/clientes"                element={<Clientes />} />

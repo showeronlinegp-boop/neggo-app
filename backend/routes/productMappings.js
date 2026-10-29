@@ -16,6 +16,10 @@
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
 // GET    /api/mappings/vincular/sin-habitual      — con oferta confirmada y sin habitual
 // POST   /api/mappings/vincular/repasar-ingresos  — repasa todos los ingresos confirmados
+//
+// Comparar compras (tabla maestra, nota 107, punto 6). Solo lectura:
+// GET    /api/mappings/comparar                   — productos con oferta web confirmada + métrica del top
+// GET    /api/mappings/comparar/sin-oferta        — se vende y no tiene oferta web disponible (con motivo)
 
 const express = require('express');
 const router = express.Router();
@@ -24,6 +28,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { runAutoMatch, getUnmappedProducts } = require('../services/matchingService');
 const vincular = require('../services/vincularService');
+const comparar = require('../services/compararComprasService');
 const { recalcularHabituales } = require('../services/tablaMaestraService');
 
 // Lista de ids enteros de un body (descarta lo que no sea número)
@@ -396,6 +401,29 @@ router.post('/vincular/repasar-ingresos', authenticate, requireRole('admin', 'op
     } catch (err) {
         console.error('❌ Error al repasar los ingresos:', err.message);
         return fail(res, 'Error al repasar los ingresos', 500);
+    }
+});
+
+// =============================================
+// Comparar compras (tabla maestra, solo lectura): ofertas por producto y lo que se vende sin oferta
+// =============================================
+
+router.get('/comparar', authenticate, async (req, res) => {
+    try {
+        const [productos, resumen] = await Promise.all([comparar.listarComparar(), comparar.metrica()]);
+        return ok(res, { productos, metrica: resumen });
+    } catch (err) {
+        console.error('❌ Error en comparar compras:', err.message);
+        return fail(res, 'Error al obtener la comparación de compras', 500);
+    }
+});
+
+router.get('/comparar/sin-oferta', authenticate, async (req, res) => {
+    try {
+        return ok(res, await comparar.listarSinOferta());
+    } catch (err) {
+        console.error('❌ Error al listar lo que se vende sin oferta:', err.message);
+        return fail(res, 'Error al obtener los productos sin oferta', 500);
     }
 });
 
