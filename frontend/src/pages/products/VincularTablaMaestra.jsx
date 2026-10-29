@@ -1,5 +1,6 @@
 // Pestañas de la tabla maestra en /productos/vinculos (nota 107): lote por código, tarjetas por
-// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo.
+// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo,
+// salvo "Cambiar código" en los conflictos, que guarda el código de referencia en Odoo (nota 117).
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import api from '../../api/client';
 import { useToast } from '../../context/ToastContext';
@@ -426,7 +427,8 @@ function motivoConflicto(productos) {
     if (refs.length === 1 && productos.every(p => p.internal_ref)) {
         const archivados = productos.filter(p => p.activo === false).length;
         return `Todos tienen la misma referencia en Odoo (${refs[0]}), por eso el lote por código los unió a todos.`
-            + (archivados ? ' Seguramente uno es un producto viejo que se archivó y se reemplazó por otro.' : '');
+            + (archivados ? ' Seguramente uno es un producto viejo que se archivó y se reemplazó por otro.' : '')
+            + ' Si alguno no lleva ese código, tocá "Cambiar código" en ese producto: se corrige en Odoo y se desvincula solo.';
     }
     return null;
 }
@@ -435,6 +437,83 @@ function motivoConflicto(productos) {
 function productoSugerido(productos) {
     const activos = productos.filter(p => p.activo !== false);
     return activos.length === 1 && activos.length < productos.length ? activos[0].odoo_id : null;
+}
+
+// Cambiar el código de referencia de un producto de Neggo (nota 117): se guarda en Odoo y los
+// vínculos por código que dejan de coincidir se sacan solos
+function EditarReferencia({ tokens: t, producto, deshabilitado, onGuardado }) {
+    const { showToast } = useToast();
+    const [editando, setEditando] = useState(false);
+    const [valor, setValor] = useState(producto.internal_ref || '');
+    const [guardando, setGuardando] = useState(false);
+
+    function abrir(e) {
+        e.stopPropagation();
+        setValor(producto.internal_ref || '');
+        setEditando(true);
+    }
+
+    async function guardar() {
+        setGuardando(true);
+        const res = await api.post('/mappings/vincular/referencia', { odooProductId: producto.odoo_id, ref: valor });
+        setGuardando(false);
+        if (!res.success) { showToast(res.error || 'Error al cambiar el código', 'error'); return; }
+        const { desvinculados } = res.data;
+        showToast(desvinculados
+            ? `Código cambiado en Odoo. Se ${desvinculados === 1 ? 'sacó 1 vínculo' : `sacaron ${desvinculados} vínculos`} por código.`
+            : 'Código cambiado en Odoo.', 'success');
+        setEditando(false);
+        onGuardado?.();
+    }
+
+    if (!editando) {
+        return (
+            <button
+                type="button"
+                onClick={abrir}
+                disabled={deshabilitado}
+                style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: t.space[1], padding: 0,
+                    border: 'none', background: 'transparent', color: t.color.primary, cursor: 'pointer',
+                    fontSize: t.font.size.xs, fontFamily: t.font.family,
+                }}
+            >
+                <Icon.Edit2 size={12} /> Cambiar código
+            </button>
+        );
+    }
+
+    return (
+        <div style={{ marginTop: t.space[2] }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', gap: t.space[2], alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                    autoFocus
+                    value={valor}
+                    maxLength={64}
+                    placeholder="Sin código"
+                    aria-label={`Código de referencia de ${producto.nombre}`}
+                    onChange={e => setValor(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter' && !guardando) guardar();
+                        if (e.key === 'Escape') setEditando(false);
+                    }}
+                    style={{
+                        width: 160, height: 32, padding: '0 8px', borderRadius: t.radius.sm,
+                        border: `1px solid ${t.color.borderStrong}`, background: t.color.surface, color: t.color.text,
+                        fontFamily: t.font.mono, fontSize: t.font.size.sm,
+                    }}
+                />
+                <Button size="sm" variant="primary" disabled={guardando} onClick={guardar}>
+                    {guardando ? 'Guardando…' : 'Guardar en Odoo'}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={guardando} onClick={() => setEditando(false)}>Cancelar</Button>
+            </div>
+            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: t.space[1], fontFamily: t.font.family }}>
+                Se cambia en Odoo. Los vínculos por código que ya no coincidan con el código nuevo se sacan.
+                Dejalo vacío para borrar el código.
+            </div>
+        </div>
+    );
 }
 
 function Rotulo({ tokens: t, children }) {
@@ -493,7 +572,7 @@ export function Conflictos({ tokens: t, onCambio }) {
                 Cada oferta de un proveedor tiene que corresponder a <b>un solo</b> producto de Neggo, pero estas quedaron
                 vinculadas a dos o más. Mirá las fotos y los nombres y tocá <b>"Es este"</b> en el producto que es el mismo
                 artículo de la oferta: los demás se desvinculan. Si ninguno corresponde, tocá "No es este" en cada uno.
-                No cambia nada en Odoo.
+                Elegir no cambia nada en Odoo; "Cambiar código" sí corrige el código en Odoo.
             </Ayuda>
             {filas.map(c => {
                 const motivo = motivoConflicto(c.productos);
@@ -515,7 +594,9 @@ export function Conflictos({ tokens: t, onCambio }) {
                                     border: `1px solid ${p.odoo_id === sugerido ? t.color.success : t.color.border}`,
                                 }}>
                                     <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                                        <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto} />
+                                        <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto}>
+                                            <EditarReferencia tokens={t} producto={p} deshabilitado={ocupado} onGuardado={() => { cargar(); onCambio?.(); }} />
+                                        </ConFoto>
                                     </div>
                                     {p.odoo_id === sugerido && <Badge tone="success">Sugerido: es el activo</Badge>}
                                     {p.activo === false && <Badge tone="muted">Archivado en Odoo</Badge>}
