@@ -13,6 +13,16 @@
 // PATCH  /api/agente/clientes/:id                — { no_contactar, contacto }
 // POST   /api/agente/feedback                    — { tipo, endpoint, mensaje } lo que el agente quiere que cambie
 // GET    /api/agente/feedback?page=&limit=
+// POST   /api/agente/notas                       — { texto, tipo?, titulo? } tarea para Claude (investigar, diseñar, buscar)
+// GET    /api/agente/notas?vivas=true&page=&limit=
+// GET    /api/agente/notas/:id                   — estado, fase, hilo y respuesta de Claude
+// POST   /api/agente/notas/:id/mensajes          — { texto, acordado? } sigue la charla; acordado pasa a ejecutar
+// POST   /api/agente/notas/:id/ejecutar          — pide que Claude la trabaje (lo toma el vigía de Windows)
+// POST   /api/agente/notas/:id/cerrar            — { resultado: ok | descartada }
+// GET    /api/agente/reposicion/proveedores      — proveedores con algo pendiente o encargado
+// GET    /api/agente/reposicion/pendientes?proveedor=   — cola para reponer, con ventas y cantidad sugerida
+// GET    /api/agente/reposicion/encargados?proveedor=   — lo que ya se pidió y todavía no llegó
+// GET    /api/agente/reposicion/cotizaciones?proveedor= — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
 //
 // Públicas (sin datos): GET /api/agente/openapi.json y GET /api/agente/docs (Swagger UI)
 
@@ -21,6 +31,8 @@ const path = require('path');
 const router = express.Router();
 const { agenteAuth } = require('../middleware/agenteAuth');
 const agente = require('../services/agenteService');
+const agenteReposicion = require('../services/agenteReposicion');
+const agenteNotas = require('../services/agenteNotas');
 const v = require('../services/agenteValidacion');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
@@ -247,6 +259,98 @@ router.get('/feedback', async (req, res) => {
         return handle(res, err, 'No se pudo leer el feedback');
     }
 });
+
+// ── Tareas para Claude (notas del bot) ──────────────────────
+// Indicación → discusión → acuerdo → ejecución → respuesta final
+
+router.post('/notas', async (req, res) => {
+    const { value, errors } = v.validarTareaNueva(req.body);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return res.status(201).json({ success: true, data: await agenteNotas.crear(value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo crear la tarea');
+    }
+});
+
+router.get('/notas', async (req, res) => {
+    const { value, errors } = v.validarQueryTareas(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agenteNotas.listar(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer las tareas');
+    }
+});
+
+router.get('/notas/:id', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agenteNotas.obtener(p.id) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer la tarea');
+    }
+});
+
+router.post('/notas/:id/mensajes', async (req, res) => {
+    const p = parse(req, res, v.validarMensajeTarea);
+    if (!p) return undefined;
+    try {
+        return res.status(201).json({ success: true, data: await agenteNotas.agregarMensaje(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el mensaje');
+    }
+});
+
+router.post('/notas/:id/ejecutar', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        return res.status(202).json({ success: true, data: await agenteNotas.pedirEjecucion(p.id) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo pedir la ejecución');
+    }
+});
+
+router.post('/notas/:id/cerrar', async (req, res) => {
+    const p = parse(req, res, v.validarCierreTarea);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agenteNotas.cerrar(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo cerrar la tarea');
+    }
+});
+
+// ── Reposición (solo lectura) ───────────────────────────────
+
+router.get('/reposicion/proveedores', async (req, res) => {
+    try {
+        return res.json({ success: true, data: await agenteReposicion.listarProveedores() });
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer los proveedores de reposición');
+    }
+});
+
+const LISTAS_REPOSICION = {
+    pendientes: agenteReposicion.listarPendientes,
+    encargados: agenteReposicion.listarEncargados,
+    cotizaciones: agenteReposicion.listarCotizaciones,
+};
+
+for (const [lista, fn] of Object.entries(LISTAS_REPOSICION)) {
+    router.get(`/reposicion/${lista}`, async (req, res) => {
+        const { value, errors } = v.validarQueryReposicion(req.query);
+        if (errors.length) return invalid(res, errors);
+        try {
+            const { data, meta } = await fn(value);
+            return res.json({ success: true, data, meta });
+        } catch (err) {
+            return handle(res, err, `No se pudieron leer los ${lista} de reposición`);
+        }
+    });
+}
 
 // Ruta inexistente (con API key válida): 404 con código, como el resto de los errores
 router.use((req, res) => res.status(404).json({

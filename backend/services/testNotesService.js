@@ -33,8 +33,9 @@ function normalizarContexto(contexto) {
     return json2.length <= MAX_CONTEXTO_CHARS ? reducido : { recortado: true };
 }
 
+// Las notas que deja un bot (feedback de la API del agente) no tienen usuario: el autor va en el contexto
 const SELECT = `
-    SELECT n.*, u.username AS autor
+    SELECT n.*, COALESCE(u.username, n.contexto->>'autor') AS autor
     FROM test_notes n
     LEFT JOIN users u ON u.id = n.user_id`;
 
@@ -105,7 +106,15 @@ async function actualizar(pool, id, cambios) {
     }
     if (cambios.tipo !== undefined && TIPOS.includes(cambios.tipo)) set('tipo', cambios.tipo);
     if (cambios.texto !== undefined && String(cambios.texto).trim()) set('texto', recortar(cambios.texto, LIMITES.texto).trim());
-    if (cambios.respuesta !== undefined) set('respuesta', recortar(cambios.respuesta, LIMITES.respuesta));
+    if (cambios.respuesta !== undefined) {
+        const respuesta = recortar(cambios.respuesta, LIMITES.respuesta);
+        set('respuesta', respuesta);
+        // En una tarea del bot la respuesta también queda en el hilo de la conversación
+        params.push(JSON.stringify([{ autor: 'claude', fecha: new Date().toISOString(), texto: respuesta, estado: cambios.estado || null }]));
+        sets.push(`contexto = CASE WHEN contexto->>'tarea' = 'true'
+            THEN jsonb_set(contexto, '{hilo}', COALESCE(contexto->'hilo', '[]'::jsonb) || $${params.length}::jsonb)
+            ELSE contexto END`);
+    }
     if (cambios.modo !== undefined) set('modo', normalizarModo(cambios.modo));
 
     if (sets.length === 0) return obtener(pool, id);
