@@ -13,6 +13,7 @@ import ConfirmDialog from '../../components/common/ConfirmDialog';
 import ProductThumb from '../../components/common/ProductThumb';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import * as Icon from '../../components/common/icons';
+import { LoteCodigo, TarjetasNombre, Conflictos, SinHabitual } from './VincularTablaMaestra';
 
 const FILTER_OPTS = [
     { value: 'all',      label: 'Todos' },
@@ -31,7 +32,10 @@ export default function ProductMappings() {
     const { tokens: t } = useTheme();
     const { showToast } = useToast();
 
-    const [activeTab, setActiveTab] = useState('vincular');
+    const [activeTab, setActiveTab] = useState('lote');
+    // Cantidades de las pestañas de la tabla maestra y repaso de ingresos
+    const [resumen, setResumen] = useState(null);
+    const [repasando, setRepasando] = useState(false);
     const [suppliers, setSuppliers] = useState([]);
     const [selectedSupplier, setSelectedSupplier] = useState('');
 
@@ -61,7 +65,24 @@ export default function ProductMappings() {
 
     useEffect(() => {
         api.get('/suppliers', { active: 'true' }).then(r => r.success && setSuppliers(r.data || []));
+        fetchResumen();
     }, []);
+
+    async function fetchResumen() {
+        const res = await api.get('/mappings/vincular/resumen');
+        if (res.success) setResumen(res.data);
+    }
+
+    async function handleRepasar() {
+        setRepasando(true);
+        const res = await api.post('/mappings/vincular/repasar-ingresos', {});
+        setRepasando(false);
+        if (res.success) {
+            const { creados = 0, confirmados = 0, renglones = 0 } = res.data || {};
+            showToast(`Ingresos repasados: ${renglones} renglones, ${creados} vínculos nuevos, ${confirmados} confirmados`, 'success');
+            fetchResumen();
+        } else showToast(res.error || 'Error al repasar los ingresos', 'error');
+    }
 
     useEffect(() => {
         if (selectedSupplier) { fetchUnmapped(); fetchMappings(); }
@@ -90,7 +111,7 @@ export default function ProductMappings() {
 
     async function fetchMappings() {
         setMappingsLoading(true);
-        const res = await api.get('/mappings', { supplierId: selectedSupplier, status: 'active', limit: 100 });
+        const res = await api.get('/mappings', { supplierId: selectedSupplier, status: 'confirmado', company: 'neggo', limit: 100 });
         if (res.success) setMappings(res.data || []);
         setMappingsLoading(false);
     }
@@ -106,13 +127,13 @@ export default function ProductMappings() {
     async function handleLink() {
         if (!selectedLeft || !selectedRight) return;
         const res = await api.post('/mappings', { supplierProductId: selectedLeft.supplier_product_id || selectedLeft.id, odooProductId: selectedRight.odoo_id, odooCompany });
-        if (res.success) { showToast('Vínculo creado', 'success'); setSelectedLeft(null); setSelectedRight(null); fetchUnmapped(); fetchMappings(); }
+        if (res.success) { showToast('Vínculo creado', 'success'); setSelectedLeft(null); setSelectedRight(null); fetchUnmapped(); fetchMappings(); fetchResumen(); }
         else showToast(res.error || 'Error al crear vínculo', 'error');
     }
 
     async function handleUnlink(id) {
         const res = await api.del(`/mappings/${id}`);
-        if (res.success) { showToast('Vínculo eliminado', 'success'); fetchUnmapped(); fetchMappings(); }
+        if (res.success) { showToast('Vínculo eliminado', 'success'); fetchUnmapped(); fetchMappings(); fetchResumen(); }
         else showToast(res.error || 'Error al desvincular', 'error');
         setConfirmUnlink(null);
     }
@@ -125,7 +146,7 @@ export default function ProductMappings() {
         if (res.success) {
             const { matched = 0, autoLinked = 0, suggested = 0, noMatch = 0 } = res.data || {};
             showToast(`Auto-match: ${matched + autoLinked} vinculados, ${suggested} sugeridos, ${noMatch} sin match`, 'success');
-            fetchUnmapped(); fetchMappings();
+            fetchUnmapped(); fetchMappings(); fetchResumen();
         } else showToast(res.error || 'Error en auto-match', 'error');
     }
 
@@ -134,10 +155,17 @@ export default function ProductMappings() {
         ...suppliers.map(s => ({ value: String(s.id), label: s.name })),
     ];
 
+    const conCantidad = (label, n) => (n ? `${label} · ${n.toLocaleString('es-AR')}` : label);
     const tabs = [
-        { value: 'vincular',    label: 'Vincular' },
-        { value: 'comparacion', label: 'Comparación' },
+        { value: 'lote',         label: conCantidad('Lote por código', resumen?.lote) },
+        { value: 'tarjetas',     label: conCantidad('Tarjetas por nombre', resumen?.tarjetas) },
+        { value: 'conflictos',   label: conCantidad('Conflictos', resumen?.conflictos) },
+        { value: 'sin_habitual', label: conCantidad('Sin habitual', resumen?.sin_habitual) },
+        { value: 'vincular',     label: 'A mano' },
+        { value: 'comparacion',  label: 'Comparación' },
     ];
+    // El proveedor solo se elige para vincular a mano y para la comparación
+    const usaProveedor = activeTab === 'vincular' || activeTab === 'comparacion';
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[5] }}>
@@ -145,6 +173,7 @@ export default function ProductMappings() {
             {/* Selector de proveedor + auto-match */}
             <Card padding={false} style={{ padding: t.space[5] }}>
                 <div style={{ display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap' }}>
+                    {usaProveedor && <>
                     <Select
                         value={selectedSupplier}
                         onChange={v => { setSelectedSupplier(v); setSelectedLeft(null); setCmpPage(1); }}
@@ -159,10 +188,28 @@ export default function ProductMappings() {
                     >
                         {autoMatchLoading ? 'Procesando…' : 'Auto-match'}
                     </Button>
+                    </>}
+                    <span style={{ flex: 1, fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                        {!usaProveedor && 'Tabla maestra de Neggo: lo que confirmes acá todavía no mueve precios en Odoo.'}
+                    </span>
+                    <Button
+                        variant="ghost"
+                        leftIcon={<Icon.Refresh size={15} />}
+                        disabled={repasando}
+                        onClick={handleRepasar}
+                        title="Vuelve a pasar los ingresos confirmados a la tabla maestra"
+                    >
+                        {repasando ? 'Repasando…' : 'Repasar vínculos de ingresos'}
+                    </Button>
                 </div>
             </Card>
 
-            <Tabs tabs={tabs} value={activeTab} onChange={setActiveTab} />
+            <Tabs tabs={tabs} value={activeTab} onChange={setActiveTab} style={{ overflowX: 'auto' }} />
+
+            {activeTab === 'lote' && <LoteCodigo tokens={t} onCambio={fetchResumen} />}
+            {activeTab === 'tarjetas' && <TarjetasNombre tokens={t} onCambio={fetchResumen} />}
+            {activeTab === 'conflictos' && <Conflictos tokens={t} onCambio={fetchResumen} />}
+            {activeTab === 'sin_habitual' && <SinHabitual tokens={t} />}
 
             {/* ── TAB VINCULAR ─────────────────────────────────────────────────────── */}
             {activeTab === 'vincular' && (
@@ -294,7 +341,7 @@ export default function ProductMappings() {
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: t.font.size.sm }}>
                                     <thead>
                                         <tr style={{ background: t.color.surface2 }}>
-                                            {['Producto proveedor', 'SKU', 'Producto Odoo', 'Ref. Odoo', 'Empresa', 'Match', 'Confianza', ''].map(h => (
+                                            {['Producto proveedor', 'SKU', 'Producto Odoo', 'Ref. Odoo', 'Empresa', 'Método', 'Confianza', ''].map(h => (
                                                 <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
                                                     {h}
                                                 </th>
@@ -304,11 +351,11 @@ export default function ProductMappings() {
                                     <tbody>
                                         {mappings.map(m => (
                                             <tr key={m.id} style={{ borderTop: `1px solid ${t.color.border}` }}>
-                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.supplier_product_name || m.product_name}</td>
+                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.supplier_name}</td>
                                                 <td style={{ padding: '10px 14px' }}>
-                                                    <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{m.sku}</span>
+                                                    <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{m.supplier_sku}</span>
                                                 </td>
-                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.odoo_product_name}</td>
+                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.odoo_name}</td>
                                                 <td style={{ padding: '10px 14px' }}>
                                                     <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{m.odoo_internal_ref || '—'}</span>
                                                 </td>
@@ -316,10 +363,11 @@ export default function ProductMappings() {
                                                     <Badge tone={m.odoo_company === 'neggo' ? 'primary' : 'accent'}>{m.odoo_company}</Badge>
                                                 </td>
                                                 <td style={{ padding: '10px 14px' }}>
-                                                    {m.match_type ? <Badge tone={MATCH_TONE[m.match_type] || 'muted'}>{m.match_type}</Badge> : '—'}
+                                                    {m.metodo || m.match_type ? <Badge tone={MATCH_TONE[m.match_type] || 'muted'}>{m.metodo || m.match_type}</Badge> : '—'}
+                                                    {m.es_habitual && <Badge tone="success" style={{ marginLeft: 6 }}>Habitual</Badge>}
                                                 </td>
                                                 <td style={{ padding: '10px 14px', ...t.numericStyle, color: t.color.textMuted }}>
-                                                    {m.confidence ? `${Math.round(m.confidence * 100)}%` : '—'}
+                                                    {m.match_confidence ? `${Math.round(m.match_confidence * 100)}%` : '—'}
                                                 </td>
                                                 <td style={{ padding: '10px 14px' }}>
                                                     <Button size="sm" variant="danger" onClick={() => setConfirmUnlink(m)}>
@@ -339,7 +387,7 @@ export default function ProductMappings() {
                         onClose={() => setConfirmUnlink(null)}
                         onConfirm={() => handleUnlink(confirmUnlink.id)}
                         title="Desvincular producto"
-                        message={`¿Desvinculás "${confirmUnlink?.supplier_product_name || confirmUnlink?.product_name}" de Odoo?`}
+                        message={`¿Desvinculás "${confirmUnlink?.supplier_name}" de Odoo? Queda rechazado y no se vuelve a proponer.`}
                         confirmLabel="Desvincular"
                         danger
                     />
