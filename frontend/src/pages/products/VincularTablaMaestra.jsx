@@ -9,10 +9,15 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Toggle from '../../components/common/Toggle';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import ProductThumb from '../../components/common/ProductThumb';
+import FotoAmpliada from '../../components/common/FotoAmpliada';
 import * as Icon from '../../components/common/icons';
 
 // Diferencia entre el neto de la oferta y el costo de Odoo a partir de la cual se avisa (posible pack)
 const DIFERENCIA_PRECIO = 0.3;
+// Tamaño de las fotos de las tarjetas: la de Neggo y la de cada oferta, para compararlas
+const FOTO_NEGGO = 120;
+const FOTO_OFERTA = 96;
 
 function diferenciaPrecio(neto, costo) {
     const n = Number(neto), c = Number(costo);
@@ -180,6 +185,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     const [datos, setDatos] = useState(null);
     const [indice, setIndice] = useState(0);
     const [guardando, setGuardando] = useState(false);
+    // Foto abierta en grande: { imageUrl, nombre, detalle }
+    const [foto, setFoto] = useState(null);
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/tarjetas');
@@ -219,7 +226,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         function onKey(e) {
             const tag = e.target?.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.ctrlKey || e.metaKey || e.altKey) return;
-            if (!tarjeta) return;
+            // Con la foto ampliada abierta no se decide nada por teclado
+            if (!tarjeta || foto) return;
             const n = parseInt(e.key, 10);
             if (n >= 1 && n <= tarjeta.ofertas.length) { e.preventDefault(); decidir(tarjeta.ofertas[n - 1].mapping_id); }
             else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); decidir(null); }
@@ -227,7 +235,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         }
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [tarjeta, decidir, saltear]);
+    }, [tarjeta, foto, decidir, saltear]);
 
     if (!datos) return <Centrado><LoadingSpinner size="md" color={t.color.primary} /></Centrado>;
 
@@ -261,6 +269,13 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
 
             <Card padding={false} style={{ padding: t.space[5] }}>
                 <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    <FotoBoton
+                        tokens={t}
+                        imageUrl={tarjeta.odoo_image_url}
+                        nombre={tarjeta.odoo_nombre}
+                        size={FOTO_NEGGO}
+                        onAbrir={() => setFoto({ imageUrl: tarjeta.odoo_image_url, nombre: tarjeta.odoo_nombre, detalle: tarjeta.internal_ref })}
+                    />
                     <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', fontFamily: t.font.family }}>
                             Producto de Neggo
@@ -282,33 +297,49 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                     {tarjeta.ofertas.map((o, i) => {
                         const dif = diferenciaPrecio(o.neto, tarjeta.standard_price);
                         return (
-                            <button
+                            <div
                                 key={o.mapping_id}
-                                type="button"
-                                disabled={guardando}
-                                onClick={() => decidir(o.mapping_id)}
                                 style={{
-                                    display: 'flex', gap: t.space[3], alignItems: 'center', textAlign: 'left',
-                                    padding: '12px 14px', borderRadius: t.radius.sm,
+                                    display: 'flex', gap: t.space[3], alignItems: 'center',
+                                    padding: '10px 14px', borderRadius: t.radius.sm,
                                     border: `1px solid ${t.color.border}`, background: t.color.surface,
-                                    cursor: guardando ? 'wait' : 'pointer', fontFamily: t.font.family,
                                 }}
                             >
-                                <Tecla tokens={t} grande>{i + 1}</Tecla>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <Nombre tokens={t} nombre={o.nombre} codigo={o.sku} extra={o.proveedor} />
-                                </div>
-                                <div style={{ textAlign: 'right', fontSize: t.font.size.sm, color: t.color.text }}>
-                                    <div style={t.numericStyle}>{o.neto ? fmtAR(o.neto) : '—'}</div>
-                                    {dif !== null && Math.abs(dif) > DIFERENCIA_PRECIO && (
-                                        <Badge tone="warn" style={{ marginTop: 4 }}>{dif > 0 ? '+' : ''}{Math.round(dif * 100)} %</Badge>
-                                    )}
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-                                    {o.parecido != null && <Badge tone="primary">{Math.round(Number(o.parecido) * 100)} % parecido</Badge>}
-                                    {!o.available && <Badge tone="muted">No disponible</Badge>}
-                                </div>
-                            </button>
+                                {/* La foto va afuera del botón: tocarla la amplía sin elegir la oferta */}
+                                <FotoBoton
+                                    tokens={t}
+                                    imageUrl={o.image_url}
+                                    nombre={o.nombre}
+                                    size={FOTO_OFERTA}
+                                    onAbrir={() => setFoto({ imageUrl: o.image_url, nombre: o.nombre, detalle: [o.sku, o.proveedor].filter(Boolean).join(' · ') })}
+                                />
+                                <button
+                                    type="button"
+                                    disabled={guardando}
+                                    onClick={() => decidir(o.mapping_id)}
+                                    style={{
+                                        flex: 1, minWidth: 0,
+                                        display: 'flex', gap: t.space[3], alignItems: 'center', textAlign: 'left',
+                                        padding: 0, border: 'none', background: 'transparent',
+                                        cursor: guardando ? 'wait' : 'pointer', fontFamily: t.font.family,
+                                    }}
+                                >
+                                    <Tecla tokens={t} grande>{i + 1}</Tecla>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <Nombre tokens={t} nombre={o.nombre} codigo={o.sku} extra={o.proveedor} />
+                                    </div>
+                                    <div style={{ textAlign: 'right', fontSize: t.font.size.sm, color: t.color.text }}>
+                                        <div style={t.numericStyle}>{o.neto ? fmtAR(o.neto) : '—'}</div>
+                                        {dif !== null && Math.abs(dif) > DIFERENCIA_PRECIO && (
+                                            <Badge tone="warn" style={{ marginTop: 4 }}>{dif > 0 ? '+' : ''}{Math.round(dif * 100)} %</Badge>
+                                        )}
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+                                        {o.parecido != null && <Badge tone="primary">{Math.round(Number(o.parecido) * 100)} % parecido</Badge>}
+                                        {!o.available && <Badge tone="muted">No disponible</Badge>}
+                                    </div>
+                                </button>
+                            </div>
                         );
                     })}
                 </div>
@@ -322,7 +353,31 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                     </Button>
                 </div>
             </Card>
+
+            <FotoAmpliada
+                imageUrl={foto?.imageUrl}
+                nombre={foto?.nombre}
+                detalle={foto?.detalle}
+                onClose={() => setFoto(null)}
+            />
         </div>
+    );
+}
+
+// Foto de la tarjeta: se toca para verla en grande (sin foto, solo la inicial)
+function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
+    const thumb = <ProductThumb imageUrl={imageUrl} emoji={nombre?.[0]} size={size} />;
+    if (!imageUrl) return thumb;
+    return (
+        <button
+            type="button"
+            onClick={onAbrir}
+            title="Ver foto en grande"
+            aria-label={`Ver foto de ${nombre || 'producto'}`}
+            style={{ padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in', flexShrink: 0, borderRadius: t.radius.sm }}
+        >
+            {thumb}
+        </button>
     );
 }
 

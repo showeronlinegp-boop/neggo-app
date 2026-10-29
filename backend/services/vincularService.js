@@ -168,9 +168,10 @@ async function listarTarjetas() {
          )
          SELECT p.odoo_product_id, p.venta,
                 opc.name AS odoo_nombre, opc.internal_ref, opc.standard_price, opc.list_price,
-                opc.vendor_name, opc.active AS odoo_activo,
+                opc.vendor_name, opc.active AS odoo_activo, opc.image_url AS odoo_image_url,
                 pm.id AS mapping_id, pm.supplier_product_id, pm.match_confidence,
-                s.name AS proveedor, sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available
+                s.name AS proveedor, sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available,
+                sp.image_url
          FROM productos p
          JOIN product_mappings pm ON pm.odoo_product_id = p.odoo_product_id AND pm.odoo_company = 'neggo'
               AND pm.estado = 'sugerido' AND pm.metodo = ANY($2::text[])
@@ -189,7 +190,7 @@ async function listarTarjetas() {
             porProducto.set(r.odoo_product_id, {
                 odoo_product_id: r.odoo_product_id, odoo_nombre: r.odoo_nombre, internal_ref: r.internal_ref,
                 standard_price: r.standard_price, list_price: r.list_price, vendor_name: r.vendor_name,
-                odoo_activo: r.odoo_activo, venta: r.venta, ofertas: []
+                odoo_activo: r.odoo_activo, odoo_image_url: r.odoo_image_url, venta: r.venta, ofertas: []
             });
         }
         const tarjeta = porProducto.get(r.odoo_product_id);
@@ -197,7 +198,7 @@ async function listarTarjetas() {
             tarjeta.ofertas.push({
                 mapping_id: r.mapping_id, supplier_product_id: r.supplier_product_id, proveedor: r.proveedor,
                 sku: r.sku, nombre: r.oferta_nombre, raw_price: r.raw_price, neto: r.neto,
-                available: r.available, parecido: r.match_confidence
+                available: r.available, parecido: r.match_confidence, image_url: r.image_url
             });
         }
     }
