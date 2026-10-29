@@ -6,10 +6,11 @@
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
 // Solo Neggo: Preventas es un dato de origen y Precompras (origen "neggo") es base de costos.
-// Ninguna decisión activa vínculos ni escribe en Odoo.
+// Ninguna decisión escribe en Odoo. Con la tabla maestra prendida, lo confirmado queda activo y
+// el habitual pasa a mover precios (siempre con la alerta de Neggo, que se aprueba a mano).
 
 const pool = require('../config/database');
-const { vincularDesdeIngresos, listarConflictos, marcarHabituales } = require('./tablaMaestraService');
+const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
 
 // Tarjetas que se muestran por semana (las revisa una sola persona)
 const TARJETAS_POR_SEMANA = 40;
@@ -90,8 +91,9 @@ async function decidirSugeridos(db, ids, decision, userId) {
             [r.supplier_product_id, r.odoo_product_id, r.odoo_company, decision, r.metodo, r.match_confidence, userId]
         );
     }
-    // Si se confirmó la oferta del proveedor principal de Odoo, pasa a ser la habitual
-    if (decision === 'confirmado' && rows.length) await marcarHabituales(db);
+    // Si se confirmó la oferta del proveedor principal de Odoo, pasa a ser la habitual (y, con la
+    // tabla maestra prendida, queda activa)
+    if (decision === 'confirmado' && rows.length) await recalcularHabituales(db);
     return rows.length;
 }
 
@@ -337,7 +339,7 @@ async function resumen() {
     );
     const conflictos = (await listarConflictos()).length;
     const sinHabitual = (await listarSinHabitual()).length;
-    return { lote: r.lote, tarjetas: r.tarjetas, conflictos, sin_habitual: sinHabitual };
+    return { lote: r.lote, tarjetas: r.tarjetas, conflictos, sin_habitual: sinHabitual, activa: await tablaActiva() };
 }
 
 module.exports = {

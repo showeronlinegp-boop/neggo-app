@@ -24,6 +24,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { runAutoMatch, getUnmappedProducts } = require('../services/matchingService');
 const vincular = require('../services/vincularService');
+const { recalcularHabituales } = require('../services/tablaMaestraService');
 
 // Lista de ids enteros de un body (descarta lo que no sea número)
 function idsDe(valor) {
@@ -462,8 +463,8 @@ router.post('/', authenticate, requireRole('admin', 'operador'), async (req, res
             return fail(res, `Producto Odoo ${odooProductId} [${odooCompany}] no encontrado en cache`, 404);
         }
 
-        // Insertar mapping manual (lo hace una persona: queda confirmado). Nace inactivo, como todos,
-        // hasta la activación junto con priceAlertService (solo el habitual mueve precios en Odoo).
+        // Insertar mapping manual (lo hace una persona: queda confirmado). Nace inactivo: lo prende
+        // recalcularHabituales si la tabla maestra está prendida (solo el habitual mueve precios en Odoo).
         const { rows: inserted } = await pool.query(
             `INSERT INTO product_mappings
                 (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
@@ -483,6 +484,8 @@ router.post('/', authenticate, requireRole('admin', 'operador'), async (req, res
 
         // Decisión para medir el acierto por método
         await registrarDecision(inserted[0], 'confirmado', req.user.id);
+        // Si es del proveedor principal pasa a ser el habitual (y con la tabla prendida, queda activo)
+        await recalcularHabituales(pool);
 
         console.log(`✅ Mapping manual creado: supplier_product ${supplierProductId} <-> odoo ${odooProductId} [${odooCompany}]`);
 

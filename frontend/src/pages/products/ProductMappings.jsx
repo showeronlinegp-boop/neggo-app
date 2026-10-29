@@ -190,7 +190,9 @@ export default function ProductMappings() {
                     </Button>
                     </>}
                     <span style={{ flex: 1, fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        {!usaProveedor && 'Tabla maestra de Neggo: lo que confirmes acá todavía no mueve precios en Odoo.'}
+                        {!usaProveedor && (resumen?.activa
+                            ? 'Tabla maestra de Neggo: la oferta habitual de lo que confirmes acá genera las alertas de precio.'
+                            : 'Tabla maestra de Neggo: lo que confirmes acá todavía no mueve precios en Odoo.')}
                     </span>
                     <Button
                         variant="ghost"

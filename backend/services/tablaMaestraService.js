@@ -310,6 +310,108 @@ async function marcarHabituales(db) {
     return { porOdoo };
 }
 
+// =============================================
+// Activación (nota 107, punto 4)
+// =============================================
+
+// Clave de app_config que prende la tabla maestra. Prendida, los vínculos confirmados de Neggo quedan
+// activos y solo el habitual activo mueve precios (priceAlertService y los lectores piden los dos)
+const CLAVE_ACTIVA = 'tabla_maestra_activa';
+
+async function tablaActiva(db = pool) {
+    const { rows } = await db.query(`SELECT value FROM app_config WHERE key = $1`, [CLAVE_ACTIVA]);
+    return rows[0]?.value === true;
+}
+
+/**
+ * Con la tabla prendida, active = confirmado de Neggo (Preventas es solo dato de origen: nunca se activa).
+ * Apagada no toca nada. Devuelve null si está apagada.
+ */
+async function sincronizarActivos(db = pool) {
+    if (!(await tablaActiva(db))) return null;
+    const { rows } = await db.query(
+        `UPDATE product_mappings SET active = (estado = 'confirmado' AND odoo_company = 'neggo')
+         WHERE active IS DISTINCT FROM (estado = 'confirmado' AND odoo_company = 'neggo')
+         RETURNING active`
+    );
+    return { prendidos: rows.filter(r => r.active).length, apagados: rows.filter(r => !r.active).length };
+}
+
+/**
+ * Habitual = la oferta web confirmada del proveedor principal de Odoo. Se corre en cada sincronización
+ * del catálogo: si cambió el principal, el habitual lo sigue (se saca el viejo y se marca el nuevo).
+ */
+async function recalcularHabituales(db = pool) {
+    const sacados = (await db.query(
+        `UPDATE product_mappings pm SET es_habitual = false
+         WHERE pm.es_habitual AND NOT EXISTS (
+             SELECT 1 FROM supplier_products sp
+             JOIN suppliers s ON s.id = sp.supplier_id
+             JOIN odoo_products_cache opc ON opc.odoo_id = pm.odoo_product_id AND opc.company = pm.odoo_company
+             WHERE sp.id = pm.supplier_product_id AND pm.estado = 'confirmado' AND pm.odoo_company = 'neggo'
+               AND opc.vendor_name = s.name AND sp.source <> 'neggo')`
+    )).rowCount;
+    const { porOdoo } = await marcarHabituales(db);
+    const activos = await sincronizarActivos(db);
+    return { sacados, marcados: porOdoo, activos };
+}
+
+/**
+ * Prende o apaga la tabla maestra en una transacción.
+ *   prender: guarda la clave, recalcula habituales y activa los confirmados de Neggo
+ *   apagar: guarda la clave en false y deja todos los vínculos inactivos (vuelve a como estaba)
+ * @param {{ aplicar?: boolean, prender?: boolean }} opts — sin aplicar hace todo y deshace (ROLLBACK)
+ */
+async function activar({ aplicar = false, prender = true } = {}) {
+    const db = await pool.connect();
+    try {
+        await db.query('BEGIN');
+        await db.query(
+            `INSERT INTO app_config (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+            [CLAVE_ACTIVA, JSON.stringify(prender)]
+        );
+        const resumen = { aplicado: aplicar, prendida: prender };
+        if (prender) {
+            resumen.habituales = await recalcularHabituales(db);
+        } else {
+            resumen.apagados = (await db.query(`UPDATE product_mappings SET active = false WHERE active`)).rowCount;
+        }
+
+        const { rows: [estado] } = await db.query(
+            `SELECT COUNT(*) FILTER (WHERE active)::int AS activos,
+                    COUNT(*) FILTER (WHERE active AND es_habitual)::int AS habituales_activos,
+                    COUNT(*) FILTER (WHERE active AND odoo_company <> 'neggo')::int AS activos_fuera_de_neggo
+             FROM product_mappings`
+        );
+        // Control: Preventas nunca se activa
+        if (estado.activos_fuera_de_neggo !== 0) {
+            throw new Error(`Control fallido: ${estado.activos_fuera_de_neggo} vínculos activos fuera de Neggo`);
+        }
+        resumen.estado = estado;
+        resumen.habituales_por_proveedor = (await db.query(
+            `SELECT s.name AS proveedor, COUNT(*)::int AS n
+             FROM product_mappings pm
+             JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+             JOIN suppliers s ON s.id = sp.supplier_id
+             WHERE pm.active AND pm.es_habitual
+             GROUP BY s.name ORDER BY n DESC`
+        )).rows;
+
+        await db.query(aplicar ? 'COMMIT' : 'ROLLBACK');
+        console.log(aplicar
+            ? `✅ Tabla maestra ${prender ? 'prendida' : 'apagada'}`
+            : '⚠️ Prueba sin aplicar: se deshizo todo (ROLLBACK)');
+        return resumen;
+    } catch (err) {
+        await db.query('ROLLBACK').catch(() => {});
+        console.error('❌ Error al activar la tabla maestra:', err.message);
+        throw err;
+    } finally {
+        db.release();
+    }
+}
+
 // Casos para mirar: una oferta propuesta para varios productos, o un producto con varias ofertas
 // del mismo proveedor por código
 async function sospechososPorCodigo(db) {
@@ -646,5 +748,6 @@ async function listarConflictos(db = pool) {
 
 module.exports = {
     primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos, marcarHabituales,
+    recalcularHabituales, sincronizarActivos, tablaActiva, activar,
     packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso
 };

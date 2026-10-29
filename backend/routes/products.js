@@ -148,7 +148,7 @@ router.get('/odoo', authenticate, async (req, res) => {
                  WHERE pm.odoo_product_id = opc.odoo_id
                    AND pm.odoo_company = opc.company
                    AND pm.active = true
-                 ORDER BY pm.match_confidence DESC
+                   AND pm.es_habitual = true
                  LIMIT 1
              ) best_pm ON true
              LEFT JOIN supplier_products sp ON sp.id = best_pm.supplier_product_id

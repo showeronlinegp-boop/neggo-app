@@ -12,7 +12,7 @@ const { calculatePrices, getCategoryRule } = require('./rulesEngine');
 const { updateProductPrices } = require('./odooService');
 
 // Cambio mínimo de precio para generar alerta en Neggo (%)
-const NEGGO_THRESHOLD_PCT = 2;
+const NEGGO_THRESHOLD_PCT = 5;
 
 // =============================================
 // Procesar cambio de precio (llamado por el scraper)
@@ -42,14 +42,14 @@ async function processPriceChange(supplierProductId, oldPrice, newPrice) {
     if (spRows.length === 0) return;
     const sp = spRows[0];
 
-    // Obtener todos los vínculos activos del producto por empresa
+    // Solo la oferta habitual (la del proveedor principal de Odoo) mueve precios (nota 107)
     const { rows: mappings } = await pool.query(`
         SELECT pm.id, pm.odoo_product_id, pm.odoo_company, pm.odoo_internal_ref,
                opc.name AS odoo_name, opc.standard_price, opc.list_price
         FROM product_mappings pm
         LEFT JOIN odoo_products_cache opc
                ON opc.odoo_id = pm.odoo_product_id AND opc.company = pm.odoo_company
-        WHERE pm.supplier_product_id = $1 AND pm.active = true
+        WHERE pm.supplier_product_id = $1 AND pm.active = true AND pm.es_habitual = true
     `, [supplierProductId]);
 
     if (mappings.length === 0) return;
@@ -99,7 +99,7 @@ async function processPriceChange(supplierProductId, oldPrice, newPrice) {
     }
 
     // ── NEGGO: alerta para aprobación manual ─────────────────────────────────
-    // Solo si el cambio supera el umbral del 2%
+    // Solo si el cambio supera el umbral del 5%
     if (neggoMappings.length > 0 && Math.abs(pctChange) >= NEGGO_THRESHOLD_PCT) {
         const linkedOdooProducts = neggoMappings.map(m => ({
             odoo_id: m.odoo_product_id,
@@ -163,7 +163,7 @@ async function approveAlert(alertId, userId) {
     const { rows: mappings } = await pool.query(`
         SELECT pm.id, pm.odoo_product_id, pm.odoo_company
         FROM product_mappings pm
-        WHERE pm.supplier_product_id = $1 AND pm.odoo_company = 'neggo' AND pm.active = true
+        WHERE pm.supplier_product_id = $1 AND pm.odoo_company = 'neggo' AND pm.active = true AND pm.es_habitual = true
     `, [alert.supplier_product_id]);
 
     const odooUpdates = [];

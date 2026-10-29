@@ -1,5 +1,5 @@
 // Tabla maestra (nota 107). Carga y mantenimiento de product_mappings.
-// Todo queda inactivo: no cambia ningún precio ni escribe en Odoo.
+// Salvo "activar", todo queda inactivo: no cambia ningún precio ni escribe en Odoo.
 //
 //   node scripts/tablaMaestra.js                       → PRIMER PASO de prueba: hace todo y lo deshace
 //   node scripts/tablaMaestra.js --aplicar             → PRIMER PASO, lo guarda
@@ -7,10 +7,13 @@
 //   node scripts/tablaMaestra.js corregir [--aplicar]  → corrección de datos (habituales de Precompras, etc.)
 //   node scripts/tablaMaestra.js repasar <supplierId>  → vincula los ingresos confirmados de un proveedor
 //   node scripts/tablaMaestra.js conflictos            → ofertas confirmadas con dos o más productos de Neggo
+//   node scripts/tablaMaestra.js activar [--aplicar]   → PRENDE la tabla: los confirmados de Neggo quedan activos
+//                                                        y el habitual pasa a mover precios (alerta de Neggo)
+//   node scripts/tablaMaestra.js apagar [--aplicar]    → vuelve atrás: todos los vínculos inactivos
 
 const pool = require('../config/database');
 const {
-    primerPaso, corregirDatos, vincularDesdeIngresos, listarConflictos
+    primerPaso, corregirDatos, vincularDesdeIngresos, listarConflictos, activar
 } = require('../services/tablaMaestraService');
 
 async function main() {
@@ -28,6 +31,12 @@ async function main() {
         const supplierId = parseInt(args[1], 10);
         if (!supplierId) throw new Error('Uso: repasar <supplierId>');
         console.log('📦 Repaso de ingresos:', JSON.stringify(await vincularDesdeIngresos({ supplierId })));
+        return;
+    }
+    if (comando === 'activar' || comando === 'apagar') {
+        const resumen = await activar({ aplicar, prender: comando === 'activar' });
+        console.log(`📦 ${aplicar ? 'Aplicado' : 'Prueba (no se guardó nada)'}:`);
+        console.log(JSON.stringify(resumen, null, 2));
         return;
     }
     if (comando === 'conflictos') {

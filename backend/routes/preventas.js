@@ -866,6 +866,7 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
                         = CONCAT('PRE', REPLACE(REPLACE(UPPER(COALESCE(opc_n.internal_ref,'')),'-',''),' ',''))
                  JOIN product_mappings pm
                      ON pm.active = true
+                    AND pm.es_habitual = true
                     AND pm.odoo_company = 'neggo'
                     AND pm.odoo_product_id = opc_n.odoo_id
                  JOIN supplier_products sp ON sp.id = pm.supplier_product_id
