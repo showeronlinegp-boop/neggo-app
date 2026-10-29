@@ -1946,6 +1946,72 @@ function PartnerModal({ onConfirm, onCancel, titulo, subtitulo }) {
 }
 
 // =============================================
+// Modal "Revisá los vínculos hechos a mano" (tabla maestra, nota 107)
+// Solo los renglones con producto de Odoo u oferta elegidos a mano, una sola vez.
+// Destildar no frena el ingreso: ese vínculo no entra a la tabla maestra.
+// =============================================
+function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
+    const [tildados, setTildados] = useState(() => new Set(renglones.map(r => r.item_id)));
+    const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
+    const todos = tildados.size === renglones.length;
+
+    const toggle = (id) => setTildados(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+    });
+
+    return (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
+            <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '24px', width: '720px', maxWidth: '95vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', ...containerStyle }}>
+                <h3 onMouseDown={onDragStart} style={{ marginBottom: '8px', color: C.primary, ...dragStyle }}>Revisá los vínculos hechos a mano</h3>
+                <p style={{ fontSize: '13px', color: C.gray, marginBottom: '12px' }}>
+                    Los tildados quedan en la tabla maestra (este producto es esta oferta del proveedor) y no se vuelven a preguntar.
+                    Si destildás uno, el ingreso se confirma igual, pero ese vínculo no se guarda.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, marginBottom: '8px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={todos}
+                        onChange={() => setTildados(todos ? new Set() : new Set(renglones.map(r => r.item_id)))} />
+                    Todos ({tildados.size} de {renglones.length})
+                </label>
+                <div style={{ overflowY: 'auto', border: `1px solid ${C.border}`, borderRadius: '4px', marginBottom: '16px' }}>
+                    {renglones.map(r => (
+                        <label key={r.item_id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 12px', borderBottom: `1px solid ${C.border}`, cursor: 'pointer', backgroundColor: tildados.has(r.item_id) ? C.white : C.bg }}>
+                            <input type="checkbox" checked={tildados.has(r.item_id)} onChange={() => toggle(r.item_id)} />
+                            <div style={{ flex: '1 1 0', minWidth: 0, fontSize: '12px', color: C.gray }}>
+                                <div style={{ fontFamily: _tk.font.mono }}>{r.codigo || '—'}</div>
+                                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.descripcion}</div>
+                            </div>
+                            <OdooImage odooId={r.odoo_product_id} size={40} />
+                            <div style={{ flex: '2 1 0', minWidth: 0, fontSize: '13px' }}>
+                                <div style={{ color: C.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.odoo_product_name}</div>
+                                <div style={{ fontFamily: _tk.font.mono, fontSize: '11px', color: C.gray }}>{r.internal_ref || '—'}</div>
+                            </div>
+                            <div style={{ flex: '2 1 0', minWidth: 0, fontSize: '12px' }}>
+                                <div style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.oferta_nombre}</div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', color: C.gray }}>
+                                    <span style={{ fontFamily: _tk.font.mono, fontSize: '11px' }}>{r.sku}</span>
+                                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.oferta_precio != null ? fmtARS(r.oferta_precio) : '—'}</span>
+                                </div>
+                            </div>
+                        </label>
+                    ))}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <button onClick={onCancel} style={{ padding: '10px 20px', backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '14px' }}>
+                        Cancelar
+                    </button>
+                    <button onClick={() => onContinue([...tildados])}
+                        style={{ padding: '10px 20px', backgroundColor: C.primary, color: C.white, border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
+                        Continuar
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// =============================================
 // Modal para vincular manualmente un ítem a una cotización de Preventas
 // =============================================
 function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
@@ -2495,6 +2561,8 @@ export default function IngresoPreview() {
     const [items, setItems]           = useState([]);
     const [activeTab, setActiveTab]   = useState('activos');
     const [showPartnerModal, setShowPartnerModal] = useState(false);
+    const [revisionRenglones, setRevisionRenglones] = useState(null);   // vínculos manuales a revisar
+    const [vinculosRevisados, setVinculosRevisados] = useState([]);    // ids tildados en la revisión
     const [whatsAppItem, setWhatsAppItem]         = useState(null);
     const { user } = useAuth();
     const [reactivating, setReactivating] = useState(null);
@@ -2753,7 +2821,7 @@ export default function IngresoPreview() {
         if (!loading && ingreso && !preventaLoaded) loadPreventaItems();
     }, [loading, ingreso, preventaLoaded, loadPreventaItems]);
 
-    const handleConfirmClick = () => {
+    const handleConfirmClick = async () => {
         // Un ítem pending bloquea solo si no tiene ningún plan de preventa
         // (sin preventa_qty_confirmed ni preventas_product_id)
         const bloqueantes = items.filter(i =>
@@ -2765,6 +2833,21 @@ export default function IngresoPreview() {
             setError(`Hay ${bloqueantes.length} item(s) sin resolver en "Nuevos". Vincinalos, creálos en Odoo, asignálos a preventa o rechazálos antes de confirmar.`);
             return;
         }
+        // Paso previo: revisar los vínculos hechos a mano (si no hay ninguno, sigue directo)
+        try {
+            const res = await ingresoAPI.getVinculosARevisar(ingresoId);
+            if (res.success && res.data.length > 0) {
+                setRevisionRenglones(res.data);
+                return;
+            }
+        } catch (_) { /* sin revisión: los manuales no entran a la tabla maestra esta vez */ }
+        setVinculosRevisados([]);
+        setShowPartnerModal(true);
+    };
+
+    const handleRevisionContinue = (tildados) => {
+        setVinculosRevisados(tildados);
+        setRevisionRenglones(null);
         setShowPartnerModal(true);
     };
 
@@ -2773,12 +2856,17 @@ export default function IngresoPreview() {
         setConfirming(true);
         setError(null);
         try {
-            const result = await ingresoAPI.confirmIngreso(ingresoId, { odoo_partner_id: odooPartnerId });
+            const result = await ingresoAPI.confirmIngreso(ingresoId, {
+                odoo_partner_id: odooPartnerId,
+                vinculos_revisados: vinculosRevisados,
+            });
             if (result.success) {
                 const partes = ['✅ Confirmado.'];
                 if (result.data.odoo_purchase_order_id)           partes.push(`OC Neggo: #${result.data.odoo_purchase_order_id}.`);
                 if (result.data.odoo_purchase_order_id_preventas) partes.push(`OC Preventas: #${result.data.odoo_purchase_order_id_preventas}.`);
                 partes.push(`${result.data.updated_products_count} productos actualizados.`);
+                const v = result.data.vinculos;
+                if (v && (v.creados + v.confirmados) > 0) partes.push(`${v.creados + v.confirmados} vínculos nuevos en la tabla maestra.`);
                 const msg = partes.join(' ');
                 navigate('/ingreso', { state: { message: msg } });
             } else setError(result.error || 'Error al confirmar');
@@ -3041,6 +3129,7 @@ export default function IngresoPreview() {
     return (
         <div style={{ maxWidth: '1200px', margin: isMobile ? '-22px -28px 0' : '0 auto', padding: isMobile ? '0 0 96px' : '24px', backgroundColor: C.bg }}>
             <ScanToast toast={scanToast} />
+            {revisionRenglones && <RevisionVinculosModal renglones={revisionRenglones} onContinue={handleRevisionContinue} onCancel={() => setRevisionRenglones(null)} />}
             {showPartnerModal && <PartnerModal onConfirm={handleConfirm} onCancel={() => setShowPartnerModal(false)} />}
             {showGenerateOCModal && <PartnerModal onConfirm={handleGenerateOC} onCancel={() => setShowGenerateOCModal(false)} titulo="Generar OC en Odoo" subtitulo="Seleccioná el proveedor para crear la orden de compra." />}
             {whatsAppItem && (

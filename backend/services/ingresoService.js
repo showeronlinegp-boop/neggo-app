@@ -402,8 +402,7 @@ async function persistPurchaseOrderIds(ingresoId, neggoId, preventasId, db = poo
 
 /**
  * Para cada item CSV, intenta matchear con un producto Odoo (empresa neggo).
- * Niveles en orden:
- *   1. supplierId → supplier_products (por SKU/codigo) → product_mappings → odoo_products_cache neggo
+ * Niveles en orden (el 1, por product_mappings, se sacó: Ingresos no lee la tabla maestra):
  *   2. internal_ref exacto (codigo === internal_ref)
  *   3. internal_ref sin prefijo (internal_ref termina en codigo)
  *   4. barcode exacto
@@ -462,35 +461,8 @@ async function matchItems(items, supplierId = null) {
         let errorMsg   = null;
 
         try {
-            // ---- Nivel 1: supplier_products → product_mappings → cache ----
-            if (supplierId && item.codigo) {
-                const { rows: spRows } = await pool.query(
-                    `SELECT sp.id FROM supplier_products sp
-                     WHERE sp.supplier_id = $1
-                       AND REPLACE(REPLACE(UPPER(sp.sku), '-', ''), ' ', '') = ANY($2::text[])
-                     LIMIT 1`,
-                    [supplierId, supplierSkuKeys(item.codigo, supplierPrefix)]
-                );
-
-                if (spRows.length > 0) {
-                    const spId = spRows[0].id;
-                    const { rows: pmRows } = await pool.query(
-                        `SELECT pm.odoo_product_id
-                         FROM product_mappings pm
-                         WHERE pm.supplier_product_id = $1
-                           AND pm.odoo_company = 'neggo'
-                           AND pm.active = true
-                         LIMIT 1`,
-                        [spId]
-                    );
-
-                    if (pmRows.length > 0) {
-                        const odooId = pmRows[0].odoo_product_id;
-                        matched = odooCache.find(p => p.odoo_id === odooId) || null;
-                        if (matched) { confidence = 1.0; matchLevel = 'supplier_mapping'; }
-                    }
-                }
-            }
+            // Sentido único (nota 107): Ingresos alimenta la tabla maestra, pero no la usa para proponer.
+            // Acá no se lee product_mappings, match_decisiones ni producto_reemplazos.
 
             // ---- Nivel 2: invoice_code_mappings (vinculación manual persistente) ----
             // Códigos vacíos, guiones o "S/COD" no se buscan — evita falsos positivos globales
@@ -1250,10 +1222,79 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
 }
 
 // =============================================
+// Revisión de vínculos hechos a mano (nota 107)
+// Al confirmar, los renglones con producto de Odoo u oferta elegidos a mano se tildan una sola vez
+// antes de entrar a la tabla maestra. Lo revisado se guarda en ingreso_items (sentido único: acá
+// no se lee la tabla maestra) y no vuelve a marcarse: mismo proveedor + código + producto de Odoo.
+// =============================================
+
+// Renglones manuales del ingreso con oferta web + producto de Neggo, y si el par ya se revisó antes
+async function renglonesManualesConOferta(ingresoId, db = pool) {
+    const { rows } = await db.query(
+        `SELECT ii.id AS item_id, ii.codigo, ii.descripcion, ii.precio_unitario,
+                ii.odoo_product_id, ii.odoo_product_name, opc.internal_ref, opc.has_image,
+                ii.match_level, ii.supplier_match_level,
+                sp.id AS supplier_product_id, sp.sku, sp.name AS oferta_nombre, sp.raw_price AS oferta_precio,
+                EXISTS (
+                    SELECT 1 FROM ingreso_items prev
+                    JOIN ingreso_mercaderia pim ON pim.id = prev.ingreso_id AND pim.estado = 'confirmado'
+                    WHERE pim.supplier_id = im.supplier_id AND prev.id <> ii.id
+                      AND prev.odoo_product_id = ii.odoo_product_id
+                      AND prev.vinculo_revisado_at IS NOT NULL
+                      AND regexp_replace(UPPER(COALESCE(prev.codigo, '')), '[^A-Z0-9]', '', 'g')
+                          = regexp_replace(UPPER(COALESCE(ii.codigo, '')), '[^A-Z0-9]', '', 'g')
+                ) AS ya_revisado
+         FROM ingreso_items ii
+         JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
+         JOIN supplier_products sp ON sp.id = ii.supplier_product_id AND sp.source = 'web'
+         LEFT JOIN odoo_products_cache opc ON opc.odoo_id = ii.odoo_product_id AND opc.company = 'neggo'
+         WHERE ii.ingreso_id = $1 AND ii.estado_item = 'matched' AND ii.odoo_product_id IS NOT NULL
+           AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
+           AND (ii.match_level = 'manual' OR ii.supplier_match_level = 'manual')
+         ORDER BY ii.id`,
+        [ingresoId]
+    );
+    return rows;
+}
+
+// Lo que se muestra en el paso "Revisá los vínculos hechos a mano"
+async function vinculosARevisar(ingresoId) {
+    return (await renglonesManualesConOferta(ingresoId)).filter(r => !r.ya_revisado);
+}
+
+/**
+ * Guarda la revisión antes de confirmar: los tildados y los que ya se habían revisado en otro
+ * ingreso quedan revisados; los destildados no (se vuelven a marcar la próxima vez).
+ * @param {number} ingresoId
+ * @param {number[]|null} tildados — ids de renglones; sin revisión no se tilda nada nuevo
+ * @param {number} userId
+ */
+async function marcarVinculosRevisados(ingresoId, tildados, userId) {
+    const renglones = await renglonesManualesConOferta(ingresoId);
+    const elegidos = new Set((tildados || []).map(Number));
+    const revisados = renglones.filter(r => r.ya_revisado || elegidos.has(r.item_id)).map(r => r.item_id);
+
+    await pool.query(
+        `UPDATE ingreso_items SET vinculo_revisado_at = NULL, vinculo_revisado_por = NULL WHERE ingreso_id = $1`,
+        [ingresoId]
+    );
+    if (revisados.length > 0) {
+        await pool.query(
+            `UPDATE ingreso_items SET vinculo_revisado_at = NOW(), vinculo_revisado_por = $2
+             WHERE ingreso_id = $1 AND id = ANY($3::int[])`,
+            [ingresoId, userId, revisados]
+        );
+    }
+    return { revisados: revisados.length, sin_revisar: renglones.length - revisados.length };
+}
+
+// =============================================
 // EXPORTS
 // =============================================
 
 module.exports = {
+    vinculosARevisar,
+    marcarVinculosRevisados,
     parseCSV,
     parsePrecio,
     parseCantidad,

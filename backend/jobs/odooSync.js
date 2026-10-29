@@ -7,6 +7,7 @@ const { callOdoo, getCompanyIds } = require('../config/odoo');
 const pool = require('../config/database');
 const { scheduleRecompute } = require('../services/preventasMatchService');
 const reposicion = require('../services/reposicionService');
+const { recalcularHabituales } = require('../services/tablaMaestraService');
 
 const PAGE_SIZE = 200;
 
@@ -480,6 +481,19 @@ async function syncOdooProducts() {
 
             if (removed > 0) {
                 console.log(`🧹 Sync Odoo [${empresa.key}]: ${removed} producto(s) eliminados de Odoo → marcados inactivos y mappings limpiados`);
+            }
+
+            // Tabla maestra: el habitual sigue al proveedor principal de Odoo (solo Neggo)
+            if (empresa.key === 'neggo') {
+                try {
+                    const h = await recalcularHabituales(pool);
+                    if (h.sacados || h.marcados || h.activos?.prendidos || h.activos?.apagados) {
+                        console.log(`✅ Tabla maestra: habituales ${h.sacados} sacados, ${h.marcados} marcados` +
+                            (h.activos ? `; vínculos ${h.activos.prendidos} prendidos, ${h.activos.apagados} apagados` : ''));
+                    }
+                } catch (err) {
+                    console.error(`❌ Tabla maestra: no se pudo recalcular el habitual: ${err.message}`);
+                }
             }
 
             // Para Preventas: copiar vendor_name desde el producto Neggo matcheado

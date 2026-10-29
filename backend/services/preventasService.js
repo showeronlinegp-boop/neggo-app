@@ -171,8 +171,7 @@ async function addOdooItemToOrder(orderId, odooProductId, odooCompany, quantity,
             `SELECT sp.raw_price, sp.supplier_id
              FROM product_mappings pm
              JOIN supplier_products sp ON sp.id = pm.supplier_product_id
-             WHERE pm.odoo_product_id = $1 AND pm.odoo_company = $2 AND pm.active = true
-             ORDER BY pm.match_confidence DESC
+             WHERE pm.odoo_product_id = $1 AND pm.odoo_company = $2 AND pm.active = true AND pm.es_habitual = true
              LIMIT 1`,
             [odooProductId, odooCompany]
         );

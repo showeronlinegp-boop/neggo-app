@@ -90,7 +90,8 @@ function matchByRef(odooRef, supplierPrefix, supplierSku) {
 /**
  * Para cada supplier_product del proveedor, busca en odoo_products_cache
  * (ambas empresas) por internal_ref.
- * Inserta en product_mappings con match_type='auto_ref', confidence=1.0, status='active'.
+ * Inserta en product_mappings con match_type='auto_ref', confidence=1.0, como sugerido e inactivo:
+ * un vínculo activo mueve precios en Odoo, así que solo lo activa una confirmación.
  *
  * @param {number} supplierId
  * @returns {Promise<{ matched: number, skipped: number }>}
@@ -139,13 +140,13 @@ async function autoMatchByRef(supplierId) {
                 await pool.query(
                     `INSERT INTO product_mappings
                         (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
-                         match_type, match_confidence, active)
-                     VALUES ($1, $2, $3, $4, 'auto_ref', 1.0, true)
+                         match_type, match_confidence, active, estado, metodo)
+                     VALUES ($1, $2, $3, $4, 'auto_ref', 1.0, false, 'sugerido', 'auto_ref')
                      ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company) DO NOTHING`,
                     [sp.id, op.odoo_id, op.company, op.internal_ref]
                 );
                 matched++;
-                console.log(`✅ Match por ref: "${sp.sku}" <-> "${op.internal_ref}" [${op.company}]`);
+                console.log(`✅ Sugerido por ref: "${sp.sku}" <-> "${op.internal_ref}" [${op.company}]`);
             } catch (err) {
                 console.error(`❌ Error insertando mapping ref (sp=${sp.id}, odoo=${op.odoo_id}):`, err.message);
                 skipped++;
@@ -162,9 +163,9 @@ async function autoMatchByRef(supplierId) {
 // =============================================
 
 /**
- * Match fuzzy por nombre para supplier_products sin mapping activo.
- * - similitud >= 0.9 → auto-vincular con status='active'
- * - similitud >= threshold (0.7 por defecto) y < 0.9 → status='suggested'
+ * Match fuzzy por nombre para supplier_products sin vínculo activo ni confirmado.
+ * Todo lo que supera el umbral (0.7 por defecto) queda sugerido e inactivo, aunque llegue a 0.9:
+ * por nombre nunca se vincula solo.
  *
  * @param {number} supplierId
  * @param {number} [threshold=0.7]
@@ -173,14 +174,15 @@ async function autoMatchByRef(supplierId) {
 async function autoMatchByName(supplierId, threshold = 0.7) {
     console.log(`📦 Iniciando match fuzzy por nombre para proveedor ID: ${supplierId} (umbral: ${threshold})`);
 
-    // Solo procesar productos SIN mapping activo existente
+    // Solo procesar productos SIN vínculo activo ni confirmado (los sugeridos se vuelven a evaluar)
     const { rows: unmapped } = await pool.query(
         `SELECT sp.id, sp.name, sp.sku
          FROM supplier_products sp
          WHERE sp.supplier_id = $1
            AND NOT EXISTS (
                SELECT 1 FROM product_mappings pm
-               WHERE pm.supplier_product_id = sp.id AND pm.active = true
+               WHERE pm.supplier_product_id = sp.id
+                 AND (pm.active = true OR pm.estado = 'confirmado')
            )`,
         [supplierId]
     );
@@ -231,28 +233,21 @@ async function autoMatchByName(supplierId, threshold = 0.7) {
 
         for (const company of Object.keys(bestByCompany)) {
             const { op, sim } = bestByCompany[company];
-            const isActive = sim >= 0.9;
-            const matchType = 'auto_fuzzy';
-            const status = isActive ? 'active' : 'suggested';
             const confidence = Math.round(sim * 1000) / 1000;
 
             try {
+                // Si el par ya existe (por ejemplo, rechazado) no se toca
                 await pool.query(
                     `INSERT INTO product_mappings
                         (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
-                         match_type, match_confidence, active)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         match_type, match_confidence, active, estado, metodo)
+                     VALUES ($1, $2, $3, $4, 'auto_fuzzy', $5, false, 'sugerido', 'auto_fuzzy')
                      ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company) DO NOTHING`,
-                    [sp.id, op.odoo_id, op.company, op.internal_ref, matchType, confidence, isActive]
+                    [sp.id, op.odoo_id, op.company, op.internal_ref, confidence]
                 );
 
-                if (isActive) {
-                    autoLinked++;
-                    console.log(`✅ Auto-vinculado fuzzy (${sim.toFixed(3)}): "${sp.name}" <-> "${op.name}" [${company}]`);
-                } else {
-                    suggested++;
-                    console.log(`⚠️ Sugerido (${sim.toFixed(3)}): "${sp.name}" <-> "${op.name}" [${company}]`);
-                }
+                suggested++;
+                console.log(`⚠️ Sugerido (${sim.toFixed(3)}): "${sp.name}" <-> "${op.name}" [${company}]`);
             } catch (err) {
                 console.error(`❌ Error insertando mapping fuzzy (sp=${sp.id}, odoo=${op.odoo_id}):`, err.message);
             }

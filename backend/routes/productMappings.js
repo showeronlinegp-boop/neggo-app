@@ -5,6 +5,17 @@
 // POST   /api/mappings               — crear vínculo manual
 // DELETE /api/mappings/:id           — eliminar vínculo (admin)
 // POST   /api/mappings/auto-match    — ejecutar auto-match para un proveedor
+//
+// Vincular (tabla maestra, nota 107). Solo Neggo; nada se activa ni se escribe en Odoo:
+// GET    /api/mappings/vincular/resumen           — cantidades por pestaña
+// GET    /api/mappings/vincular/lote              — sugeridos por código (supplierId opcional)
+// POST   /api/mappings/vincular/lote              — { confirmar: [ids], rechazar?: [ids] }
+// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre de la semana
+// POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
+// GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
+// POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
+// GET    /api/mappings/vincular/sin-habitual      — con oferta confirmada y sin habitual
+// POST   /api/mappings/vincular/repasar-ingresos  — repasa todos los ingresos confirmados
 
 const express = require('express');
 const router = express.Router();
@@ -12,6 +23,29 @@ const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { runAutoMatch, getUnmappedProducts } = require('../services/matchingService');
+const vincular = require('../services/vincularService');
+const { recalcularHabituales } = require('../services/tablaMaestraService');
+
+// Lista de ids enteros de un body (descarta lo que no sea número)
+function idsDe(valor) {
+    return Array.isArray(valor) ? valor.map(v => parseInt(v, 10)).filter(Number.isInteger) : [];
+}
+
+// Guarda en match_decisiones lo que decidió una persona sobre un vínculo.
+// Si falla no frena la operación: es solo para medir el acierto.
+async function registrarDecision(mapping, decision, userId) {
+    try {
+        await pool.query(
+            `INSERT INTO match_decisiones
+                (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [mapping.supplier_product_id, mapping.odoo_product_id, mapping.odoo_company,
+             decision, mapping.metodo || mapping.match_type, mapping.match_confidence, userId]
+        );
+    } catch (err) {
+        console.error('⚠️ Error al registrar la decisión del vínculo:', err.message);
+    }
+}
 
 // =============================================
 // GET /api/mappings
@@ -52,7 +86,7 @@ router.get('/', authenticate, async (req, res) => {
                      WHERE sp.available = true
                        AND NOT EXISTS (
                            SELECT 1 FROM product_mappings pm
-                           WHERE pm.supplier_product_id = sp.id AND pm.active = true
+                           WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado'
                        )`
                 );
                 return res.json({ success: true, data: [], total: parseInt(countRows[0].total, 10) });
@@ -80,8 +114,11 @@ router.get('/', authenticate, async (req, res) => {
             params.push(company);
         }
 
-        if (status) {
-            // Columna en schema es 'active' (boolean) + match_type, pero se unificó en la consulta
+        if (['confirmado', 'sugerido', 'rechazado'].includes(status)) {
+            conditions.push(`pm.estado = $${idx++}`);
+            params.push(status);
+        } else if (status) {
+            // 'active' | 'inactive': columna active (solo los activos mueven precios en Odoo)
             conditions.push(`pm.active = $${idx++}`);
             params.push(status === 'active');
         }
@@ -103,6 +140,9 @@ router.get('/', authenticate, async (req, res) => {
                 pm.match_type,
                 pm.match_confidence,
                 pm.active,
+                pm.estado,
+                pm.metodo,
+                pm.es_habitual,
                 pm.created_at,
                 -- Datos del producto proveedor
                 sp.sku          AS supplier_sku,
@@ -199,11 +239,11 @@ router.get('/comparison', authenticate, async (req, res) => {
             LEFT JOIN product_mappings pm_n
                    ON pm_n.supplier_product_id = sp.id
                   AND pm_n.odoo_company = 'neggo'
-                  AND pm_n.active = true
+                  AND pm_n.estado = 'confirmado'
             LEFT JOIN product_mappings pm_p
                    ON pm_p.supplier_product_id = sp.id
                   AND pm_p.odoo_company = 'preventas'
-                  AND pm_p.active = true
+                  AND pm_p.estado = 'confirmado'
             LEFT JOIN odoo_products_cache opc_n
                    ON opc_n.odoo_id = pm_n.odoo_product_id AND opc_n.company = 'neggo'
             LEFT JOIN odoo_products_cache opc_p
@@ -254,6 +294,108 @@ router.get('/comparison', authenticate, async (req, res) => {
     } catch (err) {
         console.error('❌ Error en comparison:', err.message);
         return fail(res, 'Error al obtener comparación', 500);
+    }
+});
+
+// =============================================
+// Vincular (tabla maestra): lote por código, tarjetas por nombre, conflictos, sin habitual
+// =============================================
+
+router.get('/vincular/resumen', authenticate, async (req, res) => {
+    try {
+        return ok(res, await vincular.resumen());
+    } catch (err) {
+        console.error('❌ Error en el resumen de vincular:', err.message);
+        return fail(res, 'Error al obtener el resumen', 500);
+    }
+});
+
+router.get('/vincular/lote', authenticate, async (req, res) => {
+    try {
+        const supplierId = parseInt(req.query.supplierId, 10) || null;
+        return ok(res, await vincular.listarLoteCodigo({ supplierId }));
+    } catch (err) {
+        console.error('❌ Error al listar el lote por código:', err.message);
+        return fail(res, 'Error al obtener el lote por código', 500);
+    }
+});
+
+router.post('/vincular/lote', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    const confirmar = idsDe(req.body.confirmar);
+    const rechazar = idsDe(req.body.rechazar).filter(id => !confirmar.includes(id));
+    if (!confirmar.length && !rechazar.length) return fail(res, 'No hay vínculos tildados', 400);
+    try {
+        const resultado = await vincular.decidirLote({ confirmar, rechazar, userId: req.user.id });
+        console.log(`✅ Lote por código: ${resultado.confirmados} confirmados, ${resultado.rechazados} rechazados (usuario ${req.user.id})`);
+        return ok(res, resultado);
+    } catch (err) {
+        console.error('❌ Error al confirmar el lote por código:', err.message);
+        return fail(res, 'Error al confirmar el lote', 500);
+    }
+});
+
+router.get('/vincular/tarjetas', authenticate, async (req, res) => {
+    try {
+        return ok(res, await vincular.listarTarjetas());
+    } catch (err) {
+        console.error('❌ Error al listar las tarjetas por nombre:', err.message);
+        return fail(res, 'Error al obtener las tarjetas', 500);
+    }
+});
+
+router.post('/vincular/tarjetas', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    const mappingId = req.body.mappingId == null ? null : parseInt(req.body.mappingId, 10);
+    if (!odooProductId || Number.isNaN(mappingId)) return fail(res, 'odooProductId requerido y mappingId numérico o null', 400);
+    try {
+        return ok(res, await vincular.decidirTarjeta({ odooProductId, mappingId, userId: req.user.id }));
+    } catch (err) {
+        if (err.status === 409) return fail(res, err.message, 409);
+        console.error('❌ Error al decidir la tarjeta:', err.message);
+        return fail(res, 'Error al guardar la decisión', 500);
+    }
+});
+
+router.get('/vincular/conflictos', authenticate, async (req, res) => {
+    try {
+        return ok(res, await vincular.listarConflictosDetalle());
+    } catch (err) {
+        console.error('❌ Error al listar conflictos:', err.message);
+        return fail(res, 'Error al obtener los conflictos', 500);
+    }
+});
+
+router.post('/vincular/rechazar', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplierProductId, 10);
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    if (!supplierProductId || !odooProductId) return fail(res, 'supplierProductId y odooProductId son requeridos', 400);
+    try {
+        const resultado = await vincular.rechazarPar({ supplierProductId, odooProductId, userId: req.user.id });
+        if (!resultado.rechazado) return fail(res, 'Ese vínculo no existe o ya estaba rechazado', 404);
+        return ok(res, resultado);
+    } catch (err) {
+        console.error('❌ Error al rechazar el vínculo:', err.message);
+        return fail(res, 'Error al rechazar el vínculo', 500);
+    }
+});
+
+router.get('/vincular/sin-habitual', authenticate, async (req, res) => {
+    try {
+        return ok(res, await vincular.listarSinHabitual());
+    } catch (err) {
+        console.error('❌ Error al listar sin habitual:', err.message);
+        return fail(res, 'Error al obtener los productos sin habitual', 500);
+    }
+});
+
+router.post('/vincular/repasar-ingresos', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    try {
+        const resultado = await vincular.repasarIngresos({ userId: req.user.id });
+        console.log(`✅ Repaso de ingresos: ${resultado.creados} creados, ${resultado.confirmados} confirmados`);
+        return ok(res, resultado);
+    } catch (err) {
+        console.error('❌ Error al repasar los ingresos:', err.message);
+        return fail(res, 'Error al repasar los ingresos', 500);
     }
 });
 
@@ -321,20 +463,29 @@ router.post('/', authenticate, requireRole('admin', 'operador'), async (req, res
             return fail(res, `Producto Odoo ${odooProductId} [${odooCompany}] no encontrado en cache`, 404);
         }
 
-        // Insertar mapping manual
+        // Insertar mapping manual (lo hace una persona: queda confirmado). Nace inactivo: lo prende
+        // recalcularHabituales si la tabla maestra está prendida (solo el habitual mueve precios en Odoo).
         const { rows: inserted } = await pool.query(
             `INSERT INTO product_mappings
                 (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
-                 match_type, match_confidence, active)
-             VALUES ($1, $2, $3, $4, 'manual', 1.0, true)
+                 match_type, match_confidence, active, estado, metodo, confirmado_por, confirmado_at)
+             VALUES ($1, $2, $3, $4, 'manual', 1.0, false, 'confirmado', 'manual', $5, NOW())
              ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company)
              DO UPDATE SET
                 match_type = 'manual',
                 match_confidence = 1.0,
-                active = true
+                estado = 'confirmado',
+                metodo = COALESCE(product_mappings.metodo, 'manual'),
+                confirmado_por = $5,
+                confirmado_at = NOW()
              RETURNING *`,
-            [supplierProductId, odooProductId, odooCompany, opRows[0].internal_ref]
+            [supplierProductId, odooProductId, odooCompany, opRows[0].internal_ref, req.user.id]
         );
+
+        // Decisión para medir el acierto por método
+        await registrarDecision(inserted[0], 'confirmado', req.user.id);
+        // Si es del proveedor principal pasa a ser el habitual (y con la tabla prendida, queda activo)
+        await recalcularHabituales(pool);
 
         console.log(`✅ Mapping manual creado: supplier_product ${supplierProductId} <-> odoo ${odooProductId} [${odooCompany}]`);
 
@@ -376,7 +527,7 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
 
     try {
         const { rows } = await pool.query(
-            'SELECT id FROM product_mappings WHERE id = $1',
+            'SELECT * FROM product_mappings WHERE id = $1',
             [mappingId]
         );
 
@@ -384,11 +535,14 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res) => {
             return fail(res, `Mapping ${mappingId} no encontrado`, 404);
         }
 
-        // Desactivar en lugar de borrar físicamente para mantener historial
+        // Desactivar en lugar de borrar físicamente para mantener historial.
+        // Queda rechazado: así no se vuelve a proponer.
         await pool.query(
-            'UPDATE product_mappings SET active = false WHERE id = $1',
+            `UPDATE product_mappings SET active = false, estado = 'rechazado', es_habitual = false
+             WHERE id = $1`,
             [mappingId]
         );
+        await registrarDecision(rows[0], 'rechazado', req.user.id);
 
         // Registrar en activity_log
         try {
