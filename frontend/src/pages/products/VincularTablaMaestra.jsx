@@ -18,6 +18,8 @@ const DIFERENCIA_PRECIO = 0.3;
 // Tamaño de las fotos de las tarjetas: la de Neggo y la de cada oferta, para compararlas
 const FOTO_NEGGO = 120;
 const FOTO_OFERTA = 96;
+// Fotos de las filas de las tablas y de los conflictos (nota 115)
+export const FOTO_FILA = 48;
 
 function diferenciaPrecio(neto, costo) {
     const n = Number(neto), c = Number(costo);
@@ -34,6 +36,7 @@ export function LoteCodigo({ tokens: t, onCambio }) {
     const [destildados, setDestildados] = useState(() => new Set());
     const [rechazarDestildados, setRechazarDestildados] = useState(false);
     const [guardando, setGuardando] = useState(false);
+    const [foto, setFoto] = useState(null);
 
     const cargar = useCallback(async () => {
         setCargando(true);
@@ -154,12 +157,14 @@ export function LoteCodigo({ tokens: t, onCambio }) {
                                         <input type="checkbox" checked={tildado} onChange={() => alternar(f.id)} onClick={e => e.stopPropagation()} />
                                     </Td>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.oferta_nombre} codigo={f.sku} extra={f.proveedor} />
-                                        {!f.available && <Badge tone="muted" style={{ marginTop: 4 }}>No disponible</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.image_url} nombre={f.oferta_nombre} codigo={f.sku} extra={f.proveedor} onFoto={setFoto}>
+                                            {!f.available && <Badge tone="muted" style={{ marginTop: 4 }}>No disponible</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.odoo_nombre} codigo={f.internal_ref} />
-                                        {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.odoo_image_url} nombre={f.odoo_nombre} codigo={f.internal_ref} onFoto={setFoto}>
+                                            {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t} right>
                                         <span style={t.numericStyle}>{f.neto ? fmtAR(f.neto) : '—'}</span>
@@ -175,6 +180,8 @@ export function LoteCodigo({ tokens: t, onCambio }) {
                     </tbody>
                 </table>
             </Card>
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }
@@ -364,14 +371,15 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     );
 }
 
-// Foto de la tarjeta: se toca para verla en grande (sin foto, solo la inicial)
-function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
+// Foto de la tarjeta: se toca para verla en grande (sin foto, solo la inicial). No propaga el clic
+// para no tildar la fila ni elegir el ítem en el que está.
+export function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
     const thumb = <ProductThumb imageUrl={imageUrl} emoji={nombre?.[0]} size={size} />;
     if (!imageUrl) return thumb;
     return (
         <button
             type="button"
-            onClick={onAbrir}
+            onClick={e => { e.stopPropagation(); onAbrir(); }}
             title="Ver foto en grande"
             aria-label={`Ver foto de ${nombre || 'producto'}`}
             style={{ padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in', flexShrink: 0, borderRadius: t.radius.sm }}
@@ -381,10 +389,30 @@ function FotoBoton({ tokens: t, imageUrl, nombre, size, onAbrir }) {
     );
 }
 
+// Foto + nombre + código para las filas; onFoto recibe { imageUrl, nombre, detalle } para ampliarla
+export function ConFoto({ tokens: t, imageUrl, nombre, codigo, extra, onFoto, size = FOTO_FILA, children }) {
+    return (
+        <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', minWidth: 0 }}>
+            <FotoBoton
+                tokens={t}
+                imageUrl={imageUrl}
+                nombre={nombre}
+                size={size}
+                onAbrir={() => onFoto({ imageUrl, nombre, detalle: [codigo, extra].filter(Boolean).join(' · ') })}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <Nombre tokens={t} nombre={nombre} codigo={codigo} extra={extra} />
+                {children}
+            </div>
+        </div>
+    );
+}
+
 // ─── Conflictos ──────────────────────────────────────────────────────────────────
 export function Conflictos({ tokens: t, onCambio }) {
     const { showToast } = useToast();
     const [filas, setFilas] = useState(null);
+    const [foto, setFoto] = useState(null);
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/conflictos');
@@ -411,7 +439,7 @@ export function Conflictos({ tokens: t, onCambio }) {
             </Ayuda>
             {filas.map(c => (
                 <Card key={c.supplier_product_id} padding={false} style={{ padding: t.space[5] }}>
-                    <Nombre tokens={t} nombre={c.name} codigo={c.sku} extra={c.proveedor} />
+                    <ConFoto tokens={t} imageUrl={c.image_url} nombre={c.name} codigo={c.sku} extra={c.proveedor} onFoto={setFoto} size={FOTO_OFERTA} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: t.space[4] }}>
                         {c.productos.map(p => (
                             <div key={p.odoo_id} style={{
@@ -419,7 +447,7 @@ export function Conflictos({ tokens: t, onCambio }) {
                                 padding: '10px 12px', borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`,
                             }}>
                                 <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                                    <Nombre tokens={t} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} />
+                                    <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto} />
                                 </div>
                                 {p.activo === false && <Badge tone="muted">Archivado</Badge>}
                                 <Badge tone="muted">{p.metodo}</Badge>
@@ -429,6 +457,8 @@ export function Conflictos({ tokens: t, onCambio }) {
                     </div>
                 </Card>
             ))}
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }
@@ -437,6 +467,7 @@ export function Conflictos({ tokens: t, onCambio }) {
 export function SinHabitual({ tokens: t }) {
     const { showToast } = useToast();
     const [filas, setFilas] = useState(null);
+    const [foto, setFoto] = useState(null);
 
     useEffect(() => {
         api.get('/mappings/vincular/sin-habitual').then(res => {
@@ -469,8 +500,9 @@ export function SinHabitual({ tokens: t }) {
                             {filas.map(f => (
                                 <tr key={f.odoo_id} style={{ borderTop: `1px solid ${t.color.border}` }}>
                                     <Td tokens={t}>
-                                        <Nombre tokens={t} nombre={f.odoo_nombre} codigo={f.internal_ref} />
-                                        {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        <ConFoto tokens={t} imageUrl={f.odoo_image_url} nombre={f.odoo_nombre} codigo={f.internal_ref} onFoto={setFoto}>
+                                            {f.odoo_activo === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+                                        </ConFoto>
                                     </Td>
                                     <Td tokens={t}>{f.vendor_name || <span style={{ color: t.color.textFaint }}>sin principal</span>}</Td>
                                     <Td tokens={t}>{(f.proveedores_vinculados || []).join(', ')}</Td>
@@ -481,6 +513,8 @@ export function SinHabitual({ tokens: t }) {
                     </table>
                 </Card>
             )}
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }

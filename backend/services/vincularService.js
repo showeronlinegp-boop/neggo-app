@@ -47,9 +47,9 @@ async function listarLoteCodigo({ supplierId = null } = {}) {
         `WITH ${VENTAS_CTE}
          SELECT pm.id, pm.supplier_product_id, pm.odoo_product_id,
                 s.id AS supplier_id, s.name AS proveedor,
-                sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available,
+                sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available, sp.image_url,
                 opc.name AS odoo_nombre, opc.internal_ref, opc.standard_price, opc.list_price,
-                opc.active AS odoo_activo, COALESCE(v.monto, 0) AS venta
+                opc.active AS odoo_activo, opc.image_url AS odoo_image_url, COALESCE(v.monto, 0) AS venta
          FROM product_mappings pm
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source = 'web'
          JOIN suppliers s ON s.id = sp.supplier_id
@@ -239,7 +239,7 @@ async function listarConflictosDetalle() {
     if (!conflictos.length) return [];
     const ids = [...new Set(conflictos.flatMap(c => c.odoo_ids))];
     const { rows } = await pool.query(
-        `SELECT opc.odoo_id, opc.name, opc.internal_ref, opc.active, opc.vendor_name,
+        `SELECT opc.odoo_id, opc.name, opc.internal_ref, opc.active, opc.vendor_name, opc.image_url,
                 pm.supplier_product_id, pm.metodo, pm.confirmado_at
          FROM odoo_products_cache opc
          JOIN product_mappings pm ON pm.odoo_product_id = opc.odoo_id AND pm.odoo_company = 'neggo'
@@ -253,7 +253,7 @@ async function listarConflictosDetalle() {
             .filter(r => r.supplier_product_id === c.supplier_product_id && c.odoo_ids.includes(r.odoo_id))
             .map(r => ({
                 odoo_id: r.odoo_id, nombre: r.name, internal_ref: r.internal_ref, activo: r.active,
-                vendor_name: r.vendor_name, metodo: r.metodo, confirmado_at: r.confirmado_at
+                vendor_name: r.vendor_name, metodo: r.metodo, confirmado_at: r.confirmado_at, image_url: r.image_url
             }))
     }));
 }
@@ -289,7 +289,7 @@ async function listarSinHabitual() {
     const { rows } = await pool.query(
         `WITH ${VENTAS_CTE}
          SELECT opc.odoo_id, opc.name AS odoo_nombre, opc.internal_ref, opc.vendor_name, opc.active AS odoo_activo,
-                COALESCE(v.monto, 0) AS venta,
+                opc.image_url AS odoo_image_url, COALESCE(v.monto, 0) AS venta,
                 array_agg(DISTINCT s.name ORDER BY s.name) AS proveedores_vinculados,
                 COUNT(*)::int AS ofertas
          FROM product_mappings pm
@@ -300,7 +300,7 @@ async function listarSinHabitual() {
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado' AND opc.name <> ALL($2::text[])
            AND NOT EXISTS (SELECT 1 FROM product_mappings h
                            WHERE h.odoo_product_id = pm.odoo_product_id AND h.odoo_company = 'neggo' AND h.es_habitual)
-         GROUP BY opc.odoo_id, opc.name, opc.internal_ref, opc.vendor_name, opc.active, v.monto
+         GROUP BY opc.odoo_id, opc.name, opc.internal_ref, opc.vendor_name, opc.active, opc.image_url, v.monto
          ORDER BY COALESCE(v.monto, 0) DESC, opc.name`,
         [SEMANAS_VENTA, NO_MERCADERIA]
     );

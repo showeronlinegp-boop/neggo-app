@@ -10,10 +10,10 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
-import ProductThumb from '../../components/common/ProductThumb';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import * as Icon from '../../components/common/icons';
-import { LoteCodigo, TarjetasNombre, Conflictos, SinHabitual } from './VincularTablaMaestra';
+import FotoAmpliada from '../../components/common/FotoAmpliada';
+import { LoteCodigo, TarjetasNombre, Conflictos, SinHabitual, FotoBoton, ConFoto } from './VincularTablaMaestra';
 
 const FILTER_OPTS = [
     { value: 'all',      label: 'Todos' },
@@ -53,6 +53,8 @@ export default function ProductMappings() {
     const [mappingsLoading, setMappingsLoading] = useState(false);
     const [autoMatchLoading, setAutoMatchLoading] = useState(false);
     const [confirmUnlink, setConfirmUnlink] = useState(null);
+    // Foto abierta en grande (A mano y Comparación): { imageUrl, nombre, detalle }
+    const [foto, setFoto] = useState(null);
 
     // Tab Comparación
     const [cmpData, setCmpData] = useState([]);
@@ -243,6 +245,7 @@ export default function ProductMappings() {
                                         product={p}
                                         selected={selectedLeft?.id === p.id}
                                         onClick={() => setSelectedLeft(p)}
+                                        onFoto={setFoto}
                                         tokens={t}
                                     />
                                 ))}
@@ -313,6 +316,7 @@ export default function ProductMappings() {
                                         product={p}
                                         selected={selectedRight?.id === p.id}
                                         onClick={() => setSelectedRight(p)}
+                                        onFoto={setFoto}
                                         tokens={t}
                                     />
                                 ))}
@@ -343,7 +347,7 @@ export default function ProductMappings() {
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: t.font.size.sm }}>
                                     <thead>
                                         <tr style={{ background: t.color.surface2 }}>
-                                            {['Producto proveedor', 'SKU', 'Producto Odoo', 'Ref. Odoo', 'Empresa', 'Método', 'Confianza', ''].map(h => (
+                                            {['Producto proveedor', 'Producto Odoo', 'Empresa', 'Método', 'Confianza', ''].map(h => (
                                                 <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
                                                     {h}
                                                 </th>
@@ -353,13 +357,11 @@ export default function ProductMappings() {
                                     <tbody>
                                         {mappings.map(m => (
                                             <tr key={m.id} style={{ borderTop: `1px solid ${t.color.border}` }}>
-                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.supplier_name}</td>
                                                 <td style={{ padding: '10px 14px' }}>
-                                                    <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{m.supplier_sku}</span>
+                                                    <ConFoto tokens={t} imageUrl={m.supplier_image_url} nombre={m.supplier_name} codigo={m.supplier_sku} onFoto={setFoto} />
                                                 </td>
-                                                <td style={{ padding: '10px 14px', color: t.color.text, fontFamily: t.font.family }}>{m.odoo_name}</td>
                                                 <td style={{ padding: '10px 14px' }}>
-                                                    <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{m.odoo_internal_ref || '—'}</span>
+                                                    <ConFoto tokens={t} imageUrl={m.odoo_image_url} nombre={m.odoo_name} codigo={m.odoo_internal_ref} onFoto={setFoto} />
                                                 </td>
                                                 <td style={{ padding: '10px 14px' }}>
                                                     <Badge tone={m.odoo_company === 'neggo' ? 'primary' : 'accent'}>{m.odoo_company}</Badge>
@@ -411,15 +413,18 @@ export default function ProductMappings() {
                     pageSize={CMP_PAGE_SIZE}
                     onPageChange={setCmpPage}
                     onRefresh={fetchComparison}
+                    onFoto={setFoto}
                     tokens={t}
                 />
             )}
+
+            <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
         </div>
     );
 }
 
 // ─── Ítem de producto (panel izquierdo) ──────────────────────────────────────────
-function ProductItem({ product: p, selected, onClick, tokens: t }) {
+function ProductItem({ product: p, selected, onClick, onFoto, tokens: t }) {
     const [hovered, setHovered] = useState(false);
     return (
         <div
@@ -435,7 +440,13 @@ function ProductItem({ product: p, selected, onClick, tokens: t }) {
                 cursor: 'pointer', transition: 'all 120ms',
             }}
         >
-            <ProductThumb imageUrl={p.image_url} emoji={p.name?.[0]} size={36} />
+            <FotoBoton
+                tokens={t}
+                imageUrl={p.image_url}
+                nombre={p.name}
+                size={44}
+                onAbrir={() => onFoto({ imageUrl: p.image_url, nombre: p.name, detalle: p.sku })}
+            />
             <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
                     {p.name || p.product_name}
@@ -453,7 +464,7 @@ function ProductItem({ product: p, selected, onClick, tokens: t }) {
 }
 
 // ─── Ítem de producto Odoo (panel derecho) ────────────────────────────────────────
-function OdooItem({ product: p, selected, onClick, tokens: t }) {
+function OdooItem({ product: p, selected, onClick, onFoto, tokens: t }) {
     const [hovered, setHovered] = useState(false);
     return (
         <div
@@ -461,6 +472,7 @@ function OdooItem({ product: p, selected, onClick, tokens: t }) {
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
             style={{
+                display: 'flex', gap: 10, alignItems: 'flex-start',
                 padding: 10, marginBottom: 4,
                 border: `2px solid ${selected ? t.color.primary : hovered ? t.color.borderStrong : t.color.border}`,
                 borderRadius: t.radius.sm,
@@ -468,22 +480,31 @@ function OdooItem({ product: p, selected, onClick, tokens: t }) {
                 cursor: 'pointer', transition: 'all 120ms',
             }}
         >
-            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
-                {p.name}
+            <FotoBoton
+                tokens={t}
+                imageUrl={p.image_url}
+                nombre={p.name}
+                size={44}
+                onAbrir={() => onFoto({ imageUrl: p.image_url, nombre: p.name, detalle: p.internal_ref })}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
+                    {p.name}
+                </div>
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, fontFamily: t.font.family }}>
+                    Ref: <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
+                    {p.list_price != null && <> · {fmtAR(p.list_price)}</>}
+                </div>
+                {p.categ_name && (
+                    <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 2, fontFamily: t.font.family }}>{p.categ_name}</div>
+                )}
             </div>
-            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, fontFamily: t.font.family }}>
-                Ref: <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
-                {p.list_price != null && <> · {fmtAR(p.list_price)}</>}
-            </div>
-            {p.categ_name && (
-                <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 2, fontFamily: t.font.family }}>{p.categ_name}</div>
-            )}
         </div>
     );
 }
 
 // ─── Tab Comparación ─────────────────────────────────────────────────────────────
-function ComparisonTab({ supplierId, data, loading, search, onSearchChange, filter, onFilterChange, page, total, pageSize, onPageChange, onRefresh, tokens: t }) {
+function ComparisonTab({ supplierId, data, loading, search, onSearchChange, filter, onFilterChange, page, total, pageSize, onPageChange, onRefresh, onFoto, tokens: t }) {
     if (!supplierId) {
         return (
             <div style={{ padding: '48px 24px', textAlign: 'center', fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family }}>
@@ -532,7 +553,6 @@ function ComparisonTab({ supplierId, data, loading, search, onSearchChange, filt
                         <thead>
                             <tr style={{ background: t.color.surface2 }}>
                                 <Th tokens={t}>Producto proveedor</Th>
-                                <Th tokens={t}>SKU</Th>
                                 <Th tokens={t} right>Precio prov.</Th>
                                 <Th tokens={t} divLeft={divColor}>Neggo — Odoo</Th>
                                 <Th tokens={t} right>Lista Neggo</Th>
@@ -553,17 +573,15 @@ function ComparisonTab({ supplierId, data, loading, search, onSearchChange, filt
                                 return (
                                     <tr key={row.id} style={{ borderTop: `1px solid ${t.color.border}`, background: hasNone ? `${t.color.dangerSoft}66` : 'transparent' }}>
                                         <Td tokens={t}>
-                                            <div style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: t.font.weight.medium }}>
-                                                {row.product_name}
+                                            <div style={{ maxWidth: 280 }}>
+                                                <ConFoto tokens={t} imageUrl={row.image_url} nombre={row.product_name} codigo={row.sku} extra={row.source_category} onFoto={onFoto} />
                                             </div>
-                                            {row.source_category && <div style={{ fontSize: 11, color: t.color.textFaint }}>{row.source_category}</div>}
                                         </Td>
-                                        <Td tokens={t}><span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{row.sku || '—'}</span></Td>
                                         <Td tokens={t} right><span style={{ fontWeight: t.font.weight.medium, ...t.numericStyle }}>{row.raw_price ? fmtAR(row.raw_price) : '—'}</span></Td>
 
                                         <Td tokens={t} divLeft={divColor}>
                                             {row.neggo_odoo_name
-                                                ? <OdooCell name={row.neggo_odoo_name} ref={row.neggo_ref} tokens={t} />
+                                                ? <OdooCell name={row.neggo_odoo_name} ref={row.neggo_ref} imageUrl={row.neggo_image_url} onFoto={onFoto} tokens={t} />
                                                 : <span style={{ color: t.color.textFaint }}>—</span>}
                                         </Td>
                                         <Td tokens={t} right><span style={{ ...t.numericStyle }}>{row.neggo_list_price ? fmtAR(row.neggo_list_price) : '—'}</span></Td>
@@ -571,7 +589,7 @@ function ComparisonTab({ supplierId, data, loading, search, onSearchChange, filt
 
                                         <Td tokens={t} divLeft={divColor}>
                                             {row.prev_odoo_name
-                                                ? <OdooCell name={row.prev_odoo_name} ref={row.prev_ref} tokens={t} />
+                                                ? <OdooCell name={row.prev_odoo_name} ref={row.prev_ref} imageUrl={row.prev_image_url} onFoto={onFoto} tokens={t} />
                                                 : <span style={{ color: t.color.textFaint }}>—</span>}
                                         </Td>
                                         <Td tokens={t} right><span style={{ ...t.numericStyle }}>{row.prev_list_price ? fmtAR(row.prev_list_price) : '—'}</span></Td>
@@ -630,11 +648,10 @@ function Td({ children, tokens: t, right, divLeft }) {
     );
 }
 
-function OdooCell({ name, ref: refVal, tokens: t }) {
+function OdooCell({ name, ref: refVal, imageUrl, onFoto, tokens: t }) {
     return (
-        <div style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
-            {name}
-            {refVal && <span style={{ fontSize: 11, color: t.color.textMuted, marginLeft: 4, fontFamily: t.font.mono }}>({refVal})</span>}
+        <div style={{ maxWidth: 240 }} title={name}>
+            <ConFoto tokens={t} imageUrl={imageUrl} nombre={name} codigo={refVal} onFoto={onFoto} size={40} />
         </div>
     );
 }
