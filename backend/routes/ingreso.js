@@ -11,6 +11,7 @@ const router = express.Router();
 const multer = require('multer');
 const pool = require('../config/database');
 const ingresoService = require('../services/ingresoService');
+const tablaMaestraService = require('../services/tablaMaestraService');
 const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
@@ -2025,9 +2026,24 @@ router.post('/:ingresoId/sync-odoo-prices', authenticate, requireRole('admin'), 
 // POST /api/ingreso/:ingresoId/confirm
 // =============================================
 
+// =============================================
+// GET /api/ingreso/:ingresoId/vinculos-a-revisar
+// Renglones hechos a mano (con oferta + producto de Odoo) que todavía no se revisaron nunca.
+// Se tildan en el paso previo a confirmar; solo los tildados entran a la tabla maestra.
+// =============================================
+
+router.get('/:ingresoId/vinculos-a-revisar', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoService.vinculosARevisar(parseInt(req.params.ingresoId, 10)));
+    } catch (err) {
+        console.error('❌ Error listando vínculos a revisar:', err);
+        return fail(res, err.message, 500);
+    }
+});
+
 router.post('/:ingresoId/confirm', authenticate, requireRole('admin'), async (req, res) => {
     const { ingresoId } = req.params;
-    const { odoo_partner_id } = req.body;
+    const { odoo_partner_id, vinculos_revisados } = req.body;
 
     console.log(`🔄 Confirmando ingreso ${ingresoId} por usuario ${req.user.id}`);
 
@@ -2061,6 +2077,13 @@ router.post('/:ingresoId/confirm', authenticate, requireRole('admin'), async (re
             return fail(res, 'Hay items sin resolver. Vincinalos a Neggo, asignálos a preventa o rechazálos.', 400);
         }
 
+        // Revisión de los vínculos hechos a mano: se guarda antes, así queda con el ingreso
+        await ingresoService.marcarVinculosRevisados(
+            parseInt(ingresoId, 10),
+            Array.isArray(vinculos_revisados) ? vinculos_revisados : null,
+            req.user.id
+        );
+
         const result = await ingresoService.confirmIngreso(
             ingresoId,
             req.user.id,
@@ -2068,6 +2091,20 @@ router.post('/:ingresoId/confirm', authenticate, requireRole('admin'), async (re
         );
 
         console.log(`✅ Ingreso ${ingresoId} confirmado: ${result.updated_products_count} productos actualizados`);
+
+        // Tabla maestra, al instante y fuera de la transacción del ingreso: si falla, el ingreso
+        // igual queda confirmado y lo recupera el repaso del próximo ingreso del proveedor
+        try {
+            result.vinculos = await tablaMaestraService.vincularDesdeIngresos(
+                ingreso.supplier_id
+                    ? { supplierId: ingreso.supplier_id, userId: req.user.id }
+                    : { ingresoId: parseInt(ingresoId, 10), userId: req.user.id }
+            );
+            console.log(`📦 Tabla maestra desde ingreso ${ingresoId}: ${JSON.stringify(result.vinculos)}`);
+        } catch (vincErr) {
+            console.error(`❌ Ingreso ${ingresoId} confirmado, pero falló la vinculación en la tabla maestra:`, vincErr.message);
+            result.vinculos = null;
+        }
 
         return ok(res, result);
     } catch (err) {
@@ -2086,7 +2123,7 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
 
     try {
         const itemResult = await pool.query(
-            `SELECT ii.codigo, im.supplier_id
+            `SELECT ii.codigo, im.supplier_id, ii.supplier_product_id, ii.odoo_product_id
              FROM ingreso_items ii
              JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
              WHERE ii.id = $1 AND ii.ingreso_id = $2`,
@@ -2095,7 +2132,7 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
 
         if (itemResult.rows.length === 0) return fail(res, 'Item no encontrado', 404);
 
-        const { codigo, supplier_id } = itemResult.rows[0];
+        const { codigo, supplier_id, supplier_product_id, odoo_product_id } = itemResult.rows[0];
 
         if (!codigo || !supplier_id) {
             return fail(res, 'El item no tiene código o proveedor para limpiar', 400);
@@ -2108,6 +2145,17 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
         );
 
         console.log(`🧹 Mapping eliminada: proveedor ${supplier_id}, código "${codigo}" (${rowCount} registros)`);
+
+        // En la tabla maestra queda como rechazo, para que el repaso no lo vuelva a crear
+        if (supplier_product_id && odoo_product_id) {
+            try {
+                await tablaMaestraService.rechazarVinculo({
+                    supplierProductId: supplier_product_id, odooProductId: odoo_product_id, userId: req.user.id
+                });
+            } catch (tmErr) {
+                console.error('❌ No se pudo registrar el rechazo en la tabla maestra:', tmErr.message);
+            }
+        }
         return ok(res, { deleted: rowCount, codigo, supplier_id });
     } catch (err) {
         console.error('❌ Error eliminando mapping:', err);

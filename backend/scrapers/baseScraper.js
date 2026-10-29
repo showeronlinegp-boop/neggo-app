@@ -351,6 +351,8 @@ class BaseScraper {
      * Elimina los productos que no aparecieron en este run.
      * Si el scraper no los vio esta vez, ya no existen en el proveedor.
      * La cascada borra price_history, product_mappings y preventas_sync_state asociados.
+     * Los que tienen un vínculo confirmado en la tabla maestra no se borran: quedan
+     * available = false, así el vínculo no se pierde y vuelve solo si reaparecen (nota 107).
      * Debe llamarse UNA SOLA VEZ al finalizar el run completo (no por cada upsert).
      * @param {Date} runStartedAt — timestamp capturado antes de iniciar los upserts
      */
@@ -359,9 +361,10 @@ class BaseScraper {
 
         // Defensa: si este run vio menos de la mitad de lo que había, lo más probable es que
         // se haya cortado a mitad de camino (reinicio, web caída). No se borra nada.
+        // Los no disponibles de runs anteriores no cuentan.
         const { rows: [conteo] } = await this.pool.query(
             `SELECT COUNT(*) FILTER (WHERE last_scraped_at >= $2)::INTEGER AS vistos,
-                    COUNT(*)::INTEGER AS total
+                    COUNT(*) FILTER (WHERE available OR last_scraped_at >= $2)::INTEGER AS total
              FROM supplier_products
              WHERE supplier_id = $1`,
             [this.supplier.id, runStartedAt]
@@ -374,15 +377,31 @@ class BaseScraper {
             return 0;
         }
 
-        const { rowCount } = await this.pool.query(
-            `DELETE FROM supplier_products
-             WHERE supplier_id = $1
-               AND last_scraped_at < $2`,
+        const { rowCount: noDisponibles } = await this.pool.query(
+            `UPDATE supplier_products sp SET available = false, updated_at = NOW()
+             WHERE sp.supplier_id = $1
+               AND sp.last_scraped_at < $2
+               AND sp.available
+               AND EXISTS (SELECT 1 FROM product_mappings pm
+                           WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado')`,
             [this.supplier.id, runStartedAt]
         );
-        if (rowCount > 0) {
-            console.log(`🗑️ ${rowCount} productos eliminados (no aparecieron en este run)`);
+        if (noDisponibles > 0) {
+            console.log(`📦 ${noDisponibles} productos vinculados quedan no disponibles (no aparecieron en este run)`);
         }
+
+        const { rowCount: borrados } = await this.pool.query(
+            `DELETE FROM supplier_products sp
+             WHERE sp.supplier_id = $1
+               AND sp.last_scraped_at < $2
+               AND NOT EXISTS (SELECT 1 FROM product_mappings pm
+                               WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado')`,
+            [this.supplier.id, runStartedAt]
+        );
+        if (borrados > 0) {
+            console.log(`🗑️ ${borrados} productos eliminados (no aparecieron en este run)`);
+        }
+        const rowCount = noDisponibles + borrados;
         return rowCount;
     }
 

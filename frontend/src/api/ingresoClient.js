@@ -42,6 +42,12 @@ export const ingresoAPI = {
     api.post(`/ingreso/${ingresoId}/confirm`, body),
 
   /**
+   * Renglones hechos a mano (con oferta + producto de Odoo) que hay que revisar antes de confirmar
+   * @returns { success, data: [{ item_id, codigo, descripcion, odoo_product_id, odoo_product_name, internal_ref, sku, oferta_nombre, oferta_precio }] }
+   */
+  getVinculosARevisar: (ingresoId) => api.get(`/ingreso/${ingresoId}/vinculos-a-revisar`),
+
+  /**
    * List ingresos with filters
    * @param {object} filters — { supplier_id?, estado?, desde?, hasta?, limit?, offset? }
    */

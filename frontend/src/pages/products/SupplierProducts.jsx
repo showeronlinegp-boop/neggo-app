@@ -72,7 +72,8 @@ export default function SupplierProducts() {
         setHistory([]); setMappings([]);
         const [hRes, mRes] = await Promise.all([
             api.get(`/products/supplier/${row.id}/price-history`),
-            api.get('/mappings', { supplierId: row.supplier_id, search: row.sku }),
+            // Solo los vínculos activos: los sugeridos de la tabla maestra no cuentan como vinculados
+            api.get('/mappings', { supplierId: row.supplier_id, search: row.sku, status: 'active' }),
         ]);
         if (hRes.success) setHistory(hRes.data || []);
         if (mRes.success) setMappings(mRes.data || []);

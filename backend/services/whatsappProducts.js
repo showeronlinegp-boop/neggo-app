@@ -25,6 +25,7 @@ function buildFilter(filters) {
         'sp.raw_price > 0',
         'sp.available = true',
         'pm.active = true',
+        'pm.es_habitual = true',
         's.active = true',
         'scr.id IS NOT NULL',
         'COALESCE(scr.ignored, false) = false',
