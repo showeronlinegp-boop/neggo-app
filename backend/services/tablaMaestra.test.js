@@ -1,8 +1,8 @@
-// Detección de packs de la tabla maestra (nombre "xN" + costo Odoo ÷ neto ≈ 1/N). Sin base ni Odoo.
+// Tabla maestra: detección de packs (nombre "xN" + costo Odoo ÷ neto ≈ 1/N) y método de los vínculos de Ingresos. Sin base ni Odoo.
 // node backend/services/tablaMaestra.test.js
 
 const assert = require('assert');
-const { packFromName, costRatio, decidirPack } = require('./tablaMaestraService');
+const { packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso } = require('./tablaMaestraService');
 
 function testPackPorNombre() {
     assert.strictEqual(packFromName('Bic Opaca Azul x 50 Un'), 50);
@@ -48,6 +48,18 @@ function testDecidir() {
     assert.strictEqual(decidirPack(null, null), null);
 }
 
-const tests = [testPackPorNombre, testRatio, testDecidir];
+// Ingresos → tabla maestra: qué es manual y con qué método queda el vínculo
+function testMetodoIngreso() {
+    assert.strictEqual(esRenglonManual({ match_level: 'manual', supplier_match_level: 'exact_code' }), true);
+    assert.strictEqual(esRenglonManual({ match_level: 'ref_prefix', supplier_match_level: 'manual' }), true);
+    assert.strictEqual(esRenglonManual({ match_level: 'ref_prefix', supplier_match_level: 'fuzzy' }), false);
+    assert.strictEqual(metodoDesdeIngreso({ match_level: 'manual', supplier_match_level: 'fuzzy' }), 'ingreso_manual');
+    // Producto automático + oferta por nombre parecido: entra directo (Mariano, 29/10)
+    assert.strictEqual(metodoDesdeIngreso({ match_level: 'ref_prefix', supplier_match_level: 'fuzzy' }), 'ingreso_nombre');
+    assert.strictEqual(metodoDesdeIngreso({ match_level: 'invoice_mapping', supplier_match_level: 'exact_code' }), 'ingreso');
+    assert.strictEqual(metodoDesdeIngreso({ match_level: null, supplier_match_level: 'exact_code' }), 'ingreso');
+}
+
+const tests = [testPackPorNombre, testRatio, testDecidir, testMetodoIngreso];
 for (const t of tests) t();
 console.log(`✅ tablaMaestra: ${tests.length} tests OK`);

@@ -5,7 +5,13 @@
 //   3. candidatos sugeridos: por código (PRE + referencia Neggo = SKU, mismo proveedor) y por nombre
 //      (trigramas, mismo proveedor) para los productos que hacen el 80 % de la venta
 //   4. pack con doble señal (nombre "xN" + costo Odoo ÷ neto ≈ 1/N) y lista de dudosos
-//   5. proveedor habitual: el principal de Odoo (vendor_name) o, si no hay, el del último ingreso
+//   5. proveedor habitual: el principal de Odoo (vendor_name), nunca una oferta de Precompras
+// Después del primer paso:
+//   - corregirDatos: saca habituales de Precompras o que no son el principal, y rechaza ofertas de
+//     Precompras cruzadas con otro producto
+//   - vincularDesdeIngresos: al confirmar un ingreso (y como repaso), cada renglón con oferta web +
+//     producto de Odoo queda confirmado. Sentido único: Ingresos alimenta la tabla maestra, pero
+//     ningún código de Ingresos lee product_mappings, match_decisiones ni producto_reemplazos.
 // Todo entra con active = false: ningún vínculo nuevo mueve precios en Odoo hasta que se activen
 // junto con el cambio de priceAlertService (solo el habitual escribe en Odoo).
 // Es idempotente: ON CONFLICT DO NOTHING, nunca pisa un vínculo existente.
@@ -142,6 +148,7 @@ async function cargarSemillas(db) {
                 'semilla', 1.0, false, 'confirmado', 'ingreso', ii.checked_by, COALESCE(ii.checked_at, im.created_at)
          FROM ingreso_items ii
          JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
+         JOIN supplier_products sp ON sp.id = ii.supplier_product_id AND sp.source = 'web'
          LEFT JOIN odoo_products_cache opc ON opc.odoo_id = ii.odoo_product_id
               AND opc.company = COALESCE(ii.odoo_company, 'neggo')
          WHERE im.estado = 'confirmado' AND ii.estado_item = 'matched'
@@ -276,8 +283,9 @@ async function detectarPacks(db) {
     return resultado;
 }
 
-// 5. Habitual (máximo uno por producto y empresa), solo entre confirmados:
-//    el proveedor principal de Odoo y, si no hay, el del último ingreso confirmado
+// 5. Habitual (máximo uno por producto y empresa), solo entre confirmados: la oferta del proveedor
+//    principal de Odoo. Precompras (origen "neggo") nunca es habitual: es la base de costos, no un
+//    precio de proveedor. Los ingresos no deciden el habitual (vincular no es elegir a quién comprar).
 async function marcarHabituales(db) {
     const porOdoo = (await db.query(
         `UPDATE product_mappings pm SET es_habitual = true
@@ -287,7 +295,7 @@ async function marcarHabituales(db) {
              JOIN supplier_products sp ON sp.id = pm2.supplier_product_id
              JOIN suppliers s ON s.id = sp.supplier_id
              JOIN odoo_products_cache opc ON opc.odoo_id = pm2.odoo_product_id AND opc.company = pm2.odoo_company
-             WHERE pm2.estado = 'confirmado' AND opc.vendor_name = s.name
+             WHERE pm2.estado = 'confirmado' AND opc.vendor_name = s.name AND sp.source <> 'neggo'
                AND NOT EXISTS (SELECT 1 FROM product_mappings h
                                WHERE h.odoo_product_id = pm2.odoo_product_id
                                  AND h.odoo_company = pm2.odoo_company AND h.es_habitual)
@@ -296,27 +304,7 @@ async function marcarHabituales(db) {
          WHERE pm.id = elegido.id`
     )).rowCount;
 
-    const porIngreso = (await db.query(
-        `UPDATE product_mappings pm SET es_habitual = true
-         FROM (
-             SELECT DISTINCT ON (pm2.odoo_product_id, pm2.odoo_company) pm2.id
-             FROM product_mappings pm2
-             JOIN supplier_products sp ON sp.id = pm2.supplier_product_id
-             JOIN ingreso_items ii ON ii.odoo_product_id = pm2.odoo_product_id
-                  AND COALESCE(ii.odoo_company, 'neggo') = pm2.odoo_company AND ii.estado_item = 'matched'
-             JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
-                  AND im.estado = 'confirmado' AND im.supplier_id = sp.supplier_id
-             WHERE pm2.estado = 'confirmado'
-               AND NOT EXISTS (SELECT 1 FROM product_mappings h
-                               WHERE h.odoo_product_id = pm2.odoo_product_id
-                                 AND h.odoo_company = pm2.odoo_company AND h.es_habitual)
-             ORDER BY pm2.odoo_product_id, pm2.odoo_company, im.created_at DESC,
-                      (ii.supplier_product_id = pm2.supplier_product_id) DESC, pm2.id
-         ) elegido
-         WHERE pm.id = elegido.id`
-    )).rowCount;
-
-    return { porOdoo, porIngreso };
+    return { porOdoo };
 }
 
 // Casos para mirar: una oferta propuesta para varios productos, o un producto con varias ofertas
@@ -410,4 +398,244 @@ async function primerPaso({ aplicar = false } = {}) {
     }
 }
 
-module.exports = { primerPaso, packFromName, costRatio, decidirPack };
+// =============================================
+// Corrección de datos de la carga inicial (nota 107, 29/10)
+// =============================================
+
+/**
+ * Deja la carga inicial con las definiciones nuevas. Todo está inactivo: no mueve precios.
+ *   1. Precompras (origen "neggo") no es habitual ni en Neggo ni en Preventas
+ *   2. El habitual es el principal de Odoo: se saca el que salió por ingreso
+ *   3. Una oferta de Precompras sale de un producto de Odoo: cruzada con OTRO producto de Neggo es
+ *      un error o un duplicado de Odoo → rechazada (ej. "Abrochadora 207" → "Abrochadora nº 10 Art. 260")
+ * @param {{ aplicar?: boolean }} opts — sin aplicar hace todo y deshace (ROLLBACK)
+ */
+async function corregirDatos({ aplicar = false } = {}) {
+    const db = await pool.connect();
+    try {
+        await db.query('BEGIN');
+        const resumen = { aplicado: aplicar };
+
+        resumen.habitual_precompras = (await db.query(
+            `UPDATE product_mappings pm SET es_habitual = false
+             FROM supplier_products sp
+             WHERE sp.id = pm.supplier_product_id AND sp.source = 'neggo' AND pm.es_habitual
+             RETURNING pm.odoo_company`
+        )).rows.reduce((acc, r) => ({ ...acc, [r.odoo_company]: (acc[r.odoo_company] || 0) + 1 }), {});
+
+        resumen.habitual_no_principal = (await db.query(
+            `UPDATE product_mappings pm SET es_habitual = false
+             FROM supplier_products sp, suppliers s
+             WHERE sp.id = pm.supplier_product_id AND s.id = sp.supplier_id AND pm.es_habitual
+               AND NOT EXISTS (SELECT 1 FROM odoo_products_cache opc
+                               WHERE opc.odoo_id = pm.odoo_product_id AND opc.company = pm.odoo_company
+                                 AND opc.vendor_name = s.name)`
+        )).rowCount;
+
+        const { rows: cruzados } = await db.query(
+            `UPDATE product_mappings pm
+             SET estado = 'rechazado', active = false, es_habitual = false
+             FROM supplier_products sp
+             WHERE sp.id = pm.supplier_product_id AND sp.source = 'neggo'
+               AND pm.odoo_company = 'neggo' AND pm.estado <> 'rechazado'
+               AND pm.odoo_product_id IS DISTINCT FROM sp.neggo_odoo_id
+             RETURNING pm.supplier_product_id, pm.odoo_product_id, pm.odoo_company, pm.metodo`
+        );
+        for (const c of cruzados) {
+            await db.query(
+                `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo)
+                 VALUES ($1, $2, $3, 'rechazado', $4)`,
+                [c.supplier_product_id, c.odoo_product_id, c.odoo_company, c.metodo]
+            );
+        }
+        resumen.precompras_cruzadas_rechazadas = cruzados.length;
+
+        const { rows } = await db.query(
+            `SELECT COUNT(*)::int AS activos FROM product_mappings WHERE active`
+        );
+        if (rows[0].activos !== 0) throw new Error(`Control fallido: hay ${rows[0].activos} vínculos activos`);
+
+        await db.query(aplicar ? 'COMMIT' : 'ROLLBACK');
+        console.log(aplicar ? '✅ Corrección de datos aplicada' : '⚠️ Prueba sin aplicar: se deshizo todo (ROLLBACK)');
+        return resumen;
+    } catch (err) {
+        await db.query('ROLLBACK').catch(() => {});
+        console.error('❌ Error en la corrección de datos de la tabla maestra:', err.message);
+        throw err;
+    } finally {
+        db.release();
+    }
+}
+
+// =============================================
+// Ingresos → tabla maestra (sentido único)
+// =============================================
+
+// Los vínculos nuevos nacen inactivos hasta la activación del MVP (habitual + priceAlertService)
+const ACTIVO_AL_CREAR = false;
+
+// Un renglón es "hecho a mano" si una persona eligió el producto de Odoo o la oferta
+function esRenglonManual(item) {
+    return item.match_level === 'manual' || item.supplier_match_level === 'manual';
+}
+
+// Método con el que queda el vínculo, para medir el acierto por separado
+function metodoDesdeIngreso(item) {
+    if (esRenglonManual(item)) return 'ingreso_manual';
+    if (item.supplier_match_level === 'fuzzy') return 'ingreso_nombre';
+    return 'ingreso';
+}
+
+/**
+ * Crea o confirma en product_mappings los vínculos de los ingresos confirmados.
+ * Se llama al confirmar un ingreso con { supplierId } (ese ingreso + repaso de los anteriores del
+ * mismo proveedor) y a mano desde scripts/tablaMaestra.js.
+ * Reglas:
+ *   - Solo Neggo y ofertas web (Precompras es base de costos, no se vincula).
+ *   - Renglón manual: solo si se tildó en la revisión (vinculo_revisado_at).
+ *   - Oferta borrada por el scraper (quedó NULL): si era por código, se busca de nuevo por SKU.
+ *   - Sugerido → confirmado (se anota el acierto del método que lo propuso).
+ *   - Rechazado antes de confirmar el ingreso → gana el ingreso. Rechazado después ("Borrar
+ *     vinculación") → se respeta y no se vuelve a crear.
+ *   - No toca es_habitual.
+ * @param {{ ingresoId?: number, supplierId?: number, userId?: number }} opts
+ * @returns {Promise<{ renglones: number, creados: number, confirmados: number, sin_cambios: number, conflictos: number }>}
+ */
+async function vincularDesdeIngresos({ ingresoId = null, supplierId = null, userId = null } = {}) {
+    if (!ingresoId && !supplierId) throw new Error('Falta ingresoId o supplierId');
+    const db = await pool.connect();
+    try {
+        await db.query('BEGIN');
+        const { rows: candidatos } = await db.query(
+            `SELECT DISTINCT ON (c.supplier_product_id, c.odoo_product_id) c.*
+             FROM (
+                 SELECT ii.id AS item_id, ii.odoo_product_id, ii.match_level, ii.supplier_match_level,
+                        ii.vinculo_revisado_at, im.confirmed_at,
+                        COALESCE(ii.vinculo_revisado_por, im.confirmed_by_user_id, $3) AS user_id,
+                        COALESCE(ii.supplier_product_id, rec.id) AS supplier_product_id
+                 FROM ingreso_items ii
+                 JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id AND im.estado = 'confirmado'
+                 JOIN suppliers s ON s.id = im.supplier_id
+                 LEFT JOIN LATERAL (
+                     SELECT sp.id FROM supplier_products sp
+                     WHERE ii.supplier_product_id IS NULL AND ii.supplier_match_level = 'exact_code'
+                       AND sp.supplier_id = im.supplier_id AND sp.source = 'web'
+                       AND regexp_replace(UPPER(sp.sku), '[^A-Z0-9]', '', 'g')
+                           = 'PRE' || UPPER(COALESCE(s.prefix, '')) || regexp_replace(UPPER(ii.codigo), '[^A-Z0-9]', '', 'g')
+                     ORDER BY sp.available DESC, sp.id DESC
+                     LIMIT 1
+                 ) rec ON true
+                 WHERE ii.estado_item = 'matched' AND ii.odoo_product_id IS NOT NULL
+                   AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
+                   -- Renglón manual: solo si se tildó en la revisión
+                   AND (ii.vinculo_revisado_at IS NOT NULL
+                        OR (COALESCE(ii.match_level, '') <> 'manual' AND COALESCE(ii.supplier_match_level, '') <> 'manual'))
+                   AND ($1::int IS NULL OR im.id = $1)
+                   AND ($2::int IS NULL OR im.supplier_id = $2)
+             ) c
+             JOIN supplier_products sp ON sp.id = c.supplier_product_id AND sp.source = 'web'
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM match_decisiones md
+                 WHERE md.supplier_product_id = c.supplier_product_id AND md.odoo_product_id = c.odoo_product_id
+                   AND md.odoo_company = 'neggo' AND md.decision = 'rechazado'
+                   AND md.created_at > COALESCE(c.confirmed_at, '-infinity'))
+             ORDER BY c.supplier_product_id, c.odoo_product_id, c.confirmed_at DESC NULLS LAST, c.item_id DESC`,
+            [ingresoId, supplierId, userId]
+        );
+
+        const resultado = { renglones: 0, creados: 0, confirmados: 0, sin_cambios: 0, conflictos: 0 };
+        for (const c of candidatos) {
+            resultado.renglones++;
+            const metodo = metodoDesdeIngreso(c);
+            const { rows: previo } = await db.query(
+                `SELECT id, estado, metodo, match_confidence FROM product_mappings
+                 WHERE supplier_product_id = $1 AND odoo_product_id = $2 AND odoo_company = 'neggo'`,
+                [c.supplier_product_id, c.odoo_product_id]
+            );
+            if (previo[0]?.estado === 'confirmado') { resultado.sin_cambios++; continue; }
+
+            if (previo.length === 0) {
+                await db.query(
+                    `INSERT INTO product_mappings
+                        (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
+                         match_type, match_confidence, active, estado, metodo, confirmado_por, confirmado_at)
+                     SELECT $1, $2, 'neggo', opc.internal_ref, 'ingreso', 1.0, $3, 'confirmado', $4, $5, NOW()
+                     FROM (SELECT 1) x
+                     LEFT JOIN odoo_products_cache opc ON opc.odoo_id = $2 AND opc.company = 'neggo'
+                     ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company) DO NOTHING`,
+                    [c.supplier_product_id, c.odoo_product_id, ACTIVO_AL_CREAR, metodo, c.user_id]
+                );
+                resultado.creados++;
+                continue;
+            }
+
+            // Sugerido o rechazado antes del ingreso → confirmado. El acierto cuenta para el método
+            // que lo había propuesto (sugerido) o para el del ingreso (rechazado).
+            const p = previo[0];
+            await db.query(
+                `UPDATE product_mappings SET estado = 'confirmado', metodo = $2, confirmado_por = $3, confirmado_at = NOW()
+                 WHERE id = $1`,
+                [p.id, metodo, c.user_id]
+            );
+            await db.query(
+                `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+                 VALUES ($1, $2, 'neggo', 'confirmado', $3, $4, $5)`,
+                [c.supplier_product_id, c.odoo_product_id, p.estado === 'sugerido' ? p.metodo : metodo,
+                 p.match_confidence, c.user_id]
+            );
+            resultado.confirmados++;
+        }
+
+        resultado.conflictos = (await listarConflictos(db)).length;
+        await db.query('COMMIT');
+        return resultado;
+    } catch (err) {
+        await db.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        db.release();
+    }
+}
+
+/**
+ * "Borrar vinculación" de un renglón del Ingreso: el par queda rechazado en la tabla maestra
+ * para que el repaso no lo vuelva a crear. Si el par no existía, igual queda la decisión.
+ */
+async function rechazarVinculo({ supplierProductId, odooProductId, odooCompany = 'neggo', userId = null }) {
+    const { rows } = await pool.query(
+        `UPDATE product_mappings SET estado = 'rechazado', active = false, es_habitual = false
+         WHERE supplier_product_id = $1 AND odoo_product_id = $2 AND odoo_company = $3
+         RETURNING metodo, match_confidence`,
+        [supplierProductId, odooProductId, odooCompany]
+    );
+    await pool.query(
+        `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+         VALUES ($1, $2, $3, 'rechazado', $4, $5, $6)`,
+        [supplierProductId, odooProductId, odooCompany, rows[0]?.metodo || 'ingreso', rows[0]?.match_confidence ?? null, userId]
+    );
+    return { rechazado: rows.length > 0 };
+}
+
+/**
+ * Conflictos: una oferta web confirmada con dos o más productos distintos de Neggo
+ * (ej. Impotekno W1702 → Pava Dinax y Jarra Winco). No se borra nada: es para revisar.
+ */
+async function listarConflictos(db = pool) {
+    const { rows } = await db.query(
+        `SELECT sp.id AS supplier_product_id, s.name AS proveedor, sp.sku, sp.name,
+                array_agg(pm.odoo_product_id ORDER BY pm.odoo_product_id) AS odoo_ids
+         FROM product_mappings pm
+         JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source = 'web'
+         JOIN suppliers s ON s.id = sp.supplier_id
+         WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
+         GROUP BY sp.id, s.name
+         HAVING COUNT(DISTINCT pm.odoo_product_id) > 1
+         ORDER BY s.name, sp.sku`
+    );
+    return rows;
+}
+
+module.exports = {
+    primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos,
+    packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso
+};
