@@ -13,7 +13,7 @@ const pool = require('../config/database');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
 
 // Tarjetas que se muestran por día (las revisa una sola persona)
-const TARJETAS_POR_DIA = 40;
+const TARJETAS_POR_DIA = 80;
 // Semanas de venta que ordenan las tarjetas y el lote
 const SEMANAS_VENTA = 6;
 // Productos de Odoo que no son mercadería (anticipos y pedidos de preventa)
