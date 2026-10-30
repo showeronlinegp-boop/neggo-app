@@ -27,8 +27,8 @@ PASSWORD = os.environ.get('BLUMEN_PASSWORD', '')
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 TIMEOUT = 60
 REINTENTOS = 3
-FILAS = 24           # lo mismo que pide la página
-LOTE = 240           # artículos por tanda (checkpoint)
+FILAS = 1000         # la página pide 24, pero acepta tandas grandes (~1,5 s cada una)
+LOTE = 5000          # artículos por checkpoint
 PAUSA = 0.5
 MAX_ARTICULOS = 50000
 
@@ -133,8 +133,8 @@ def to_product(item):
         'product_url': None,
         'source_category': limpio(item.get('CATTXT')) or None,
         'barcode': None,
-        # Con stock informado manda el stock; si no viene, que la tienda deje agregarlo al carrito
-        'available': (int(stk.group(1)) > 0) if stk else item.get('VERADD') == 'S',
+        # Todos traen "(Stk: N)"; VERADD (agregar al carrito) es siempre S, no sirve como stock
+        'available': bool(stk) and int(stk.group(1)) > 0,
     }
 
 
