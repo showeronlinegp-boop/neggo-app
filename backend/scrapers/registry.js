@@ -4,6 +4,7 @@ const ImpoteknóScraper = require('./impotekno');
 const ElReyScraper = require('./elrey');
 const NurcellScraper = require('./nurcell');
 const ZleScraper = require('./zle');
+const TiendanubeScraper = require('./tiendanube');
 const NeggoScraper = require('./neggoScraper');
 
 /**
@@ -17,6 +18,7 @@ const SCRAPER_REGISTRY = {
     'elrey': ElReyScraper,
     'nurcell': NurcellScraper,
     'zle': ZleScraper,
+    'tiendanube': TiendanubeScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
 };
