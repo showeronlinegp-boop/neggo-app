@@ -1287,13 +1287,14 @@ router.post('/:ingresoId/items/:itemId/assign-supplier', authenticate, requireRo
 
         const ctx = { context: { allowed_company_ids: [companyId] } };
 
-        // Buscar partner en Odoo por nombre del proveedor
+        // Buscar partner en Odoo por nombre EXACTO del proveedor (sin distinguir mayúsculas).
+        // Con 'ilike' (contiene) "ZLE" encontraba primero a la clienta "Yamii GonZLEz".
         const partners = await callOdoo('res.partner', 'search_read',
-            [[['name', 'ilike', ingreso.supplier_name]]],
-            { fields: ['id', 'name'], limit: 1, context: ctx }
+            [[['name', '=ilike', ingreso.supplier_name.trim()]]],
+            { fields: ['id', 'name'], order: 'id asc', limit: 1, context: ctx }
         );
         if (!partners.length) {
-            return fail(res, `Proveedor "${ingreso.supplier_name}" no encontrado en Odoo Neggo`, 404);
+            return fail(res, `No hay un contacto llamado exactamente "${ingreso.supplier_name}" en Odoo Neggo`, 404);
         }
         const partnerId   = partners[0].id;
         const partnerName = partners[0].name;

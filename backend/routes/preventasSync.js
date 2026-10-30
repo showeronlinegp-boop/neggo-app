@@ -138,10 +138,11 @@ router.post('/assign-vendor', authenticate, requireRole('admin'), async (req, re
         const stats = { asignados: 0, omitidos: 0, errores: 0 };
 
         for (const [, group] of bySupplier) {
-            // Buscar partner en Odoo Preventas por nombre
+            // Buscar partner en Odoo Preventas por nombre EXACTO (sin distinguir mayúsculas):
+            // con 'ilike' (contiene) "ZLE" encontraba primero a la clienta "Yamii GonZLEz"
             const partners = await callOdoo('res.partner', 'search_read',
-                [[['name', 'ilike', group.name]]],
-                { fields: ['id', 'name'], limit: 1, context: ctx }
+                [[['name', '=ilike', (group.name || '').trim()]]],
+                { fields: ['id', 'name'], order: 'id asc', limit: 1, context: ctx }
             );
             if (!partners.length) {
                 console.warn(`⚠️ Partner no encontrado en Odoo para proveedor "${group.name}"`);
