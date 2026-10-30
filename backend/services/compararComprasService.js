@@ -2,8 +2,10 @@
 //   - Comparar: productos de Neggo con ofertas web confirmadas, con su venta, el costo actual de
 //     Odoo, el más económico y si conviene otro proveedor (el mismo cálculo que Reposición)
 //   - Se vende y no tiene oferta: lo vendido en las últimas semanas sin ninguna oferta web
-//     confirmada y disponible, con el motivo para saber por dónde resolverlo
-// Precompras (origen "neggo") es base de costos y no cuenta como oferta. No escribe nada.
+//     confirmada y disponible, con el motivo para saber por dónde resolverlo y, como propuesta, la
+//     oferta web más parecida de cualquier proveedor (nota 120)
+// Precompras (origen "neggo") es base de costos y no cuenta como oferta. No escribe nada (el
+// "Es esta" de la propuesta usa POST /api/mappings).
 
 const pool = require('../config/database');
 const { ofertasPorProducto } = require('./tablaMaestraService');
@@ -14,6 +16,9 @@ const SEMANAS_VENTA = 6;
 const NO_MERCADERIA = ['Down Payment (POS)', 'Pedido Preventa'];
 // Parte de la venta que forma el "top" (la métrica del plan)
 const PARTE_TOP = 0.80;
+
+// Nombre normalizado para comparar (sin acentos, minúsculas), igual que en la tabla maestra
+const normName = col => `translate(LOWER(${col}), 'áéíóúüàèìòùñ', 'aeiouuaeioun')`;
 
 // Venta de las últimas semanas por producto de Neggo y si está en el top que hace el 80 % de la venta
 const VENTAS_CTE = `
@@ -97,7 +102,72 @@ async function listarSinOferta() {
          ORDER BY t.monto DESC, opc.name`,
         [SEMANAS_VENTA, NO_MERCADERIA, PARTE_TOP]
     );
-    return rows.map(r => ({ ...r, motivo: motivoSinOferta(r) }));
+    const propuestas = await masParecidas(rows.map(r => r.odoo_id));
+    return rows.map(r => ({ ...r, motivo: motivoSinOferta(r), propuesta: propuestas.get(r.odoo_id) || null }));
+}
+
+/**
+ * La oferta web más parecida por nombre (trigramas) para cada producto, de cualquier proveedor.
+ * Solo ofertas disponibles y con precio, que no estén confirmadas con otro producto de Neggo (para
+ * no armar conflictos) y nunca un par ya rechazado. Siempre trae una si hay ofertas: el parecido
+ * va en la respuesta para que se vea qué tan cerca está.
+ * @param {number[]} odooIds — productos de Neggo
+ * @returns {Promise<Map<number, object>>} odoo_id → propuesta
+ */
+async function masParecidas(odooIds) {
+    const res = new Map();
+    if (!odooIds.length) return res;
+    const db = await pool.connect();
+    try {
+        await db.query('BEGIN');
+        // Tabla de paso con índice de trigramas: la más cercana sale por el índice (<->)
+        await db.query(
+            `CREATE TEMP TABLE tmp_ofertas_parecidas ON COMMIT DROP AS
+             SELECT v.supplier_product_id, ${normName('v.name')} AS nombre
+             FROM v_ofertas_comparables v
+             WHERE v.source <> 'neggo' AND v.available AND v.precio_comparable > 0
+               AND NOT EXISTS (SELECT 1 FROM product_mappings pm
+                               WHERE pm.supplier_product_id = v.supplier_product_id
+                                 AND pm.odoo_company = 'neggo' AND pm.estado = 'confirmado')`
+        );
+        await db.query(`CREATE INDEX ON tmp_ofertas_parecidas USING gist (nombre gist_trgm_ops)`);
+        await db.query(`ANALYZE tmp_ofertas_parecidas`);
+        const { rows } = await db.query(
+            `SELECT opc.odoo_id, o.supplier_product_id, similarity(o.nombre, ${normName('opc.name')}) AS parecido,
+                    v.name, v.proveedor, v.sku, v.precio_comparable AS precio, v.pack_cantidad AS pack,
+                    sp.image_url, (v.proveedor = opc.vendor_name) AS mismo_proveedor
+             FROM odoo_products_cache opc
+             CROSS JOIN LATERAL (
+                 SELECT t.supplier_product_id, t.nombre FROM tmp_ofertas_parecidas t
+                 WHERE NOT EXISTS (SELECT 1 FROM product_mappings pm
+                                   WHERE pm.supplier_product_id = t.supplier_product_id AND pm.odoo_product_id = opc.odoo_id
+                                     AND pm.odoo_company = 'neggo' AND pm.estado = 'rechazado')
+                   AND NOT EXISTS (SELECT 1 FROM match_decisiones md
+                                   WHERE md.supplier_product_id = t.supplier_product_id AND md.odoo_product_id = opc.odoo_id
+                                     AND md.odoo_company = 'neggo' AND md.decision = 'rechazado')
+                 ORDER BY t.nombre <-> ${normName('opc.name')}
+                 LIMIT 1
+             ) o
+             JOIN v_ofertas_comparables v ON v.supplier_product_id = o.supplier_product_id
+             JOIN supplier_products sp ON sp.id = o.supplier_product_id
+             WHERE opc.company = 'neggo' AND opc.odoo_id = ANY($1::int[])`,
+            [odooIds]
+        );
+        await db.query('COMMIT');
+        for (const r of rows) {
+            res.set(r.odoo_id, {
+                supplier_product_id: r.supplier_product_id, nombre: r.name, proveedor: r.proveedor, sku: r.sku,
+                precio: Number(r.precio), pack: r.pack, image_url: r.image_url,
+                parecido: Math.round(Number(r.parecido) * 100) / 100, mismo_proveedor: r.mismo_proveedor,
+            });
+        }
+        return res;
+    } catch (err) {
+        await db.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        db.release();
+    }
 }
 
 /**

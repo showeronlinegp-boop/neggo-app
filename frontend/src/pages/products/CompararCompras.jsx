@@ -1,7 +1,8 @@
 // Comparar compras (nota 107, punto 6): solo lectura sobre la tabla maestra de Neggo.
 // "Comparar": productos con ofertas web confirmadas (más económico y si conviene otro proveedor).
-// "Se vende y no tiene oferta": lo vendido sin oferta web disponible, con el motivo.
-// No cambia el habitual ni escribe en Odoo.
+// "Se vende y no tiene oferta": lo vendido sin oferta web disponible, con el motivo y la oferta
+// más parecida de cualquier proveedor (nota 120), que se puede confirmar con "Es esta".
+// No escribe en Odoo: "Es esta" solo crea el vínculo confirmado en la tabla maestra.
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../api/client';
@@ -12,6 +13,7 @@ import Tabs from '../../components/common/Tabs';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
 import Input from '../../components/common/Input';
+import Button from '../../components/common/Button';
 import ProductThumb from '../../components/common/ProductThumb';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import * as Icon from '../../components/common/icons';
@@ -140,6 +142,22 @@ function SinOferta({ tokens: t, filas }) {
     const [soloTop, setSoloTop] = useState(true);
     const [motivo, setMotivo] = useState('');
     const [mostrar, setMostrar] = useState(FILAS_POR_TANDA);
+    // "Es esta" ya tocado: odoo_id → supplier_product_id vinculado
+    const [vinculadas, setVinculadas] = useState({});
+    const [ocupado, setOcupado] = useState(null);
+    const { showToast } = useToast();
+    const ofertasUsadas = useMemo(() => new Set(Object.values(vinculadas)), [vinculadas]);
+
+    const esEsta = async (f) => {
+        setOcupado(f.odoo_id);
+        const res = await api.post('/mappings', {
+            supplierProductId: f.propuesta.supplier_product_id, odooProductId: f.odoo_id, odooCompany: 'neggo',
+        });
+        setOcupado(null);
+        if (!res.success) return showToast(res.error || 'No se pudo vincular la oferta', 'error');
+        setVinculadas(v => ({ ...v, [f.odoo_id]: f.propuesta.supplier_product_id }));
+        showToast('Listo: la oferta quedó vinculada', 'success');
+    };
 
     const base = soloTop ? filas.filter(f => f.en_top) : filas;
     const porMotivo = useMemo(() => {
@@ -182,6 +200,7 @@ function SinOferta({ tokens: t, filas }) {
                                 <Th tokens={t}>Producto de Neggo</Th>
                                 <Th tokens={t}>Principal en Odoo</Th>
                                 <Th tokens={t}>Por qué no tiene oferta</Th>
+                                <Th tokens={t}>Oferta más parecida</Th>
                                 <Th tokens={t} right>Venta 6 sem.</Th>
                             </tr>
                         </thead>
@@ -199,6 +218,12 @@ function SinOferta({ tokens: t, filas }) {
                                                 {f.sugeridos === 1 ? '1 sugerida' : `${fmtInt(f.sugeridos)} sugeridas`}
                                             </div>
                                         )}
+                                    </Td>
+                                    <Td tokens={t}>
+                                        <Propuesta tokens={t} p={f.propuesta}
+                                            vinculada={vinculadas[f.odoo_id] != null}
+                                            usada={vinculadas[f.odoo_id] == null && ofertasUsadas.has(f.propuesta?.supplier_product_id)}
+                                            ocupado={ocupado === f.odoo_id} onEsEsta={() => esEsta(f)} />
                                     </Td>
                                     <Td tokens={t} right><Venta tokens={t} p={f} /></Td>
                                 </tr>
@@ -232,6 +257,35 @@ function Producto({ tokens: t, p }) {
                     {(p.internal_ref || '').trim() || '—'}
                 </div>
                 {p.active === false && <Badge tone="muted" style={{ marginTop: 4 }}>Archivado</Badge>}
+            </div>
+        </div>
+    );
+}
+
+// Oferta web más parecida por nombre: foto, nombre, proveedor, precio por unidad y cuánto se parece
+function Propuesta({ tokens: t, p, vinculada, usada, ocupado, onEsEsta }) {
+    if (!p) return <span style={{ color: t.color.textFaint }}>No hay ofertas para proponer</span>;
+    const pct = Math.round(p.parecido * 100);
+    const tono = pct >= 60 ? 'success' : pct >= 35 ? 'primary' : 'muted';
+    return (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', minWidth: 260, maxWidth: 380 }}>
+            <ProductThumb imageUrl={p.image_url} emoji={p.nombre} size={36} />
+            <div style={{ minWidth: 0, fontFamily: t.font.family }}>
+                <div style={{ color: t.color.text }}>{p.nombre}</div>
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint, marginTop: 2, fontFamily: t.font.mono }}>{p.sku || '—'}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 4, fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                    <span>
+                        <strong style={{ color: t.color.text }}>{p.proveedor}</strong>
+                        {' · '}<span style={t.numericStyle}>{fmtAR(p.precio)}</span>{p.pack > 1 ? ` c/u (pack ${p.pack})` : ' c/u'}
+                    </span>
+                    <span title="Cuánto se parecen los nombres"><Badge tone={tono}>{pct} % parecida</Badge></span>
+                    {p.mismo_proveedor && <Badge tone="success">Del principal</Badge>}
+                </div>
+                <div style={{ marginTop: 6 }}>
+                    {vinculada ? <Badge tone="success">Vinculada</Badge>
+                        : usada ? <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Ya la vinculaste a otro producto</span>
+                        : <Button size="sm" variant="secondary" leftIcon={<Icon.Check size={14} />} disabled={ocupado} onClick={onEsEsta}>Es esta</Button>}
+                </div>
             </div>
         </div>
     );
