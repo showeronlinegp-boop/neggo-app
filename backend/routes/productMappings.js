@@ -60,8 +60,8 @@ async function registrarDecision(mapping, decision, userId) {
 //   supplierId — filtra por proveedor
 //   company    — 'neggo' | 'preventas'
 //   status     — 'active' | 'suggested' | 'rejected'
-//   unmapped   — 'true' → devuelve supplier_products SIN mapping activo
-//   search     — búsqueda por nombre del producto proveedor
+//   unmapped   — 'true' → devuelve supplier_products disponibles SIN vínculo confirmado
+//   search     — búsqueda por nombre del producto proveedor (y SKU en modo unmapped)
 //   limit      — default 100, max 500
 //   offset     — default 0
 // =============================================
@@ -81,7 +81,7 @@ router.get('/', authenticate, async (req, res) => {
     const offset = Math.max(parseInt(rawOffset, 10) || 0, 0);
 
     try {
-        // Modo "no mapeados": devuelve supplier_products sin mapping activo
+        // Modo "no mapeados": devuelve supplier_products sin vínculo confirmado
         if (unmapped === 'true') {
             // Sin supplierId → solo retornar el conteo total (para el dashboard)
             if (!supplierId) {
@@ -97,7 +97,7 @@ router.get('/', authenticate, async (req, res) => {
                 return res.json({ success: true, data: [], total: parseInt(countRows[0].total, 10) });
             }
 
-            const rows = await getUnmappedProducts(parseInt(supplierId, 10));
+            const rows = await getUnmappedProducts(parseInt(supplierId, 10), { search: String(search), limit, offset });
             return ok(res, rows);
         }
 
