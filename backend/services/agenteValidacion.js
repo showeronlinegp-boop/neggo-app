@@ -3,6 +3,7 @@
 // Tests en agenteValidacion.test.js.
 
 const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
+const { DIAS_DEFAULT: COTIZACIONES_DIAS_DEFAULT } = require('./agenteCotizacionesWeb');
 
 const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -75,9 +76,9 @@ function esObjeto(body) {
     return body && typeof body === 'object' && !Array.isArray(body);
 }
 
-/** ?dias: entero de 1 a 90, por defecto 15. */
-function validarDias(value) {
-    if (value === undefined || value === '') return { value: DIAS_DEFAULT, errors: [] };
+/** ?dias: entero de 1 a 90, por defecto el de clientes nuevos (21). */
+function validarDias(value, porDefecto = DIAS_DEFAULT) {
+    if (value === undefined || value === '') return { value: porDefecto, errors: [] };
     const n = entero(value, { min: 1, max: DIAS_MAX });
     return n === null
         ? { value: null, errors: [{ campo: 'dias', error: `Tiene que ser un entero de 1 a ${DIAS_MAX}` }] }
@@ -130,6 +131,26 @@ function validarQueryNuevos(query = {}) {
         const b = booleanoQuery(query[campo]);
         if (b === undefined) errors.push({ campo, error: 'Tiene que ser true o false' });
         else value[campo] = b;
+    }
+    return { value, errors };
+}
+
+/** Query de GET clientes/cotizaciones-web. */
+function validarQueryCotizacionesWeb(query = {}) {
+    const dias = validarDias(query.dias, COTIZACIONES_DIAS_DEFAULT);
+    const pag = validarPaginacion(query);
+    const errors = [...dias.errors, ...pag.errors];
+    // Igual que en clientes nuevos: por defecto no vienen los que pidieron no recibir mensajes
+    const value = { dias: dias.value, ...pag.value, no_contactar: false };
+    if (query.no_contactar !== undefined) {
+        const b = query.no_contactar === 'todos' ? null : booleanoQuery(query.no_contactar);
+        if (b === undefined) errors.push({ campo: 'no_contactar', error: 'Tiene que ser true, false o todos' });
+        else value.no_contactar = b;
+    }
+    if (query.compro_despues !== undefined) {
+        const b = booleanoQuery(query.compro_despues);
+        if (b === undefined) errors.push({ campo: 'compro_despues', error: 'Tiene que ser true o false' });
+        else value.compro_despues = b;
     }
     return { value, errors };
 }
@@ -401,6 +422,7 @@ module.exports = {
     validarDias,
     validarPaginacion,
     validarQueryNuevos,
+    validarQueryCotizacionesWeb,
     validarQueryProductos,
     validarQueryReposicion,
     validarId,

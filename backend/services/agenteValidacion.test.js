@@ -47,6 +47,17 @@ function testQueryNuevos() {
     assert.deepStrictEqual(v.validarQueryProductos({ stock: 'true', rubro: ' Librería ' }).value.rubros, ['Librería']);
 }
 
+function testQueryCotizacionesWeb() {
+    assert.deepStrictEqual(v.validarQueryCotizacionesWeb({}), {
+        value: { dias: 30, page: 1, limit: 20, offset: 0, no_contactar: false }, errors: [],
+    });
+    const ok = v.validarQueryCotizacionesWeb({ dias: '7', no_contactar: 'todos', compro_despues: 'false', page: '2', limit: '10' });
+    assert.deepStrictEqual(ok.errors, []);
+    assert.deepStrictEqual(ok.value, { dias: 7, page: 2, limit: 10, offset: 10, no_contactar: null, compro_despues: false });
+    const mal = v.validarQueryCotizacionesWeb({ dias: '91', no_contactar: 'si', compro_despues: 'quizas' });
+    assert.deepStrictEqual(campos(mal.errors), ['compro_despues', 'dias', 'no_contactar']);
+}
+
 function testFechasIso() {
     assert.strictEqual(v.parseIso('2026-10-17T10:00:00-03:00').toISOString(), '2026-10-17T13:00:00.000Z');
     assert.strictEqual(v.parseIso('2026-10-17T13:00:00Z').toISOString(), '2026-10-17T13:00:00.000Z');
@@ -224,6 +235,6 @@ function testTareas() {
     assert.strictEqual(t.ejecucion.lanzada_at, '2026-10-27T10:01:00-03:00');
 }
 
-const tests = [testDias, testQueryNuevos, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota, testTareas];
+const tests = [testDias, testQueryNuevos, testQueryCotizacionesWeb, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota, testTareas];
 for (const t of tests) t();
 console.log(`✅ agenteValidacion: ${tests.length} tests OK`);
