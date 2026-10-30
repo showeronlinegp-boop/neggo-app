@@ -416,7 +416,7 @@ export default function SupplierRules() {
 
                     <div>
                         <label style={labelStyle}>Descuento override (%)</label>
-                        <Input type="number" value={form.discountOverride} onChange={e => setField('discountOverride', e.target.value)} placeholder={`Default: ${defDiscount}%`} min="0" max="100" />
+                        <Input type="number" value={form.discountOverride} onChange={e => setField('discountOverride', e.target.value)} placeholder={`Default: ${defDiscount}%`} min="-100" max="100" />
                     </div>
                     <div>
                         <label style={labelStyle}>Markup Neggo override (%)</label>
