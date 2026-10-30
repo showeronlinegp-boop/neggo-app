@@ -22,6 +22,7 @@ const ESTADOS = [
     { key: 'inactivar',     label: 'Inactivar',       color: '#856404', bg: '#fff3cd' },
     { key: 'solo_scraper',  label: 'Crear en Odoo',   color: '#155724', bg: '#d4edda' },
     { key: 'solo_odoo',     label: 'Solo en Odoo',    color: '#721c24', bg: '#f8d7da' },
+    { key: 'fuera_preventas', label: 'No va a Preventas', color: '#721c24', bg: '#f8d7da' },
     { key: 'sin_cambios',   label: 'Sin cambios',     color: '#999',    bg: '#eee'    },
     { key: 'sin_fuente',    label: 'Sin fuente',      color: '#555',    bg: '#eee'    },
 ];
@@ -46,7 +47,7 @@ const MATCH_BADGE = Object.fromEntries(
 const ACCION_LABEL = {
     solo_scraper: 'Crear', activar: 'Activar', inactivar: 'Inactivar',
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
-    solo_odoo: 'Inactivar en Odoo', sin_cambios: null,
+    solo_odoo: 'Inactivar en Odoo', fuera_preventas: 'Archivar en Odoo', sin_cambios: null,
 };
 
 const fmt = v => v != null ? `$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 2 })}` : '—';
@@ -456,12 +457,12 @@ export default function PreventasSyncPage() {
         },
     ];
 
-    const pendientes = Object.entries(resumen).filter(([k]) => ['activar','inactivar','precio_sube','precio_baja','solo_scraper','solo_odoo'].includes(k)).reduce((sum, [, v]) => sum + v, 0);
+    const pendientes = Object.entries(resumen).filter(([k]) => ['activar','inactivar','precio_sube','precio_baja','solo_scraper','solo_odoo','fuera_preventas'].includes(k)).reduce((sum, [, v]) => sum + v, 0);
     const grupoTotal = (() => {
         const NON_ACTIONABLE = new Set(['sin_cambios', 'sin_fuente', 'todos']);
         if (estado && estado !== 'todos') {
             if (NON_ACTIONABLE.has(estado)) return 0;
-            if (['inactivar', 'solo_odoo'].includes(estado) && !supplierId) return 0;
+            if (['inactivar', 'solo_odoo', 'fuera_preventas'].includes(estado) && !supplierId) return 0;
             return resumen[estado] || 0;
         }
         switch (grupo) {
@@ -469,9 +470,9 @@ export default function PreventasSyncPage() {
             case 'nuevos':     return resumen.solo_scraper || 0;
             case 'matcheados': return (resumen.activar || 0) + (resumen.precio_sube || 0) + (resumen.precio_baja || 0);
             // Inactivar en bloque solo con un proveedor elegido
-            case 'inactivar':  return supplierId ? (resumen.inactivar || 0) + (resumen.solo_odoo || 0) : 0;
+            case 'inactivar':  return supplierId ? (resumen.inactivar || 0) + (resumen.solo_odoo || 0) + (resumen.fuera_preventas || 0) : 0;
             // "Aplicar todo" sin proveedor no inactiva (el backend lo excluye)
-            default:           return supplierId ? pendientes : pendientes - (resumen.inactivar || 0) - (resumen.solo_odoo || 0);
+            default:           return supplierId ? pendientes : pendientes - (resumen.inactivar || 0) - (resumen.solo_odoo || 0) - (resumen.fuera_preventas || 0);
         }
     })();
 
@@ -555,7 +556,7 @@ export default function PreventasSyncPage() {
             {/* Filtros jerárquicos */}
             {(() => {
                 const matcheadosTotal = (resumen.activar || 0) + (resumen.sin_cambios || 0) + (resumen.precio_sube || 0) + (resumen.precio_baja || 0);
-                const inactivarTotal  = (resumen.inactivar || 0) + (resumen.solo_odoo || 0);
+                const inactivarTotal  = (resumen.inactivar || 0) + (resumen.solo_odoo || 0) + (resumen.fuera_preventas || 0);
                 const GRUPOS_DEF = [
                     { key: 'todos',      label: 'Todos',       count: resumen.total,             color: '#555',    bg: '#f0f0f0' },
                     { key: 'nuevos',     label: 'Nuevos',      count: resumen.solo_scraper || 0, color: '#155724', bg: '#d4edda' },
@@ -574,6 +575,7 @@ export default function PreventasSyncPage() {
                     { key: 'todos',     label: 'Todos',        count: inactivarTotal,          color: '#555',    bg: '#f0f0f0' },
                     { key: 'inactivar', label: 'Perdió match', count: resumen.inactivar || 0,  color: '#856404', bg: '#fff3cd' },
                     { key: 'solo_odoo', label: 'Sin match',    count: resumen.solo_odoo || 0,  color: '#721c24', bg: '#f8d7da' },
+                    { key: 'fuera_preventas', label: 'Proveedor apagado', count: resumen.fuera_preventas || 0, color: '#721c24', bg: '#f8d7da' },
                 ];
                 return (
                     <div style={{ background: t.color.surface, border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, padding: `${t.space[3]}px ${t.space[5]}px` }}>

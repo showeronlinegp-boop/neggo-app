@@ -50,7 +50,7 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
 
         if (esBulk) {
             // Inactivar en bloque solo por proveedor (se valida acá para responder antes del background)
-            const pideInactivar = grupo === 'inactivar' || ['inactivar', 'solo_odoo'].includes(estado);
+            const pideInactivar = grupo === 'inactivar' || ['inactivar', 'solo_odoo', 'fuera_preventas'].includes(estado);
             if (pideInactivar && !supplierId) {
                 return fail(res, 'Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
             }

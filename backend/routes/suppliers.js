@@ -7,12 +7,13 @@ const { ok, fail } = require('../utils/response');
 const { getProductCategories, getPartners, getPartnerById } = require('../services/odooService');
 const { getAvailableKeys } = require('../scrapers/registry');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
+const { scheduleRecompute } = require('../services/preventasMatchService');
 
 // Columnas que devuelve la API de proveedores
 const SUPPLIER_COLS = `
     id, name, prefix, website_url, scraper_key, price_format,
     default_discount, markup_neggo, markup_preventas,
-    scrape_config, last_scraped_at, active, scrape_enabled, created_at, updated_at
+    scrape_config, last_scraped_at, active, scrape_enabled, va_a_preventas, created_at, updated_at
 `;
 
 // Categorías del proveedor con productos disponibles y sin regla activa.
@@ -375,6 +376,41 @@ router.post('/:id/scraping/toggle', authenticate, requireRole('admin'), async (r
     } catch (error) {
         console.error('❌ Error al cambiar estado de scraping:', error.message);
         return fail(res, 'Error al cambiar estado de scraping', 500);
+    }
+});
+
+// =============================================
+// POST /:id/preventas/toggle — Prende/apaga "Va a Preventas" (solo admin)
+// Body opcional: { enabled: true|false } — sin body invierte el valor actual.
+// Lo scrapeado sigue yendo a Vínculos; esto decide solo qué entra a Sync Preventas.
+// Al cambiarlo se recalcula Sync Preventas: apagado propone archivar lo que sigue activo.
+// =============================================
+router.post('/:id/preventas/toggle', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { enabled } = req.body || {};
+
+        const { rows: current } = await pool.query(
+            'SELECT id, va_a_preventas FROM suppliers WHERE id = $1', [id]
+        );
+        if (current.length === 0) {
+            return fail(res, 'Proveedor no encontrado', 404);
+        }
+        const target = enabled === undefined ? !current[0].va_a_preventas : !!enabled;
+
+        const { rows } = await pool.query(
+            `UPDATE suppliers SET va_a_preventas = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING ${SUPPLIER_COLS}`,
+            [id, target]
+        );
+        const s = rows[0];
+        console.log(`${s.va_a_preventas ? '✅' : '⚠️'} "${s.name}" ${s.va_a_preventas ? 'va' : 'no va'} a Preventas`);
+        if (target !== current[0].va_a_preventas) scheduleRecompute(pool);
+        return ok(res, withComputed(s));
+    } catch (error) {
+        console.error('❌ Error al cambiar "Va a Preventas":', error.message);
+        return fail(res, 'Error al cambiar "Va a Preventas"', 500);
     }
 });
 

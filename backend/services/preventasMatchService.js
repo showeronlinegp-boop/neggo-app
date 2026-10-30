@@ -16,8 +16,11 @@ const PRICE_TOL = 0.0001;
 
 // ─── SQL fragments ─────────────────────────────────────────────────────────────
 
+// Proveedor con "Va a Preventas" apagado: no se propone nada salvo archivar lo que sigue activo
 const ESTADO_CASE = `
     CASE
+        WHEN s.va_a_preventas IS NOT TRUE THEN
+            CASE WHEN opc.active = true THEN 'fuera_preventas' ELSE 'sin_cambios' END
         WHEN opc.active = false AND sp.available = true  THEN 'activar'
         WHEN opc.active = true  AND sp.available = false THEN 'inactivar'
         WHEN opc.active = true AND sp.available = true
@@ -161,10 +164,13 @@ best_by_sp AS (
 ),
 
 -- Mejor match por producto Odoo (evita que dos scrapers reclamen el mismo)
+-- Si un proveedor apagado y uno prendido reclaman el mismo, gana el prendido (no se archiva)
 best_match AS (
-    SELECT DISTINCT ON (odoo_id) sp_id, odoo_id, match_type, score
-    FROM best_by_sp
-    ORDER BY odoo_id, score DESC
+    SELECT DISTINCT ON (b.odoo_id) b.sp_id, b.odoo_id, b.match_type, b.score
+    FROM best_by_sp b
+    JOIN supplier_products spx ON spx.id = b.sp_id
+    JOIN suppliers sx ON sx.id = spx.supplier_id
+    ORDER BY b.odoo_id, sx.va_a_preventas DESC, b.score DESC
 )
 
 INSERT INTO preventas_sync_state
@@ -202,21 +208,7 @@ SELECT
     s.id,
     'fuzzy_name',
     ROUND((best.sim * 100)::NUMERIC, 2),
-    CASE
-        WHEN opc.active = false AND sp.available = true  THEN 'activar'
-        WHEN opc.active = true  AND sp.available = false THEN 'inactivar'
-        WHEN opc.active = true AND sp.available = true
-             AND p.costo IS NOT NULL AND opc.standard_price IS NOT NULL
-             AND opc.standard_price > 0
-             AND ABS(p.costo - opc.standard_price) / opc.standard_price > ${PRICE_TOL}
-             AND p.costo > opc.standard_price  THEN 'precio_sube'
-        WHEN opc.active = true AND sp.available = true
-             AND p.costo IS NOT NULL AND opc.standard_price IS NOT NULL
-             AND opc.standard_price > 0
-             AND ABS(p.costo - opc.standard_price) / opc.standard_price > ${PRICE_TOL}
-             AND p.costo < opc.standard_price  THEN 'precio_baja'
-        ELSE 'sin_cambios'
-    END,
+    ${ESTADO_CASE},
     p.costo,
     p.precio_preventas,
     NOW()
@@ -240,6 +232,7 @@ LEFT JOIN LATERAL (
 JOIN odoo_products_cache opc ON opc.odoo_id = best.odoo_id AND opc.company = 'preventas'
 ${PRECIO_LATERAL}
 WHERE sp.available = true
+  AND s.va_a_preventas = true
   AND best.odoo_id IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
@@ -294,7 +287,8 @@ JOIN odoo_products_cache opc
         SELECT 1 FROM preventas_sync_state pss2 WHERE pss2.odoo_product_id = opc.odoo_id
     )
 ${PRECIO_LATERAL}
-WHERE NOT EXISTS (
+WHERE s.va_a_preventas = true
+  AND NOT EXISTS (
     SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
 )
 ON CONFLICT DO NOTHING
@@ -312,6 +306,7 @@ SELECT
     opc.odoo_id,
     sx.id,
     CASE
+        WHEN sx.id IS NOT NULL AND sx.va_a_preventas = false THEN 'fuera_preventas'
         WHEN sx.id IS NOT NULL
              AND sx.scrape_enabled = true
              AND sx.scraper_key IS NOT NULL
@@ -323,7 +318,7 @@ SELECT
     NOW()
 FROM odoo_products_cache opc
 LEFT JOIN LATERAL (
-    SELECT s.id, s.scrape_enabled, s.scraper_key
+    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas
     FROM suppliers s
     WHERE UPPER(REGEXP_REPLACE(COALESCE(NULLIF(opc.internal_ref, ''), opc.ext_id_clean, ''), '[^A-Za-z0-9]', '', 'g'))
           LIKE 'PRE' || UPPER(s.prefix) || '%'
@@ -372,6 +367,7 @@ LEFT JOIN supplier_category_rules scr
     AND scr.source_category = sp.source_category
     AND scr.active = true
 WHERE sp.available = true
+  AND s.va_a_preventas = true
   AND NOT EXISTS (
       SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
   )
