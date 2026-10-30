@@ -9,6 +9,7 @@ const ParnassaScraper = require('./parnassa');
 const JorgeScraper = require('./jorge');
 const FancyYouScraper = require('./fancyyou');
 const VentasXMayorScraper = require('./ventasxmayor');
+const ToysPalaceScraper = require('./toyspalace');
 const NeggoScraper = require('./neggoScraper');
 
 /**
@@ -27,6 +28,7 @@ const SCRAPER_REGISTRY = {
     'jorge': JorgeScraper,
     'fancyyou': FancyYouScraper,
     'ventasxmayor': VentasXMayorScraper,
+    'toyspalace': ToysPalaceScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
 };
