@@ -277,6 +277,182 @@
         }
       }
     },
+    "/clientes/cotizaciones-web": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "listarCotizacionesWeb",
+        "summary": "Clientes con cotizaciones de la web sin confirmar",
+        "description": "Carritos que el cliente armó en la tienda web de Neggo (mayorista o minorista) y no confirmó: `sale.order` con tienda, en borrador o enviada, de los últimos N días. Se lee en vivo de Odoo, sin caché. No vienen los carritos del usuario público (sin cliente), los de usuarios internos ni los vacíos. Un elemento por cliente, con sus cotizaciones de la más nueva a la más vieja; orden estable: la cotización más nueva desc y después `id` asc. `compro_despues` = true si después de su última cotización compró en el local o confirmó otro pedido (no hace falta escribirle). Por defecto no vienen los que pidieron no recibir mensajes. Solo lectura: no reserva envíos ni toca la cadencia de clientes nuevos. Los precios son finales.",
+        "parameters": [
+          {
+            "name": "dias",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90,
+              "default": 30
+            },
+            "description": "Ventana en días, contando hoy, sobre la fecha de la cotización",
+            "example": 30
+          },
+          {
+            "name": "compro_despues",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "false = solo los que no compraron después de su última cotización; true = solo los que sí",
+            "example": false
+          },
+          {
+            "name": "no_contactar",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "false",
+                "true",
+                "todos"
+              ],
+              "default": "false"
+            },
+            "description": "false (por defecto) = los que se pueden contactar; true = solo los que pidieron no; todos = todos"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClienteCotizacionWeb"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 852,
+                      "nombre": "Jesica Gomez",
+                      "contacto": null,
+                      "telefono": "+5492477455049",
+                      "ciudad": "Acevedo",
+                      "no_contactar": false,
+                      "no_contactar_at": null,
+                      "respuesta_pendiente": false,
+                      "ultimo_recibido": null,
+                      "ultimo_enviado": null,
+                      "ultima_compra": "2026-10-26T09:24:54-03:00",
+                      "compro_despues": false,
+                      "cantidad_cotizaciones": 1,
+                      "cotizaciones": [
+                        {
+                          "id": 4331,
+                          "referencia": "S04331",
+                          "estado": "borrador",
+                          "tienda": "neggo mayorista",
+                          "fecha": "2026-10-28T16:14:50-03:00",
+                          "ultima_modificacion": "2026-10-29T16:36:44-03:00",
+                          "monto": 53020,
+                          "abandonada": true,
+                          "productos": [
+                            {
+                              "id": 66971,
+                              "nombre": "Bingo c/ bolillero 48 cartones art 9274",
+                              "cantidad": 1,
+                              "precio": 11012,
+                              "subtotal": 11012
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  },
+                  "meta": {
+                    "hoy": "2026-10-29",
+                    "ahora": "2026-10-29T17:00:00-03:00",
+                    "ventana_envio": "lunes a viernes de 9 a 18 (hora de Argentina)",
+                    "ventana_abierta": true,
+                    "abre_a": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
     "/clientes/{id}": {
       "get": {
         "tags": [
@@ -2759,6 +2935,170 @@
           "porcentaje": {
             "type": "integer",
             "description": "% del monto en productos"
+          }
+        }
+      },
+      "CotizacionWebProducto": {
+        "type": "object",
+        "required": [
+          "id",
+          "nombre",
+          "cantidad",
+          "precio",
+          "subtotal"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "product_id de Odoo"
+          },
+          "nombre": {
+            "type": "string",
+            "description": "Sin el código interno"
+          },
+          "cantidad": {
+            "type": "number"
+          },
+          "precio": {
+            "type": "number",
+            "description": "Precio unitario final"
+          },
+          "subtotal": {
+            "type": "number"
+          }
+        }
+      },
+      "CotizacionWeb": {
+        "type": "object",
+        "required": [
+          "id",
+          "referencia",
+          "estado",
+          "fecha",
+          "monto",
+          "abandonada",
+          "productos"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "sale.order de Odoo"
+          },
+          "referencia": {
+            "type": "string",
+            "example": "S04331"
+          },
+          "estado": {
+            "type": "string",
+            "enum": [
+              "borrador",
+              "enviada"
+            ]
+          },
+          "tienda": {
+            "type": "string",
+            "nullable": true,
+            "example": "neggo mayorista"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Fecha de la cotización (hora de Argentina)"
+          },
+          "ultima_modificacion": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Último cambio en Odoo: si es reciente, el cliente puede estar armándolo todavía"
+          },
+          "monto": {
+            "type": "number",
+            "description": "Total final"
+          },
+          "abandonada": {
+            "type": "boolean",
+            "description": "Odoo la marca como carrito abandonado (sin cambios hace horas)"
+          },
+          "productos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CotizacionWebProducto"
+            }
+          }
+        }
+      },
+      "ClienteCotizacionWeb": {
+        "type": "object",
+        "required": [
+          "id",
+          "nombre",
+          "no_contactar",
+          "compro_despues",
+          "cantidad_cotizaciones",
+          "cotizaciones"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Partner de Odoo (el mismo id de GET clientes/{id})"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true
+          },
+          "telefono": {
+            "type": "string",
+            "nullable": true,
+            "description": "Normalizado +549…; null si Odoo no tiene uno válido"
+          },
+          "ciudad": {
+            "type": "string",
+            "nullable": true
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "no_contactar_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "respuesta_pendiente": {
+            "type": "boolean",
+            "description": "Contestó y todavía no se atendió la respuesta"
+          },
+          "ultimo_recibido": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ultimo_enviado": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Último mensaje confirmado que le mandó el bot (para no escribirle dos veces seguidas)"
+          },
+          "ultima_compra": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Última compra cerrada en toda la historia (local o pedido confirmado); null si nunca compró"
+          },
+          "compro_despues": {
+            "type": "boolean",
+            "description": "Compró después de su última cotización web"
+          },
+          "cantidad_cotizaciones": {
+            "type": "integer"
+          },
+          "cotizaciones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CotizacionWeb"
+            }
           }
         }
       },

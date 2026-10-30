@@ -1,7 +1,8 @@
 // API del agente (Grok Bot): lectura de Odoo y de la base, y armado de las respuestas.
 // Regla dura: no escribe nada en Odoo. Solo escribe en las tablas crm_bot_* y en crm_events
 // (y el feedback, además, como nota de prueba).
-// El cálculo de clientes nuevos y la cadencia están en agenteNuevos.js (lógica pura).
+// El cálculo de clientes nuevos y la cadencia están en agenteNuevos.js (lógica pura); el de las
+// cotizaciones web sin confirmar, en agenteCotizacionesWeb.js.
 
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
@@ -10,6 +11,7 @@ const { ensureSchema } = require('./crmSchema');
 const { phoneKey, phoneDisplay } = require('./crmContacts');
 const { productLink } = require('./whatsappMessage');
 const nuevos = require('./agenteNuevos');
+const cotWeb = require('./agenteCotizacionesWeb');
 const testNotes = require('./testNotesService');
 
 const COMPANY = 'neggo';
@@ -401,6 +403,105 @@ async function obtenerCliente(id) {
     const hoy = hoyAr();
     const info = meta(hoy);
     return { data: armarCliente(ficha, row, hoy, info.ventana_abierta, conv, reserva), meta: info };
+}
+
+// =============================================
+// Cotizaciones de la web sin confirmar
+// =============================================
+
+const COTIZACION_FIELDS = ['id', 'name', 'state', 'partner_id', 'date_order', 'write_date', 'amount_total', 'website_id', 'is_abandoned_cart'];
+
+/** Partners que no son clientes: el usuario público de cada tienda y los usuarios internos (pruebas del equipo). */
+async function partnersNoClientes() {
+    const webs = await callOdoo('website', 'search_read', [[]], { fields: ['user_id'] });
+    const publicos = webs.map((w) => nuevos.m2oId(w.user_id)).filter(Boolean);
+    const usuarios = await callOdoo('res.users', 'search_read',
+        [['|', ['share', '=', false], ['id', 'in', publicos]]],
+        { fields: ['partner_id'], context: { active_test: false } });
+    return usuarios.map((u) => nuevos.m2oId(u.partner_id)).filter(Boolean);
+}
+
+/** Última compra cerrada de cada partner (ticket del POS o pedido confirmado), en toda la historia. */
+async function ultimasCompras(partnerIds, companyId, context) {
+    const out = [];
+    const grupos = [
+        ['pos.order', ['state', 'in', nuevos.POS_STATES]],
+        ['sale.order', ['state', '=', 'sale']],
+    ];
+    for (const [model, estado] of grupos) {
+        const rows = await callOdoo(model, 'read_group',
+            [[['company_id', '=', companyId], estado, ['partner_id', 'in', partnerIds]], ['date_order:max'], ['partner_id']],
+            { lazy: false, context });
+        for (const r of rows) out.push({ partner_id: r.partner_id, date_order: r.date_order });
+    }
+    return out;
+}
+
+async function cotizacionesWebOdoo(dias) {
+    const { companyId, context } = await neggoContext();
+    const desde = nuevos.desdeVentana(hoyAr(), dias);
+    const fuera = new Set(await partnersNoClientes());
+    const cotizaciones = (await readAll('sale.order',
+        [['company_id', '=', companyId], ['state', 'in', cotWeb.ESTADOS_ABIERTOS], ['website_id', '!=', false],
+            ['partner_id', '!=', false], ['date_order', '>=', nuevos.inicioDiaUtc(desde)]],
+        COTIZACION_FIELDS, context)).filter((o) => !fuera.has(nuevos.m2oId(o.partner_id)));
+    if (!cotizaciones.length) return [];
+
+    const lineas = [];
+    const ids = cotizaciones.map((o) => o.id);
+    for (let i = 0; i < ids.length; i += LINE_BATCH) {
+        const rows = await callOdoo('sale.order.line', 'search_read',
+            [[['order_id', 'in', ids.slice(i, i + LINE_BATCH)], ['display_type', '=', false], ['product_id.type', '=', 'consu']]],
+            { fields: ['order_id', 'product_id', 'product_uom_qty', 'price_total'], context });
+        lineas.push(...rows);
+    }
+    const partnerIds = [...new Set(cotizaciones.map((o) => nuevos.m2oId(o.partner_id)))];
+    const compras = await ultimasCompras(partnerIds, companyId, context);
+    const clientes = cotWeb.agruparCotizacionesWeb({ cotizaciones, lineas, compras, excluidos: fuera });
+    if (!clientes.length) return [];
+    const partners = await readPartners(clientes.map((c) => c.id));
+    return clientes.map((c) => {
+        const p = partners.get(c.id) || {};
+        return {
+            ...c,
+            nombre: p.name || c.nombre,
+            contacto_odoo: p.contacto_odoo || null,
+            telefono: phoneDisplay(phoneKey(p.phone)),
+            ciudad: p.city ? String(p.city).trim() : null,
+        };
+    });
+}
+
+function armarClienteCotizaciones(base, row, conv) {
+    return {
+        id: base.id,
+        nombre: base.nombre,
+        contacto: (row && row.contacto) || base.contacto_odoo || null,
+        telefono: base.telefono,
+        ciudad: base.ciudad,
+        no_contactar: Boolean(row && row.no_contactar),
+        no_contactar_at: row && row.no_contactar_at ? nuevos.toArIso(row.no_contactar_at) : null,
+        respuesta_pendiente: hayRespuestaPendiente(row, conv),
+        ultimo_recibido: conv && conv.ultimo_recibido ? nuevos.toArIso(conv.ultimo_recibido) : null,
+        ultimo_enviado: conv && conv.ultimo_enviado ? nuevos.toArIso(conv.ultimo_enviado) : null,
+        ultima_compra: base.ultima_compra,
+        compro_despues: base.compro_despues,
+        cantidad_cotizaciones: base.cotizaciones.length,
+        cotizaciones: base.cotizaciones,
+    };
+}
+
+/** GET clientes/cotizaciones-web: en vivo y sin caché. Solo lectura. */
+async function listarCotizacionesWeb({ dias, no_contactar: noContactar, compro_despues: comproDespues, page, limit, offset }) {
+    await ensureSchema();
+    const base = await odoo(() => cotizacionesWebOdoo(dias));
+    const ids = base.map((c) => c.id);
+    const segs = await seguimientos(ids);
+    const convs = await conversaciones(ids);
+    let lista = base.map((c) => armarClienteCotizaciones(c, segs.get(c.id), convs.get(c.id)));
+    if (noContactar !== null && noContactar !== undefined) lista = lista.filter((c) => c.no_contactar === noContactar);
+    if (comproDespues !== undefined) lista = lista.filter((c) => c.compro_despues === comproDespues);
+    return { data: lista.slice(offset, offset + limit), total: lista.length, page, limit, meta: meta(hoyAr()) };
 }
 
 // =============================================
@@ -1027,6 +1128,7 @@ module.exports = {
     AgenteError,
     listarNuevos,
     obtenerCliente,
+    listarCotizacionesWeb,
     actualizarSeguimiento,
     actualizarCliente,
     registrarInteraccion,
