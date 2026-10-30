@@ -92,18 +92,6 @@ def login():
         raise RuntimeError(f'La tienda no validó la cuenta: {datos.get("errmsg") or respuesta[:200]}')
 
 
-def precio(texto):
-    """Último importe del texto de precio ('<del>$ 1.200</del> $ 1.000' → 1000.0)."""
-    limpio = htmllib.unescape(re.sub(r'<[^>]+>', ' ', texto or ''))
-    importes = re.findall(r'\$\s*([\d.]+(?:,\d+)?)', limpio)
-    if not importes:
-        return None
-    try:
-        return float(importes[-1].replace('.', '').replace(',', '.'))
-    except ValueError:
-        return None
-
-
 def limpio(texto):
     return re.sub(r'\s+', ' ', htmllib.unescape(re.sub(r'<[^>]+>', ' ', texto or ''))).strip()
 
@@ -115,6 +103,9 @@ def articulos(skip):
             'rows': FILAS, 'skip': skip,
         })
         datos = json.loads(texto)
+        # Responde directamente la lista de artículos (o un objeto con error)
+        if isinstance(datos, list):
+            return datos
         if str(datos.get('errcod', '0')) not in ('0', '', '2'):
             raise RuntimeError(datos.get('errmsg') or texto[:200])
         return datos.get('output') or []
@@ -122,19 +113,28 @@ def articulos(skip):
 
 
 def to_product(item):
-    codigo = re.sub(r'[^A-Z0-9]', '', str(item.get('ITEMID') or '').upper())
+    # Subtítulo: "Cod. 25853428 (Stk:        0)" → código del proveedor y stock
+    subtit = limpio(item.get('SUBTIT'))
+    cod = re.search(r'Cod\.\s*([^\s(]+)', subtit)
+    stk = re.search(r'Stk:\s*(-?\d+)', subtit)
+    codigo = re.sub(r'[^A-Z0-9]', '', (cod.group(1) if cod else str(item.get('ITEMID') or '')).upper())
     foto = item.get('FOTOID') or ''
+    # PRBASE es el precio numérico; el texto viene con formato "$11,008.98"
+    try:
+        base = round(float(item.get('PRBASE')), 2) if item.get('PRBASE') not in (None, '') else None
+    except (TypeError, ValueError):
+        base = None
     return {
         'sku': codigo or None,
         'name': limpio(item.get('TITULO')),
-        'raw_price': precio(item.get('PRETXT')),
+        'raw_price': base if base else None,
         'offer_price': None,
         'image_url': f'{BASE_URL}/imagen.php?fotoid={urllib.parse.quote(foto)}&auto=500' if foto else None,
         'product_url': None,
         'source_category': limpio(item.get('CATTXT')) or None,
         'barcode': None,
-        # La tienda muestra el carrito solo si se puede pedir
-        'available': item.get('VERADD') == 'S',
+        # Con stock informado manda el stock; si no viene, que la tienda deje agregarlo al carrito
+        'available': (int(stk.group(1)) > 0) if stk else item.get('VERADD') == 'S',
     }
 
 
