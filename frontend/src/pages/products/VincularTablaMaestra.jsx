@@ -214,11 +214,11 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         if (!res.success) return showToast(res.error || 'Error al guardar', 'error');
         showToast(mappingId ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
         onCambio?.();
-        // Sale de la lista y queda una decisión más en la semana
+        // Sale de la lista y queda una decisión más en el día
         setDatos(d => ({
             ...d,
             tarjetas: d.tarjetas.filter(x => x.odoo_product_id !== tarjeta.odoo_product_id),
-            decididas_semana: d.decididas_semana + 1,
+            decididas_hoy: d.decididas_hoy + 1,
             pendientes: Math.max(d.pendientes - 1, 0),
         }));
         setIndice(i => Math.min(i, Math.max(tarjetas.length - 2, 0)));
@@ -248,7 +248,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
 
     const encabezado = (
         <div style={{ display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap', fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
-            <span>Esta semana: <b style={{ color: t.color.text }}>{datos.decididas_semana}</b> de {datos.tope}</span>
+            <span>Hoy: <b style={{ color: t.color.text }}>{datos.decididas_hoy}</b> de {datos.tope}</span>
             <span>· {fmtInt(datos.pendientes)} productos pendientes</span>
             {tarjetas.length > 0 && <span>· tarjeta {indice + 1} de {tarjetas.length}</span>}
         </div>
@@ -258,8 +258,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
                 {encabezado}
-                <Vacio tokens={t} msg={datos.pendientes > 0 && datos.decididas_semana >= datos.tope
-                    ? `Llegaste al tope de ${datos.tope} tarjetas de esta semana. Las que faltan vuelven la semana que viene.`
+                <Vacio tokens={t} msg={datos.pendientes > 0 && datos.decididas_hoy >= datos.tope
+                    ? `Llegaste al tope de ${datos.tope} tarjetas de hoy. Las que faltan vuelven mañana.`
                     : 'No quedan tarjetas por revisar.'} />
             </div>
         );

@@ -1,7 +1,7 @@
 // Vincular (nota 107, punto 3): pantallas de /productos/vinculos sobre la tabla maestra.
 //   - Lote por código: los sugeridos 'codigo' (PRE + referencia Neggo = SKU), todo tildado
 //   - Tarjetas por nombre: un producto de Neggo por tarjeta con hasta 3 ofertas parecidas,
-//     ordenadas por venta y con tope semanal
+//     ordenadas por venta y con tope diario (nota 123)
 //   - Conflictos: una oferta confirmada con dos o más productos de Neggo
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
@@ -12,8 +12,8 @@
 const pool = require('../config/database');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
 
-// Tarjetas que se muestran por semana (las revisa una sola persona)
-const TARJETAS_POR_SEMANA = 40;
+// Tarjetas que se muestran por día (las revisa una sola persona)
+const TARJETAS_POR_DIA = 40;
 // Semanas de venta que ordenan las tarjetas y el lote
 const SEMANAS_VENTA = 6;
 // Productos de Odoo que no son mercadería (anticipos y pedidos de preventa)
@@ -124,13 +124,14 @@ async function decidirLote({ confirmar = [], rechazar = [], userId }) {
     }));
 }
 
-// Productos con tarjeta ya decidida por una persona en los últimos 7 días
-async function tarjetasDecididasSemana(db = pool) {
+// Productos con tarjeta ya decidida por una persona desde las 00:00 de hoy, hora de Argentina
+// (created_at se guarda en UTC)
+async function tarjetasDecididasHoy(db = pool) {
     const { rows } = await db.query(
         `SELECT COUNT(DISTINCT odoo_product_id)::int AS n
          FROM match_decisiones
          WHERE odoo_company = 'neggo' AND metodo = ANY($1::text[]) AND user_id IS NOT NULL
-           AND created_at > NOW() - INTERVAL '7 days'`,
+           AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires') AT TIME ZONE 'America/Argentina/Buenos_Aires'`,
         [METODOS_NOMBRE]
     );
     return rows[0].n;
@@ -138,12 +139,12 @@ async function tarjetasDecididasSemana(db = pool) {
 
 /**
  * Tarjetas por nombre: productos de Neggo con sugeridos por parecido de nombre, de lo que más se
- * vende a lo que menos, hasta completar el tope de la semana. Cada tarjeta trae hasta 3 ofertas.
- * @returns {Promise<{ tarjetas: Array, decididas_semana: number, tope: number, pendientes: number }>}
+ * vende a lo que menos, hasta completar el tope del día. Cada tarjeta trae hasta 3 ofertas.
+ * @returns {Promise<{ tarjetas: Array, decididas_hoy: number, tope: number, pendientes: number }>}
  */
 async function listarTarjetas() {
-    const decididas = await tarjetasDecididasSemana();
-    const restan = Math.max(TARJETAS_POR_SEMANA - decididas, 0);
+    const decididas = await tarjetasDecididasHoy();
+    const restan = Math.max(TARJETAS_POR_DIA - decididas, 0);
 
     const { rows: [{ pendientes }] } = await pool.query(
         `SELECT COUNT(DISTINCT pm.odoo_product_id)::int AS pendientes
@@ -152,7 +153,7 @@ async function listarTarjetas() {
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'sugerido' AND pm.metodo = ANY($1::text[])`,
         [METODOS_NOMBRE]
     );
-    if (restan === 0) return { tarjetas: [], decididas_semana: decididas, tope: TARJETAS_POR_SEMANA, pendientes };
+    if (restan === 0) return { tarjetas: [], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
 
     const { rows } = await pool.query(
         `WITH ${VENTAS_CTE},
@@ -202,7 +203,7 @@ async function listarTarjetas() {
             });
         }
     }
-    return { tarjetas: [...porProducto.values()], decididas_semana: decididas, tope: TARJETAS_POR_SEMANA, pendientes };
+    return { tarjetas: [...porProducto.values()], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
 }
 
 /**
@@ -345,5 +346,5 @@ async function resumen() {
 
 module.exports = {
     listarLoteCodigo, decidirLote, listarTarjetas, decidirTarjeta, listarConflictosDetalle,
-    rechazarPar, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
+    rechazarPar, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_DIA
 };

@@ -10,7 +10,7 @@
 // GET    /api/mappings/vincular/resumen           — cantidades por pestaña
 // GET    /api/mappings/vincular/lote              — sugeridos por código (supplierId opcional)
 // POST   /api/mappings/vincular/lote              — { confirmar: [ids], rechazar?: [ids] }
-// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre de la semana
+// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre del día
 // POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
 // GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
