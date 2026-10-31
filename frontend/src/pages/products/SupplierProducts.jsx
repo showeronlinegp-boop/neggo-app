@@ -42,7 +42,8 @@ export default function SupplierProducts() {
     const scrapingSupplier = !selectedId && activeSupplierIds.length === 1 ? String(activeSupplierIds[0]) : null;
     const effectiveSupplierId = supplierId || scrapingSupplier || '';
 
-    useEffect(() => { api.get('/suppliers').then(r => r.success && setSuppliers(r.data || [])); }, []);
+    // Con counts: cantidad de productos por proveedor para el desplegable (nota 138)
+    useEffect(() => { api.get('/suppliers', { counts: true }).then(r => r.success && setSuppliers(r.data || [])); }, []);
     useEffect(() => { setPage(1); }, [effectiveSupplierId, search, onlyAvailable]);
     useEffect(() => { fetchData(); }, [effectiveSupplierId, search, onlyAvailable, page]);
 
@@ -79,9 +80,13 @@ export default function SupplierProducts() {
         if (mRes.success) setMappings(mRes.data || []);
     }
 
+    // Cantidad por proveedor: con "solo disponibles" cuenta los que tienen stock
+    const cantidad = s => (onlyAvailable ? s.available_count : s.product_count) || 0;
+    const fmtCant = n => Number(n).toLocaleString('es-AR');
+    const totalProductos = suppliers.reduce((acc, s) => acc + cantidad(s), 0);
     const supplierOptions = [
-        { value: '', label: 'Todos los proveedores' },
-        ...suppliers.map(s => ({ value: String(s.id), label: s.name })),
+        { value: '', label: `Todos los proveedores (${fmtCant(totalProductos)})` },
+        ...suppliers.map(s => ({ value: String(s.id), label: `${s.name} (${fmtCant(cantidad(s))})` })),
     ];
 
     const cols = [
