@@ -24,8 +24,8 @@ const SEMANAS_VENTA = 6;
 const NO_MERCADERIA = ['Down Payment (POS)', 'Pedido Preventa'];
 // Métodos del lote (por código) y de las tarjetas (por parecido de nombre)
 const METODOS_CODIGO = ['codigo', 'auto_ref'];
-// Métodos que alimentan las tarjetas (sugeridos por parecido de nombre)
-const METODOS_NOMBRE = ['nombre', 'auto_fuzzy'];
+// Métodos que alimentan las tarjetas: sugeridos por parecido de nombre y los que eligió Claude (punto 5)
+const METODOS_NOMBRE = ['nombre', 'auto_fuzzy', 'claude'];
 
 // Venta de las últimas semanas por producto de Neggo (sin anticipos ni pedidos de preventa)
 const VENTAS_CTE = `
@@ -174,7 +174,9 @@ async function listarTarjetas() {
          SELECT p.odoo_product_id, p.venta,
                 opc.name AS odoo_nombre, opc.internal_ref, opc.standard_price, opc.list_price,
                 opc.vendor_name, opc.active AS odoo_activo, opc.image_url AS odoo_image_url,
-                pm.id AS mapping_id, pm.supplier_product_id, pm.match_confidence,
+                pm.id AS mapping_id, pm.supplier_product_id, pm.match_confidence, pm.metodo,
+                cr.confianza AS claude_confianza, cr.motivo AS claude_motivo,
+                ultima.resultado AS claude_resultado, ultima.motivo AS claude_ultimo_motivo,
                 s.name AS proveedor, sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available,
                 sp.image_url
          FROM productos p
@@ -184,7 +186,14 @@ async function listarTarjetas() {
          JOIN suppliers s ON s.id = sp.supplier_id
          ${JOIN_REGLA}
          LEFT JOIN odoo_products_cache opc ON opc.odoo_id = p.odoo_product_id AND opc.company = 'neggo'
-         ORDER BY p.venta DESC, p.odoo_product_id, pm.match_confidence DESC NULLS LAST, sp.available DESC, pm.id`,
+         -- Por qué la eligió Claude, y si en su última revisión dijo que ninguno era el mismo
+         LEFT JOIN LATERAL (SELECT c.confianza, c.motivo FROM cruce_revisiones c
+                            WHERE c.odoo_product_id = p.odoo_product_id AND c.supplier_product_id = pm.supplier_product_id
+                            ORDER BY c.created_at DESC LIMIT 1) cr ON pm.metodo = 'claude'
+         LEFT JOIN LATERAL (SELECT c.resultado, c.motivo FROM cruce_revisiones c
+                            WHERE c.odoo_product_id = p.odoo_product_id AND c.odoo_company = 'neggo'
+                            ORDER BY c.created_at DESC, c.id DESC LIMIT 1) ultima ON true
+         ORDER BY p.venta DESC, p.odoo_product_id, (pm.metodo = 'claude') DESC, pm.match_confidence DESC NULLS LAST, sp.available DESC, pm.id`,
         [SEMANAS_VENTA, METODOS_NOMBRE, restan]
     );
 
@@ -195,7 +204,10 @@ async function listarTarjetas() {
             porProducto.set(r.odoo_product_id, {
                 odoo_product_id: r.odoo_product_id, odoo_nombre: r.odoo_nombre, internal_ref: r.internal_ref,
                 standard_price: r.standard_price, list_price: r.list_price, vendor_name: r.vendor_name,
-                odoo_activo: r.odoo_activo, odoo_image_url: r.odoo_image_url, venta: r.venta, ofertas: []
+                odoo_activo: r.odoo_activo, odoo_image_url: r.odoo_image_url, venta: r.venta, ofertas: [],
+                // Claude revisó el producto y no encontró el mismo entre los candidatos (o le faltó info)
+                claude_ninguno: ['ninguno', 'duda'].includes(r.claude_resultado)
+                    ? { resultado: r.claude_resultado, motivo: r.claude_ultimo_motivo || null } : null,
             });
         }
         const tarjeta = porProducto.get(r.odoo_product_id);
@@ -203,7 +215,8 @@ async function listarTarjetas() {
             tarjeta.ofertas.push({
                 mapping_id: r.mapping_id, supplier_product_id: r.supplier_product_id, proveedor: r.proveedor,
                 sku: r.sku, nombre: r.oferta_nombre, raw_price: r.raw_price, neto: r.neto,
-                available: r.available, parecido: r.match_confidence, image_url: r.image_url
+                available: r.available, parecido: r.match_confidence, image_url: r.image_url,
+                claude: r.metodo === 'claude' ? { confianza: r.claude_confianza, motivo: r.claude_motivo } : null
             });
         }
     }
