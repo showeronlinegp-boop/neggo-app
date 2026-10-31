@@ -1176,6 +1176,8 @@ function condicionesListado({ solapa = 'pedidos', companies, q = '', dias = null
     }
     // Factura o POS en Odoo: ya no se arma/controla acá.
     where.push(`NOT ${sqlFueraPorFacturaOPos()}`);
+    // Cancelada en Odoo (aunque acá haya quedado armada o controlada): no se lista
+    where.push("COALESCE(e.odoo_state, '') <> 'cancel'");
     // Sólo arranca con cotizaciones enviadas: una que volvió a borrador en Odoo no se arma
     where.push(`NOT (e.estado = 'pendiente' AND COALESCE(e.odoo_state, '') = 'draft')`);
     if (solapa === 'esperando_pago') {
