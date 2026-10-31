@@ -154,7 +154,8 @@ export default function ProductMappings() {
 
     const supplierOptions = [
         { value: '', label: 'Seleccioná un proveedor' },
-        ...suppliers.map(s => ({ value: String(s.id), label: s.name })),
+        // Los de fuente interna (neggo_scraper) son los mismos productos de Odoo: no hay nada que vincular
+        ...suppliers.filter(s => s.scraper_key !== 'neggo_scraper').map(s => ({ value: String(s.id), label: s.name })),
     ];
 
     const conCantidad = (label, n) => (n ? `${label} · ${n.toLocaleString('es-AR')}` : label);
