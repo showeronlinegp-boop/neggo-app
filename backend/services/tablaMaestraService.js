@@ -774,7 +774,10 @@ function resumirOfertas(filas, { costo = null, ahora = new Date() } = {}) {
     const ofertas = filas
         .map(f => ({
             supplier_product_id: f.supplier_product_id,
+            supplier_id: f.supplier_id ?? null,
             proveedor: f.proveedor,
+            // Pedido al que va: "Parnassa Web" se le pide a "Parnassa" (migración 054)
+            proveedor_odoo: f.proveedor_odoo || f.proveedor,
             nombre: f.name,
             sku: f.sku,
             url: f.product_url || null,
@@ -826,7 +829,7 @@ async function ofertasPorProducto(productos, db = pool) {
     const resultado = new Map();
     if (!ids.length) return resultado;
     const { rows } = await db.query(
-        `SELECT pm.odoo_product_id, v.supplier_product_id, v.proveedor, v.name, v.sku, v.precio_comparable,
+        `SELECT pm.odoo_product_id, v.supplier_product_id, v.supplier_id, v.proveedor, v.proveedor_odoo, v.name, v.sku, v.precio_comparable,
                 v.pack_cantidad, v.available, v.last_scraped_at, sp.product_url, pm.es_habitual,
                 (opc.vendor_name = v.proveedor_odoo) AS es_principal
          FROM product_mappings pm

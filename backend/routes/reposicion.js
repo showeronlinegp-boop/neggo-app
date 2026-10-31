@@ -18,6 +18,8 @@
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 // DELETE /api/reposicion/producto/:odooId            — saca de la cola un pendiente marcado por error
 // POST   /api/reposicion/foto/:odooId                — multipart "image": carga la foto en Odoo (admin)
+// GET    /api/reposicion/propuestas                  — pedidos propuestos por proveedor (motor, solo lectura)
+// POST   /api/reposicion/propuestas/aprobar          — { proveedor, solver?, renglones } guarda y pasa a encargado
 
 const express = require('express');
 const router = express.Router();
@@ -29,6 +31,7 @@ const reposicion = require('../services/reposicionService');
 const ordenes = require('../services/reposicionOrdenesService');
 const cotizaciones = require('../services/reposicionCotizacionesService');
 const preciosFrescos = require('../services/preciosFrescosService');
+const propuestas = require('../services/compraPropuestaService');
 const { detectMime } = require('../services/whatsappMessage');
 const { writeOdooImage } = require('../services/odooImageService');
 
@@ -251,6 +254,24 @@ router.get('/precios', async (req, res) => {
     } catch (err) {
         console.error('❌ Error leyendo frescura de precios:', err.message);
         return fail(res, err.message, 500);
+    }
+});
+
+router.get('/propuestas', async (req, res) => {
+    try {
+        return ok(res, await propuestas.proponer());
+    } catch (err) {
+        console.error('❌ Error armando propuestas de compra:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/propuestas/aprobar', async (req, res) => {
+    try {
+        return ok(res, await propuestas.aprobar(req.body, req.user.id));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error aprobando propuesta de compra:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
     }
 });
 
