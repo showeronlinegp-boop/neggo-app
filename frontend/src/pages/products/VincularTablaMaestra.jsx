@@ -271,7 +271,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
             <Ayuda tokens={t}>
-                Ofertas del mismo proveedor con nombre parecido, de lo que más se vende a lo que menos.
+                Ofertas con nombre parecido, de lo que más se vende a lo que menos. Las que eligió Claude van
+                primero, con el motivo (pueden ser de otro proveedor).
                 Tocá <Tecla tokens={t}>1</Tecla> <Tecla tokens={t}>2</Tecla> <Tecla tokens={t}>3</Tecla> si es esa oferta,
                 {' '}<Tecla tokens={t}>N</Tecla> si no es ninguna y <Tecla tokens={t}>espacio</Tecla> para saltearla.
             </Ayuda>
@@ -302,6 +303,17 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                     <Dato tokens={t} titulo="Venta 6 sem." valor={Number(tarjeta.venta) ? fmtAR(tarjeta.venta) : '—'} numerico />
                     {tarjeta.odoo_activo === false && <Badge tone="muted">Archivado</Badge>}
                 </div>
+
+                {tarjeta.claude_ninguno && (
+                    <div style={{
+                        marginTop: t.space[4], padding: '8px 12px', borderRadius: t.radius.sm,
+                        background: t.color.surface2, fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family,
+                    }}>
+                        <b style={{ color: t.color.text }}>Claude:</b>{' '}
+                        {tarjeta.claude_ninguno.resultado === 'ninguno' ? 'ninguna de estas le pareció la misma' : 'no le alcanzó para decidir'}
+                        {tarjeta.claude_ninguno.motivo ? ` — ${tarjeta.claude_ninguno.motivo}` : ''}
+                    </div>
+                )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: t.space[5] }}>
                     {tarjeta.ofertas.map((o, i) => {
@@ -337,6 +349,11 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                                     <Tecla tokens={t} grande>{i + 1}</Tecla>
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <Nombre tokens={t} nombre={o.nombre} codigo={o.sku} extra={o.proveedor} />
+                                        {o.claude?.motivo && (
+                                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 4 }}>
+                                                {o.claude.motivo}
+                                            </div>
+                                        )}
                                     </div>
                                     <div style={{ textAlign: 'right', fontSize: t.font.size.sm, color: t.color.text }}>
                                         <div style={t.numericStyle}>{o.neto ? fmtAR(o.neto) : '—'}</div>
@@ -345,7 +362,9 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                                         )}
                                     </div>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-                                        {o.parecido != null && <Badge tone="primary">{Math.round(Number(o.parecido) * 100)} % parecido</Badge>}
+                                        {o.claude
+                                            ? <Badge tone="accent">Claude · {o.claude.confianza === 'alta' ? 'seguro' : 'probable'}</Badge>
+                                            : o.parecido != null && <Badge tone="primary">{Math.round(Number(o.parecido) * 100)} % parecido</Badge>}
                                         {!o.available && <Badge tone="muted">No disponible</Badge>}
                                     </div>
                                 </button>
