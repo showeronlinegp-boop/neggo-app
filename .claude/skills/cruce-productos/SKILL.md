@@ -1,6 +1,6 @@
 ---
 name: cruce-productos
-description: Hacer una tanda de cruce de productos de Neggo App - Claude revisa candidatos de proveedores para los productos que más se venden y deja vínculos sugeridos para confirmar en Vincular. Trigger - cuando una tarea del bot o el usuario pide "tanda de cruce", "cruce de productos", "vinculá productos con Claude" o invoca /cruce-productos.
+description: Hacer una tanda de cruce de productos de Neggo App - Claude revisa candidatos de proveedores para los productos que más se venden y deja vínculos sugeridos para confirmar en Vincular. Trigger - cuando una tarea del bot o el usuario pide "tanda de cruce", "cruce de productos", "vinculá productos con Claude", "revisá el auto-match de <proveedor>" o invoca /cruce-productos.
 ---
 
 # Tanda de cruce de productos
@@ -37,6 +37,21 @@ Docker no está en el PATH (Git Bash): `D="/c/Program Files/Docker/Docker/resour
 
 `ver <id>` vuelve a imprimir una tanda guardada. Una tanda se registra una sola vez: los productos
 sin respuesta vuelven en la próxima.
+
+### Revisar el Auto-match de un proveedor
+
+Cuando piden "revisá el auto-match de <proveedor>" (el botón Auto-match de Vínculos Odoo deja
+sugeridos por nombre que suelen tener ruido), la tanda se arma con `--proveedor`: los productos de
+Neggo con sugeridos de las ofertas de ese proveedor, y como candidatos solo ofertas suyas (primero
+las que sugirió el Auto-match). Se contesta y registra igual que una tanda normal.
+
+```bash
+"$D" exec neggo-app-backend-1 node scripts/cruceClaude.js proveedores                 # id, nombre y productos pendientes
+"$D" exec neggo-app-backend-1 node scripts/cruceClaude.js lote --proveedor <id> --limite 40
+```
+
+Lo que elegís pasa a sugerido de Claude con tu motivo; con `-` o `?` la tarjeta de Vincular muestra
+que ninguno te pareció el mismo. Si quedan productos, se arma otra tanda (no vuelven los ya revisados).
 
 ## Formato de respuesta
 

@@ -7,6 +7,9 @@
 //                   (metodo 'claude') para que una persona lo confirme en Vincular.
 // Nada se confirma solo, no toca Odoo ni precios. Los productos revisados no vuelven a una
 // tanda hasta dentro de DIAS_REPASO días.
+// Con --proveedor <id> (nota 135) la tanda revisa lo que dejó el botón Auto-match de ese proveedor:
+// los productos de Neggo con sugeridos por nombre de sus ofertas y, como candidatos, esas ofertas y
+// las más parecidas del mismo proveedor.
 
 const pool = require('../config/database');
 
@@ -16,6 +19,10 @@ const DIAS_REPASO = 30;
 // Candidatos por producto: del mismo proveedor de Odoo (ahí suele estar) y de otros proveedores
 const CAND_MISMO = 8;
 const CAND_OTROS = 6;
+// Candidatos por producto en la tanda de un proveedor (primero los que sugirió el Auto-match)
+const CAND_PROVEEDOR = 8;
+// Sugeridos por nombre que revisa la tanda de un proveedor
+const METODOS_AUTO = ['auto_fuzzy', 'nombre'];
 // Parecido mínimo para traer candidatos de otros proveedores
 const MIN_PARECIDO_OTROS = 0.2;
 // Venta que define el top y semanas que se miran (igual que la tabla maestra)
@@ -119,6 +126,106 @@ async function candidatos(db, odooIds) {
          ) c
          WHERE opc.company = 'neggo' AND opc.odoo_id = ANY($1::int[])`,
         [odooIds]
+    );
+    return rows;
+}
+
+// Sugeridos por nombre de las ofertas de un proveedor, por producto de Neggo, con la fecha del más nuevo
+const sugeridosProveedor = (proveedor, metodos) => `
+    SELECT pm.odoo_product_id, MAX(pm.created_at) AS sugerido_at
+    FROM product_mappings pm
+    JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source = 'web'
+    WHERE sp.supplier_id = ${proveedor} AND pm.odoo_company = 'neggo'
+      AND pm.estado = 'sugerido' AND pm.metodo = ANY(${metodos}::text[])
+    GROUP BY pm.odoo_product_id`;
+// ...que Claude todavía no revisó desde que se sugirieron (alias p del CTE de arriba)
+const SIN_REVISAR = `NOT EXISTS (SELECT 1 FROM cruce_revisiones cr
+                      WHERE cr.odoo_product_id = p.odoo_product_id AND cr.odoo_company = 'neggo'
+                        AND cr.created_at > p.sugerido_at)`;
+
+/**
+ * Productos de Neggo con sugeridos del Auto-match de un proveedor sin revisar. Ordenados por venta.
+ */
+async function productosDeProveedor(db, supplierId, limite) {
+    const { rows } = await db.query(
+        `WITH p AS (${sugeridosProveedor('$1', '$2')}),
+         ventas AS (
+             SELECT odoo_id, SUM(amount_total) AS monto
+             FROM product_sales_weekly
+             WHERE company = 'neggo'
+               AND week_start > (SELECT MAX(week_start) FROM product_sales_weekly WHERE company = 'neggo') - ($3::int * 7)
+             GROUP BY odoo_id
+         ), confirmados AS (
+             SELECT pm.odoo_product_id, array_agg(DISTINCT s.name ORDER BY s.name) AS proveedores
+             FROM product_mappings pm
+             JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source <> 'neggo'
+             JOIN suppliers s ON s.id = sp.supplier_id
+             WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
+             GROUP BY pm.odoo_product_id
+         )
+         SELECT opc.odoo_id, opc.name, opc.internal_ref, opc.standard_price, opc.list_price,
+                opc.categ_name, opc.vendor_name, opc.active, COALESCE(v.monto, 0) AS venta,
+                COALESCE(c.proveedores, '{}') AS confirmados_con
+         FROM p
+         JOIN odoo_products_cache opc ON opc.odoo_id = p.odoo_product_id AND opc.company = 'neggo'
+         LEFT JOIN ventas v ON v.odoo_id = opc.odoo_id
+         LEFT JOIN confirmados c ON c.odoo_product_id = opc.odoo_id
+         WHERE ${SIN_REVISAR}
+         ORDER BY venta DESC, opc.odoo_id
+         LIMIT $4`,
+        [supplierId, METODOS_AUTO, SEMANAS_VENTA, limite]
+    );
+    return rows;
+}
+
+/**
+ * Proveedores con sugeridos del Auto-match sin revisar por Claude (para elegir la tanda).
+ */
+async function proveedoresConAutoMatch() {
+    const { rows } = await pool.query(
+        `SELECT s.id AS supplier_id, s.name AS nombre, x.productos
+         FROM suppliers s
+         CROSS JOIN LATERAL (
+             SELECT COUNT(*)::int AS productos
+             FROM (${sugeridosProveedor('s.id', '$1')}) p
+             WHERE ${SIN_REVISAR}
+         ) x
+         WHERE x.productos > 0
+         ORDER BY x.productos DESC, s.name`,
+        [METODOS_AUTO]
+    );
+    return rows;
+}
+
+/**
+ * Candidatos de la tanda de un proveedor: solo ofertas suyas, primero las que sugirió el
+ * Auto-match y después las más parecidas. Saltea pares confirmados o rechazados.
+ */
+async function candidatosDeProveedor(db, odooIds, supplierId) {
+    const { rows } = await db.query(
+        `SELECT opc.odoo_id, c.*
+         FROM odoo_products_cache opc
+         CROSS JOIN LATERAL (
+             SELECT v.supplier_product_id, v.proveedor, v.sku, v.codigo_proveedor, v.name, v.source_category,
+                    v.available, v.pack_cantidad, v.precio_comparable, v.last_scraped_at,
+                    (v.proveedor_odoo = opc.vendor_name) AS mismo_proveedor,
+                    similarity(${normName('v.name')}, ${normName('opc.name')}) AS parecido,
+                    EXISTS (SELECT 1 FROM product_mappings pm
+                            WHERE pm.supplier_product_id = v.supplier_product_id AND pm.odoo_product_id = opc.odoo_id
+                              AND pm.odoo_company = 'neggo' AND pm.estado = 'sugerido') AS sugerido
+             FROM v_ofertas_comparables v
+             WHERE v.supplier_id = $2 AND v.source = 'web'
+               AND NOT EXISTS (SELECT 1 FROM product_mappings pm
+                               WHERE pm.supplier_product_id = v.supplier_product_id AND pm.odoo_product_id = opc.odoo_id
+                                 AND pm.odoo_company = 'neggo' AND pm.estado IN ('confirmado', 'rechazado'))
+               AND NOT EXISTS (SELECT 1 FROM match_decisiones md
+                               WHERE md.supplier_product_id = v.supplier_product_id AND md.odoo_product_id = opc.odoo_id
+                                 AND md.odoo_company = 'neggo' AND md.decision = 'rechazado')
+             ORDER BY sugerido DESC, parecido DESC, v.available DESC, v.supplier_product_id
+             LIMIT ${CAND_PROVEEDOR}
+         ) c
+         WHERE opc.company = 'neggo' AND opc.odoo_id = ANY($1::int[])`,
+        [odooIds, supplierId]
     );
     return rows;
 }
@@ -250,12 +357,18 @@ function validarDecisiones(productos, decisiones) {
 }
 
 /**
- * Arma y guarda una tanda nueva.
+ * Arma y guarda una tanda nueva. Con `proveedor`, revisa lo que dejó el Auto-match de ese proveedor.
  */
-async function nuevoLote({ limite = LOTE_DEFECTO } = {}) {
+async function nuevoLote({ limite = LOTE_DEFECTO, proveedor = null } = {}) {
     const n = Math.min(Math.max(parseInt(limite, 10) || LOTE_DEFECTO, 1), LOTE_MAX);
-    const productos = await productosParaRevisar(pool, n);
-    const filas = productos.length ? await candidatos(pool, productos.map(p => p.odoo_id)) : [];
+    const supplierId = proveedor == null ? null : parseInt(proveedor, 10);
+    if (proveedor != null && !Number.isInteger(supplierId)) throw new Error(`Proveedor inválido: ${proveedor}`);
+    const productos = supplierId
+        ? await productosDeProveedor(pool, supplierId, n)
+        : await productosParaRevisar(pool, n);
+    const ids = productos.map(p => p.odoo_id);
+    const filas = !productos.length ? []
+        : supplierId ? await candidatosDeProveedor(pool, ids, supplierId) : await candidatos(pool, ids);
     const lote = { id: idLote(), productos: armarProductos(productos, filas) };
     if (lote.productos.length) {
         await pool.query(`INSERT INTO cruce_lotes (id, productos) VALUES ($1, $2)`, [lote.id, JSON.stringify(lote.productos)]);
@@ -361,5 +474,5 @@ async function cobertura() {
 module.exports = {
     LOTE_DEFECTO, DIAS_REPASO,
     idLote, armarProductos, formatearLote, parsearDecisiones, validarDecisiones,
-    nuevoLote, registrar, cobertura,
+    nuevoLote, registrar, cobertura, proveedoresConAutoMatch,
 };

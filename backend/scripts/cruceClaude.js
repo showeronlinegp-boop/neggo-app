@@ -3,7 +3,9 @@
 // como sugerido para Vincular. No toca Odoo ni precios.
 //
 //   node scripts/cruceClaude.js lote [--limite 40]          → arma y guarda una tanda; imprime el texto a revisar
-//   node scripts/cruceClaude.js ver <lote>                   → vuelve a imprimir una tanda guardada
+//   node scripts/cruceClaude.js lote --proveedor <id>        → tanda con lo que sugirió el Auto-match de ese proveedor
+//   node scripts/cruceClaude.js proveedores                  → proveedores con sugeridos del Auto-match sin revisar
+//   node scripts/cruceClaude.js ver <lote>                  → vuelve a imprimir una tanda guardada
 //   node scripts/cruceClaude.js registrar <lote> [--aplicar] → lee las respuestas por stdin; sin --aplicar es prueba
 //   node scripts/cruceClaude.js cobertura                    → top con 1 y 2+ proveedores, y acierto de Claude
 
@@ -30,8 +32,14 @@ async function main() {
     const comando = args[0];
 
     if (comando === 'lote') {
-        const lote = await cruce.nuevoLote({ limite: opcion(args, '--limite', cruce.LOTE_DEFECTO) });
-        if (!lote.productos.length) { console.log('✅ No hay productos para revisar: el top ya tiene 2 proveedores o se revisó hace poco.'); return; }
+        const proveedor = opcion(args, '--proveedor', null);
+        const lote = await cruce.nuevoLote({ limite: opcion(args, '--limite', cruce.LOTE_DEFECTO), proveedor });
+        if (!lote.productos.length) {
+            console.log(proveedor
+                ? `✅ No hay sugeridos del Auto-match sin revisar para el proveedor ${proveedor}.`
+                : '✅ No hay productos para revisar: el top ya tiene 2 proveedores o se revisó hace poco.');
+            return;
+        }
         console.log(cruce.formatearLote(lote));
         return;
     }
@@ -55,11 +63,17 @@ async function main() {
         if (resumen.faltan.length) console.log(`⚠️ Sin respuesta (vuelven en la próxima tanda): ${resumen.faltan.join(', ')}`);
         return;
     }
+    if (comando === 'proveedores') {
+        const filas = await cruce.proveedoresConAutoMatch();
+        if (!filas.length) { console.log('✅ No hay sugeridos del Auto-match sin revisar.'); return; }
+        for (const f of filas) console.log(`${f.supplier_id}\t${f.nombre}\t${f.productos} productos`);
+        return;
+    }
     if (comando === 'cobertura') {
         console.log(JSON.stringify(await cruce.cobertura(), null, 2));
         return;
     }
-    console.log('Uso: lote [--limite N] | ver <lote> | registrar <lote> [--aplicar] | cobertura');
+    console.log('Uso: lote [--limite N] [--proveedor ID] | proveedores | ver <lote> | registrar <lote> [--aplicar] | cobertura');
     process.exitCode = 1;
 }
 
