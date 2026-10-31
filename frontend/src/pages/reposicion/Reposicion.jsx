@@ -18,6 +18,7 @@ import ReposicionProveedorModal from './ReposicionProveedorModal';
 import ReposicionOrdenes from './ReposicionOrdenes';
 import ReposicionCotizaciones from './ReposicionCotizaciones';
 import ReposicionPrecios from './ReposicionPrecios';
+import ReposicionPropuestas from './ReposicionPropuestas';
 import { descargarPedidoPDF } from './pedidoPdf';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
@@ -569,10 +570,11 @@ export default function Reposicion() {
     const cerrarFoto = useCallback(() => setFoto(null), []);
     const ordenes = tab === 'ordenes';
     const cotizaciones = tab === 'cotizaciones';
+    const propuestas = tab === 'propuestas';
 
     const cargarCola = useCallback(async () => {
-        // Las pestañas Órdenes y Cotizaciones leen Odoo y cargan lo suyo
-        if (tab === 'ordenes' || tab === 'cotizaciones') { setLoading(false); return; }
+        // Las pestañas Órdenes, Cotizaciones y Propuestas cargan lo suyo
+        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') { setLoading(false); return; }
         setLoading(true);
         setError(null);
         const estado = tab === 'resueltos' || tab === 'encargado' ? tab : 'pendiente';
@@ -589,7 +591,7 @@ export default function Reposicion() {
     }, []);
 
     const cargar = useCallback(async () => {
-        if (tab === 'ordenes' || tab === 'cotizaciones') setRecargarVista(n => n + 1);
+        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') setRecargarVista(n => n + 1);
         await Promise.all([cargarCola(), cargarProveedores()]);
     }, [tab, cargarCola, cargarProveedores]);
 
@@ -699,7 +701,7 @@ export default function Reposicion() {
                         <>
                             <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{items.length}</span> encargados
                         </>
-                    ) : ordenes ? 'Ventas y POS de la última semana' : cotizaciones ? 'Cotizaciones pendientes en Odoo' : 'Últimos 200 resueltos'}
+                    ) : ordenes ? 'Ventas y POS de la última semana' : cotizaciones ? 'Cotizaciones pendientes en Odoo' : propuestas ? 'Pedidos propuestos por proveedor' : 'Últimos 200 resueltos'}
                 </div>
                 <div style={{ display: 'flex', gap: t.space[2] }}>
                     <Link to="/reposicion/recorrida" style={{ textDecoration: 'none' }}>
@@ -724,6 +726,7 @@ export default function Reposicion() {
                     { value: 'resueltos', label: isMobile ? 'Resuel.' : 'Resueltos', icon: <Icon.Check size={14} /> },
                     { value: 'ordenes', label: 'Órdenes', icon: <Icon.ClipboardList size={14} /> },
                     { value: 'cotizaciones', label: isMobile ? 'Cotiz.' : 'Cotizaciones', icon: <Icon.Tag size={14} /> },
+                    { value: 'propuestas', label: isMobile ? 'Propuest.' : 'Propuestas', icon: <Icon.ShoppingBag size={14} /> },
                 ]}
                 value={tab}
                 onChange={(v) => { setTab(v); setAviso(null); }}
@@ -766,6 +769,14 @@ export default function Reposicion() {
 
             {ordenes ? (
                 <ReposicionOrdenes
+                    recargar={recargarVista}
+                    onCambioCola={cargarProveedores}
+                    onAviso={(msg) => { setError(null); setAviso(msg); }}
+                    onError={mostrarError}
+                    isMobile={isMobile}
+                />
+            ) : propuestas ? (
+                <ReposicionPropuestas
                     recargar={recargarVista}
                     onCambioCola={cargarProveedores}
                     onAviso={(msg) => { setError(null); setAviso(msg); }}
