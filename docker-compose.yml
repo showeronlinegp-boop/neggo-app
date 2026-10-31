@@ -30,6 +30,12 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - MALI_USERNAME=${MALI_USERNAME:-}
       - MALI_PASSWORD=${MALI_PASSWORD:-}
+      # Cuenta de cliente de ZLE Store: sin login la API no devuelve precios
+      - ZLE_EMAIL=${ZLE_EMAIL:-}
+      - ZLE_PASSWORD=${ZLE_PASSWORD:-}
+      # Cuenta de cliente de Blumen (tienda Sigma): sin login no se ve el catálogo
+      - BLUMEN_EMAIL=${BLUMEN_EMAIL:-}
+      - BLUMEN_PASSWORD=${BLUMEN_PASSWORD:-}
       # Notas de prueba (marcar en pantalla + Claude Code). 1 = habilitadas para admins
       - TEST_NOTES_ENABLED=${TEST_NOTES_ENABLED:-0}
       - CHROME_WS_ENDPOINT=ws://chrome:3000

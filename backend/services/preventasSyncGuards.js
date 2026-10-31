@@ -14,7 +14,7 @@ const FUZZY_MIN_AUTOMATICO = 90;
 const TOL_PESOS = 0.01;
 
 const ESTADOS_PRECIO = ['precio_sube', 'precio_baja'];
-const ESTADOS_ODOO = ['activar', 'inactivar', 'solo_odoo', 'precio_sube', 'precio_baja'];
+const ESTADOS_ODOO = ['activar', 'inactivar', 'solo_odoo', 'fuera_preventas', 'precio_sube', 'precio_baja'];
 
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
 
@@ -120,7 +120,7 @@ function motivoOdoo(prod, odoo) {
     if (!odoo) return 'El producto ya no existe en Odoo: sincronizá Odoo';
 
     if (prod.estado === 'activar' && odoo.active === true) return 'Ya está activo en Odoo';
-    if ((prod.estado === 'inactivar' || prod.estado === 'solo_odoo') && odoo.active === false) {
+    if (['inactivar', 'solo_odoo', 'fuera_preventas'].includes(prod.estado) && odoo.active === false) {
         return 'Ya está archivado en Odoo';
     }
     if (ESTADOS_PRECIO.includes(prod.estado)) {

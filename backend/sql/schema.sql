@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
     last_scraped_at TIMESTAMP,
     active BOOLEAN DEFAULT true,
     scrape_enabled BOOLEAN NOT NULL DEFAULT false,
+    va_a_preventas BOOLEAN NOT NULL DEFAULT false,      -- entra a Sync Preventas (migración 053)
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );

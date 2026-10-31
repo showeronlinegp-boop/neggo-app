@@ -116,6 +116,18 @@ export default function SupplierList() {
         }
     }
 
+    async function handleTogglePreventas(supplier, enabled) {
+        const res = await api.post(`/suppliers/${supplier.id}/preventas/toggle`, { enabled });
+        if (res.success) {
+            replaceSupplier(res.data);
+            showToast(res.data.va_a_preventas
+                ? `"${supplier.name}" va a Preventas: revisá lo que propone Sync Preventas`
+                : `"${supplier.name}" ya no va a Preventas: Sync Preventas propone archivar sus productos`, 'success');
+        } else {
+            showToast(res.error || 'Error al cambiar "Va a Preventas"', 'error');
+        }
+    }
+
     async function handleDeactivate(supplier) {
         const res = await api.del(`/suppliers/${supplier.id}`);
         setConfirmDeactivate(null);
@@ -206,6 +218,22 @@ export default function SupplierList() {
                     </div>
                 );
             },
+        },
+        {
+            key: 'va_a_preventas',
+            label: 'Va a Preventas',
+            render: (v, row) => (
+                <div
+                    style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}
+                    onClick={e => e.stopPropagation()}
+                    title="Todo lo scrapeado va a Vínculos; esto decide si además entra a Sync Preventas"
+                >
+                    <Toggle size="sm" checked={!!v} disabled={!isAdmin || !row.active} onChange={val => handleTogglePreventas(row, val)} />
+                    <span style={{ fontSize: t.font.size.sm, color: v ? t.color.text : t.color.textFaint, fontFamily: t.font.family }}>
+                        {v ? 'Sí' : 'No'}
+                    </span>
+                </div>
+            ),
         },
         {
             key: 'default_discount',
@@ -699,8 +727,8 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
             {/* Precios */}
             <div style={sectionTitle}>Precios</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: t.space[4] }}>
-                <FormField label="Descuento (%)" error={errors.default_discount} tokens={t}>
-                    <Input type="number" min="0" max="100" step="0.01" placeholder="0" {...field('default_discount')} style={{ ...t.numericStyle, ...(errors.default_discount ? { borderColor: t.color.danger } : {}) }} />
+                <FormField label="Descuento (%) · negativo = recargo (ej. −10,5 IVA)" error={errors.default_discount} tokens={t}>
+                    <Input type="number" min="-100" max="100" step="0.01" placeholder="0" {...field('default_discount')} style={{ ...t.numericStyle, ...(errors.default_discount ? { borderColor: t.color.danger } : {}) }} />
                 </FormField>
                 <FormField label="Markup Neggo (%)" error={errors.markup_neggo} tokens={t}>
                     <Input type="number" min="0" step="0.01" placeholder="0" {...field('markup_neggo')} style={{ ...t.numericStyle, ...(errors.markup_neggo ? { borderColor: t.color.danger } : {}) }} />
