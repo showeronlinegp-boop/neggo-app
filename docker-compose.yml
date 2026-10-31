@@ -41,6 +41,8 @@ services:
       - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
       # API del agente (Grok Bot). Sin clave (o con menos de 32 caracteres) la API queda deshabilitada
       - AGENTE_API_KEY=${AGENTE_API_KEY:-}
+      # Máximo de ejecuciones de tareas del bot (Claude Code) en 24 horas
+      - AGENTE_TAREAS_MAX_DIA=${AGENTE_TAREAS_MAX_DIA:-10}
       - WHATSAPP_SHOP_URL=${WHATSAPP_SHOP_URL:-}
     volumes:
       - ./volumes/storage:/app/storage
