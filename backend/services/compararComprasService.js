@@ -62,6 +62,8 @@ function motivoSinOferta(p) {
 /**
  * Productos de Neggo con alguna oferta web confirmada, de lo que más se vende a lo que menos.
  * Cada uno trae `ofertas` (resumirOfertas: costo actual, más económico, conviene y todas).
+ * Los renglones que no son mercadería (anticipos, pedidos de preventa) no entran aunque tengan un
+ * vínculo (nota 133: "Pedido Preventa" había quedado vinculado a una oferta por una factura).
  */
 async function listarComparar() {
     const { rows } = await pool.query(
@@ -71,7 +73,7 @@ async function listarComparar() {
                 COALESCE(t.monto, 0) AS venta, COALESCE(t.unidades, 0) AS unidades, COALESCE(t.en_top, false) AS en_top
          FROM odoo_products_cache opc
          LEFT JOIN top t ON t.odoo_id = opc.odoo_id
-         WHERE opc.company = 'neggo' AND ${OFERTA_CONFIRMADA(false)}
+         WHERE opc.company = 'neggo' AND opc.name <> ALL($2::text[]) AND ${OFERTA_CONFIRMADA(false)}
          ORDER BY COALESCE(t.monto, 0) DESC, opc.name`,
         [SEMANAS_VENTA, NO_MERCADERIA, PARTE_TOP]
     );
