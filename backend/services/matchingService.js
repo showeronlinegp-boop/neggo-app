@@ -293,23 +293,29 @@ async function runAutoMatch(supplierId) {
 // =============================================
 
 /**
- * Lista de supplier_products sin ningún mapping activo para un proveedor.
+ * Lista de supplier_products disponibles sin vínculo confirmado para un proveedor.
+ * Se mira el estado y no `active`: desde la tabla maestra `active` solo marca la
+ * oferta habitual que mueve precios, y la mayoría de los confirmados está inactiva (nota 126).
  *
  * @param {number} supplierId
+ * @param {{ search?: string, limit?: number, offset?: number }} [opts]
  * @returns {Promise<Array>}
  */
-async function getUnmappedProducts(supplierId) {
+async function getUnmappedProducts(supplierId, { search = '', limit = 100, offset = 0 } = {}) {
     const { rows } = await pool.query(
         `SELECT sp.id, sp.sku, sp.name, sp.raw_price, sp.source_category,
                 sp.available, sp.last_scraped_at, sp.image_url
          FROM supplier_products sp
          WHERE sp.supplier_id = $1
+           AND sp.available = true
+           AND ($2 = '' OR sp.name ILIKE '%' || $2 || '%' OR sp.sku ILIKE '%' || $2 || '%')
            AND NOT EXISTS (
                SELECT 1 FROM product_mappings pm
-               WHERE pm.supplier_product_id = sp.id AND pm.active = true
+               WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado'
            )
-         ORDER BY sp.name ASC`,
-        [supplierId]
+         ORDER BY sp.name ASC
+         LIMIT $3 OFFSET $4`,
+        [supplierId, search.trim(), limit, offset]
     );
     return rows;
 }
