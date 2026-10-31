@@ -60,6 +60,13 @@ const PRECIO_LATERAL = `
         ${PRECIO_EXPR} AS precio_preventas
     ) p`;
 
+// De cada proveedor entran a Preventas solo las ofertas de la fuente elegida (nota 127):
+// un proveedor web con "Preventas desde Neggo" también tiene ofertas web, que quedan para
+// Reposición y Vínculos. Los de fuente interna (neggo_scraper) solo tienen ofertas de Neggo.
+const FUENTE_PREVENTAS = `
+    sp.source = CASE WHEN s.scraper_key = 'neggo_scraper' OR s.preventas_fuente = 'neggo'
+                     THEN 'neggo' ELSE 'web' END`;
+
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
 const MATCH_SQL = `
@@ -158,9 +165,12 @@ WITH candidates AS (
 
 -- Mejor match por producto scraper (puntaje más alto gana)
 best_by_sp AS (
-    SELECT DISTINCT ON (sp_id) sp_id, odoo_id, match_type, score
-    FROM candidates
-    ORDER BY sp_id, score DESC, match_type
+    SELECT DISTINCT ON (c.sp_id) c.sp_id, c.odoo_id, c.match_type, c.score
+    FROM candidates c
+    JOIN supplier_products sp ON sp.id = c.sp_id
+    JOIN suppliers s ON s.id = sp.supplier_id
+    WHERE ${FUENTE_PREVENTAS}
+    ORDER BY c.sp_id, c.score DESC, c.match_type
 ),
 
 -- Mejor match por producto Odoo (evita que dos scrapers reclamen el mismo)
@@ -233,6 +243,7 @@ JOIN odoo_products_cache opc ON opc.odoo_id = best.odoo_id AND opc.company = 'pr
 ${PRECIO_LATERAL}
 WHERE sp.available = true
   AND s.va_a_preventas = true
+  AND ${FUENTE_PREVENTAS}
   AND best.odoo_id IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
@@ -288,6 +299,7 @@ JOIN odoo_products_cache opc
     )
 ${PRECIO_LATERAL}
 WHERE s.va_a_preventas = true
+  AND ${FUENTE_PREVENTAS}
   AND NOT EXISTS (
     SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
 )
@@ -368,6 +380,7 @@ LEFT JOIN supplier_category_rules scr
     AND scr.active = true
 WHERE sp.available = true
   AND s.va_a_preventas = true
+  AND ${FUENTE_PREVENTAS}
   AND NOT EXISTS (
       SELECT 1 FROM preventas_sync_state pss WHERE pss.supplier_product_id = sp.id
   )

@@ -16,6 +16,10 @@ const { esNoUsar } = require('../utils/noUsar');
  */
 class NeggoScraper extends BaseScraper {
 
+    get fuente() {
+        return 'neggo';
+    }
+
     // Texto en mayúsculas sin acentos ni símbolos (mismo formato que los códigos ya cargados en Odoo)
     static normalizar(texto) {
         return (texto || '')
@@ -175,6 +179,28 @@ class NeggoScraper extends BaseScraper {
             }).catch(() => {});
             throw err;
         }
+    }
+
+    /**
+     * Pasada de Neggo dentro del run de un proveedor web con "Preventas desde Neggo" (nota 127).
+     * Guarda los productos de Neggo del proveedor (source = 'neggo') junto a los de la web,
+     * sin crear otro run ni tocar el estado del run web: solo escribe en su log.
+     * @param {number} runId — run del scraping web (para el log)
+     * @returns {{ found, newProducts, updated, unavailable }}
+     */
+    async actualizarParaPreventas(runId) {
+        this.runId = runId;
+        this.log(`📦 [Neggo] "${this.supplier.name}" toma Preventas desde Neggo: leyendo sus productos de Odoo`);
+        const productos = await this.fetchProductosNeggo();
+
+        this.runStartedAt = new Date();
+        const upsertStats = await this.upsertProducts(productos);
+        // 0 productos = el partner no tiene nada en Neggo o falló Odoo: no borrar nada
+        const unavailable = productos.length > 0 ? await this.markUnavailableSince(this.runStartedAt) : 0;
+
+        this.log(`📊 [Neggo] ${productos.length} productos de Neggo para Preventas, ${upsertStats.new} nuevos, ` +
+            `${upsertStats.updated} actualizados, ${unavailable} eliminados`);
+        return { found: productos.length, newProducts: upsertStats.new, updated: upsertStats.updated, unavailable };
     }
 
     // No usa navegador

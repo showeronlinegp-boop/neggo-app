@@ -6,6 +6,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail } = require('../utils/response');
 const { getProductCategories, getPartners, getPartnerById } = require('../services/odooService');
 const { getAvailableKeys } = require('../scrapers/registry');
+const NeggoScraper = require('../scrapers/neggoScraper');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 const { scheduleRecompute } = require('../services/preventasMatchService');
 const { normalizarCondiciones, guardarCondiciones } = require('../services/supplierCondiciones');
@@ -14,7 +15,7 @@ const { normalizarCondiciones, guardarCondiciones } = require('../services/suppl
 const SUPPLIER_COLS = `
     id, name, prefix, website_url, scraper_key, price_format,
     default_discount, markup_neggo, markup_preventas,
-    scrape_config, last_scraped_at, active, scrape_enabled, va_a_preventas,
+    scrape_config, last_scraped_at, active, scrape_enabled, va_a_preventas, preventas_fuente,
     odoo_vendor_name, pedido_minimo, flete_pct, demora_dias, acepta_auto, condiciones_nota,
     created_at, updated_at
 `;
@@ -440,6 +441,67 @@ router.post('/:id/preventas/toggle', authenticate, requireRole('admin'), async (
     } catch (error) {
         console.error('❌ Error al cambiar "Va a Preventas":', error.message);
         return fail(res, 'Error al cambiar "Va a Preventas"', 500);
+    }
+});
+
+// =============================================
+// POST /:id/preventas/fuente — De dónde toma Preventas los datos de un proveedor web (solo admin, nota 127)
+// Body: { fuente: 'web' | 'neggo' }
+//   web   → lo scrapeado de la web
+//   neggo → los productos de Neggo del proveedor en Odoo; la web se sigue scrapeando para
+//           Reposición y Vínculos pero no entra a Sync Preventas
+// Al pasar a Neggo se leen sus productos de Odoo en el momento (solo lectura) y se recalcula
+// Sync Preventas; de ahí en más se actualizan en cada scraping del proveedor.
+// =============================================
+router.post('/:id/preventas/fuente', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { fuente } = req.body || {};
+        if (!['web', 'neggo'].includes(fuente)) {
+            return fail(res, 'La fuente de Preventas tiene que ser "web" o "neggo"', 400);
+        }
+
+        const { rows: current } = await pool.query(
+            'SELECT id, scraper_key, preventas_fuente, scrape_config FROM suppliers WHERE id = $1', [id]
+        );
+        if (current.length === 0) {
+            return fail(res, 'Proveedor no encontrado', 404);
+        }
+        if (current[0].scraper_key === 'neggo_scraper') {
+            return fail(res, 'Este proveedor ya toma sus productos de Neggo', 400);
+        }
+        if (fuente === 'neggo' && !parseInt(current[0].scrape_config?.odoo_partner_id, 10)) {
+            return fail(res, 'Primero elegí el proveedor de Odoo en la ficha: sin eso no se sabe qué productos de Neggo le corresponden', 400);
+        }
+
+        const { rows } = await pool.query(
+            `UPDATE suppliers SET preventas_fuente = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING ${SUPPLIER_COLS}`,
+            [id, fuente]
+        );
+        const s = rows[0];
+        console.log(`✅ "${s.name}" toma Preventas desde ${fuente === 'neggo' ? 'Neggo (Odoo)' : 'la web'}`);
+
+        if (fuente !== current[0].preventas_fuente) {
+            if (fuente === 'neggo') {
+                // En segundo plano: leer de Odoo puede tardar unos segundos
+                setImmediate(async () => {
+                    try {
+                        await new NeggoScraper(s, pool).actualizarParaPreventas(null);
+                    } catch (err) {
+                        console.error(`❌ Productos de Neggo de "${s.name}":`, err.message);
+                    }
+                    scheduleRecompute(pool);
+                });
+            } else {
+                scheduleRecompute(pool);
+            }
+        }
+        return ok(res, withComputed(s));
+    } catch (error) {
+        console.error('❌ Error al cambiar la fuente de Preventas:', error.message);
+        return fail(res, 'Error al cambiar la fuente de Preventas', 500);
     }
 });
 
