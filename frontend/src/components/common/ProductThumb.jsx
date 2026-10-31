@@ -21,7 +21,10 @@ export default function ProductThumb({ emoji, imageUrl, size = 44, style }) {
         background: t.color.surface2,
         ...style,
       }}>
+        {/* key = src: al cambiar de producto se arma un <img> nuevo, así no queda la foto anterior
+            mientras carga la otra ni queda oculta por un error de la foto previa (nota 134) */}
         <img
+          key={src}
           src={src}
           alt=""
           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
