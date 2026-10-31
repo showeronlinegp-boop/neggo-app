@@ -37,7 +37,7 @@ function catalogSalePrice(row, company) {
         markup_neggo_override: row.markup_neggo_override,
         markup_preventas_override: row.markup_preventas_override,
     };
-    const sale = calculatePrices({ raw_price: raw }, supplier, rule, company).sale_price;
+    const sale = calculatePrices({ raw_price: raw, source: row.source }, supplier, rule, company).sale_price;
     if (!Number.isFinite(sale) || sale <= 0) return null;
     const label = formatMoneyAR(sale);
     if (!label) return null;

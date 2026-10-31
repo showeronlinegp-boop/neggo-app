@@ -37,7 +37,7 @@ async function addItemToOrder(orderId, supplierProductId, quantity, pricelistId 
     // Obtener el producto con datos del proveedor
     const productResult = await pool.query(
         `SELECT sp.id, sp.name, sp.sku, sp.raw_price, sp.image_url,
-                sp.source_category, sp.supplier_id,
+                sp.source_category, sp.supplier_id, sp.source,
                 s.id as supplier_id, s.name as supplier_name,
                 s.default_discount, s.markup_preventas
          FROM supplier_products sp

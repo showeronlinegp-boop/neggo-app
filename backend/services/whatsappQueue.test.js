@@ -42,6 +42,8 @@ function testPrice() {
     const priced = catalogSalePrice(priceRow(), 'preventas');
     assert.deepStrictEqual(priced, { amount: 1523, label: '$1.523' });
     assert.strictEqual(catalogSalePrice(priceRow(), 'neggo').label, '$1.218');
+    // Fuente Neggo: sin flete encima del costo de Neggo (nota 129)
+    assert.strictEqual(catalogSalePrice(priceRow({ source: 'neggo' }), 'preventas').amount, 1500);
     assert.strictEqual(catalogSalePrice(priceRow({ list_price: 99999 }), 'preventas').amount, 1523);
     assert.strictEqual(catalogSalePrice(priceRow({ has_image: false }), 'preventas'), null);
     assert.strictEqual(catalogSalePrice(priceRow({ template_id: null }), 'preventas'), null);

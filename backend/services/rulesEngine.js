@@ -8,14 +8,20 @@
  * - costo:     lista × (1 - descuento/100 + 0.015)   [flete 1.5% sobre lista]
  * - neggo:     lista × 1.015 × (1 + markup_neggo/100)
  * - preventas: lista × 1.015 × (1 + markup_preventas/100)
+ *
+ * Oferta de fuente Neggo (supplierProduct.source = 'neggo'): raw_price ya es el costo de Neggo,
+ * con el descuento del proveedor aplicado. No se vuelve a descontar ni se suma flete (nota 129),
+ * igual que en Sync Preventas.
  */
 function calculatePrices(supplierProduct, supplier, categoryRule, company) {
     const rawPrice = parseFloat(supplierProduct.raw_price);
+    const esNeggo = supplierProduct.source === 'neggo';
 
-    // Descuento: override de regla > default del proveedor
-    const discount = categoryRule?.discount_override != null
-        ? parseFloat(categoryRule.discount_override)
-        : parseFloat(supplier.default_discount ?? 0);
+    // Descuento: override de regla > default del proveedor (nunca sobre el costo de Neggo)
+    const discount = esNeggo ? 0
+        : categoryRule?.discount_override != null
+            ? parseFloat(categoryRule.discount_override)
+            : parseFloat(supplier.default_discount ?? 0);
 
     // Markup por empresa: override de la regla > markup del proveedor
     let markup;
@@ -29,7 +35,7 @@ function calculatePrices(supplierProduct, supplier, categoryRule, company) {
             : parseFloat(supplier.markup_preventas ?? 0);
     }
 
-    const FLETE = 0.015;
+    const FLETE = esNeggo ? 0 : 0.015;
     const cost      = rawPrice * (1 - discount / 100 + FLETE);
     const salePrice = rawPrice * (1 + FLETE) * (1 + markup / 100);
 
