@@ -14,6 +14,7 @@
 // POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
 // GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
+// POST   /api/mappings/vincular/referencia        — { odooProductId, ref } cambia el código en Odoo (nota 117)
 // GET    /api/mappings/vincular/sin-habitual      — con oferta confirmada y sin habitual
 // POST   /api/mappings/vincular/repasar-ingresos  — repasa todos los ingresos confirmados
 //
@@ -386,6 +387,18 @@ router.post('/vincular/rechazar', authenticate, requireRole('admin', 'operador')
     } catch (err) {
         console.error('❌ Error al rechazar el vínculo:', err.message);
         return fail(res, 'Error al rechazar el vínculo', 500);
+    }
+});
+
+router.post('/vincular/referencia', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    if (!odooProductId || typeof (req.body.ref ?? '') !== 'string') return fail(res, 'odooProductId y ref (texto) son requeridos', 400);
+    try {
+        return ok(res, await vincular.cambiarReferencia({ odooProductId, ref: req.body.ref, userId: req.user.id }));
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ Error al cambiar el código de referencia:', err.message);
+        return fail(res, `No se pudo cambiar el código en Odoo: ${err.message}`, 500);
     }
 });
 

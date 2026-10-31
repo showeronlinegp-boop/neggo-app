@@ -6,10 +6,13 @@
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
 // Solo Neggo: Preventas es un dato de origen y Precompras (origen "neggo") es base de costos.
-// Ninguna decisión escribe en Odoo. Con la tabla maestra prendida, lo confirmado queda activo y
-// el habitual pasa a mover precios (siempre con la alerta de Neggo, que se aprueba a mano).
+// Ninguna decisión escribe en Odoo, salvo cambiar el código de referencia de un producto (nota 117):
+// va a Odoo porque la sincronización lo vuelve a traer. Con la tabla maestra prendida, lo
+// confirmado queda activo y el habitual pasa a mover precios (siempre con la alerta de Neggo,
+// que se aprueba a mano).
 
 const pool = require('../config/database');
+const odoo = require('../config/odoo');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
 
 // Tarjetas que se muestran por semana (las revisa una sola persona)
@@ -281,6 +284,85 @@ async function rechazarPar({ supplierProductId, odooProductId, userId }) {
     });
 }
 
+// Largo máximo del código de referencia que se acepta desde la pantalla
+const REF_MAX = 64;
+
+// Referencia sin símbolos y en mayúsculas, como la compara el lote por código
+const refLimpia = (ref) => String(ref || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+/**
+ * Cambia el código de referencia de un producto de Neggo en Odoo y en la app (nota 117).
+ * Los vínculos por código de ese producto cuya oferta ya no coincide con el código nuevo
+ * (SKU = 'PRE' + referencia sin símbolos) quedan rechazados, como un "No es este".
+ * @param {{ odooProductId: number, ref: string, userId: number }} opts — ref vacía borra el código
+ * @param {{ callOdoo: Function, getCompanyIds: Function }} deps — reemplazables en los tests
+ * @returns {Promise<{ antes: string|null, despues: string|null, desvinculados: number }>}
+ */
+async function cambiarReferencia({ odooProductId, ref, userId }, deps = odoo) {
+    const nueva = String(ref ?? '').trim() || null;
+    if (nueva && nueva.length > REF_MAX) {
+        throw Object.assign(new Error(`El código no puede tener más de ${REF_MAX} caracteres`), { status: 400 });
+    }
+
+    const { rows: [producto] } = await pool.query(
+        `SELECT odoo_id, name, internal_ref FROM odoo_products_cache WHERE company = 'neggo' AND odoo_id = $1`,
+        [odooProductId]
+    );
+    if (!producto) throw Object.assign(new Error('No se encontró el producto de Neggo'), { status: 404 });
+    if ((producto.internal_ref || null) === nueva) return { antes: producto.internal_ref, despues: nueva, desvinculados: 0 };
+
+    // Otro producto con el mismo código es justamente lo que arma los conflictos
+    if (nueva) {
+        const { rows: [otro] } = await pool.query(
+            `SELECT name FROM odoo_products_cache
+             WHERE company = 'neggo' AND odoo_id <> $1
+               AND regexp_replace(UPPER(internal_ref), '[^A-Z0-9]', '', 'g') = $2
+             LIMIT 1`,
+            [odooProductId, refLimpia(nueva)]
+        );
+        if (otro) throw Object.assign(new Error(`Ese código ya lo tiene "${otro.name}"`), { status: 409 });
+    }
+
+    // Primero Odoo: si falla, la app no queda distinta de Odoo
+    const { neggo } = await deps.getCompanyIds();
+    await deps.callOdoo('product.product', 'write',
+        [[odooProductId], { default_code: nueva || false }],
+        { context: { allowed_company_ids: [neggo] } }
+    );
+    console.log(`✅ Código de ${producto.name} (${odooProductId}) cambiado en Odoo: ${producto.internal_ref || '—'} → ${nueva || '—'}`);
+
+    const desvinculados = await enTransaccion(async (db) => {
+        await db.query(
+            `UPDATE odoo_products_cache SET internal_ref = $1 WHERE company = 'neggo' AND odoo_id = $2`,
+            [nueva, odooProductId]
+        );
+        const { rows } = await db.query(
+            `UPDATE product_mappings pm SET estado = 'rechazado', active = false, es_habitual = false
+             FROM supplier_products sp
+             WHERE sp.id = pm.supplier_product_id
+               AND pm.odoo_product_id = $1 AND pm.odoo_company = 'neggo'
+               AND pm.metodo = ANY($2::text[]) AND pm.estado <> 'rechazado'
+               AND ($3::text = '' OR UPPER(sp.sku) <> 'PRE' || $3::text)
+             RETURNING pm.supplier_product_id, pm.metodo, pm.match_confidence`,
+            [odooProductId, METODOS_CODIGO, refLimpia(nueva)]
+        );
+        for (const r of rows) {
+            await db.query(
+                `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+                 VALUES ($1, $2, 'neggo', 'rechazado', $3, $4, $5)`,
+                [r.supplier_product_id, odooProductId, r.metodo, r.match_confidence, userId]
+            );
+        }
+        await db.query(
+            `UPDATE product_mappings SET odoo_internal_ref = $1 WHERE odoo_product_id = $2 AND odoo_company = 'neggo'`,
+            [nueva, odooProductId]
+        );
+        return rows.length;
+    });
+    if (desvinculados) console.log(`📦 ${desvinculados} vínculo(s) por código de ${producto.name} rechazados por el cambio de código`);
+    return { antes: producto.internal_ref, despues: nueva, desvinculados };
+}
+
 /**
  * Productos de Neggo con alguna oferta web confirmada y sin habitual (informativo: el habitual es
  * la oferta del proveedor principal de Odoo; si el principal no tiene oferta, queda sin habitual).
@@ -345,5 +427,5 @@ async function resumen() {
 
 module.exports = {
     listarLoteCodigo, decidirLote, listarTarjetas, decidirTarjeta, listarConflictosDetalle,
-    rechazarPar, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
+    rechazarPar, cambiarReferencia, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
 };
