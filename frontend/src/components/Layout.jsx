@@ -266,6 +266,8 @@ export default function Layout() {
     const [unmappedCount, setUnmappedCount] = useState(0);
     const [openGroups, setOpenGroups] = useState(leerGruposAbiertos);
     const [compactoGuardado, setCompactoGuardado] = useState(leerCompacto);
+    // En el celular las notas de prueba no flotan: se activan con un botón del encabezado
+    const [slotNotas, setSlotNotas] = useState(null);
     // En el celular el menú se abre entero sobre la pantalla: nunca va comprimido
     const compacto = compactoGuardado && !isMobile;
 
@@ -435,6 +437,7 @@ export default function Layout() {
                 <Topbar
                     title={pageTitle}
                     onMenuClick={isMobile ? toggleSidebar : undefined}
+                    actions={user?.role === 'admin' && isMobile ? <div ref={setSlotNotas} style={{ display: 'flex' }} /> : undefined}
                 />
                 {/* data-app-main: contenedor que scrollea (lo usan los pines de las notas de prueba) */}
                 <main data-app-main="" style={{
@@ -451,7 +454,7 @@ export default function Layout() {
             <ScrapingTerminal />
 
             {/* Notas de prueba: solo admins; se oculta sola si el backend no las habilita */}
-            {user?.role === 'admin' && <TestNotes pantalla={pageTitle} />}
+            {user?.role === 'admin' && <TestNotes pantalla={pageTitle} ocultable={isMobile} slotBoton={slotNotas} />}
         </div>
     );
 }

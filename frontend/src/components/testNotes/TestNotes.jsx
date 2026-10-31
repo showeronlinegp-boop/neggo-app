@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTheme } from '../../theme/ThemeContext';
 import api from '../../api/client';
+import * as Icon from '../common/icons';
 import { snapshotContext } from './testNotesCapture';
 import {
     OWN_UI_ATTR, isOwnUi, buildSelector, describeElement, relativePosition, pinPosition, findBySelector,
@@ -38,6 +39,13 @@ const VIVAS = ['abierta', 'en_curso', 'consulta', 'para_revisar'];
 const POLL_MS = 60000;
 const Z = 2100; // por encima de la terminal de scraping
 
+// En el celular los botones flotantes y los pines tapan la pantalla: arrancan ocultos y se recuerda si los activaste
+const VISIBLES_KEY = 'neggo.testNotes.visibles';
+
+function leerVisibles() {
+    try { return localStorage.getItem(VISIBLES_KEY) === '1'; } catch { return false; }
+}
+
 function tonoEstado(t, estado) {
     switch (estado) {
         case 'abierta':      return { fg: t.color.danger,  bg: t.color.dangerSoft };
@@ -49,7 +57,8 @@ function tonoEstado(t, estado) {
     }
 }
 
-export default function TestNotes({ pantalla }) {
+// ocultable: en el celular no flota nada hasta activarlo con el botón que se monta en slotBoton (encabezado)
+export default function TestNotes({ pantalla, ocultable = false, slotBoton = null }) {
     const { tokens: t } = useTheme();
     const location = useLocation();
     const navigate = useNavigate();
@@ -64,6 +73,14 @@ export default function TestNotes({ pantalla }) {
     const [soloPantalla, setSoloPantalla] = useState(false);
     const [enfocada, setEnfocada] = useState(null);    // id de la nota resaltada
     const [, setTick] = useState(0);                   // fuerza recálculo de pines
+    const [visibles, setVisibles] = useState(leerVisibles);
+
+    const toggleVisibles = () => {
+        setVisibles(prev => {
+            try { localStorage.setItem(VISIBLES_KEY, prev ? '0' : '1'); } catch { /* sin storage: queda en memoria */ }
+            return !prev;
+        });
+    };
 
     const cargar = useCallback(async () => {
         const res = await api.get('/test-notes');
@@ -174,7 +191,9 @@ export default function TestNotes({ pantalla }) {
 
     const rutaActual = location.pathname + location.search;
     const vivas = notas.filter(n => VIVAS.includes(n.estado));
-    const pinesPantalla = notas.filter(n => n.ruta === rutaActual && (VIVAS.includes(n.estado) || n.id === enfocada));
+    // Mientras marcás o tenés el panel abierto se muestra todo aunque esté oculto
+    const mostrar = !ocultable || visibles || marcando || panelAbierto;
+    const pinesPantalla = !mostrar ? [] : notas.filter(n => n.ruta === rutaActual && (VIVAS.includes(n.estado) || n.id === enfocada));
     const filtroDef = FILTROS.find(f => f.key === filtro);
     const listadas = notas
         .filter(n => !filtroDef.estados || filtroDef.estados.includes(n.estado))
@@ -189,7 +208,31 @@ export default function TestNotes({ pantalla }) {
         fontFamily: t.font.family, cursor: 'pointer', fontWeight: t.font.weight.medium,
     });
 
-    return createPortal(
+    const botonEncabezado = ocultable && slotBoton && createPortal(
+        <button
+            {...own} type="button" onClick={toggleVisibles}
+            title={visibles ? 'Ocultar notas de prueba' : 'Mostrar notas de prueba'}
+            style={{
+                position: 'relative', width: 36, height: 36, borderRadius: t.radius.sm,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                color: visibles ? t.color.primary : t.color.textMuted,
+                background: visibles ? t.color.primarySoft : 'transparent',
+                border: `1px solid ${visibles ? t.color.primary : t.color.border}`,
+            }}
+        >
+            <Icon.Edit2 size={18} />
+            {vivas.length > 0 && (
+                <span style={{
+                    position: 'absolute', top: -6, right: -6, minWidth: 18, height: 18, padding: '0 5px', boxSizing: 'border-box',
+                    borderRadius: t.radius.full, background: t.color.accent, color: t.color.surface,
+                    fontSize: 11, fontWeight: t.font.weight.bold, fontFamily: t.font.family, lineHeight: '18px', ...t.numericStyle,
+                }}>{vivas.length}</span>
+            )}
+        </button>,
+        slotBoton
+    );
+
+    return <>{botonEncabezado}{createPortal(
         <>
             {/* Pines numerados sobre la pantalla actual */}
             {pinesPantalla.map(n => {
@@ -243,14 +286,14 @@ export default function TestNotes({ pantalla }) {
             )}
 
             {/* Botones flotantes */}
-            <div {...own} style={{ position: 'fixed', right: 20, bottom: 20, zIndex: Z, display: 'flex', gap: t.space[2] }}>
+            {mostrar && <div {...own} style={{ position: 'fixed', right: 20, bottom: 20, zIndex: Z, display: 'flex', gap: t.space[2] }}>
                 <button {...own} onClick={() => { setMarcando(m => !m); setBorrador(null); }} style={{ ...boton(marcando), padding: '8px 14px', fontSize: t.font.size.sm, boxShadow: t.shadow.pop, background: marcando ? t.color.primarySoft : t.color.accent, color: marcando ? t.color.primary : t.color.surface, border: 'none' }}>
                     {marcando ? 'Cancelar' : 'Marcar'}
                 </button>
                 <button {...own} onClick={() => setPanelAbierto(p => !p)} style={{ ...boton(panelAbierto), padding: '8px 14px', fontSize: t.font.size.sm, boxShadow: t.shadow.pop }}>
                     Notas ({vivas.length})
                 </button>
-            </div>
+            </div>}
 
             {/* Panel lateral */}
             {panelAbierto && (
@@ -321,7 +364,7 @@ export default function TestNotes({ pantalla }) {
             )}
         </>,
         document.body
-    );
+    )}</>;
 }
 
 function TarjetaNota({ nota: n, tokens: t, enfocada, own, boton, onIr, onEnviar, onEstado, onBorrar }) {
