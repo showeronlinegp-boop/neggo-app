@@ -30,6 +30,12 @@ const NOT_MERCHANDISE = ['Down Payment (POS)', 'Pedido Preventa'];
 const PACK_TOLERANCE = 0.15;
 const PACK_MAX = 500;
 
+// Proveedor de Odoo de un proveedor de la app (migración 054): varios pueden apuntar al mismo
+// (ej. "Parnassa Web" → "Parnassa"). Se usa para sugerir y para el "proveedor del pedido".
+// El habitual (el que mueve costos en Odoo) sigue pidiendo el nombre exacto: que una web
+// pase a mover precios en Odoo es una decisión aparte.
+const proveedorOdoo = (alias) => `COALESCE(NULLIF(${alias}.odoo_vendor_name, ''), ${alias}.name)`;
+
 // Nombre normalizado para comparar (sin acentos, minúsculas)
 const normName = col => `translate(LOWER(${col}), 'áéíóúüàèìòùñ', 'aeiouuaeioun')`;
 
@@ -197,7 +203,7 @@ async function candidatosPorCodigo(db) {
              match_type, match_confidence, active, estado, metodo)
          SELECT sp.id, opc.odoo_id, 'neggo', opc.internal_ref, 'codigo', 1.0, false, 'sugerido', 'codigo'
          FROM odoo_products_cache opc
-         JOIN suppliers s ON s.name = opc.vendor_name
+         JOIN suppliers s ON ${proveedorOdoo('s')} = opc.vendor_name
          JOIN supplier_products sp ON sp.supplier_id = s.id AND sp.source = 'web'
               AND UPPER(sp.sku) = 'PRE' || regexp_replace(UPPER(opc.internal_ref), '[^A-Z0-9]', '', 'g')
          WHERE opc.company = 'neggo' AND COALESCE(opc.internal_ref, '') <> ''
@@ -223,7 +229,7 @@ async function candidatosPorNombre(db) {
                     ) AS orden
              FROM tmp_top_ventas t
              JOIN odoo_products_cache opc ON opc.odoo_id = t.odoo_id AND opc.company = 'neggo'
-             JOIN suppliers s ON s.name = opc.vendor_name
+             JOIN suppliers s ON ${proveedorOdoo('s')} = opc.vendor_name
              JOIN supplier_products sp ON sp.supplier_id = s.id AND sp.source = 'web'
              WHERE NOT EXISTS (
                      SELECT 1 FROM product_mappings pm
@@ -822,7 +828,7 @@ async function ofertasPorProducto(productos, db = pool) {
     const { rows } = await db.query(
         `SELECT pm.odoo_product_id, v.supplier_product_id, v.proveedor, v.name, v.sku, v.precio_comparable,
                 v.pack_cantidad, v.available, v.last_scraped_at, sp.product_url, pm.es_habitual,
-                (opc.vendor_name = v.proveedor) AS es_principal
+                (opc.vendor_name = v.proveedor_odoo) AS es_principal
          FROM product_mappings pm
          JOIN v_ofertas_comparables v ON v.supplier_product_id = pm.supplier_product_id
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id

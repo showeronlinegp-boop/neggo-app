@@ -544,6 +544,13 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
         markup_preventas: supplier?.markup_preventas ?? '',
         scrape_enabled:   supplier ? !!supplier.scrape_enabled : true,
         odoo_partner_id:  supplier?.scrape_config?.odoo_partner_id || null,
+        // Condiciones de compra (migración 054)
+        odoo_vendor_name: supplier?.odoo_vendor_name || '',
+        pedido_minimo:    supplier?.pedido_minimo ?? '',
+        flete_pct:        supplier?.flete_pct ?? '',
+        demora_dias:      supplier?.demora_dias ?? '',
+        acepta_auto:      !!supplier?.acepta_auto,
+        condiciones_nota: supplier?.condiciones_nota || '',
     });
     const [type, setType] = useState(sourceType(supplier?.scraper_key));
     const [errors, setErrors] = useState({});
@@ -596,6 +603,10 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
         for (const k of ['default_discount', 'markup_neggo', 'markup_preventas']) {
             if (form[k] !== '' && isNaN(Number(form[k]))) errs[k] = 'Debe ser un número';
         }
+        const n = k => Number(form[k]);
+        if (form.pedido_minimo !== '' && (isNaN(n('pedido_minimo')) || n('pedido_minimo') < 0)) errs.pedido_minimo = 'Poné un monto de 0 o más';
+        if (form.flete_pct !== '' && (isNaN(n('flete_pct')) || n('flete_pct') < 0 || n('flete_pct') > 100)) errs.flete_pct = 'Entre 0 y 100';
+        if (form.demora_dias !== '' && (!Number.isInteger(n('demora_dias')) || n('demora_dias') < 0 || n('demora_dias') > 365)) errs.demora_dias = 'Días enteros, de 0 a 365';
         return errs;
     }
 
@@ -616,6 +627,14 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
             markup_neggo:     num(form.markup_neggo),
             markup_preventas: num(form.markup_preventas),
             scrape_enabled:   form.scrape_enabled && scraperAvailable,
+            condiciones: {
+                odoo_vendor_name: form.odoo_vendor_name,
+                pedido_minimo:    num(form.pedido_minimo),
+                flete_pct:        num(form.flete_pct),
+                demora_dias:      num(form.demora_dias),
+                acepta_auto:      form.acepta_auto,
+                condiciones_nota: form.condiciones_nota,
+            },
         };
         // El partner de Odoo solo se toca con fuente interna (los web también lo tienen guardado)
         if (type === 'interno') body.odoo_partner_id = form.odoo_partner_id;
@@ -744,6 +763,43 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
             )}
             <div style={{ ...hint, marginTop: t.space[2] }}>
                 Cada categoría puede pisar estos valores desde Reglas.
+            </div>
+
+            {/* Condiciones de compra: las usa Reposición para armar los pedidos */}
+            <div style={sectionTitle}>Condiciones de compra</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
+                <FormField label="Nombre del proveedor en Odoo" tokens={t}>
+                    <Input placeholder={form.name || 'Igual que el nombre'} {...field('odoo_vendor_name')} />
+                    <span style={hint}>
+                        Tal cual figura como proveedor de los productos en Odoo. Vacío = el mismo nombre de arriba.
+                        Sirve para que una web aparte (ej. «Parnassa Web») cuente como el mismo proveedor.
+                    </span>
+                </FormField>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: t.space[4] }}>
+                    <FormField label="Pedido mínimo ($, sin IVA)" error={errors.pedido_minimo} tokens={t}>
+                        <Input type="number" min="0" step="1" placeholder="Sin mínimo" {...field('pedido_minimo')} style={{ ...t.numericStyle, ...(errors.pedido_minimo ? { borderColor: t.color.danger } : {}) }} />
+                    </FormField>
+                    <FormField label="Flete (%)" error={errors.flete_pct} tokens={t}>
+                        <Input type="number" min="0" max="100" step="0.1" placeholder="1,5" {...field('flete_pct')} style={{ ...t.numericStyle, ...(errors.flete_pct ? { borderColor: t.color.danger } : {}) }} />
+                    </FormField>
+                    <FormField label="Demora (días)" error={errors.demora_dias} tokens={t}>
+                        <Input type="number" min="0" max="365" step="1" placeholder="—" {...field('demora_dias')} style={{ ...t.numericStyle, ...(errors.demora_dias ? { borderColor: t.color.danger } : {}) }} />
+                    </FormField>
+                </div>
+                <FormField label="Notas (forma de pago, por dónde se pide, horarios)" tokens={t}>
+                    <textarea
+                        rows={3}
+                        placeholder="Ej: transferencia por adelantado; pedido por WhatsApp hasta el jueves"
+                        {...field('condiciones_nota')}
+                        style={{
+                            width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '8px 12px',
+                            border: `1px solid ${t.color.borderStrong}`, borderRadius: t.radius.sm,
+                            background: t.color.surface, color: t.color.text,
+                            fontSize: t.font.size.sm, fontFamily: t.font.family,
+                        }}
+                    />
+                </FormField>
+                <span style={hint}>Sin flete cargado se usa el 1,5 % de siempre. La demora es la que dice el proveedor; después se compara con lo que tarda de verdad.</span>
             </div>
 
             {saving && <div style={{ ...hint, marginTop: t.space[4] }}>Guardando…</div>}
