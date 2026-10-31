@@ -1,8 +1,10 @@
 // Cruce de productos revisado por Claude (plan de reposición automática, punto 5).
 // Lo corre una sesión de Claude Code (tareas del bot o a mano) con scripts/cruceClaude.js:
-//   1. lote       → toma los productos que más se venden y tienen menos de 2 proveedores web
-//                   confirmados, les busca candidatos (de su proveedor de Odoo y de los demás)
-//                   y guarda la tanda con una letra por candidato.
+//   1. lote       → toma los productos activos de Neggo (y los archivados del top de venta) con
+//                   menos de 2 proveedores web confirmados, de lo que más se vende a lo que menos
+//                   (nota 139: todos, no solo el top), les busca candidatos (de su proveedor de
+//                   Odoo y de los demás) y guarda la tanda con una letra por candidato.
+//                   Se pueden elegir varias letras si son de proveedores distintos.
 //   2. registrar  → Claude contesta una línea por producto; lo elegido queda como SUGERIDO
 //                   (metodo 'claude') para que una persona lo confirme en Vincular.
 // Nada se confirma solo, no toca Odoo ni precios. Los productos revisados no vuelven a una
@@ -23,6 +25,8 @@ const PARTE_TOP = 0.80;
 const SEMANAS_VENTA = 6;
 // Lo que se guarda como match_confidence según lo que dice Claude
 const CONFIANZA = { alta: 0.95, media: 0.75 };
+// Productos de Odoo que no son mercadería (anticipos y pedidos de preventa)
+const NO_MERCADERIA = ['Down Payment (POS)', 'Pedido Preventa'];
 const LETRAS = 'abcdefghijklmnopqrstuvwxyz';
 
 const normName = col => `translate(LOWER(${col}), 'áéíóúüàèìòùñ', 'aeiouuaeioun')`;
@@ -37,8 +41,9 @@ function idLote(ahora = new Date()) {
 }
 
 /**
- * Productos del top de venta con menos de 2 proveedores web confirmados y sin revisión reciente.
- * Incluye archivados en Odoo (archivado = agotado: son los que hay que reponer).
+ * Productos con menos de 2 proveedores web confirmados y sin revisión reciente, de lo que más se
+ * vende a lo que menos: todos los activos de Neggo (nota 139) y, del top de venta, también los
+ * archivados en Odoo (archivado = agotado: son los que hay que reponer).
  */
 async function productosParaRevisar(db, limite) {
     const { rows } = await db.query(
@@ -62,19 +67,21 @@ async function productosParaRevisar(db, limite) {
              GROUP BY pm.odoo_product_id
          )
          SELECT opc.odoo_id, opc.name, opc.internal_ref, opc.standard_price, opc.list_price,
-                opc.categ_name, opc.vendor_name, opc.active, t.monto AS venta,
+                opc.categ_name, opc.vendor_name, opc.active, COALESCE(t.monto, 0) AS venta,
                 COALESCE(c.proveedores, '{}') AS confirmados_con
-         FROM top t
-         JOIN odoo_products_cache opc ON opc.odoo_id = t.odoo_id AND opc.company = 'neggo'
+         FROM odoo_products_cache opc
+         LEFT JOIN top t ON t.odoo_id = opc.odoo_id
          LEFT JOIN confirmados c ON c.odoo_product_id = opc.odoo_id
-         WHERE t.en_top
+         WHERE opc.company = 'neggo'
+           AND (opc.active OR COALESCE(t.en_top, false))
+           AND opc.name <> ALL($5::text[])
            AND COALESCE(array_length(c.proveedores, 1), 0) < 2
            AND NOT EXISTS (SELECT 1 FROM cruce_revisiones cr
                            WHERE cr.odoo_product_id = opc.odoo_id AND cr.odoo_company = 'neggo'
                              AND cr.created_at > NOW() - ($3::int * INTERVAL '1 day'))
-         ORDER BY t.monto DESC, opc.odoo_id
+         ORDER BY COALESCE(t.monto, 0) DESC, opc.odoo_id
          LIMIT $4`,
-        [SEMANAS_VENTA, PARTE_TOP, DIAS_REPASO, limite]
+        [SEMANAS_VENTA, PARTE_TOP, DIAS_REPASO, limite, NO_MERCADERIA]
     );
     return rows;
 }
@@ -176,6 +183,7 @@ function formatearLote(lote) {
         `# Tanda ${lote.id} — ${lote.productos.length} productos`,
         '# Contestá una línea por producto:  <odoo_id> <letra|-|?> <alta|media> <motivo>',
         '#   letra = es el mismo producto (mismo modelo, medida y presentación; un pack se acepta si el precio por unidad cierra)',
+        '#   a,c   = varias letras si el mismo producto está en proveedores distintos (una por proveedor)',
         '#   -     = ninguno es el mismo      ?     = no alcanza para decidir (falta color, medida o precio)',
         '#   La confianza va solo con letra. El motivo es corto y es lo que va a leer quien confirme.',
         '',
@@ -201,7 +209,8 @@ function formatearLote(lote) {
 }
 
 /**
- * Lee las respuestas: "<odoo_id> <letra|-|?> [alta|media] [motivo...]". Líneas vacías o con # se ignoran.
+ * Lee las respuestas: "<odoo_id> <letra[,letra...]|-|?> [alta|media] [motivo...]". Líneas vacías o
+ * con # se ignoran. Varias letras (proveedores distintos) quedan como "a,c" en marca.
  * @returns {{ decisiones: Array<{odoo_id, marca, confianza, motivo}>, errores: string[] }}
  */
 function parsearDecisiones(texto) {
@@ -211,9 +220,9 @@ function parsearDecisiones(texto) {
         const l = linea.trim();
         // "#123 ..." es una respuesta (se puede copiar el id como aparece); "# texto" es comentario
         if (!l || (l.startsWith('#') && !/^#\d/.test(l))) return;
-        const m = l.match(/^#?(\d+)\s+([a-z]|-|\?)(?:\s+(alta|media))?(?:\s+(.*))?$/i);
+        const m = l.match(/^#?(\d+)\s+([a-z](?:\s*,\s*[a-z])*|-|\?)(?:\s+(alta|media))?(?:\s+(.*))?$/i);
         if (!m) { errores.push(`Línea ${i + 1}: no se entiende "${l}"`); return; }
-        const marca = m[2].toLowerCase();
+        const marca = m[2].toLowerCase().replace(/\s+/g, '');
         const confianza = m[3] ? m[3].toLowerCase() : null;
         if (/[a-z]/.test(marca) && !confianza) { errores.push(`Línea ${i + 1}: falta la confianza (alta o media)`); return; }
         decisiones.push({ odoo_id: Number(m[1]), marca, confianza: /[a-z]/.test(marca) ? confianza : null, motivo: (m[4] || '').trim() || null });
@@ -240,10 +249,18 @@ function validarDecisiones(productos, decisiones) {
                 supplier_product_id: null, confianza: null, motivo: d.motivo, candidatos: p.candidatos.length });
             continue;
         }
-        const c = p.candidatos.find(x => x.letra === d.marca);
-        if (!c) { errores.push(`#${d.odoo_id}: la letra "${d.marca}" no existe`); continue; }
-        validas.push({ odoo_id: d.odoo_id, ref: p.ref, resultado: 'elegido', supplier_product_id: c.supplier_product_id,
-            confianza: d.confianza, motivo: d.motivo, candidatos: p.candidatos.length, proveedor: c.proveedor });
+        // Una o varias letras; varias solo si son de proveedores distintos (nota 139)
+        const letras = [...new Set(d.marca.split(','))];
+        const elegidos = letras.map(l => p.candidatos.find(x => x.letra === l));
+        const falta = letras.find((l, i) => !elegidos[i]);
+        if (falta) { errores.push(`#${d.odoo_id}: la letra "${falta}" no existe`); continue; }
+        const proveedores = elegidos.map(c => c.proveedor);
+        const repetido = proveedores.find((pr, i) => proveedores.indexOf(pr) !== i);
+        if (repetido) { errores.push(`#${d.odoo_id}: elegiste dos ofertas de ${repetido}; va una por proveedor`); continue; }
+        for (const c of elegidos) {
+            validas.push({ odoo_id: d.odoo_id, ref: p.ref, resultado: 'elegido', supplier_product_id: c.supplier_product_id,
+                confianza: d.confianza, motivo: d.motivo, candidatos: p.candidatos.length, proveedor: c.proveedor });
+        }
     }
     const faltan = productos.filter(p => !vistos.has(p.odoo_id)).map(p => p.odoo_id);
     return { validas, errores, faltan };
