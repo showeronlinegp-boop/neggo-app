@@ -86,7 +86,7 @@ async function listarSinOferta() {
     const { rows } = await pool.query(
         `WITH ${VENTAS_CTE},
          con_web AS (
-             SELECT DISTINCT s.name FROM suppliers s
+             SELECT DISTINCT COALESCE(NULLIF(s.odoo_vendor_name, ''), s.name) AS name FROM suppliers s
              JOIN supplier_products sp ON sp.supplier_id = s.id AND sp.source = 'web' AND sp.raw_price > 0
          )
          SELECT opc.odoo_id, opc.name, opc.internal_ref, opc.vendor_name, opc.standard_price,
@@ -135,7 +135,7 @@ async function masParecidas(odooIds) {
         const { rows } = await db.query(
             `SELECT opc.odoo_id, o.supplier_product_id, similarity(o.nombre, ${normName('opc.name')}) AS parecido,
                     v.name, v.proveedor, v.sku, v.precio_comparable AS precio, v.pack_cantidad AS pack,
-                    sp.image_url, (v.proveedor = opc.vendor_name) AS mismo_proveedor
+                    sp.image_url, (v.proveedor_odoo = opc.vendor_name) AS mismo_proveedor
              FROM odoo_products_cache opc
              CROSS JOIN LATERAL (
                  SELECT t.supplier_product_id, t.nombre FROM tmp_ofertas_parecidas t

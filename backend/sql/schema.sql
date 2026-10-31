@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS suppliers (
     active BOOLEAN DEFAULT true,
     scrape_enabled BOOLEAN NOT NULL DEFAULT false,
     va_a_preventas BOOLEAN NOT NULL DEFAULT false,      -- entra a Sync Preventas (migración 053)
+    -- Condiciones de compra y proveedor de Odoo (migración 054)
+    odoo_vendor_name VARCHAR(200),                      -- vacío = el mismo nombre
+    pedido_minimo NUMERIC(12,2),
+    flete_pct NUMERIC(5,2),                             -- vacío = 1,5 %
+    demora_dias INTEGER,
+    acepta_auto BOOLEAN NOT NULL DEFAULT false,
+    condiciones_nota TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );

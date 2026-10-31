@@ -8,12 +8,15 @@ const { getProductCategories, getPartners, getPartnerById } = require('../servic
 const { getAvailableKeys } = require('../scrapers/registry');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 const { scheduleRecompute } = require('../services/preventasMatchService');
+const { normalizarCondiciones, guardarCondiciones } = require('../services/supplierCondiciones');
 
 // Columnas que devuelve la API de proveedores
 const SUPPLIER_COLS = `
     id, name, prefix, website_url, scraper_key, price_format,
     default_discount, markup_neggo, markup_preventas,
-    scrape_config, last_scraped_at, active, scrape_enabled, va_a_preventas, created_at, updated_at
+    scrape_config, last_scraped_at, active, scrape_enabled, va_a_preventas,
+    odoo_vendor_name, pedido_minimo, flete_pct, demora_dias, acepta_auto, condiciones_nota,
+    created_at, updated_at
 `;
 
 // Categorías del proveedor con productos disponibles y sin regla activa.
@@ -213,6 +216,13 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
         }
         const errorKey = validarScraperKey(scraper_key);
         if (errorKey) return fail(res, errorKey);
+        // Condiciones de compra (opcionales): se validan antes de escribir nada
+        let condiciones = null;
+        if (req.body.condiciones !== undefined) {
+            const r = normalizarCondiciones(req.body.condiciones);
+            if (r.error) return fail(res, r.error);
+            condiciones = r.valores;
+        }
 
         const scrapeConfig = odoo_partner_id ? { odoo_partner_id: parseInt(odoo_partner_id, 10) } : {};
 
@@ -237,8 +247,14 @@ router.post('/', authenticate, requireRole('admin'), async (req, res) => {
             ]
         );
 
-        console.log(`✅ Proveedor creado: ${result.rows[0].name} (id: ${result.rows[0].id})`);
-        return ok(res, withComputed(result.rows[0]), 201);
+        let creado = result.rows[0];
+        if (condiciones) {
+            await guardarCondiciones(pool, creado.id, condiciones);
+            creado = (await pool.query(`SELECT ${SUPPLIER_COLS} FROM suppliers WHERE id = $1`, [creado.id])).rows[0];
+        }
+
+        console.log(`✅ Proveedor creado: ${creado.name} (id: ${creado.id})`);
+        return ok(res, withComputed(creado), 201);
     } catch (error) {
         if (error.code === '23505') {
             // unique_violation — name ya existe
@@ -289,6 +305,13 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
 
         const errorKey = validarScraperKey(scraper_key);
         if (errorKey) return fail(res, errorKey);
+        // Condiciones de compra: si vienen, reemplazan las 6 columnas (vacío = se borra)
+        let condiciones = null;
+        if (req.body.condiciones !== undefined) {
+            const r = normalizarCondiciones(req.body.condiciones);
+            if (r.error) return fail(res, r.error);
+            condiciones = r.valores;
+        }
 
         const result = await pool.query(
             `UPDATE suppliers SET
@@ -331,8 +354,14 @@ router.put('/:id', authenticate, requireRole('admin'), async (req, res) => {
             ]
         );
 
+        let actualizado = result.rows[0];
+        if (condiciones) {
+            await guardarCondiciones(pool, id, condiciones);
+            actualizado = (await pool.query(`SELECT ${SUPPLIER_COLS} FROM suppliers WHERE id = $1`, [id])).rows[0];
+        }
+
         console.log(`✅ Proveedor actualizado: id ${id}`);
-        return ok(res, withComputed(result.rows[0]));
+        return ok(res, withComputed(actualizado));
     } catch (error) {
         if (error.code === '23505') {
             return fail(res, 'Ya existe un proveedor con ese nombre');

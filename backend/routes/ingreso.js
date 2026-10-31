@@ -1272,7 +1272,8 @@ router.post('/:ingresoId/items/:itemId/assign-supplier', authenticate, requireRo
         if (!item.odoo_product_id) return fail(res, 'Item sin producto Odoo asignado', 400);
 
         const { rows: [ingreso] } = await pool.query(
-            `SELECT im.supplier_id, s.name AS supplier_name
+            // El contacto de Odoo es el del proveedor de Odoo ("Parnassa Web" → "Parnassa", migración 054)
+            `SELECT im.supplier_id, COALESCE(NULLIF(s.odoo_vendor_name, ''), s.name) AS supplier_name
              FROM ingreso_mercaderia im
              LEFT JOIN suppliers s ON s.id = im.supplier_id
              WHERE im.id = $1`,
