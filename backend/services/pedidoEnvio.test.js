@@ -65,6 +65,9 @@ function testListado() {
     assert.ok(pedidos.where.includes("e.estado <> 'cancelado'"));
     assert.ok(pedidos.where.some((w) => w.includes("invoice_status") && w.includes('odoo_pos_count')));
     assert.ok(!pedidos.where.some((w) => w.includes('odoo_picking_done_count')));
+    assert.ok(pedidos.where.includes("COALESCE(e.odoo_state, '') <> 'cancel'"));
+    // La solapa Pendientes mira el pedido de pendientes, no el estado del original
+    assert.ok(!condicionesListado({ companies, solapa: 'pendientes' }).where.some((w) => w.includes("<> 'cancel'")));
 
     const esperando = condicionesListado({ companies, solapa: 'esperando_pago', q: 'S04', dias: '7' });
     assert.deepStrictEqual(esperando.params, [companies, '%S04%', 7]);
