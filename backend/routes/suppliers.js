@@ -10,7 +10,6 @@ const NeggoScraper = require('../scrapers/neggoScraper');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 const { scheduleRecompute } = require('../services/preventasMatchService');
 const { normalizarCondiciones, guardarCondiciones } = require('../services/supplierCondiciones');
-const { sugerirCategorias } = require('../services/categoriasIaService');
 
 // Columnas que devuelve la API de proveedores
 const SUPPLIER_COLS = `
@@ -105,34 +104,30 @@ router.get('/unmapped-summary', authenticate, async (req, res) => {
 
 // =============================================
 // GET /pending-categories — Categorías sin regla de todos los proveedores
-// Con hasta 3 productos de ejemplo para decidir la categoría de Odoo
+// Con hasta 3 productos de ejemplo para decidir la categoría de Odoo, y la propuesta de Claude
+// si ya la revisó (scripts/categoriasClaude.js, nota 131)
 // =============================================
 router.get('/pending-categories', authenticate, async (req, res) => {
     try {
         const { rows } = await pool.query(`
-            ${UNMAPPED_SQL}
-            GROUP BY sp.supplier_id, s.name, sp.source_category
-            ORDER BY s.name, sp.source_category
+            SELECT u.*,
+                   crs.odoo_categ_id_neggo     AS sug_categ_neggo,
+                   crs.odoo_categ_id_preventas AS sug_categ_preventas,
+                   crs.confianza               AS sug_confianza,
+                   crs.motivo                  AS sug_motivo,
+                   (crs.revisada_at IS NOT NULL) AS sug_revisada
+            FROM (
+                ${UNMAPPED_SQL}
+                GROUP BY sp.supplier_id, s.name, sp.source_category
+            ) u
+            LEFT JOIN category_rule_suggestions crs
+                   ON crs.supplier_id = u.supplier_id AND crs.source_category = u.source_category
+            ORDER BY u.supplier_name, u.source_category
         `);
         return ok(res, rows);
     } catch (error) {
         console.error('❌ Error al obtener categorías pendientes:', error.message);
         return fail(res, 'Error al obtener categorías pendientes', 500);
-    }
-});
-
-// =============================================
-// POST /pending-categories/sugerir — La IA propone categoría de Odoo (Neggo y Preventas)
-// Body: { items: [{ supplier_id, source_category }] } (máx. 30). No guarda nada.
-// =============================================
-router.post('/pending-categories/sugerir', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const data = await sugerirCategorias(req.body?.items);
-        return ok(res, data);
-    } catch (error) {
-        if (error.status === 400) return fail(res, error.message);
-        console.error('❌ Error al sugerir categorías con IA:', error.message);
-        return fail(res, `No pude pedir sugerencias a la IA: ${error.message}`, 502);
     }
 });
 

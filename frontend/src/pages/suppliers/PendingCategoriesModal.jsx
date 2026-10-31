@@ -10,12 +10,20 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 
 // Categorías de los proveedores que todavía no tienen regla.
 // Se asigna la categoría de Odoo de cada empresa (o se ignora) sin salir de Proveedores.
-// La IA puede proponer las categorías (nota 131); nada se guarda hasta tocar Asignar.
+// Claude revisa tandas con scripts/categoriasClaude.js (nota 131): su propuesta llega precargada
+// en los selectores; nada se guarda hasta tocar Asignar.
 
-// Filas por clic de "Sugerir con IA", repartidas en pedidos de 30 (lo que acepta el backend)
-const MAX_POR_PEDIDO = 120;
-const FILAS_POR_TANDA = 30;
 const TONO_CONFIANZA = { alta: 'success', media: 'primary', baja: 'warn' };
+
+// Propuesta de Claude de una fila, o null si todavía no la revisó
+function propuestaDe(row) {
+    if (!row.sug_revisada) return null;
+    if (!row.sug_categ_neggo && !row.sug_categ_preventas) return { sinPropuesta: true, motivo: row.sug_motivo };
+    return {
+        neggo: row.sug_categ_neggo, preventas: row.sug_categ_preventas,
+        confianza: row.sug_confianza, motivo: row.sug_motivo,
+    };
+}
 
 export default function PendingCategoriesModal({ isOpen, onClose, onChanged, initialSupplierId }) {
     const { tokens: t } = useTheme();
@@ -30,16 +38,12 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
     // Elección por fila: { [clave]: { neggo: id, preventas: id } }
     const [choices, setChoices] = useState({});
     const [savingKey, setSavingKey] = useState(null);
-    // Propuestas de la IA por fila: { [clave]: { neggo, preventas, confianza, motivo } }
-    const [sugerencias, setSugerencias] = useState({});
-    const [sugiriendo, setSugiriendo] = useState(false);
     const [asignandoLote, setAsignandoLote] = useState(null); // { hechas, total } mientras asigna en lote
 
     useEffect(() => {
         if (!isOpen) return;
         setSupplierFilter(initialSupplierId ? String(initialSupplierId) : '');
         setChoices({});
-        setSugerencias({});
         loadPending();
         if (categsNeggo.length === 0) loadOdooCategories();
     }, [isOpen, initialSupplierId]);
@@ -48,8 +52,21 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         setLoading(true);
         const res = await api.get('/suppliers/pending-categories');
         setLoading(false);
-        if (res.success) setPending(res.data || []);
-        else showToast(res.error || 'Error al cargar categorías pendientes', 'error');
+        if (!res.success) return showToast(res.error || 'Error al cargar categorías pendientes', 'error');
+        const rows = res.data || [];
+        setPending(rows);
+        // Precargar los selectores con la propuesta de Claude
+        const iniciales = {};
+        for (const row of rows) {
+            const p = propuestaDe(row);
+            if (p && !p.sinPropuesta) {
+                iniciales[keyOf(row)] = {
+                    neggo: p.neggo ? String(p.neggo) : '',
+                    preventas: p.preventas ? String(p.preventas) : '',
+                };
+            }
+        }
+        setChoices(iniciales);
     }
 
     async function loadOdooCategories() {
@@ -75,49 +92,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         return found?.complete_name || found?.name || null;
     }
 
-    // Le pide a la IA propuestas para las filas visibles que todavía no tienen (hasta 120 por vez)
-    // y completa los selectores que el usuario no tocó.
-    async function sugerirConIa() {
-        const filas = visible.filter(r => !sugerencias[keyOf(r)]).slice(0, MAX_POR_PEDIDO);
-        if (filas.length === 0) return;
-        setSugiriendo(true);
-        // Tandas chicas en paralelo: cada pedido tiene que volver antes del corte de 30 s de nginx
-        const tandas = [];
-        for (let i = 0; i < filas.length; i += FILAS_POR_TANDA) tandas.push(filas.slice(i, i + FILAS_POR_TANDA));
-        const respuestas = await Promise.all(tandas.map(tanda => api.post('/suppliers/pending-categories/sugerir', {
-            items: tanda.map(r => ({ supplier_id: r.supplier_id, source_category: r.source_category })),
-        })));
-        setSugiriendo(false);
-
-        const nuevas = {};
-        const errores = [];
-        respuestas.forEach((res, idx) => {
-            if (!res.success) { errores.push(res.error || 'error'); return; }
-            for (const s of res.data || []) nuevas[keyOf(s)] = s;
-            // Las filas sin propuesta quedan marcadas para no volver a pedirlas
-            for (const r of tandas[idx]) if (!nuevas[keyOf(r)]) nuevas[keyOf(r)] = { sinPropuesta: true };
-        });
-        if (errores.length === respuestas.length) return showToast(errores[0] || 'No pude pedir sugerencias a la IA', 'error');
-        setSugerencias(prev => ({ ...prev, ...nuevas }));
-        setChoices(prev => {
-            const next = { ...prev };
-            for (const [k, s] of Object.entries(nuevas)) {
-                if (s.sinPropuesta || next[k]?.neggo || next[k]?.preventas) continue;
-                next[k] = { neggo: s.neggo ? String(s.neggo) : '', preventas: s.preventas ? String(s.preventas) : '' };
-            }
-            return next;
-        });
-        const conPropuesta = Object.values(nuevas).filter(s => !s.sinPropuesta).length;
-        const pedidas = Object.keys(nuevas).length;
-        showToast(
-            errores.length
-                ? `La IA propuso ${conPropuesta} de ${pedidas}; ${errores.length} tanda(s) fallaron (${errores[0]}). Volvé a tocar Sugerir.`
-                : `La IA propuso categoría para ${conPropuesta} de ${pedidas}. Revisalas y asigná.`,
-            errores.length ? 'warning' : 'success',
-        );
-    }
-
-    // Asigna de una las filas visibles con propuesta alta o media de la IA
+    // Asigna de una las filas visibles con propuesta alta o media de Claude (con lo que haya en los selectores)
     async function asignarSugeridas() {
         const filas = filasParaLote;
         setAsignandoLote({ hechas: 0, total: filas.length });
@@ -165,14 +140,14 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         })),
     ];
     const visible = supplierFilter ? pending.filter(r => String(r.supplier_id) === supplierFilter) : pending;
-    const sinPedirIa = visible.filter(r => !sugerencias[keyOf(r)]).length;
+    const revisadas = visible.filter(r => r.sug_revisada).length;
     // Para el lote: propuesta alta/media y selectores con algo elegido
     const filasParaLote = visible.filter(r => {
-        const s = sugerencias[keyOf(r)];
+        const p = propuestaDe(r);
         const c = choices[keyOf(r)] || {};
-        return s && !s.sinPropuesta && s.confianza !== 'baja' && (c.neggo || c.preventas);
+        return p && !p.sinPropuesta && p.confianza !== 'baja' && (c.neggo || c.preventas);
     });
-    const ocupado = sugiriendo || !!asignandoLote;
+    const ocupado = !!asignandoLote;
 
     // Agrupar por proveedor manteniendo el orden del backend
     const groups = [];
@@ -209,18 +184,14 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                             Cargando categorías de Odoo…
                         </span>
                     )}
-                    <Button
-                        size="sm" variant="secondary"
-                        disabled={ocupado || loading || loadingCategs || sinPedirIa === 0}
-                        onClick={sugerirConIa}
-                        title="La IA mira el nombre de la categoría y productos de ejemplo, y propone la categoría de Odoo. No guarda nada."
-                    >
-                        {sugiriendo
-                            ? 'Pensando…'
-                            : sinPedirIa === 0
-                                ? 'Sugerido con IA'
-                                : `✨ Sugerir con IA (${Math.min(sinPedirIa, MAX_POR_PEDIDO)}${sinPedirIa > MAX_POR_PEDIDO ? ` de ${sinPedirIa}` : ''})`}
-                    </Button>
+                    {!loading && visible.length > 0 && (
+                        <span
+                            title="Para que Claude revise más, pedile en la terminal una tanda de categorías (skill categorias-claude)"
+                            style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}
+                        >
+                            Claude revisó {revisadas} de {visible.length}
+                        </span>
+                    )}
                     <Button
                         size="sm" variant="primary"
                         disabled={ocupado || filasParaLote.length === 0}
@@ -264,6 +235,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                             const k = keyOf(row);
                             const choice = choices[k] || {};
                             const saving = savingKey === k;
+                            const propuesta = propuestaDe(row);
                             return (
                                 <div key={k} style={{
                                     display: 'grid', gridTemplateColumns: 'minmax(180px, 1.3fr) 1fr 1fr auto',
@@ -290,17 +262,17 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                                 Ej: {row.sample_products.join(' · ')}
                                             </div>
                                         )}
-                                        {sugerencias[k] && (
+                                        {propuesta && (
                                             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], marginTop: 4, minWidth: 0 }}>
-                                                <Badge tone={sugerencias[k].sinPropuesta ? 'muted' : TONO_CONFIANZA[sugerencias[k].confianza]}>
-                                                    {sugerencias[k].sinPropuesta ? 'IA: sin propuesta' : `IA · ${sugerencias[k].confianza}`}
+                                                <Badge tone={propuesta.sinPropuesta ? 'muted' : TONO_CONFIANZA[propuesta.confianza]}>
+                                                    {propuesta.sinPropuesta ? 'Claude: sin categoría' : `Claude · ${propuesta.confianza}`}
                                                 </Badge>
-                                                {sugerencias[k].motivo && (
-                                                    <span title={sugerencias[k].motivo} style={{
+                                                {propuesta.motivo && (
+                                                    <span title={propuesta.motivo} style={{
                                                         fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family,
                                                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                                                     }}>
-                                                        {sugerencias[k].motivo}
+                                                        {propuesta.motivo}
                                                     </span>
                                                 )}
                                             </div>
