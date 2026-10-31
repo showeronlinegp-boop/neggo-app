@@ -17,6 +17,7 @@ import OfertasProducto from '../../components/tablaMaestra/OfertasProducto';
 import ReposicionProveedorModal from './ReposicionProveedorModal';
 import ReposicionOrdenes from './ReposicionOrdenes';
 import ReposicionCotizaciones from './ReposicionCotizaciones';
+import ReposicionPrecios from './ReposicionPrecios';
 import { descargarPedidoPDF } from './pedidoPdf';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
@@ -738,6 +739,8 @@ export default function Reposicion() {
             )}
 
             {pendiente && <BuscadorReponer onAgregado={alAgregar} onQuitado={alQuitar} onError={mostrarError} isMobile={isMobile} />}
+
+            {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={cargarCola} onError={mostrarError} />}
 
             {(pendiente || encargado) && (nConviene > 0 || soloConviene) && (
                 <label style={{

@@ -846,5 +846,5 @@ async function ofertasPorProducto(productos, db = pool) {
 module.exports = {
     primerPaso, corregirDatos, vincularDesdeIngresos, rechazarVinculo, listarConflictos, marcarHabituales,
     recalcularHabituales, sincronizarActivos, tablaActiva, activar, ofertasPorProducto, resumirOfertas,
-    packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso
+    packFromName, costRatio, decidirPack, esRenglonManual, metodoDesdeIngreso, DIAS_PRECIO_VIEJO
 };
