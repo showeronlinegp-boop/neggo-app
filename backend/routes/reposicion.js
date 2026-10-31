@@ -13,6 +13,8 @@
 // POST   /api/reposicion/activar                     — { odoo_id } desarchiva y lo saca de la cola
 // POST   /api/reposicion/resolver                    — { items, estado? } lote repuesto/descartado
 // POST   /api/reposicion/sync-ventas                 — fuerza sync de ventas
+// GET    /api/reposicion/precios                     — proveedores de la cola y hace cuánto se scrapearon
+// POST   /api/reposicion/precios/actualizar          — { supplier_ids? } encola los scrapers viejos (admin)
 // PATCH  /api/reposicion/:id                         — { estado, qty_decidida?, nota? }
 // DELETE /api/reposicion/producto/:odooId            — saca de la cola un pendiente marcado por error
 // POST   /api/reposicion/foto/:odooId                — multipart "image": carga la foto en Odoo (admin)
@@ -26,6 +28,7 @@ const { ok, fail } = require('../utils/response');
 const reposicion = require('../services/reposicionService');
 const ordenes = require('../services/reposicionOrdenesService');
 const cotizaciones = require('../services/reposicionCotizacionesService');
+const preciosFrescos = require('../services/preciosFrescosService');
 const { detectMime } = require('../services/whatsappMessage');
 const { writeOdooImage } = require('../services/odooImageService');
 
@@ -239,6 +242,28 @@ router.post('/sync-ventas', async (req, res) => {
     } catch (err) {
         console.error('❌ Error sincronizando ventas de reposición:', err.message);
         return fail(res, err.message, 500);
+    }
+});
+
+router.get('/precios', async (req, res) => {
+    try {
+        return ok(res, await preciosFrescos.frescuraCola());
+    } catch (err) {
+        console.error('❌ Error leyendo frescura de precios:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+router.post('/precios/actualizar', requireRole('admin'), async (req, res) => {
+    try {
+        const ids = req.body?.supplier_ids;
+        if (ids != null && (!Array.isArray(ids) || ids.some(id => !Number.isInteger(Number(id))))) {
+            return fail(res, 'supplier_ids tiene que ser una lista de IDs', 400);
+        }
+        return ok(res, await preciosFrescos.actualizar(req.user.id, { supplierIds: ids }));
+    } catch (err) {
+        console.error('❌ Error encolando precios frescos:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
     }
 });
 
