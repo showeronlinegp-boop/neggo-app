@@ -571,18 +571,73 @@ function lunesDe(fecha) {
     return d.toISOString().slice(0, 10);
 }
 
+// Semanas completas que entran al promedio y semanas para medir cada cuánto se vende
+const SEMANAS_PROMEDIO = 4;
+const SEMANAS_FRECUENCIA = 12;
+
+function sumarDias(isoDate, dias) {
+    const d = new Date(`${isoDate}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + dias);
+    return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Resume las semanas de venta de un producto. Solo hay fila en las semanas con venta:
+ * las que faltan cuentan como cero (si no, un producto que vendió una sola semana
+ * aparece con ese número como promedio).
+ *   - avg_weekly: promedio de las 4 semanas completas anteriores a la actual
+ *   - qty_7d: la última semana completa
+ *   - qty_30d: esas 4 semanas más lo que va de la actual (~5 semanas)
+ *   - semanas_con_venta: en cuántas de las últimas 12 semanas completas se vendió
+ * @param {{week_start:string, qty_vendida:number}[]} semanas
+ * @param {string} lunesActual — 'YYYY-MM-DD' del lunes de la semana en curso
+ */
+function resumirSemanas(semanas, lunesActual) {
+    const qtyPorSemana = new Map();
+    for (const s of semanas || []) {
+        qtyPorSemana.set(s.week_start, (qtyPorSemana.get(s.week_start) || 0) + Number(s.qty_vendida || 0));
+    }
+    const qtyDe = k => qtyPorSemana.get(sumarDias(lunesActual, -7 * k)) || 0;
+
+    const enCurso = qtyDe(0);
+    let sumaPromedio = 0;
+    for (let k = 1; k <= SEMANAS_PROMEDIO; k++) sumaPromedio += qtyDe(k);
+    let semanasConVenta = 0;
+    for (let k = 1; k <= SEMANAS_FRECUENCIA; k++) if (qtyDe(k) > 0) semanasConVenta++;
+
+    const avgWeekly = sumaPromedio / SEMANAS_PROMEDIO;
+    const qty7 = qtyDe(1);
+    let ritmo = 'sin_datos';
+    if (avgWeekly > 0) {
+        if (qty7 >= avgWeekly * 1.15) ritmo = 'reponer';
+        else if (qty7 <= avgWeekly * 0.7) ritmo = 'flojo';
+        else ritmo = 'estable';
+    } else if (enCurso > 0) {
+        // Recién empezó a venderse esta semana
+        ritmo = 'reponer';
+    }
+    return {
+        qty_7d: qty7,
+        qty_semana_actual: enCurso,
+        avg_weekly: avgWeekly,
+        qty_30d: sumaPromedio + enCurso,
+        semanas_con_venta: semanasConVenta,
+        ritmo,
+    };
+}
+
 /**
  * Métricas de venta por odoo_id a partir de product_sales_weekly.
  */
 async function metricasVenta(odooIds) {
     if (!odooIds.length) return new Map();
+    const lunesActual = lunesDe(new Date().toISOString());
     const { rows } = await pool.query(
-        `SELECT odoo_id, week_start, qty_vendida, amount_total
+        `SELECT odoo_id, to_char(week_start, 'YYYY-MM-DD') AS week_start, qty_vendida
          FROM product_sales_weekly
          WHERE company = 'neggo' AND odoo_id = ANY($1::int[])
-           AND week_start >= (CURRENT_DATE - INTERVAL '35 days')
-         ORDER BY odoo_id, week_start DESC`,
-        [odooIds]
+           AND week_start >= $2::date`,
+        [odooIds, sumarDias(lunesActual, -7 * SEMANAS_FRECUENCIA)]
     );
     const byId = new Map();
     for (const r of rows) {
@@ -590,26 +645,25 @@ async function metricasVenta(odooIds) {
         byId.get(r.odoo_id).push(r);
     }
     const out = new Map();
-    const cobertura = semanasCobertura();
-    for (const id of odooIds) {
-        const weeks = byId.get(id) || [];
-        const qty7 = weeks[0] ? Number(weeks[0].qty_vendida) : 0;
-        const last4 = weeks.slice(0, 4);
-        const avgWeekly = last4.length
-            ? last4.reduce((s, w) => s + Number(w.qty_vendida), 0) / last4.length
-            : 0;
-        const qty30 = weeks.reduce((s, w) => s + Number(w.qty_vendida), 0);
-        let ritmo = 'sin_datos';
-        if (avgWeekly > 0 || qty7 > 0) {
-            if (avgWeekly <= 0) ritmo = 'reponer';
-            else if (qty7 >= avgWeekly * 1.15) ritmo = 'reponer';
-            else if (qty7 <= avgWeekly * 0.7) ritmo = 'flojo';
-            else ritmo = 'estable';
-        }
-        out.set(id, { qty_7d: qty7, avg_weekly: avgWeekly, qty_30d: qty30, ritmo });
-    }
-    void cobertura;
+    for (const id of odooIds) out.set(id, resumirSemanas(byId.get(id), lunesActual));
     return out;
+}
+
+/**
+ * ABC sobre todo lo que vendió Neggo en las mismas ~5 semanas de qty_30d, no solo sobre
+ * los productos de la cola: "A" es de lo más vendido del negocio.
+ */
+async function abcGlobal(db = pool) {
+    const lunesActual = lunesDe(new Date().toISOString());
+    const { rows } = await db.query(
+        `SELECT odoo_id, SUM(qty_vendida)::float AS qty_30d
+         FROM product_sales_weekly
+         WHERE company = 'neggo' AND week_start >= $1::date
+         GROUP BY odoo_id
+         HAVING SUM(qty_vendida) > 0`,
+        [sumarDias(lunesActual, -7 * SEMANAS_PROMEDIO)]
+    );
+    return clasificarAbc(rows);
 }
 
 /**
@@ -647,23 +701,20 @@ async function conMetricas(filas) {
 
     const ids = items.map(i => i.odoo_id);
     const metrics = await metricasVenta(ids);
-    const forAbc = ids.map(id => ({
-        odoo_id: id,
-        qty_30d: metrics.get(id)?.qty_30d || 0,
-    }));
-    const abc = clasificarAbc(forAbc);
+    const abc = await abcGlobal();
     const cobertura = semanasCobertura();
 
     const enriched = items.map(it => {
-        const m = metrics.get(it.odoo_id) || { qty_7d: 0, avg_weekly: 0, qty_30d: 0, ritmo: 'sin_datos' };
+        const m = metrics.get(it.odoo_id) || resumirSemanas([], lunesDe(new Date().toISOString()));
         const sugerida = m.avg_weekly > 0
             ? Math.max(1, Math.ceil(m.avg_weekly * cobertura))
-            : (m.qty_7d > 0 ? Math.max(1, Math.ceil(m.qty_7d)) : 0);
+            : (m.qty_semana_actual > 0 ? Math.max(1, Math.ceil(m.qty_semana_actual)) : 0);
         return {
             ...it,
             qty_7d: m.qty_7d,
             avg_weekly: Math.round(m.avg_weekly * 100) / 100,
             qty_30d: m.qty_30d,
+            semanas_con_venta: m.semanas_con_venta,
             ritmo: m.ritmo,
             abc: abc.get(it.odoo_id) || 'C',
             qty_sugerida_calc: sugerida,
@@ -796,6 +847,8 @@ module.exports = {
     colaParaAgente,
     resolverLote,
     metricasVenta,
+    resumirSemanas,
+    abcGlobal,
     clasificarAbc,
     lunesDe,
     vendorLabel,

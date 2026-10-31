@@ -14,8 +14,10 @@ const {
     ESTADOS_ABIERTOS,
     ESTADOS_FINALES,
     cruzaIngresoActivoNeggo,
+    resumirSemanas,
 } = require('./reposicionService');
 const { sumQtyByProduct } = require('./odooService');
+const { agregarLineas, fechaDesde, semanasATraer } = require('../jobs/salesWeeklySync');
 
 function testTransiciones() {
     const antes = new Map([
@@ -51,6 +53,62 @@ function testAbcPorUnidades() {
     assert.strictEqual(labels.get(1), 'A');
     assert.strictEqual(labels.get(2), 'B');
     assert.strictEqual(labels.get(3), 'C');
+}
+
+function testResumirSemanas() {
+    const lunes = '2026-10-26';
+    // Vendió 6 en una sola de las 4 semanas completas: promedio 1,5, no 6
+    const una = resumirSemanas([{ week_start: '2026-10-05', qty_vendida: 6 }], lunes);
+    assert.strictEqual(una.avg_weekly, 1.5);
+    assert.strictEqual(una.qty_7d, 0);
+    assert.strictEqual(una.semanas_con_venta, 1);
+    assert.strictEqual(una.ritmo, 'flojo');
+
+    // Parejo las 4 semanas, más lo que va de la actual
+    const parejo = resumirSemanas([
+        { week_start: '2026-10-26', qty_vendida: 2 },
+        { week_start: '2026-10-19', qty_vendida: 4 },
+        { week_start: '2026-10-12', qty_vendida: 4 },
+        { week_start: '2026-10-05', qty_vendida: 4 },
+        { week_start: '2026-09-28', qty_vendida: 4 },
+        { week_start: '2026-08-31', qty_vendida: 9 },
+    ], lunes);
+    assert.strictEqual(parejo.avg_weekly, 4);
+    assert.strictEqual(parejo.qty_7d, 4);
+    assert.strictEqual(parejo.qty_semana_actual, 2);
+    assert.strictEqual(parejo.qty_30d, 18);
+    assert.strictEqual(parejo.semanas_con_venta, 5);
+    assert.strictEqual(parejo.ritmo, 'estable');
+
+    // Recién empezó esta semana
+    const nuevo = resumirSemanas([{ week_start: '2026-10-26', qty_vendida: 3 }], lunes);
+    assert.strictEqual(nuevo.avg_weekly, 0);
+    assert.strictEqual(nuevo.ritmo, 'reponer');
+
+    // Fuera de las 12 semanas no cuenta
+    const viejo = resumirSemanas([{ week_start: '2026-07-27', qty_vendida: 50 }], lunes);
+    assert.strictEqual(viejo.semanas_con_venta, 0);
+    assert.strictEqual(viejo.ritmo, 'sin_datos');
+}
+
+function testAgregarLineasVentas() {
+    const fechas = new Map([[1, '2026-10-20 15:00:00'], [2, '2026-10-27 10:00:00']]);
+    const agg = agregarLineas([
+        { product_id: [10, 'Taza'], order_id: [1, 'S1'], product_uom_qty: 2, price_subtotal: 100 },
+        { product_id: [10, 'Taza'], order_id: [1, 'S1'], product_uom_qty: 1, price_subtotal: 50 },
+        { product_id: [99, 'Down Payment (POS)'], order_id: [1, 'S1'], product_uom_qty: 1, price_subtotal: 500 },
+        { product_id: [10, 'Taza'], order_id: [2, 'S2'], product_uom_qty: 4, price_subtotal: 200 },
+        { product_id: false, order_id: [2, 'S2'], product_uom_qty: 9 },
+    ], fechas, 'product_uom_qty', new Set([99]));
+    assert.strictEqual(agg.size, 2);
+    assert.deepStrictEqual(agg.get('10|2026-10-19'), { odoo_id: 10, week_start: '2026-10-19', qty: 3, amount: 150 });
+    assert.strictEqual(agg.get('10|2026-10-26').qty, 4);
+}
+
+function testVentanaDelSync() {
+    assert.strictEqual(fechaDesde(6, new Date('2026-10-30T12:00:00Z')), '2026-09-14');
+    assert.strictEqual(semanasATraer(0), 52);
+    assert.strictEqual(semanasATraer(40), 6);
 }
 
 function testLunesDe() {
@@ -151,6 +209,9 @@ function testCruzaIngreso() {
 testTransiciones();
 testCacheVacio();
 testAbcPorUnidades();
+testResumirSemanas();
+testAgregarLineasVentas();
+testVentanaDelSync();
 testLunesDe();
 testVendorYOrigen();
 testRankearMasVendidos();
