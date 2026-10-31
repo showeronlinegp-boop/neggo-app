@@ -481,107 +481,6 @@ function ModalDecidirProveedor({ vendor, onClose, onChanged }) {
     );
 }
 
-function ListaProveedores({ proveedores, loading, filtro, onFiltro, onAbrir, isMobile, t }) {
-    const q = filtro.trim().toLowerCase();
-    const lista = q
-        ? proveedores.filter(p => p.vendor_name.toLowerCase().includes(q))
-        : proveedores;
-
-    return (
-        <Card padding={false} style={{ overflow: 'hidden' }}>
-            <div style={{ padding: isMobile ? '12px 12px 10px' : '12px 16px', display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}>
-                    <span style={{
-                        width: 28, height: 28, borderRadius: t.radius.sm, background: t.color.primarySoft,
-                        color: t.color.primary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                        <Icon.Truck size={15} />
-                    </span>
-                    <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>
-                        Proveedores
-                    </div>
-                    <span style={{ marginLeft: 'auto', fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
-                        {proveedores.length}
-                    </span>
-                </div>
-                <Input
-                    value={filtro}
-                    onChange={e => onFiltro(e.target.value)}
-                    placeholder="Buscá un proveedor…"
-                    leftIcon={<Icon.Search size={14} />}
-                />
-            </div>
-            {loading ? (
-                <div style={{ padding: '20px 16px', color: t.color.textMuted, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
-                    Cargando proveedores…
-                </div>
-            ) : lista.length === 0 ? (
-                <div style={{ padding: '20px 16px', color: t.color.textMuted, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
-                    {proveedores.length === 0
-                        ? 'Todavía no hay productos de Neggo en el cache.'
-                        : 'Ningún proveedor coincide con esa búsqueda.'}
-                </div>
-            ) : (
-                <div style={{
-                    maxHeight: isMobile ? '42vh' : 360,
-                    overflowY: 'auto',
-                    WebkitOverflowScrolling: 'touch',
-                    borderTop: `1px solid ${t.color.border}`,
-                }}>
-                    {lista.map(p => (
-                        <button
-                            key={p.vendor_name}
-                            type="button"
-                            onClick={() => onAbrir(p.vendor_name)}
-                            style={{
-                                display: 'flex', alignItems: isMobile ? 'flex-start' : 'center',
-                                gap: t.space[3], width: '100%',
-                                padding: isMobile ? '12px 12px' : '10px 16px',
-                                border: 'none', borderTop: `1px solid ${t.color.border}`,
-                                background: 'transparent', cursor: 'pointer', textAlign: 'left',
-                                fontFamily: t.font.family, minHeight: isMobile ? 56 : undefined,
-                            }}
-                            onMouseEnter={e => { e.currentTarget.style.background = t.color.surface2; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                        >
-                            <span style={{
-                                width: isMobile ? 40 : 28, height: isMobile ? 40 : 28, borderRadius: t.radius.md,
-                                background: t.color.surface2, color: t.color.textMuted,
-                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                            }}>
-                                <Icon.Truck size={isMobile ? 18 : 14} />
-                            </span>
-                            <span style={{ flex: 1, minWidth: 0 }}>
-                                <span style={{
-                                    display: 'block', fontWeight: t.font.weight.semibold,
-                                    fontSize: isMobile ? t.font.size.base : t.font.size.sm,
-                                    color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                }}>
-                                    {p.vendor_name}
-                                </span>
-                                <span style={{
-                                    display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, alignItems: 'center',
-                                }}>
-                                    <ChipIcono t={t} n={p.n_pendientes} label="En cola" icon={<Icon.Package size={12} />}
-                                        color={t.color.warn} bg={t.color.warnSoft} />
-                                    <ChipIcono t={t} n={p.n_encargados} label="Encargados" icon={<Icon.ShoppingCart size={12} />}
-                                        color={t.color.accent} bg={t.color.accentSoft} />
-                                    <ChipIcono t={t} n={p.n_agotados} label="Agotados" icon={<Icon.Archive size={12} />}
-                                        color={t.color.danger} bg={t.color.dangerSoft} />
-                                    <span style={{ fontSize: 11, color: t.color.textMuted, ...t.numericStyle }}>
-                                        {p.n_activos} act. · {p.n_archivados} arch.
-                                    </span>
-                                </span>
-                            </span>
-                            <Icon.ChevronRight size={16} />
-                        </button>
-                    ))}
-                </div>
-            )}
-        </Card>
-    );
-}
-
 // Miniatura que, si hay foto, se toca para verla en grande
 function ThumbCola({ it, size, onVerFoto }) {
     if (!it.image_url) return <ProductThumb imageUrl={it.image_url} size={size} />;
@@ -660,8 +559,6 @@ export default function Reposicion() {
     const [aviso, setAviso] = useState(null);
     const [trabajando, setTrabajando] = useState(null);
     const [proveedores, setProveedores] = useState([]);
-    const [loadingProv, setLoadingProv] = useState(true);
-    const [filtroProv, setFiltroProv] = useState('');
     const [proveedorAbierto, setProveedorAbierto] = useState(null);
     const [proveedorDecidir, setProveedorDecidir] = useState(null);
     const [recargarVista, setRecargarVista] = useState(0);
@@ -685,11 +582,9 @@ export default function Reposicion() {
     }, [tab]);
 
     const cargarProveedores = useCallback(async () => {
-        setLoadingProv(true);
         const res = await api.get('/reposicion/proveedores');
         if (res.success) setProveedores(res.data || []);
         else setError(res.error || 'No se pudo cargar los proveedores');
-        setLoadingProv(false);
     }, []);
 
     const cargar = useCallback(async () => {
@@ -819,16 +714,6 @@ export default function Reposicion() {
                     </Button>
                 </div>
             </div>
-
-            <ListaProveedores
-                proveedores={proveedores}
-                loading={loadingProv}
-                filtro={filtroProv}
-                onFiltro={setFiltroProv}
-                onAbrir={setProveedorAbierto}
-                isMobile={isMobile}
-                t={t}
-            />
 
             <Tabs
                 fullWidth={isMobile}
