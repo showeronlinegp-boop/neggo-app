@@ -228,29 +228,31 @@ async function listarTarjetas() {
 
 /**
  * Qué se rechaza al decidir una tarjeta. Pura.
- * Con oferta elegida: solo las otras del mismo proveedor (las de otros proveedores siguen en la
- * tarjeta: el producto puede quedar vinculado con varios, nota 139). Sin elegida ("ninguna"): todas.
+ * Con ofertas elegidas (una o varias, nota 140): se rechazan las otras de los proveedores elegidos;
+ * las de proveedores que no se eligieron siguen en la tarjeta (el producto puede quedar vinculado
+ * con varios, nota 139). Sin elegidas ("ninguna"): todas.
  * @param {Array<{id: number, supplier_id: number}>} sugeridos — los pendientes de la tarjeta
- * @param {number|null} mappingId
+ * @param {number[]|number|null} elegidas — ids de product_mappings elegidos
  * @returns {{ rechazar: number[], quedan: number[] }}
  */
-function repartoTarjeta(sugeridos, mappingId) {
-    if (!mappingId) return { rechazar: sugeridos.map(s => s.id), quedan: [] };
-    const elegido = sugeridos.find(s => s.id === mappingId);
-    const otros = sugeridos.filter(s => s.id !== mappingId);
+function repartoTarjeta(sugeridos, elegidas) {
+    const ids = elegidas == null ? [] : [].concat(elegidas);
+    if (!ids.length) return { rechazar: sugeridos.map(s => s.id), quedan: [] };
+    const proveedores = new Set(sugeridos.filter(s => ids.includes(s.id)).map(s => s.supplier_id));
+    const otros = sugeridos.filter(s => !ids.includes(s.id));
     return {
-        rechazar: otros.filter(s => s.supplier_id === elegido.supplier_id).map(s => s.id),
-        quedan: otros.filter(s => s.supplier_id !== elegido.supplier_id).map(s => s.id),
+        rechazar: otros.filter(s => proveedores.has(s.supplier_id)).map(s => s.id),
+        quedan: otros.filter(s => !proveedores.has(s.supplier_id)).map(s => s.id),
     };
 }
 
 /**
- * Decisión de una tarjeta: la oferta elegida queda confirmada y se rechazan las demás de su
- * proveedor; las de otros proveedores quedan pendientes. Sin elegida ("ninguna") se rechazan todas.
- * @param {{ odooProductId: number, mappingId?: number|null, userId: number }} opts
+ * Decisión de una tarjeta: las ofertas elegidas quedan confirmadas y se rechazan las demás de sus
+ * proveedores; las de otros proveedores quedan pendientes. Sin elegidas ("ninguna") se rechazan todas.
+ * @param {{ odooProductId: number, mappingIds?: number[], userId: number }} opts
  * @returns {Promise<{ confirmados: number, rechazados: number, quedan: number[] }>}
  */
-async function decidirTarjeta({ odooProductId, mappingId = null, userId }) {
+async function decidirTarjeta({ odooProductId, mappingIds = [], userId }) {
     return enTransaccion(async (db) => {
         const { rows } = await db.query(
             `SELECT pm.id, sp.supplier_id
@@ -260,14 +262,14 @@ async function decidirTarjeta({ odooProductId, mappingId = null, userId }) {
                AND pm.metodo = ANY($2::text[])`,
             [odooProductId, METODOS_NOMBRE]
         );
-        if (mappingId && !rows.some(r => r.id === mappingId)) {
-            const err = new Error('La oferta elegida ya no está pendiente en esta tarjeta');
+        if (mappingIds.some(id => !rows.some(r => r.id === id))) {
+            const err = new Error('Alguna de las ofertas elegidas ya no está pendiente en esta tarjeta');
             err.status = 409;
             throw err;
         }
-        const { rechazar, quedan } = repartoTarjeta(rows, mappingId);
+        const { rechazar, quedan } = repartoTarjeta(rows, mappingIds);
         return {
-            confirmados: mappingId ? await decidirSugeridos(db, [mappingId], 'confirmado', userId) : 0,
+            confirmados: await decidirSugeridos(db, mappingIds, 'confirmado', userId),
             rechazados: await decidirSugeridos(db, rechazar, 'rechazado', userId),
             quedan,
         };

@@ -11,7 +11,7 @@
 // GET    /api/mappings/vincular/lote              — sugeridos por código (supplierId opcional)
 // POST   /api/mappings/vincular/lote              — { confirmar: [ids], rechazar?: [ids] }
 // GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre del día
-// POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
+// POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingIds: [ids] } ([] = ninguna)
 // GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
 // POST   /api/mappings/vincular/no-usar           — { odooProductId } "[NO USAR]" + archivado en Odoo (admin, nota 118)
@@ -357,10 +357,13 @@ router.get('/vincular/tarjetas', authenticate, async (req, res) => {
 
 router.post('/vincular/tarjetas', authenticate, requireRole('admin', 'operador'), async (req, res) => {
     const odooProductId = parseInt(req.body.odooProductId, 10);
-    const mappingId = req.body.mappingId == null ? null : parseInt(req.body.mappingId, 10);
-    if (!odooProductId || Number.isNaN(mappingId)) return fail(res, 'odooProductId requerido y mappingId numérico o null', 400);
+    // Una o varias ofertas elegidas (nota 140); también acepta el mappingId suelto de antes. [] = ninguna
+    const crudas = Array.isArray(req.body.mappingIds) ? req.body.mappingIds
+        : (req.body.mappingId == null ? [] : [req.body.mappingId]);
+    const mappingIds = [...new Set(crudas.map(v => parseInt(v, 10)))];
+    if (!odooProductId || mappingIds.some(Number.isNaN)) return fail(res, 'odooProductId requerido y mappingIds numéricos', 400);
     try {
-        return ok(res, await vincular.decidirTarjeta({ odooProductId, mappingId, userId: req.user.id }));
+        return ok(res, await vincular.decidirTarjeta({ odooProductId, mappingIds, userId: req.user.id }));
     } catch (err) {
         if (err.status === 409) return fail(res, err.message, 409);
         console.error('❌ Error al decidir la tarjeta:', err.message);
