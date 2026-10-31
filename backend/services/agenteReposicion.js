@@ -70,6 +70,7 @@ function formatItem(it) {
             ultima_semana: numero(it.qty_7d) || 0,
             promedio_semanal: numero(it.avg_weekly) || 0,
             ultimas_5_semanas: numero(it.qty_30d) || 0,
+            semanas_con_venta_de_12: numero(it.semanas_con_venta) || 0,
         },
         ritmo: it.ritmo,
         abc: it.abc,
