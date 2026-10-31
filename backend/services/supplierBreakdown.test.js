@@ -9,6 +9,8 @@ function testNetCost() {
     assert.strictEqual(supplierNetCost({ raw_price: 1000, offer_price: 750, default_discount: 10 }), 750);
     assert.strictEqual(supplierNetCost({ raw_price: null, default_discount: 10 }), null);
     assert.strictEqual(supplierNetCost({ raw_price: 0, default_discount: 0 }), null);
+    // Fuente Neggo: el costo ya tiene el descuento (nota 129)
+    assert.strictEqual(supplierNetCost({ raw_price: 900, default_discount: 10, source: 'neggo' }), 900);
     console.log('neto ok');
 }
 

@@ -33,12 +33,13 @@ function formatFechaAR(date) {
  * No usa el costo interno de Odoo.
  * @returns {number|null}
  */
-function supplierNetCost({ raw_price, offer_price, default_discount } = {}) {
+function supplierNetCost({ raw_price, offer_price, default_discount, source } = {}) {
     const offer = Number(offer_price);
     if (Number.isFinite(offer) && offer > 0) return Math.round(offer * 100) / 100;
     const raw = Number(raw_price);
     if (!Number.isFinite(raw) || raw <= 0) return null;
-    const discount = Number(default_discount) || 0;
+    // El costo de Neggo ya tiene el descuento del proveedor (nota 129)
+    const discount = source === 'neggo' ? 0 : Number(default_discount) || 0;
     const net = discount > 0 ? raw * (1 - discount / 100) : raw;
     return Math.round(net * 100) / 100;
 }

@@ -59,6 +59,7 @@ const SELECT_COLUMNS = `
     opc.template_id,
     opc.has_image,
     sp.raw_price,
+    sp.source,
     s.default_discount,
     s.markup_neggo,
     s.markup_preventas,

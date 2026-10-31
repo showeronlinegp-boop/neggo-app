@@ -835,6 +835,7 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
                         s.name AS supplier_name,
                         sp.raw_price,
                         sp.offer_price,
+                        sp.source,
                         s.default_discount
                  FROM product_mappings pm
                  JOIN supplier_products sp ON sp.id = pm.supplier_product_id
@@ -857,6 +858,7 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
                         s.name AS supplier_name,
                         sp.raw_price,
                         sp.offer_price,
+                        sp.source,
                         s.default_discount
                  FROM odoo_products_cache opc_p
                  JOIN odoo_products_cache opc_n
