@@ -25,7 +25,16 @@ if (-not (Test-Path $docker) -or -not (Test-Path $abrir)) {
     Log "Falta docker.exe o abrir-nota.ps1"
     exit 1
 }
-Log "Vigia iniciado (cada $Segundos s)"
+
+# Mientras el vigia corre, Windows no suspende la PC por inactividad (la pantalla si se puede apagar).
+# No evita la suspension al cerrar la tapa ni la manual.
+Add-Type -Namespace Neggo -Name Energia -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);
+'@
+# ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+[void][Neggo.Energia]::SetThreadExecutionState([uint32]'0x80000001')
+
+Log "Vigia iniciado (cada $Segundos s, sin suspension)"
 
 while ($true) {
     try {

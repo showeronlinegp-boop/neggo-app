@@ -1,5 +1,6 @@
 # Registra el vigia de tareas del bot (vigia-bot.ps1) como tarea programada del usuario actual:
-# arranca al iniciar sesion en Windows, oculto, y queda corriendo. Sin permisos de administrador.
+# arranca al iniciar sesion en Windows, oculto, y queda corriendo; si se corta, vuelve solo en
+# menos de 5 minutos. Sin permisos de administrador.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\claude-link\registrar-vigia.ps1
 #
@@ -15,11 +16,14 @@ if (-not (Test-Path $script)) {
 $nombre = 'Neggo vigia bot'
 $accion = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
-$disparo = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$alIniciar = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# Cada 5 minutos lo vuelve a lanzar por si se corto (suspension, cierre del proceso). Si ya esta
+# corriendo, la tarea ignora el disparo (IgnoreNew) y el mutex del vigia corta cualquier copia.
+$cada5 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
 
-Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $disparo -Settings $config -Force | Out-Null
+Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger @($alIniciar, $cada5) -Settings $config -Force | Out-Null
 Start-ScheduledTask -TaskName $nombre
 
 Write-Host "Vigia registrado y corriendo ($nombre)"
