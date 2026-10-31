@@ -1,22 +1,23 @@
 // Vincular (nota 107, punto 3): pantallas de /productos/vinculos sobre la tabla maestra.
 //   - Lote por código: los sugeridos 'codigo' (PRE + referencia Neggo = SKU), todo tildado
 //   - Tarjetas por nombre: un producto de Neggo por tarjeta con hasta 3 ofertas parecidas,
-//     ordenadas por venta y con tope semanal
+//     ordenadas por venta y con tope diario (nota 123)
 //   - Conflictos: una oferta confirmada con dos o más productos de Neggo
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
 // Solo Neggo: Preventas es un dato de origen y Precompras (origen "neggo") es base de costos.
-// Ninguna decisión escribe en Odoo, salvo cambiar el código de referencia de un producto (nota 117):
-// va a Odoo porque la sincronización lo vuelve a traer. Con la tabla maestra prendida, lo
-// confirmado queda activo y el habitual pasa a mover precios (siempre con la alerta de Neggo,
-// que se aprueba a mano).
+// Ninguna decisión escribe en Odoo, salvo "No usar" (nota 118) y cambiar el código de referencia de un
+// producto (nota 117), que va a Odoo porque la sincronización lo vuelve a traer. Con la tabla maestra
+// prendida, lo confirmado queda activo y el habitual pasa a mover precios (siempre con la alerta de
+// Neggo, que se aprueba a mano).
 
 const pool = require('../config/database');
 const odoo = require('../config/odoo');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
+const odooService = require('./odooService');
 
-// Tarjetas que se muestran por semana (las revisa una sola persona)
-const TARJETAS_POR_SEMANA = 40;
+// Tarjetas que se muestran por día (las revisa una sola persona)
+const TARJETAS_POR_DIA = 80;
 // Semanas de venta que ordenan las tarjetas y el lote
 const SEMANAS_VENTA = 6;
 // Productos de Odoo que no son mercadería (anticipos y pedidos de preventa)
@@ -127,13 +128,14 @@ async function decidirLote({ confirmar = [], rechazar = [], userId }) {
     }));
 }
 
-// Productos con tarjeta ya decidida por una persona en los últimos 7 días
-async function tarjetasDecididasSemana(db = pool) {
+// Productos con tarjeta ya decidida por una persona desde las 00:00 de hoy, hora de Argentina
+// (created_at se guarda en UTC)
+async function tarjetasDecididasHoy(db = pool) {
     const { rows } = await db.query(
         `SELECT COUNT(DISTINCT odoo_product_id)::int AS n
          FROM match_decisiones
          WHERE odoo_company = 'neggo' AND metodo = ANY($1::text[]) AND user_id IS NOT NULL
-           AND created_at > NOW() - INTERVAL '7 days'`,
+           AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Argentina/Buenos_Aires') AT TIME ZONE 'America/Argentina/Buenos_Aires'`,
         [METODOS_NOMBRE]
     );
     return rows[0].n;
@@ -141,12 +143,12 @@ async function tarjetasDecididasSemana(db = pool) {
 
 /**
  * Tarjetas por nombre: productos de Neggo con sugeridos por parecido de nombre, de lo que más se
- * vende a lo que menos, hasta completar el tope de la semana. Cada tarjeta trae hasta 3 ofertas.
- * @returns {Promise<{ tarjetas: Array, decididas_semana: number, tope: number, pendientes: number }>}
+ * vende a lo que menos, hasta completar el tope del día. Cada tarjeta trae hasta 3 ofertas.
+ * @returns {Promise<{ tarjetas: Array, decididas_hoy: number, tope: number, pendientes: number }>}
  */
 async function listarTarjetas() {
-    const decididas = await tarjetasDecididasSemana();
-    const restan = Math.max(TARJETAS_POR_SEMANA - decididas, 0);
+    const decididas = await tarjetasDecididasHoy();
+    const restan = Math.max(TARJETAS_POR_DIA - decididas, 0);
 
     const { rows: [{ pendientes }] } = await pool.query(
         `SELECT COUNT(DISTINCT pm.odoo_product_id)::int AS pendientes
@@ -155,7 +157,7 @@ async function listarTarjetas() {
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'sugerido' AND pm.metodo = ANY($1::text[])`,
         [METODOS_NOMBRE]
     );
-    if (restan === 0) return { tarjetas: [], decididas_semana: decididas, tope: TARJETAS_POR_SEMANA, pendientes };
+    if (restan === 0) return { tarjetas: [], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
 
     const { rows } = await pool.query(
         `WITH ${VENTAS_CTE},
@@ -205,7 +207,7 @@ async function listarTarjetas() {
             });
         }
     }
-    return { tarjetas: [...porProducto.values()], decididas_semana: decididas, tope: TARJETAS_POR_SEMANA, pendientes };
+    return { tarjetas: [...porProducto.values()], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
 }
 
 /**
@@ -364,6 +366,34 @@ async function cambiarReferencia({ odooProductId, ref, userId }, deps = odoo) {
 }
 
 /**
+ * "No usar" (nota 118): marca el producto "[NO USAR]" en Odoo (leyenda en el nombre + archivado) y
+ * lo saca de la app: rechaza todos sus vínculos y lo borra del cache sin esperar al sync, que
+ * desde ahora lo deja afuera. Es la única acción de Vincular que escribe en Odoo.
+ * @param {{ odooProductId: number, userId: number }} opts
+ */
+async function marcarNoUsar({ odooProductId, userId }) {
+    const odoo = await odooService.marcarNoUsar(odooProductId, 'neggo');
+    return enTransaccion(async (db) => {
+        const { rows } = await db.query(
+            `UPDATE product_mappings SET estado = 'rechazado', active = false, es_habitual = false
+             WHERE odoo_product_id = $1 AND estado <> 'rechazado'
+             RETURNING supplier_product_id, odoo_company, metodo, match_confidence`,
+            [odooProductId]
+        );
+        for (const r of rows) {
+            await db.query(
+                `INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+                 VALUES ($1, $2, $3, 'rechazado', $4, $5, $6)`,
+                [r.supplier_product_id, odooProductId, r.odoo_company, r.metodo, r.match_confidence, userId]
+            );
+        }
+        await db.query('DELETE FROM invoice_code_mappings WHERE odoo_product_id = $1', [odooProductId]);
+        const { rowCount } = await db.query('DELETE FROM odoo_products_cache WHERE odoo_id = $1', [odooProductId]);
+        return { ...odoo, vinculos_rechazados: rows.length, sacado_del_cache: rowCount > 0 };
+    });
+}
+
+/**
  * Productos de Neggo con alguna oferta web confirmada y sin habitual (informativo: el habitual es
  * la oferta del proveedor principal de Odoo; si el principal no tiene oferta, queda sin habitual).
  */
@@ -427,5 +457,5 @@ async function resumen() {
 
 module.exports = {
     listarLoteCodigo, decidirLote, listarTarjetas, decidirTarjeta, listarConflictosDetalle,
-    rechazarPar, cambiarReferencia, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_SEMANA
+    rechazarPar, marcarNoUsar, cambiarReferencia, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_DIA
 };

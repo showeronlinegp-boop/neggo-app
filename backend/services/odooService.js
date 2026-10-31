@@ -2,6 +2,7 @@
 // Cubre productos, partners, órdenes de compra y cotizaciones de venta
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
+const { conLeyendaNoUsar } = require('../utils/noUsar');
 
 // =============================================
 // Helpers internos
@@ -590,6 +591,42 @@ async function setProductArchived(odooProductId, companyKey, archived = true) {
     }
 
     console.log(`✅ Producto odoo_id=${odooProductId} (tmpl=${tmplId}) ${archived ? 'archivado' : 'restaurado'} en Odoo [${companyKey}]`);
+}
+
+/**
+ * Marca un producto "[NO USAR]" en Odoo (nota 118): le antepone la leyenda al nombre y lo archiva
+ * si estaba activo. No toca precio, foto ni categoría; sacando la leyenda vuelve a la app.
+ *
+ * @param {number} odooProductId — ID de product.product
+ * @param {string} companyKey    — 'neggo' | 'preventas'
+ * @returns {Promise<{ nombreAnterior: string, nombre: string, archivado: boolean }>}
+ */
+async function marcarNoUsar(odooProductId, companyKey = 'neggo') {
+    const companyId = await resolveCompanyId(companyKey);
+    const ctx = withCompany(companyId, { context: { active_test: false } });
+
+    const [producto] = await callOdoo(
+        'product.product',
+        'read',
+        [[odooProductId], ['name', 'product_tmpl_id', 'active']],
+        ctx
+    );
+    if (!producto) {
+        throw new Error(`No encontré el producto ${odooProductId} en Odoo`);
+    }
+    const tmplRaw = producto.product_tmpl_id;
+    const tmplId = Array.isArray(tmplRaw) ? tmplRaw[0] : tmplRaw;
+    const nombre = conLeyendaNoUsar(producto.name);
+
+    // El nombre vive en el template (la variante lo hereda)
+    if (nombre !== producto.name) {
+        if (tmplId) await callOdoo('product.template', 'write', [[tmplId], { name: nombre }], ctx);
+        else await callOdoo('product.product', 'write', [[odooProductId], { name: nombre }], ctx);
+    }
+    if (producto.active) await setProductArchived(odooProductId, companyKey, true);
+
+    console.log(`✅ Producto odoo_id=${odooProductId} marcado "[NO USAR]" en Odoo [${companyKey}]: "${producto.name}" → "${nombre}"`);
+    return { nombreAnterior: producto.name, nombre, archivado: producto.active };
 }
 
 async function confirmSaleOrder(odooOrderId, companyKey) {
@@ -1723,6 +1760,7 @@ module.exports = {
     createProduct,
     getProductCategories,
     setProductArchived,
+    marcarNoUsar,
     // Partners
     getPartners,
     getPartnerById,

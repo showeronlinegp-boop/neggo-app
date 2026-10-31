@@ -10,10 +10,11 @@
 // GET    /api/mappings/vincular/resumen           — cantidades por pestaña
 // GET    /api/mappings/vincular/lote              — sugeridos por código (supplierId opcional)
 // POST   /api/mappings/vincular/lote              — { confirmar: [ids], rechazar?: [ids] }
-// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre de la semana
+// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre del día
 // POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
 // GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
+// POST   /api/mappings/vincular/no-usar           — { odooProductId } "[NO USAR]" + archivado en Odoo (admin, nota 118)
 // POST   /api/mappings/vincular/referencia        — { odooProductId, ref } cambia el código en Odoo (nota 117)
 // GET    /api/mappings/vincular/sin-habitual      — con oferta confirmada y sin habitual
 // POST   /api/mappings/vincular/repasar-ingresos  — repasa todos los ingresos confirmados
@@ -387,6 +388,19 @@ router.post('/vincular/rechazar', authenticate, requireRole('admin', 'operador')
     } catch (err) {
         console.error('❌ Error al rechazar el vínculo:', err.message);
         return fail(res, 'Error al rechazar el vínculo', 500);
+    }
+});
+
+router.post('/vincular/no-usar', authenticate, requireRole('admin'), async (req, res) => {
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    if (!odooProductId) return fail(res, 'odooProductId es requerido', 400);
+    try {
+        const resultado = await vincular.marcarNoUsar({ odooProductId, userId: req.user.id });
+        console.log(`✅ "No usar" odoo_id=${odooProductId}: ${resultado.vinculos_rechazados} vínculo(s) rechazados`);
+        return ok(res, resultado);
+    } catch (err) {
+        console.error('❌ Error al marcar "No usar":', err.message);
+        return fail(res, `No se pudo marcar "No usar": ${err.message}`, 500);
     }
 });
 
