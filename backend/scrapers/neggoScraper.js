@@ -1,6 +1,7 @@
 const BaseScraper = require('./baseScraper');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const scrapingLogs = require('../services/scrapingLogs');
+const { esNoUsar } = require('../utils/noUsar');
 
 /**
  * NeggoScraper — fuente interna (scraper_key = 'neggo_scraper').
@@ -77,8 +78,8 @@ class NeggoScraper extends BaseScraper {
             variantes.push(...lote);
         }
 
-        // Código base de cada variante
-        const productos = variantes.map(v => {
+        // Código base de cada variante (sin los marcados "[NO USAR]", nota 118)
+        const productos = variantes.filter(v => !esNoUsar(v.name)).map(v => {
             const esVariante = (v.product_template_variant_value_ids || []).length > 0;
             const base = NeggoScraper.codigoBase({
                 default_code: v.default_code,

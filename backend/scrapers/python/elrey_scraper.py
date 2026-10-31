@@ -1,5 +1,8 @@
 """
 elrey_scraper.py — El Rey (catálogo Smarty con token)
+El catálogo acepta ?limit=N: cada categoría principal entra entera en una sola página HTML,
+así que se lee con HTTP simple (sin navegador). Después se recorre el catálogo completo
+para levantar los productos que no cuelgan de ninguna categoría principal.
 Salida NDJSON por stdout: cada producto es una línea {"type":"product",...}
 Al finalizar cada categoría emite {"type":"category_done","name":"...","count":N}
 Soporta SKIP_CATEGORIES (JSON list de nombres para reanudar).
@@ -8,19 +11,34 @@ import sys
 import signal
 import json
 import time
-import shutil
 import os
 import re
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import urllib.request
 from bs4 import BeautifulSoup
 
 BASE_URL = 'https://catalog.smarty.com.ar'
+DEFAULT_TOKEN = '574abb0c8c154b8d46e3cd9e8d99c5b8ab5f00ad'
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+LIMITE = 5000        # productos por página (el catálogo completo tiene < 1.000)
+TIMEOUT = 120
+REINTENTOS = 3
+
+# Categorías principales del menú (id de Smarty). El orden importa: un producto que está en
+# varias queda en la primera.
+CATEGORIAS = [7335, 7308, 7367, 7325, 7344, 7358, 7349, 23723, 27346]
+
+# El catálogo titula las principales en mayúsculas; las reglas de categoría de El Rey
+# (supplier_category_rules) se cargaron con estos nombres.
+NOMBRE_REGLA = {
+    'PERFUMERÍA': 'Perfumería',
+    'HOGAR Y BAZAR': 'Hogar y Bazar',
+    'ARTÍCULOS KIOSCO': 'Artículos Kiosco',
+    'INSECTICIDAS': 'Insecticidas',
+}
+
+# Categorías ya completadas (para reanudar)
+SKIP_CATEGORIES = set(json.loads(os.environ.get('SKIP_CATEGORIES', '[]')))
+RESTO = 'Otros productos'
 
 
 def normalize_sku(code):
@@ -28,28 +46,6 @@ def normalize_sku(code):
     if not code:
         return None
     return re.sub(r'[^A-Z0-9]', '', code.upper().strip())
-
-DEFAULT_TOKEN        = '574abb0c8c154b8d46e3cd9e8d99c5b8ab5f00ad'
-DEFAULT_CATEGORY_IDS = [9732, 9728, 7335, 9730, 9727]
-
-# Categorías a saltear (por nombre, para reanudar)
-SKIP_CATEGORIES = set(json.loads(os.environ.get('SKIP_CATEGORIES', '[]')))
-
-
-def setup_driver():
-    chromium    = os.environ.get('CHROMIUM_BIN') or shutil.which('chromium-browser') or shutil.which('chromium') or '/usr/bin/chromium-browser'
-    chromedriver = os.environ.get('CHROMEDRIVER_BIN') or shutil.which('chromedriver') or '/usr/bin/chromedriver'
-
-    options = Options()
-    options.binary_location = chromium
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-
-    return webdriver.Chrome(service=Service(chromedriver), options=options)
 
 
 def clean_price(price_str):
@@ -60,170 +56,153 @@ def clean_price(price_str):
     cleaned = cleaned.replace('.', '').replace(',', '.')
     try:
         return float(cleaned)
-    except:
+    except ValueError:
         return None
 
 
-def scrape_category(driver, start_url):
-    """Recorre todas las páginas de una categoría y emite productos via NDJSON."""
-    current_url = start_url
-    page_count = 1
-    cat_count = 0
+def nombre_categoria(texto):
+    nombre = (texto or '').strip()
+    if nombre.startswith('en '):
+        nombre = nombre[3:].strip()
+    return NOMBRE_REGLA.get(nombre, nombre) or None
 
-    print(f'📦 Accediendo a categoría: {start_url}', file=sys.stderr)
-    driver.get(current_url)
 
-    # Obtener nombre de la categoría
-    category_name = 'Catálogo'
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'h2.d-inline.fw-bold'))
-        )
-        raw_name = driver.find_element(By.CSS_SELECTOR, 'h2.d-inline.fw-bold').text.strip()
-        category_name = raw_name[3:] if raw_name.startswith('en ') else raw_name
-    except TimeoutException:
-        print('⚠️ No se encontró el nombre de la categoría', file=sys.stderr)
-
-    print(f'📦 Categoría: {category_name}', file=sys.stderr)
-
-    # Saltar si ya fue completada en run anterior
-    if category_name in SKIP_CATEGORIES:
-        print(f'⏭️ Saltando categoría ya completada: {category_name}', file=sys.stderr)
-        return category_name, 0, True  # (name, count, skipped)
-
-    while current_url:
-        print(f'  → Página {page_count}: {current_url}', file=sys.stderr)
-        if page_count > 1:
-            driver.get(current_url)
-
+def fetch(url):
+    """GET con reintentos ante errores de red."""
+    ultimo_error = None
+    for intento in range(1, REINTENTOS + 1):
         try:
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'div.itemWrapper'))
-            )
-            time.sleep(1)
-        except TimeoutException:
-            print(f'  🛑 Sin productos en página {page_count}', file=sys.stderr)
-            break
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        items = soup.select('div.itemWrapper')
-
-        if not items:
-            print(f'  🛑 Sin productos — fin de categoría', file=sys.stderr)
-            break
-
-        for item in items:
-            try:
-                name_tag = item.select_one('h5.item-name')
-                name = name_tag.get_text(strip=True) if name_tag else None
-                if not name:
-                    continue
-
-                ref_tag = item.select_one('span.reference')
-                codigo = ref_tag.get_text(strip=True) if ref_tag else None
-
-                price_tag = item.select_one('span.discountPrice') or item.select_one('div.item-price span')
-                raw_price = clean_price(price_tag.get_text(strip=True)) if price_tag else None
-
-                img_tag = item.select_one('img.item-image-primary')
-                image_url = None
-                if img_tag:
-                    src = img_tag.get('data-src') or img_tag.get('src', '')
-                    image_url = f'{BASE_URL}{src}' if src.startswith('/') else src
-
-                sku = normalize_sku(codigo) if codigo else None
-
-                product = {
-                    'sku':             sku,
-                    'name':            name,
-                    'raw_price':       raw_price,
-                    'offer_price':     None,
-                    'image_url':       image_url,
-                    'product_url':     None,
-                    'source_category': category_name,
-                    'barcode':         None,
-                    'available':       True,
-                }
-                # Emitir producto inmediatamente via NDJSON
-                print(json.dumps({'type': 'product', **product}), flush=True)
-                print(f'    ✔ {sku} | {name[:40]}', file=sys.stderr)
-                cat_count += 1
-
-            except Exception as e:
-                print(f'    ❌ Error en item: {e}', file=sys.stderr)
-
-        print(f'  ✅ {len(items)} productos en página {page_count}', file=sys.stderr)
-
-        # Siguiente página via a[rel="next"]
-        next_url = None
-        try:
-            next_tag = driver.find_element(By.CSS_SELECTOR, 'a[rel="next"]')
-            href = next_tag.get_attribute('href')
-            if href and href != current_url:
-                next_url = href if href.startswith('http') else f'{BASE_URL}{href}'
-        except NoSuchElementException:
-            pass
-
-        current_url = next_url
-        page_count += 1
-        if next_url:
-            time.sleep(1)
-
-    print(f'✅ Categoría "{category_name}": {cat_count} productos total', file=sys.stderr)
-    return category_name, cat_count, False
+            req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                return resp.read().decode('utf-8', 'replace')
+        except Exception as e:
+            ultimo_error = str(e)
+            print(f'  ⚠️ Intento {intento}/{REINTENTOS} fallido ({ultimo_error})', file=sys.stderr)
+            time.sleep(3 * intento)
+    raise RuntimeError(f'No se pudo leer {url}: {ultimo_error}')
 
 
-def scrape(driver):
-    token       = os.environ.get('ELREY_TOKEN', DEFAULT_TOKEN)
-    cat_ids_raw = os.environ.get('ELREY_CATEGORY_IDS', '')
+def leer_items(url):
+    """Devuelve (título de la página, items) recorriendo la paginación si la hubiera."""
+    titulo, items = None, []
+    while url:
+        soup = BeautifulSoup(fetch(url), 'html.parser')
+        if titulo is None:
+            h2 = soup.select_one('h2.d-inline.fw-bold')
+            titulo = h2.get_text(' ', strip=True) if h2 else ''
+        items.extend(soup.select('div.itemWrapper'))
+        siguiente = soup.select_one('a[rel="next"]')
+        href = siguiente.get('href') if siguiente else None
+        url = (href if href.startswith('http') else f'{BASE_URL}{href}') if href and href != url else None
+    return titulo, items
 
-    if cat_ids_raw:
-        try:
-            category_ids = json.loads(cat_ids_raw)
-        except:
-            category_ids = DEFAULT_CATEGORY_IDS
-    else:
-        category_ids = DEFAULT_CATEGORY_IDS
 
-    print(f'📦 El Rey — token: {token[:12]}... — {len(category_ids)} categorías', file=sys.stderr)
+def to_product(item, token, categoria):
+    name_tag = item.select_one('h5.item-name')
+    name = name_tag.get_text(' ', strip=True) if name_tag else None
+    ref_tag = item.select_one('span.reference')
+    sku = normalize_sku(ref_tag.get_text(strip=True)) if ref_tag else None
+    if not name or not sku:
+        return None
 
+    # En promo la web muestra el precio con descuento y, tachado, el de lista:
+    # raw_price = lista, offer_price = promo (así el costo no salta cuando termina la promo)
+    promo_tag = item.select_one('span.discountPrice')
+    lista_tag = item.select_one('span.origDiscountPrice') if promo_tag else item.select_one('span.origPrice')
+    raw_price = clean_price(lista_tag.get_text(strip=True)) if lista_tag else None
+    offer_price = clean_price(promo_tag.get_text(strip=True)) if promo_tag else None
+    if raw_price is None:
+        precio = item.select_one('div.item-price')
+        raw_price = clean_price(precio.get('data-view-item-price', '').replace('.', ',')) if precio else None
+
+    image_url = None
+    galeria = item.select_one('a.lnkGallery')
+    img_tag = item.select_one('img.item-image-primary')
+    src = (galeria.get('data-src') if galeria else None) or (img_tag.get('data-src') or img_tag.get('src', '') if img_tag else '')
+    if src:
+        image_url = f'{BASE_URL}{src}' if src.startswith('/') else src
+
+    item_id = item.select_one('input.id')
+    product_url = f'{BASE_URL}/token/{token}/{item_id.get("value")}' if item_id and item_id.get('value') else None
+
+    return {
+        'sku':             sku,
+        'name':            name,
+        'raw_price':       raw_price,
+        'offer_price':     offer_price,
+        'image_url':       image_url,
+        'product_url':     product_url,
+        'source_category': categoria,
+        'barcode':         None,
+        # Lo que está publicado en el catálogo se puede pedir; lo que sale se da de baja en la limpieza
+        'available':       True,
+    }
+
+
+def scrape():
+    token = os.environ.get('ELREY_TOKEN', DEFAULT_TOKEN)
+    print(f'📦 El Rey — token: {token[:12]}... — {len(CATEGORIAS)} categorías + resto del catálogo', file=sys.stderr)
     if SKIP_CATEGORIES:
         print(f'⏭️ Reanudando — saltando categorías: {list(SKIP_CATEGORIES)}', file=sys.stderr)
 
-    for cat_id in category_ids:
-        url = f'{BASE_URL}/token/{token}/?category_id={cat_id}'
-        category_name, cat_count, skipped = scrape_category(driver, url)
+    emitidos = set()
+    total = 0
 
-        if not skipped:
-            # Señal de categoría completada (para checkpoint)
-            print(json.dumps({'type': 'category_done', 'name': category_name, 'count': cat_count}), flush=True)
+    def emitir(items, categoria_fija):
+        count = 0
+        for item in items:
+            try:
+                categoria = categoria_fija
+                if categoria is None:
+                    # Resto: primera categoría que muestra el producto
+                    cats = item.select_one('span.item-categories')
+                    categoria = nombre_categoria(cats.get_text(strip=True).split(',')[0]) if cats else None
+                product = to_product(item, token, categoria)
+                if not product or product['sku'] in emitidos:
+                    continue
+                emitidos.add(product['sku'])
+                print(json.dumps({'type': 'product', **product}), flush=True)
+                count += 1
+            except Exception as e:
+                print(f'    ❌ Error en item: {e}', file=sys.stderr)
+        return count
 
+    for cat_id in CATEGORIAS:
+        titulo, items = leer_items(f'{BASE_URL}/token/{token}/?category_id={cat_id}&limit={LIMITE}')
+        categoria = nombre_categoria(titulo) or f'Categoría {cat_id}'
+        # Aunque se saltee, sus SKU cuentan como vistos para que no caigan en el resto
+        if categoria in SKIP_CATEGORIES:
+            print(f'⏭️ Saltando categoría ya completada: {categoria}', file=sys.stderr)
+            for item in items:
+                ref = item.select_one('span.reference')
+                if ref:
+                    emitidos.add(normalize_sku(ref.get_text(strip=True)))
+            continue
+        count = emitir(items, categoria)
+        total += count
+        print(json.dumps({'type': 'category_done', 'name': categoria, 'count': count}), flush=True)
+        print(f'✅ {categoria}: {count} productos ({len(items)} en la página)', file=sys.stderr)
         time.sleep(1)
+
+    if RESTO not in SKIP_CATEGORIES:
+        _, items = leer_items(f'{BASE_URL}/token/{token}/?limit={LIMITE}')
+        count = emitir(items, None)
+        total += count
+        print(json.dumps({'type': 'category_done', 'name': RESTO, 'count': count}), flush=True)
+        print(f'✅ {RESTO}: {count} productos (catálogo completo: {len(items)})', file=sys.stderr)
+
+    print(f'📊 El Rey: {total} productos emitidos', file=sys.stderr)
 
 
 if __name__ == '__main__':
-    driver = None
-
     def shutdown(signum, frame):
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
         sys.exit(143)  # 128 + SIGTERM: el backend lo toma como pausa
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
     try:
-        driver = setup_driver()
-        scrape(driver)
+        scrape()
     except Exception as e:
         print(f'❌ Error fatal: {e}', file=sys.stderr)
         sys.exit(1)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass

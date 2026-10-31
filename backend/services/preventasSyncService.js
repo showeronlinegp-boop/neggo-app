@@ -11,7 +11,7 @@ const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO 
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     matcheados: ['activar', 'sin_cambios', 'precio_sube', 'precio_baja'],
-    inactivar:  ['inactivar', 'solo_odoo'],
+    inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
     // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
     sin_fuente: ['sin_fuente'],
 };
@@ -19,7 +19,7 @@ const GRUPO_ESTADOS = {
 // Estados que nunca generan una acción en Odoo
 const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
-const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo'];
+const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
 async function getProductsToSync(pool, filters = {}) {
     const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
@@ -122,6 +122,7 @@ async function getProductsToSync(pool, filters = {}) {
                 WHEN 'inactivar'    THEN 4
                 WHEN 'solo_scraper' THEN 5
                 WHEN 'solo_odoo'    THEN 6
+                WHEN 'fuera_preventas' THEN 6
                 ELSE                     7
             END,
             s.name ASC NULLS LAST,
@@ -417,7 +418,7 @@ async function ejecutarAccion(prod, preventasCompanyId, pool) {
 
     // ─── Archivar / desarchivar — usa action_archive/unarchive en product.template
     // para que afecte el template y todas sus variantes (comportamiento correcto en Odoo).
-    if (prod.estado === 'inactivar' || prod.estado === 'solo_odoo') {
+    if (ESTADOS_INACTIVACION.includes(prod.estado)) {
         const templateId = prod.odoo_template_id;
         if (!templateId) {
             throw new Error(`Producto ${prod.odoo_ref || prod.odoo_product_id} sin template_id en cache — hacé un sync de Odoo primero`);

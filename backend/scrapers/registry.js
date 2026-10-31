@@ -4,6 +4,14 @@ const ImpoteknóScraper = require('./impotekno');
 const ElReyScraper = require('./elrey');
 const NurcellScraper = require('./nurcell');
 const ZleScraper = require('./zle');
+const TiendanubeScraper = require('./tiendanube');
+const ParnassaScraper = require('./parnassa');
+const JorgeScraper = require('./jorge');
+const FancyYouScraper = require('./fancyyou');
+const VentasXMayorScraper = require('./ventasxmayor');
+const ToysPalaceScraper = require('./toyspalace');
+const OdooShopScraper = require('./odooshop');
+const BlumenScraper = require('./blumen');
 const NeggoScraper = require('./neggoScraper');
 
 /**
@@ -17,6 +25,14 @@ const SCRAPER_REGISTRY = {
     'elrey': ElReyScraper,
     'nurcell': NurcellScraper,
     'zle': ZleScraper,
+    'tiendanube': TiendanubeScraper,
+    'parnassa': ParnassaScraper,
+    'jorge': JorgeScraper,
+    'fancyyou': FancyYouScraper,
+    'ventasxmayor': VentasXMayorScraper,
+    'toyspalace': ToysPalaceScraper,
+    'odooshop': OdooShopScraper,
+    'blumen': BlumenScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
 };

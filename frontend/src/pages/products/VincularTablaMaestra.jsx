@@ -1,8 +1,10 @@
 // Pestañas de la tabla maestra en /productos/vinculos (nota 107): lote por código, tarjetas por
-// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo.
+// nombre, conflictos y sin habitual. Solo Neggo; ninguna decisión mueve precios ni escribe en Odoo,
+// salvo en los conflictos "Cambiar código" (nota 117) y "No usar" (nota 118), que sí escriben en Odoo.
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import api from '../../api/client';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import { fmtAR, fmtInt } from '../../theme/tokens';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
@@ -11,6 +13,7 @@ import Toggle from '../../components/common/Toggle';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ProductThumb from '../../components/common/ProductThumb';
 import FotoAmpliada from '../../components/common/FotoAmpliada';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 
 // Diferencia entre el neto de la oferta y el costo de Odoo a partir de la cual se avisa (posible pack)
@@ -214,11 +217,11 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         if (!res.success) return showToast(res.error || 'Error al guardar', 'error');
         showToast(mappingId ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
         onCambio?.();
-        // Sale de la lista y queda una decisión más en la semana
+        // Sale de la lista y queda una decisión más en el día
         setDatos(d => ({
             ...d,
             tarjetas: d.tarjetas.filter(x => x.odoo_product_id !== tarjeta.odoo_product_id),
-            decididas_semana: d.decididas_semana + 1,
+            decididas_hoy: d.decididas_hoy + 1,
             pendientes: Math.max(d.pendientes - 1, 0),
         }));
         setIndice(i => Math.min(i, Math.max(tarjetas.length - 2, 0)));
@@ -248,7 +251,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
 
     const encabezado = (
         <div style={{ display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap', fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
-            <span>Esta semana: <b style={{ color: t.color.text }}>{datos.decididas_semana}</b> de {datos.tope}</span>
+            <span>Hoy: <b style={{ color: t.color.text }}>{datos.decididas_hoy}</b> de {datos.tope}</span>
             <span>· {fmtInt(datos.pendientes)} productos pendientes</span>
             {tarjetas.length > 0 && <span>· tarjeta {indice + 1} de {tarjetas.length}</span>}
         </div>
@@ -258,8 +261,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
                 {encabezado}
-                <Vacio tokens={t} msg={datos.pendientes > 0 && datos.decididas_semana >= datos.tope
-                    ? `Llegaste al tope de ${datos.tope} tarjetas de esta semana. Las que faltan vuelven la semana que viene.`
+                <Vacio tokens={t} msg={datos.pendientes > 0 && datos.decididas_hoy >= datos.tope
+                    ? `Llegaste al tope de ${datos.tope} tarjetas de hoy. Las que faltan vuelven mañana.`
                     : 'No quedan tarjetas por revisar.'} />
             </div>
         );
@@ -426,7 +429,8 @@ function motivoConflicto(productos) {
     if (refs.length === 1 && productos.every(p => p.internal_ref)) {
         const archivados = productos.filter(p => p.activo === false).length;
         return `Todos tienen la misma referencia en Odoo (${refs[0]}), por eso el lote por código los unió a todos.`
-            + (archivados ? ' Seguramente uno es un producto viejo que se archivó y se reemplazó por otro.' : '');
+            + (archivados ? ' Seguramente uno es un producto viejo que se archivó y se reemplazó por otro.' : '')
+            + ' Si alguno no lleva ese código, tocá "Cambiar código" en ese producto: se corrige en Odoo y se desvincula solo.';
     }
     return null;
 }
@@ -435,6 +439,83 @@ function motivoConflicto(productos) {
 function productoSugerido(productos) {
     const activos = productos.filter(p => p.activo !== false);
     return activos.length === 1 && activos.length < productos.length ? activos[0].odoo_id : null;
+}
+
+// Cambiar el código de referencia de un producto de Neggo (nota 117): se guarda en Odoo y los
+// vínculos por código que dejan de coincidir se sacan solos
+function EditarReferencia({ tokens: t, producto, deshabilitado, onGuardado }) {
+    const { showToast } = useToast();
+    const [editando, setEditando] = useState(false);
+    const [valor, setValor] = useState(producto.internal_ref || '');
+    const [guardando, setGuardando] = useState(false);
+
+    function abrir(e) {
+        e.stopPropagation();
+        setValor(producto.internal_ref || '');
+        setEditando(true);
+    }
+
+    async function guardar() {
+        setGuardando(true);
+        const res = await api.post('/mappings/vincular/referencia', { odooProductId: producto.odoo_id, ref: valor });
+        setGuardando(false);
+        if (!res.success) { showToast(res.error || 'Error al cambiar el código', 'error'); return; }
+        const { desvinculados } = res.data;
+        showToast(desvinculados
+            ? `Código cambiado en Odoo. Se ${desvinculados === 1 ? 'sacó 1 vínculo' : `sacaron ${desvinculados} vínculos`} por código.`
+            : 'Código cambiado en Odoo.', 'success');
+        setEditando(false);
+        onGuardado?.();
+    }
+
+    if (!editando) {
+        return (
+            <button
+                type="button"
+                onClick={abrir}
+                disabled={deshabilitado}
+                style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: t.space[1], padding: 0,
+                    border: 'none', background: 'transparent', color: t.color.primary, cursor: 'pointer',
+                    fontSize: t.font.size.xs, fontFamily: t.font.family,
+                }}
+            >
+                <Icon.Edit2 size={12} /> Cambiar código
+            </button>
+        );
+    }
+
+    return (
+        <div style={{ marginTop: t.space[2] }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', gap: t.space[2], alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                    autoFocus
+                    value={valor}
+                    maxLength={64}
+                    placeholder="Sin código"
+                    aria-label={`Código de referencia de ${producto.nombre}`}
+                    onChange={e => setValor(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter' && !guardando) guardar();
+                        if (e.key === 'Escape') setEditando(false);
+                    }}
+                    style={{
+                        width: 160, height: 32, padding: '0 8px', borderRadius: t.radius.sm,
+                        border: `1px solid ${t.color.borderStrong}`, background: t.color.surface, color: t.color.text,
+                        fontFamily: t.font.mono, fontSize: t.font.size.sm,
+                    }}
+                />
+                <Button size="sm" variant="primary" disabled={guardando} onClick={guardar}>
+                    {guardando ? 'Guardando…' : 'Guardar en Odoo'}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={guardando} onClick={() => setEditando(false)}>Cancelar</Button>
+            </div>
+            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: t.space[1], fontFamily: t.font.family }}>
+                Se cambia en Odoo. Los vínculos por código que ya no coincidan con el código nuevo se sacan.
+                Dejalo vacío para borrar el código.
+            </div>
+        </div>
+    );
 }
 
 function Rotulo({ tokens: t, children }) {
@@ -447,8 +528,12 @@ function Rotulo({ tokens: t, children }) {
 
 export function Conflictos({ tokens: t, onCambio }) {
     const { showToast } = useToast();
+    const { user } = useAuth();
+    const esAdmin = user?.role === 'admin';
     const [filas, setFilas] = useState(null);
     const [foto, setFoto] = useState(null);
+    const [noUsar, setNoUsar] = useState(null);
+    const [marcando, setMarcando] = useState(false);
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/conflictos');
@@ -484,6 +569,17 @@ export function Conflictos({ tokens: t, onCambio }) {
         cargar(); onCambio?.();
     }
 
+    // "No usar" (nota 118): leyenda en el nombre + archivado en Odoo; la app deja de traerlo
+    async function marcarNoUsar() {
+        if (!noUsar || marcando) return;
+        setMarcando(true);
+        const res = await api.post('/mappings/vincular/no-usar', { odooProductId: noUsar.odoo_id });
+        setMarcando(false);
+        setNoUsar(null);
+        if (res.success) { showToast(`"${res.data.nombre}" quedó fuera de la app`, 'success'); cargar(); onCambio?.(); }
+        else showToast(res.error || 'Error al marcar No usar', 'error');
+    }
+
     if (!filas) return <Centrado><LoadingSpinner size="md" color={t.color.primary} /></Centrado>;
     if (!filas.length) return <Vacio tokens={t} msg="No hay conflictos." />;
 
@@ -493,7 +589,8 @@ export function Conflictos({ tokens: t, onCambio }) {
                 Cada oferta de un proveedor tiene que corresponder a <b>un solo</b> producto de Neggo, pero estas quedaron
                 vinculadas a dos o más. Mirá las fotos y los nombres y tocá <b>"Es este"</b> en el producto que es el mismo
                 artículo de la oferta: los demás se desvinculan. Si ninguno corresponde, tocá "No es este" en cada uno.
-                No cambia nada en Odoo.
+                Elegir no cambia nada en Odoo. "Cambiar código" corrige el código en Odoo; "No usar" le pone "[NO USAR]"
+                al nombre en Odoo, lo archiva y la app deja de traerlo (para duplicados que no se usan más).
             </Ayuda>
             {filas.map(c => {
                 const motivo = motivoConflicto(c.productos);
@@ -515,13 +612,21 @@ export function Conflictos({ tokens: t, onCambio }) {
                                     border: `1px solid ${p.odoo_id === sugerido ? t.color.success : t.color.border}`,
                                 }}>
                                     <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                                        <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto} />
+                                        <ConFoto tokens={t} imageUrl={p.image_url} nombre={p.nombre} codigo={p.internal_ref} extra={p.vendor_name ? `principal: ${p.vendor_name}` : null} onFoto={setFoto}>
+                                            <EditarReferencia tokens={t} producto={p} deshabilitado={ocupado} onGuardado={() => { cargar(); onCambio?.(); }} />
+                                        </ConFoto>
                                     </div>
                                     {p.odoo_id === sugerido && <Badge tone="success">Sugerido: es el activo</Badge>}
                                     {p.activo === false && <Badge tone="muted">Archivado en Odoo</Badge>}
                                     <Badge tone="muted">{METODO_LABEL[p.metodo] || p.metodo}</Badge>
                                     <Button size="sm" variant="primary" leftIcon={<Icon.Check size={14} />} disabled={ocupado} onClick={() => esEste(c, p.odoo_id)}>Es este</Button>
                                     <Button size="sm" variant="ghost" disabled={ocupado} onClick={() => noEsEste(c.supplier_product_id, p.odoo_id)}>No es este</Button>
+                                    {esAdmin && (
+                                        <Button size="sm" variant="danger" disabled={ocupado || marcando} onClick={() => setNoUsar(p)}
+                                            title='Le pone "[NO USAR]" al nombre en Odoo, lo archiva y la app deja de traerlo'>
+                                            No usar
+                                        </Button>
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -530,6 +635,16 @@ export function Conflictos({ tokens: t, onCambio }) {
             })}
 
             <FotoAmpliada imageUrl={foto?.imageUrl} nombre={foto?.nombre} detalle={foto?.detalle} onClose={() => setFoto(null)} />
+
+            <ConfirmDialog
+                isOpen={!!noUsar}
+                onClose={() => setNoUsar(null)}
+                onConfirm={marcarNoUsar}
+                title="Marcar como No usar"
+                message={`En Odoo, "${noUsar?.nombre}" pasa a llamarse "[NO USAR] ${noUsar?.nombre}" y queda archivado (precio, foto y categoría no se tocan). La app deja de traerlo y se rechazan todos sus vínculos. Para recuperarlo, sacale la leyenda al nombre en Odoo.`}
+                confirmLabel={marcando ? 'Marcando…' : 'Marcar No usar'}
+                danger
+            />
         </div>
     );
 }

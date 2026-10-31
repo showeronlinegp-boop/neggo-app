@@ -201,7 +201,8 @@ export default function PedidoEnvioDetalle() {
 
     const setQtyAbs = async (item, qty, okMsg) => {
         const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
-        const nueva = Math.max(0, Math.min(topeDe(item, envio), qty));
+        // Sin tope arriba: se pueden sumar unidades extra a lo pedido
+        const nueva = Math.max(0, qty);
         if (nueva === (Number(item[campo]) || 0)) return;
         setTrabajando(true);
         const res = await api.patch(`/pedido-envios/items/${item.id}`, { [campo]: nueva });
@@ -478,6 +479,7 @@ export default function PedidoEnvioDetalle() {
                     const pedida = topeDe(it, envio);
                     const actual = qtyDe(it, envio.estado);
                     const completo = actual >= pedida && pedida > 0;
+                    const extra = pedida > 0 ? actual - pedida : 0;
                     return (
                         <div key={it.id} style={{
                             padding: 12, borderTop: `1px solid ${t.color.border}`,
@@ -523,6 +525,11 @@ export default function PedidoEnvioDetalle() {
                                     <div style={{ fontWeight: t.font.weight.semibold, ...t.numericStyle, color: completo ? t.color.success : t.color.text }}>
                                         {actual}/{pedida}
                                     </div>
+                                    {extra > 0 && (
+                                        <div style={{ marginTop: 4 }}>
+                                            <Badge tone="accent">+{extra} extra</Badge>
+                                        </div>
+                                    )}
                                     {it.price_unit != null && (
                                         <div title="Precio de venta (unitario)" style={{ fontSize: 12, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
                                             {fmtARS(it.price_unit)}
@@ -541,8 +548,9 @@ export default function PedidoEnvioDetalle() {
                                     <div style={{ minWidth: 36, textAlign: 'center', fontWeight: t.font.weight.semibold, ...t.numericStyle }}>
                                         {Number(it[campo]) || 0}
                                     </div>
-                                    <Button size="sm" variant="secondary" disabled={trabajando || actual >= pedida}
+                                    <Button size="sm" variant="secondary" disabled={trabajando || pedida <= 0}
                                         onClick={() => setQty(it, 1)}
+                                        title={completo ? 'Sumar una unidad extra' : undefined}
                                         style={{ width: 48, height: 48, padding: 0 }} aria-label="Sumar">
                                         <Icon.Plus size={18} />
                                     </Button>

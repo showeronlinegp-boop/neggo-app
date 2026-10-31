@@ -10,10 +10,12 @@
 // GET    /api/mappings/vincular/resumen           — cantidades por pestaña
 // GET    /api/mappings/vincular/lote              — sugeridos por código (supplierId opcional)
 // POST   /api/mappings/vincular/lote              — { confirmar: [ids], rechazar?: [ids] }
-// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre de la semana
+// GET    /api/mappings/vincular/tarjetas          — tarjetas por nombre del día
 // POST   /api/mappings/vincular/tarjetas          — { odooProductId, mappingId | null }
 // GET    /api/mappings/vincular/conflictos        — ofertas confirmadas con 2 o más productos
 // POST   /api/mappings/vincular/rechazar          — { supplierProductId, odooProductId }
+// POST   /api/mappings/vincular/no-usar           — { odooProductId } "[NO USAR]" + archivado en Odoo (admin, nota 118)
+// POST   /api/mappings/vincular/referencia        — { odooProductId, ref } cambia el código en Odoo (nota 117)
 // GET    /api/mappings/vincular/sin-habitual      — con oferta confirmada y sin habitual
 // POST   /api/mappings/vincular/repasar-ingresos  — repasa todos los ingresos confirmados
 //
@@ -60,8 +62,8 @@ async function registrarDecision(mapping, decision, userId) {
 //   supplierId — filtra por proveedor
 //   company    — 'neggo' | 'preventas'
 //   status     — 'active' | 'suggested' | 'rejected'
-//   unmapped   — 'true' → devuelve supplier_products SIN mapping activo
-//   search     — búsqueda por nombre del producto proveedor
+//   unmapped   — 'true' → devuelve supplier_products disponibles SIN vínculo confirmado
+//   search     — búsqueda por nombre del producto proveedor (y SKU en modo unmapped)
 //   limit      — default 100, max 500
 //   offset     — default 0
 // =============================================
@@ -81,7 +83,7 @@ router.get('/', authenticate, async (req, res) => {
     const offset = Math.max(parseInt(rawOffset, 10) || 0, 0);
 
     try {
-        // Modo "no mapeados": devuelve supplier_products sin mapping activo
+        // Modo "no mapeados": devuelve supplier_products sin vínculo confirmado
         if (unmapped === 'true') {
             // Sin supplierId → solo retornar el conteo total (para el dashboard)
             if (!supplierId) {
@@ -97,7 +99,7 @@ router.get('/', authenticate, async (req, res) => {
                 return res.json({ success: true, data: [], total: parseInt(countRows[0].total, 10) });
             }
 
-            const rows = await getUnmappedProducts(parseInt(supplierId, 10));
+            const rows = await getUnmappedProducts(parseInt(supplierId, 10), { search: String(search), limit, offset });
             return ok(res, rows);
         }
 
@@ -386,6 +388,31 @@ router.post('/vincular/rechazar', authenticate, requireRole('admin', 'operador')
     } catch (err) {
         console.error('❌ Error al rechazar el vínculo:', err.message);
         return fail(res, 'Error al rechazar el vínculo', 500);
+    }
+});
+
+router.post('/vincular/no-usar', authenticate, requireRole('admin'), async (req, res) => {
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    if (!odooProductId) return fail(res, 'odooProductId es requerido', 400);
+    try {
+        const resultado = await vincular.marcarNoUsar({ odooProductId, userId: req.user.id });
+        console.log(`✅ "No usar" odoo_id=${odooProductId}: ${resultado.vinculos_rechazados} vínculo(s) rechazados`);
+        return ok(res, resultado);
+    } catch (err) {
+        console.error('❌ Error al marcar "No usar":', err.message);
+        return fail(res, `No se pudo marcar "No usar": ${err.message}`, 500);
+    }
+});
+
+router.post('/vincular/referencia', authenticate, requireRole('admin', 'operador'), async (req, res) => {
+    const odooProductId = parseInt(req.body.odooProductId, 10);
+    if (!odooProductId || typeof (req.body.ref ?? '') !== 'string') return fail(res, 'odooProductId y ref (texto) son requeridos', 400);
+    try {
+        return ok(res, await vincular.cambiarReferencia({ odooProductId, ref: req.body.ref, userId: req.user.id }));
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ Error al cambiar el código de referencia:', err.message);
+        return fail(res, `No se pudo cambiar el código en Odoo: ${err.message}`, 500);
     }
 });
 
