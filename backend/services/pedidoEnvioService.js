@@ -88,6 +88,12 @@ function clampQty(value, max) {
     return v;
 }
 
+// Cantidad cargada, sin tope: se pueden sumar unidades extra a lo pedido
+function qtyEntera(value) {
+    const v = Math.round(num(value));
+    return v < 0 ? 0 : v;
+}
+
 function tabDeEstado(estado) {
     if (estado === 'pendiente' || estado === 'armando') return 'armar';
     if (estado === 'armado' || estado === 'controlando') return 'controlar';
@@ -118,8 +124,9 @@ function qtyCampoDeFase(estado) {
     return 'qty_armada';
 }
 
-// Hasta cuánto se puede cargar en la fase. Con el envío 1 validado, en el control
+// Cuánto se espera en la fase (completo). Con el envío 1 validado, en el control
 // sólo se cuenta lo armado: lo demás quedó en el backorder del envío 1 (pendiente de armar).
+// Se puede cargar de más: las extra salen en el envío y al cerrar la orden se iguala a lo entregado.
 function topeDeFase(item, estado, pickingState) {
     const pedida = num(item.qty_pedida);
     if (estado === 'controlando' && pickingState === 'done') {
@@ -134,8 +141,8 @@ function previewSaldar(items) {
     const iguales = [];
     for (const it of items || []) {
         const pedida = num(it.qty_pedida);
-        const controlada = clampQty(it.qty_controlada, pedida);
-        const resto = Math.round((pedida - controlada) * 100) / 100;
+        const controlada = qtyEntera(it.qty_controlada);
+        const resto = Math.max(0, Math.round((pedida - controlada) * 100) / 100);
         if (controlada === pedida) {
             iguales.push({
                 id: it.id,
@@ -282,7 +289,7 @@ function qtyDesdeMoves(items, moves) {
         let q = 0;
         if (it.odoo_line_id && porLinea.has(it.odoo_line_id)) q = porLinea.get(it.odoo_line_id);
         else if (it.odoo_product_id && porProd.has(it.odoo_product_id)) q = porProd.get(it.odoo_product_id);
-        return { id: it.id, qty: clampQty(q, it.qty_pedida) };
+        return { id: it.id, qty: qtyEntera(q) };
     });
 }
 
@@ -320,7 +327,7 @@ function itemsSinLoHecho(items, hecho, campo) {
     const clave = campo === 'qty_controlada' ? 'ctrl' : 'arm';
     return (items || []).map((it) => ({
         ...it,
-        [campo]: Math.max(0, clampQty(it[campo], it.qty_pedida) - num(hecho.get(it.id)?.[clave])),
+        [campo]: Math.max(0, qtyEntera(it[campo]) - num(hecho.get(it.id)?.[clave])),
     }));
 }
 
@@ -424,6 +431,11 @@ function planIgualar(odoo) {
     for (const l of lineasProductoOdoo(odoo)) {
         const pedida = num(l.quantity);
         const entregada = Math.max(0, num(l.qty_delivered));
+        if (entregada > pedida + 0.0001) {
+            // Salieron unidades extra: la orden sube a lo entregado
+            writes.push({ odoo_line_id: l.id, qty: entregada, product_name: l.product_name });
+            continue;
+        }
         if (entregada + 0.0001 >= pedida) continue;
         writes.push({ odoo_line_id: l.id, qty: entregada, product_name: l.product_name });
         pendientes.push({
@@ -498,7 +510,7 @@ function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
     const restantesLinea = new Map();
     const restantesProd = new Map();
     for (const it of items || []) {
-        const qty = clampQty(it[campo], it.qty_pedida);
+        const qty = qtyEntera(it[campo]);
         if (it.odoo_line_id) {
             restantesLinea.set(it.odoo_line_id, (restantesLinea.get(it.odoo_line_id) || 0) + qty);
         }
@@ -508,9 +520,12 @@ function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
     }
 
     const writes = [];
+    const ultimoPorLinea = new Map();
+    const ultimoPorProd = new Map();
     for (const mv of (moves || []).filter((m) => m && m.state !== 'cancel')) {
         const demand = Math.max(0, num(mv.product_uom_qty));
         let take = 0;
+        let porLinea = false;
         if (mv.sale_line_id && restantesLinea.has(mv.sale_line_id)) {
             const hay = restantesLinea.get(mv.sale_line_id);
             take = Math.min(demand, hay);
@@ -518,18 +533,35 @@ function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
             if (mv.product_id && restantesProd.has(mv.product_id)) {
                 restantesProd.set(mv.product_id, Math.max(0, restantesProd.get(mv.product_id) - take));
             }
+            porLinea = true;
         } else if (mv.product_id && restantesProd.has(mv.product_id)) {
             const hay = restantesProd.get(mv.product_id);
             take = Math.min(demand, hay);
             restantesProd.set(mv.product_id, hay - take);
         }
-        writes.push({
+        const w = {
             id: mv.id,
             quantity: take,
             demand,
             sale_line_id: mv.sale_line_id || null,
             product_id: mv.product_id || null,
-        });
+        };
+        writes.push(w);
+        if (porLinea) ultimoPorLinea.set(mv.sale_line_id, w);
+        else if (mv.product_id && restantesProd.has(mv.product_id)) ultimoPorProd.set(mv.product_id, w);
+    }
+    // Unidades extra (más que lo pedido): van al último move de su línea o de su producto
+    for (const [lineId, resto] of restantesLinea) {
+        const w = ultimoPorLinea.get(lineId);
+        if (!w || resto <= 0) continue;
+        w.quantity += resto;
+        if (w.product_id && restantesProd.has(w.product_id)) {
+            restantesProd.set(w.product_id, Math.max(0, restantesProd.get(w.product_id) - resto));
+        }
+    }
+    for (const [prodId, resto] of restantesProd) {
+        const w = ultimoPorProd.get(prodId);
+        if (w && resto > 0) w.quantity += resto;
     }
     // Lo cargado que no tiene línea en el envío (lo incompleto de un envío anterior)
     const enEnvio = (moves || []).filter((m) => m && m.state !== 'cancel');
@@ -540,7 +572,7 @@ function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
             sale_line_id: it.odoo_line_id,
             product_id: it.odoo_product_id,
             product_name: it.product_name,
-            qty: clampQty(it[campo], it.qty_pedida),
+            qty: qtyEntera(it[campo]),
         }))
         .filter((s) => s.qty > 0);
     return {
@@ -937,7 +969,7 @@ function objetivoPorItem(item, plan) {
     const todas = [...(plan.queda || []), ...(plan.iguales || [])];
     const marcada = todas.find((l) => l.odoo_line_id === item.odoo_line_id);
     if (marcada) return marcada.qty_nueva;
-    return clampQty(item.qty_controlada, item.qty_pedida);
+    return qtyEntera(item.qty_controlada);
 }
 
 // Compara el envío local contra la sale.order viva. Sin I/O.
@@ -1715,7 +1747,10 @@ async function setQty(itemId, campo, qty, userId) {
     if (campo === 'qty_controlada' && item.estado !== 'controlando') {
         throw httpError('Sólo se controla en la etapa de control', 409);
     }
-    const nueva = clampQty(qty, topeDeFase(item, item.estado, item.odoo_picking_state));
+    const nueva = qtyEntera(qty);
+    if (nueva > 0 && campo === 'qty_controlada' && topeDeFase(item, item.estado, item.odoo_picking_state) <= 0) {
+        throw httpError(`«${item.product_name}» no se armó: está pendiente de armar`, 409);
+    }
     await pool.query(
         `UPDATE pedido_envio_items SET ${campo} = $2 WHERE id = $1`,
         [itemId, nueva]
@@ -1740,9 +1775,6 @@ async function escanear(envioId, code, userId) {
     const tope = topeDeFase(item, envio.estado, envio.odoo_picking_state);
     if (tope <= 0) {
         throw httpError(`«${item.product_name}» no se armó: está pendiente de armar`, 409);
-    }
-    if (actual >= tope) {
-        throw httpError(`«${item.product_name}» ya está completo`, 409);
     }
     return setQty(item.id, campo, actual + 1, userId);
 }
@@ -1995,6 +2027,7 @@ module.exports = {
     ESTADOS,
     ensureSchema,
     clampQty,
+    qtyEntera,
     tabDeEstado,
     normalizarCode,
     itemPorCodigo,
