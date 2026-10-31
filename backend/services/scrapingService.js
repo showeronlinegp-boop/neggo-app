@@ -1,5 +1,6 @@
 const { getScraperForSupplier, SCRAPER_REGISTRY } = require('../scrapers/registry');
 const PythonScraper = require('../scrapers/pythonScraper');
+const NeggoScraper = require('../scrapers/neggoScraper');
 const pool = require('../config/database');
 const scrapingLogs = require('./scrapingLogs');
 
@@ -269,6 +270,18 @@ async function executeRun(db, run) {
         console.log(`📦 Worker: iniciando "${supplier.name}" (run ${run.id})`);
         const result = await scraper.run(run.triggered_by);
         console.log(`✅ Worker: "${supplier.name}" terminó (run ${run.id}): ${result.status}, ${result.found} productos`);
+
+        // "Preventas desde Neggo" en un proveedor web (nota 127): la web queda para Reposición y
+        // Vínculos; además se leen sus productos de Neggo, que son los que van a Sync Preventas
+        if (supplier.preventas_fuente === 'neggo' && !(scraper instanceof NeggoScraper)
+            && result.status !== 'paused') {
+            try {
+                await new NeggoScraper(supplier, db).actualizarParaPreventas(run.id);
+            } catch (err) {
+                console.error(`❌ Worker: productos de Neggo de "${supplier.name}" (run ${run.id}): ${err.message}`);
+                scrapingLogs.appendLog(run.id, `❌ [Neggo] No se pudieron leer los productos de Neggo: ${err.message}`);
+            }
+        }
     } catch (err) {
         console.error(`❌ Worker: run ${run.id}${supplier ? ` de "${supplier.name}"` : ''} falló: ${err.message}`);
         scrapingLogs.appendLog(run.id, `❌ ${err.message}`);

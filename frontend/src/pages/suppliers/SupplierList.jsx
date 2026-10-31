@@ -128,6 +128,19 @@ export default function SupplierList() {
         }
     }
 
+    async function handlePreventasFuente(supplier, fuente) {
+        if (fuente === (supplier.preventas_fuente || 'web')) return;
+        const res = await api.post(`/suppliers/${supplier.id}/preventas/fuente`, { fuente });
+        if (res.success) {
+            replaceSupplier(res.data);
+            showToast(fuente === 'neggo'
+                ? `"${supplier.name}" toma Preventas desde Neggo: en unos segundos Sync Preventas muestra lo que propone. La web se sigue scrapeando para Reposición`
+                : `"${supplier.name}" toma Preventas desde la web otra vez`, 'success');
+        } else {
+            showToast(res.error || 'Error al cambiar la fuente de Preventas', 'error');
+        }
+    }
+
     async function handleDeactivate(supplier) {
         const res = await api.del(`/suppliers/${supplier.id}`);
         setConfirmDeactivate(null);
@@ -232,6 +245,14 @@ export default function SupplierList() {
                     <span style={{ fontSize: t.font.size.sm, color: v ? t.color.text : t.color.textFaint, fontFamily: t.font.family }}>
                         {v ? 'Sí' : 'No'}
                     </span>
+                    {v && row.scraper_key && row.scraper_key !== NEGGO_SOURCE_KEY && (
+                        <FuentePreventas
+                            value={row.preventas_fuente || 'web'}
+                            disabled={!isAdmin || !row.active}
+                            onChange={f => handlePreventasFuente(row, f)}
+                            tokens={t}
+                        />
+                    )}
                 </div>
             ),
         },
@@ -807,20 +828,39 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
     );
 }
 
-// Selector en línea de pocas opciones (web / interno / sin fuente)
-function Segmented({ options, value, onChange, tokens: t }) {
+// De dónde toma Preventas los datos de un proveedor web (nota 127): la web o sus productos de Neggo.
+// Con Neggo, la web se sigue scrapeando para Reposición y Vínculos.
+function FuentePreventas({ value, disabled, onChange, tokens: t }) {
     return (
-        <div style={{ display: 'flex', background: t.color.surface2, borderRadius: t.radius.sm, padding: 3, gap: 3 }}>
+        <div title="De dónde toma Preventas los datos. Con Neggo, la web se sigue scrapeando para Reposición">
+            <Segmented
+                compact
+                disabled={disabled}
+                value={value}
+                onChange={onChange}
+                options={[{ value: 'web', label: 'Web' }, { value: 'neggo', label: 'Neggo' }]}
+                tokens={t}
+            />
+        </div>
+    );
+}
+
+// Selector en línea de pocas opciones (web / interno / sin fuente)
+function Segmented({ options, value, onChange, tokens: t, compact = false, disabled = false }) {
+    return (
+        <div style={{ display: 'flex', background: t.color.surface2, borderRadius: t.radius.sm, padding: compact ? 2 : 3, gap: compact ? 2 : 3 }}>
             {options.map(o => {
                 const active = o.value === value;
                 return (
                     <button
                         key={o.value}
                         type="button"
+                        disabled={disabled}
                         onClick={() => onChange(o.value)}
                         style={{
-                            flex: 1, padding: '7px 10px', border: 'none', cursor: 'pointer',
-                            borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: t.font.size.sm,
+                            flex: 1, padding: compact ? '3px 8px' : '7px 10px', border: 'none',
+                            cursor: disabled ? 'default' : 'pointer', opacity: disabled && !active ? 0.6 : 1,
+                            borderRadius: t.radius.sm, fontFamily: t.font.family, fontSize: compact ? t.font.size.xs : t.font.size.sm,
                             fontWeight: active ? t.font.weight.semibold : t.font.weight.medium,
                             background: active ? t.color.surface : 'transparent',
                             color: active ? t.color.text : t.color.textMuted,

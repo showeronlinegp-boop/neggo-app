@@ -26,6 +26,13 @@ class BaseScraper {
         this.runStartedAt = null;
     }
 
+    // Fuente de las ofertas que guarda este scraper (supplier_products.source).
+    // Un proveedor web con "Preventas desde Neggo" tiene ofertas de las dos fuentes (nota 127):
+    // la limpieza de cada run toca solo las de su fuente.
+    get fuente() {
+        return 'web';
+    }
+
     // =============================================
     // Métodos que cada scraper DEBE implementar
     // =============================================
@@ -181,9 +188,9 @@ class BaseScraper {
                         `SELECT id, raw_price,
                                 ($3::timestamp IS NOT NULL AND last_scraped_at >= $3) AS visto_en_run
                          FROM supplier_products
-                         WHERE supplier_id = $1 AND name_key = $2
+                         WHERE supplier_id = $1 AND name_key = $2 AND source = $4
                          LIMIT 1`,
-                        [this.supplier.id, nameKey, this.runStartedAt]
+                        [this.supplier.id, nameKey, this.runStartedAt, source]
                     );
 
                     // Mismo nombre con otro SKU ya guardado en este run (el proveedor publica el
@@ -362,12 +369,13 @@ class BaseScraper {
         // Defensa: si este run vio menos de la mitad de lo que había, lo más probable es que
         // se haya cortado a mitad de camino (reinicio, web caída). No se borra nada.
         // Los no disponibles de runs anteriores no cuentan.
+        // Solo las ofertas de la fuente de este scraper: las de la otra fuente no las vio y no son suyas.
         const { rows: [conteo] } = await this.pool.query(
             `SELECT COUNT(*) FILTER (WHERE last_scraped_at >= $2)::INTEGER AS vistos,
                     COUNT(*) FILTER (WHERE available OR last_scraped_at >= $2)::INTEGER AS total
              FROM supplier_products
-             WHERE supplier_id = $1`,
-            [this.supplier.id, runStartedAt]
+             WHERE supplier_id = $1 AND source = $3`,
+            [this.supplier.id, runStartedAt, this.fuente]
         );
         if (conteo.total > 0 && conteo.vistos < conteo.total * MIN_VISTOS_PARA_BORRAR) {
             const msg = `⚠️ El run vio ${conteo.vistos} de ${conteo.total} productos ` +
@@ -380,11 +388,12 @@ class BaseScraper {
         const { rowCount: noDisponibles } = await this.pool.query(
             `UPDATE supplier_products sp SET available = false, updated_at = NOW()
              WHERE sp.supplier_id = $1
+               AND sp.source = $3
                AND sp.last_scraped_at < $2
                AND sp.available
                AND EXISTS (SELECT 1 FROM product_mappings pm
                            WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado')`,
-            [this.supplier.id, runStartedAt]
+            [this.supplier.id, runStartedAt, this.fuente]
         );
         if (noDisponibles > 0) {
             console.log(`📦 ${noDisponibles} productos vinculados quedan no disponibles (no aparecieron en este run)`);
@@ -393,10 +402,11 @@ class BaseScraper {
         const { rowCount: borrados } = await this.pool.query(
             `DELETE FROM supplier_products sp
              WHERE sp.supplier_id = $1
+               AND sp.source = $3
                AND sp.last_scraped_at < $2
                AND NOT EXISTS (SELECT 1 FROM product_mappings pm
                                WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado')`,
-            [this.supplier.id, runStartedAt]
+            [this.supplier.id, runStartedAt, this.fuente]
         );
         if (borrados > 0) {
             console.log(`🗑️ ${borrados} productos eliminados (no aparecieron en este run)`);
@@ -431,6 +441,7 @@ class BaseScraper {
                     ) AS rn
                 FROM supplier_products sp
                 WHERE sp.supplier_id = $1
+                  AND sp.source = $2
                   AND sp.available = true
                   AND sp.name_key IS NOT NULL
                   AND sp.name_key != ''
@@ -438,7 +449,7 @@ class BaseScraper {
             UPDATE supplier_products
             SET available = false, updated_at = NOW()
             WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
-        `, [this.supplier.id]);
+        `, [this.supplier.id, this.fuente]);
 
         if (rowCount > 0) {
             console.log(`🧹 ${rowCount} duplicados colapsados para "${this.supplier.name}"`);
