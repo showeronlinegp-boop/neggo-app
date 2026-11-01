@@ -11,9 +11,13 @@ const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO 
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     matcheados: ['activar', 'sin_cambios', 'precio_sube', 'precio_baja'],
+    // Vinculados cuyo precio cambió (sube o baja): la vista "Cambiar precio" de la pantalla
+    precio:     ['precio_sube', 'precio_baja'],
     inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
     // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
     sin_fuente: ['sin_fuente'],
+    // Lo que no necesita ninguna acción: la vista "Al día" de la pantalla
+    al_dia:     ['sin_cambios', 'sin_fuente'],
 };
 
 // Estados que nunca generan una acción en Odoo
