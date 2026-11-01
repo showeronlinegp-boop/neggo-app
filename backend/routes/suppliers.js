@@ -60,11 +60,25 @@ function withComputed(row) {
 
 // =============================================
 // GET / — Lista todos los proveedores
-// Query param: ?active=true|false (sin filtro = todos)
+// Query params: ?active=true|false (sin filtro = todos)
+//               ?counts=true → suma product_count y available_count (productos scrapeados, nota 138)
 // =============================================
 router.get('/', authenticate, async (req, res) => {
     try {
         let query = `SELECT ${SUPPLIER_COLS} FROM suppliers`;
+        if (req.query.counts === 'true') {
+            query = `SELECT ${SUPPLIER_COLS},
+                            COALESCE(pc.product_count, 0)::INTEGER   AS product_count,
+                            COALESCE(pc.available_count, 0)::INTEGER AS available_count
+                     FROM suppliers
+                     LEFT JOIN (
+                         SELECT supplier_id,
+                                COUNT(*) AS product_count,
+                                COUNT(*) FILTER (WHERE available = true) AS available_count
+                         FROM supplier_products
+                         GROUP BY supplier_id
+                     ) pc ON pc.supplier_id = suppliers.id`;
+        }
         const params = [];
 
         if (req.query.active !== undefined) {
