@@ -198,8 +198,8 @@ function PublicarWhatsApp({ producto, onClose, onPublicado, t }) {
     const grupo = config?.settings?.group_subject || config?.settings?.group_jid || null;
     // Grupos y estados salen por números distintos: cada uno con su conexión.
     const sinGrupos = config && config.evolution?.state !== 'open';
-    const sinEstados = config && config.evolution_status?.state !== 'open';
-    const desconectados = [sinGrupos && 'el de grupos', sinEstados && 'el de estados'].filter(Boolean);
+    // Los estados no se usan más (se borró la instancia neggo-estados): solo se publica al grupo.
+    const desconectados = [sinGrupos && 'el de grupos'].filter(Boolean);
 
     const publicar = async (destino) => {
         setEnviando(destino);
@@ -244,15 +244,6 @@ function PublicarWhatsApp({ producto, onClose, onPublicado, t }) {
                     style={btn}
                 >
                     {enviando === 'grupo' ? 'Publicando…' : grupo ? `Al grupo «${grupo}»` : 'Al grupo (elegilo en Admin → WhatsApp)'}
-                </Button>
-                <Button
-                    variant="secondary"
-                    leftIcon={<Icon.MessageCircle size={18} />}
-                    disabled={!config || !!enviando}
-                    onClick={() => publicar('estado')}
-                    style={btn}
-                >
-                    {enviando === 'estado' ? 'Publicando…' : 'A los estados (novedades)'}
                 </Button>
             </div>
         </Modal>
