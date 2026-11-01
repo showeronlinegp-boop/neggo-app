@@ -1,7 +1,8 @@
 // Vincular (nota 107, punto 3): pantallas de /productos/vinculos sobre la tabla maestra.
 //   - Lote por código: los sugeridos 'codigo' (PRE + referencia Neggo = SKU), todo tildado
-//   - Tarjetas por nombre: un producto de Neggo por tarjeta con hasta 3 ofertas parecidas,
-//     ordenadas por venta y con tope diario (nota 123)
+//   - Tarjetas por nombre: un producto de Neggo por tarjeta con sus ofertas parecidas, ordenadas
+//     por venta. Sin tope diario (nota 139): elegir una oferta descarta solo las del mismo
+//     proveedor, así un producto puede quedar vinculado con varios proveedores
 //   - Conflictos: una oferta confirmada con dos o más productos de Neggo
 //   - Sin habitual: productos con oferta web confirmada pero sin habitual (informativo)
 //   - Repaso de ingresos: vuelve a pasar todos los ingresos confirmados a la tabla maestra
@@ -16,8 +17,10 @@ const odoo = require('../config/odoo');
 const { vincularDesdeIngresos, listarConflictos, recalcularHabituales, tablaActiva } = require('./tablaMaestraService');
 const odooService = require('./odooService');
 
-// Tarjetas que se muestran por día (las revisa una sola persona)
-const TARJETAS_POR_DIA = 80;
+// Tarjetas que se traen por carga (al terminarlas la pantalla pide más). No es un tope por día.
+const TARJETAS_POR_CARGA = 100;
+// Ofertas por tarjeta (se eligen con las teclas 1 a 9)
+const OFERTAS_POR_TARJETA = 9;
 // Semanas de venta que ordenan las tarjetas y el lote
 const SEMANAS_VENTA = 6;
 // Productos de Odoo que no son mercadería (anticipos y pedidos de preventa)
@@ -143,12 +146,11 @@ async function tarjetasDecididasHoy(db = pool) {
 
 /**
  * Tarjetas por nombre: productos de Neggo con sugeridos por parecido de nombre, de lo que más se
- * vende a lo que menos, hasta completar el tope del día. Cada tarjeta trae hasta 3 ofertas.
- * @returns {Promise<{ tarjetas: Array, decididas_hoy: number, tope: number, pendientes: number }>}
+ * vende a lo que menos, de a TARJETAS_POR_CARGA. Cada tarjeta trae hasta OFERTAS_POR_TARJETA ofertas.
+ * @returns {Promise<{ tarjetas: Array, decididas_hoy: number, pendientes: number }>}
  */
 async function listarTarjetas() {
     const decididas = await tarjetasDecididasHoy();
-    const restan = Math.max(TARJETAS_POR_DIA - decididas, 0);
 
     const { rows: [{ pendientes }] } = await pool.query(
         `SELECT COUNT(DISTINCT pm.odoo_product_id)::int AS pendientes
@@ -157,7 +159,7 @@ async function listarTarjetas() {
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'sugerido' AND pm.metodo = ANY($1::text[])`,
         [METODOS_NOMBRE]
     );
-    if (restan === 0) return { tarjetas: [], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
+    if (pendientes === 0) return { tarjetas: [], decididas_hoy: decididas, pendientes };
 
     const { rows } = await pool.query(
         `WITH ${VENTAS_CTE},
@@ -177,8 +179,8 @@ async function listarTarjetas() {
                 pm.id AS mapping_id, pm.supplier_product_id, pm.match_confidence, pm.metodo,
                 cr.confianza AS claude_confianza, cr.motivo AS claude_motivo,
                 ultima.resultado AS claude_resultado, ultima.motivo AS claude_ultimo_motivo,
-                s.name AS proveedor, sp.sku, sp.name AS oferta_nombre, sp.raw_price, ${NETO_SQL} AS neto, sp.available,
-                sp.image_url
+                s.id AS supplier_id, s.name AS proveedor, sp.sku, sp.name AS oferta_nombre, sp.raw_price,
+                ${NETO_SQL} AS neto, sp.available, sp.image_url
          FROM productos p
          JOIN product_mappings pm ON pm.odoo_product_id = p.odoo_product_id AND pm.odoo_company = 'neggo'
               AND pm.estado = 'sugerido' AND pm.metodo = ANY($2::text[])
@@ -194,10 +196,10 @@ async function listarTarjetas() {
                             WHERE c.odoo_product_id = p.odoo_product_id AND c.odoo_company = 'neggo'
                             ORDER BY c.created_at DESC, c.id DESC LIMIT 1) ultima ON true
          ORDER BY p.venta DESC, p.odoo_product_id, (pm.metodo = 'claude') DESC, pm.match_confidence DESC NULLS LAST, sp.available DESC, pm.id`,
-        [SEMANAS_VENTA, METODOS_NOMBRE, restan]
+        [SEMANAS_VENTA, METODOS_NOMBRE, TARJETAS_POR_CARGA]
     );
 
-    // Una tarjeta por producto, con sus 3 mejores ofertas
+    // Una tarjeta por producto, con sus mejores ofertas
     const porProducto = new Map();
     for (const r of rows) {
         if (!porProducto.has(r.odoo_product_id)) {
@@ -211,40 +213,63 @@ async function listarTarjetas() {
             });
         }
         const tarjeta = porProducto.get(r.odoo_product_id);
-        if (tarjeta.ofertas.length < 3) {
+        if (tarjeta.ofertas.length < OFERTAS_POR_TARJETA) {
             tarjeta.ofertas.push({
-                mapping_id: r.mapping_id, supplier_product_id: r.supplier_product_id, proveedor: r.proveedor,
+                mapping_id: r.mapping_id, supplier_product_id: r.supplier_product_id,
+                supplier_id: r.supplier_id, proveedor: r.proveedor,
                 sku: r.sku, nombre: r.oferta_nombre, raw_price: r.raw_price, neto: r.neto,
                 available: r.available, parecido: r.match_confidence, image_url: r.image_url,
                 claude: r.metodo === 'claude' ? { confianza: r.claude_confianza, motivo: r.claude_motivo } : null
             });
         }
     }
-    return { tarjetas: [...porProducto.values()], decididas_hoy: decididas, tope: TARJETAS_POR_DIA, pendientes };
+    return { tarjetas: [...porProducto.values()], decididas_hoy: decididas, pendientes };
 }
 
 /**
- * Decisión de una tarjeta: la oferta elegida queda confirmada y las demás sugeridas por nombre de
- * ese producto, rechazadas. Sin elegida ("ninguna") se rechazan todas.
+ * Qué se rechaza al decidir una tarjeta. Pura.
+ * Con oferta elegida: solo las otras del mismo proveedor (las de otros proveedores siguen en la
+ * tarjeta: el producto puede quedar vinculado con varios, nota 139). Sin elegida ("ninguna"): todas.
+ * @param {Array<{id: number, supplier_id: number}>} sugeridos — los pendientes de la tarjeta
+ * @param {number|null} mappingId
+ * @returns {{ rechazar: number[], quedan: number[] }}
+ */
+function repartoTarjeta(sugeridos, mappingId) {
+    if (!mappingId) return { rechazar: sugeridos.map(s => s.id), quedan: [] };
+    const elegido = sugeridos.find(s => s.id === mappingId);
+    const otros = sugeridos.filter(s => s.id !== mappingId);
+    return {
+        rechazar: otros.filter(s => s.supplier_id === elegido.supplier_id).map(s => s.id),
+        quedan: otros.filter(s => s.supplier_id !== elegido.supplier_id).map(s => s.id),
+    };
+}
+
+/**
+ * Decisión de una tarjeta: la oferta elegida queda confirmada y se rechazan las demás de su
+ * proveedor; las de otros proveedores quedan pendientes. Sin elegida ("ninguna") se rechazan todas.
  * @param {{ odooProductId: number, mappingId?: number|null, userId: number }} opts
+ * @returns {Promise<{ confirmados: number, rechazados: number, quedan: number[] }>}
  */
 async function decidirTarjeta({ odooProductId, mappingId = null, userId }) {
     return enTransaccion(async (db) => {
         const { rows } = await db.query(
-            `SELECT id FROM product_mappings
-             WHERE odoo_product_id = $1 AND odoo_company = 'neggo' AND estado = 'sugerido'
-               AND metodo = ANY($2::text[])`,
+            `SELECT pm.id, sp.supplier_id
+             FROM product_mappings pm
+             JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+             WHERE pm.odoo_product_id = $1 AND pm.odoo_company = 'neggo' AND pm.estado = 'sugerido'
+               AND pm.metodo = ANY($2::text[])`,
             [odooProductId, METODOS_NOMBRE]
         );
-        const ids = rows.map(r => r.id);
-        if (mappingId && !ids.includes(mappingId)) {
+        if (mappingId && !rows.some(r => r.id === mappingId)) {
             const err = new Error('La oferta elegida ya no está pendiente en esta tarjeta');
             err.status = 409;
             throw err;
         }
+        const { rechazar, quedan } = repartoTarjeta(rows, mappingId);
         return {
             confirmados: mappingId ? await decidirSugeridos(db, [mappingId], 'confirmado', userId) : 0,
-            rechazados: await decidirSugeridos(db, ids.filter(id => id !== mappingId), 'rechazado', userId),
+            rechazados: await decidirSugeridos(db, rechazar, 'rechazado', userId),
+            quedan,
         };
     });
 }
@@ -470,5 +495,6 @@ async function resumen() {
 
 module.exports = {
     listarLoteCodigo, decidirLote, listarTarjetas, decidirTarjeta, listarConflictosDetalle,
-    rechazarPar, marcarNoUsar, cambiarReferencia, listarSinHabitual, repasarIngresos, resumen, TARJETAS_POR_DIA
+    rechazarPar, marcarNoUsar, cambiarReferencia, listarSinHabitual, repasarIngresos, resumen,
+    repartoTarjeta, TARJETAS_POR_CARGA, OFERTAS_POR_TARJETA
 };

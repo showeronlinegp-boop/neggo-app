@@ -91,9 +91,32 @@ function testValidar() {
     assert.strictEqual(r2.validas[0].supplier_product_id, null);
 }
 
+// Varias letras: el mismo producto en proveedores distintos (nota 139)
+function testVariasLetras() {
+    const { decisiones, errores } = parsearDecisiones('20 a, b media mismo mate en dos proveedores\n10 a,z alta x');
+    assert.deepStrictEqual(errores, []);
+    assert.strictEqual(decisiones[0].marca, 'a,b');
+    assert.strictEqual(decisiones[1].marca, 'a,z');
+
+    const conOtro = [...filas, { ...filas[1], supplier_product_id: 300, proveedor: 'CastMayorista', mismo_proveedor: false }];
+    const armados = armarProductos(productos, conOtro, (() => { let k = 0; return () => k++; })());
+    // #20: a = Babu 200, b = Babu 201, c = Cast 300
+    const ok = validarDecisiones(armados, [{ odoo_id: 20, marca: 'a,c', confianza: 'media', motivo: 'm' }]);
+    assert.deepStrictEqual(ok.errores, []);
+    assert.deepStrictEqual(ok.validas.map(v => [v.supplier_product_id, v.proveedor]), [[200, 'Babu'], [300, 'CastMayorista']]);
+
+    const mismo = validarDecisiones(armados, [{ odoo_id: 20, marca: 'a,b', confianza: 'media', motivo: null }]);
+    assert.match(mismo.errores[0], /dos ofertas de Babu/);
+    assert.strictEqual(mismo.validas.length, 0);
+
+    const falta = validarDecisiones(armados, [{ odoo_id: 10, marca: 'a,z', confianza: 'alta', motivo: null }]);
+    assert.match(falta.errores[0], /letra "z" no existe/);
+}
+
 testIdLote();
 testArmar();
 testParsear();
 testValidar();
+testVariasLetras();
 console.log('✅ cruceClaude: todos los casos pasan');
 process.exit(0);

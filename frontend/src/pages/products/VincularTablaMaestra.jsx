@@ -215,9 +215,25 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         const res = await api.post('/mappings/vincular/tarjetas', { odooProductId: tarjeta.odoo_product_id, mappingId });
         setGuardando(false);
         if (!res.success) return showToast(res.error || 'Error al guardar', 'error');
-        showToast(mappingId ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
+        const quedan = res.data?.quedan || [];
         onCambio?.();
+        if (quedan.length) {
+            // Quedan ofertas de otros proveedores: la tarjeta sigue para vincular también esas (nota 139)
+            const elegida = tarjeta.ofertas.find(o => o.mapping_id === mappingId);
+            showToast(`Vínculo confirmado. Quedan ${quedan.length} de otros proveedores`, 'success');
+            setDatos(d => ({
+                ...d,
+                tarjetas: d.tarjetas.map(x => x.odoo_product_id !== tarjeta.odoo_product_id ? x : {
+                    ...x,
+                    ofertas: x.ofertas.filter(o => quedan.includes(o.mapping_id)),
+                    vinculada_con: [...(x.vinculada_con || []), elegida?.proveedor].filter(Boolean),
+                }),
+            }));
+            return;
+        }
+        showToast(mappingId ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
         // Sale de la lista y queda una decisión más en el día
+        const restantes = tarjetas.length - 1;
         setDatos(d => ({
             ...d,
             tarjetas: d.tarjetas.filter(x => x.odoo_product_id !== tarjeta.odoo_product_id),
@@ -225,7 +241,9 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
             pendientes: Math.max(d.pendientes - 1, 0),
         }));
         setIndice(i => Math.min(i, Math.max(tarjetas.length - 2, 0)));
-    }, [tarjeta, guardando, tarjetas.length, showToast, onCambio]);
+        // Se terminó la carga y hay más pendientes: trae las siguientes (no hay tope por día)
+        if (restantes === 0 && datos.pendientes > 1) cargar();
+    }, [tarjeta, guardando, tarjetas.length, datos, showToast, onCambio, cargar]);
 
     const saltear = useCallback(() => {
         if (tarjetas.length) setIndice(i => (i + 1) % tarjetas.length);
@@ -251,7 +269,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
 
     const encabezado = (
         <div style={{ display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap', fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
-            <span>Hoy: <b style={{ color: t.color.text }}>{datos.decididas_hoy}</b> de {datos.tope}</span>
+            <span>Hoy: <b style={{ color: t.color.text }}>{fmtInt(datos.decididas_hoy)}</b> decididas</span>
             <span>· {fmtInt(datos.pendientes)} productos pendientes</span>
             {tarjetas.length > 0 && <span>· tarjeta {indice + 1} de {tarjetas.length}</span>}
         </div>
@@ -261,9 +279,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
                 {encabezado}
-                <Vacio tokens={t} msg={datos.pendientes > 0 && datos.decididas_hoy >= datos.tope
-                    ? `Llegaste al tope de ${datos.tope} tarjetas de hoy. Las que faltan vuelven mañana.`
-                    : 'No quedan tarjetas por revisar.'} />
+                <Vacio tokens={t} msg="No quedan tarjetas por revisar." />
             </div>
         );
     }
@@ -272,7 +288,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
             <Ayuda tokens={t}>
                 Ofertas con nombre parecido, de lo que más se vende a lo que menos. Las que eligió Claude van
-                primero, con el motivo (pueden ser de otro proveedor).
+                primero, con el motivo (pueden ser de otro proveedor). Si hay de varios proveedores, después de
+                elegir una la tarjeta sigue con las de los otros, para vincularlo con todos.
                 Tocá <Tecla tokens={t}>1</Tecla> <Tecla tokens={t}>2</Tecla> <Tecla tokens={t}>3</Tecla> si es esa oferta,
                 {' '}<Tecla tokens={t}>N</Tecla> si no es ninguna y <Tecla tokens={t}>espacio</Tecla> para saltearla.
             </Ayuda>
@@ -303,6 +320,13 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                     <Dato tokens={t} titulo="Venta 6 sem." valor={Number(tarjeta.venta) ? fmtAR(tarjeta.venta) : '—'} numerico />
                     {tarjeta.odoo_activo === false && <Badge tone="muted">Archivado</Badge>}
                 </div>
+
+                {tarjeta.vinculada_con?.length > 0 && (
+                    <div style={{ marginTop: t.space[4], display: 'flex', gap: t.space[2], alignItems: 'center', flexWrap: 'wrap', fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                        <Badge tone="success">Ya vinculado con {tarjeta.vinculada_con.join(', ')}</Badge>
+                        <span>¿Es también alguna de estas? Si no, tocá Ninguna.</span>
+                    </div>
+                )}
 
                 {tarjeta.claude_ninguno && (
                     <div style={{
