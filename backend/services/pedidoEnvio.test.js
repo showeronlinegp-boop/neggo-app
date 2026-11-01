@@ -26,6 +26,8 @@ const {
     armandoRequiereConfirmado,
     primerPickingSalida,
     planQtyMovesArmado,
+    yaHechoPorItem,
+    itemsSinLoHecho,
     hayFaltanteEnMoves,
     esWizardBackorder,
     auditarTerminarArmado,
@@ -286,6 +288,14 @@ function testCotizacionParaArmar() {
     assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 2 })), true);
     assert.strictEqual(ordenEnviosYaHechos(odooOrder({ done_picking_count: 1 })), false);
     assert.strictEqual(esCotizacionParaArmar(odooOrder({ state: 'sent', done_picking_count: 2 })), false);
+    // Con 2 hechos pero un Recolectar nuevo abierto (agregaron productos) se arma (nota #90, S04305)
+    const reabierta = odooOrder({ state: 'sale', done_picking_count: 2, pickings: [
+        { id: 1, state: 'done', picking_type_code: 'internal' },
+        { id: 2, state: 'done', picking_type_code: 'outgoing' },
+        { id: 3, state: 'assigned', picking_type_code: 'internal' },
+    ] });
+    assert.strictEqual(ordenEnviosYaHechos(reabierta), false);
+    assert.strictEqual(auditarEmpezarArmar(reabierta).ok, true);
     const yaEnviada = auditarEmpezarArmar(odooOrder({ state: 'sale', done_picking_count: 2 }));
     assert.strictEqual(yaEnviada.ok, false);
     assert.match(yaEnviada.error, /envíos hechos/);
@@ -369,6 +379,58 @@ function testReabiertoPorProductosNuevos() {
         { id: 2, state: 'done', picking_type_code: 'outgoing' },
         { id: 3, state: 'cancel', picking_type_code: 'internal' },
     ] }), 'saldado');
+}
+
+// Nota #90 (S03550): al sumar mercadería lo que ya salió queda hecho; se arma lo nuevo y lo incompleto
+function testRearmarSoloLoQueFalta() {
+    const items = [
+        { id: 1, odoo_line_id: 101, odoo_product_id: 11, product_name: 'Cepillo Espejo', qty_pedida: 3 },
+        { id: 2, odoo_line_id: 102, odoo_product_id: 12, product_name: 'Billetera', qty_pedida: 6 },
+        { id: 3, odoo_line_id: 103, odoo_product_id: 13, product_name: 'Alicate (nuevo)', qty_pedida: 6 },
+    ];
+    const pickings = [
+        { id: 1, state: 'done', picking_type_code: 'internal', moves: [
+            { id: 10, sale_line_id: 101, product_id: 11, quantity: 2 },
+            { id: 11, sale_line_id: 102, product_id: 12, quantity: 6 },
+        ] },
+        { id: 2, state: 'assigned', picking_type_code: 'outgoing', moves: [] },
+        { id: 3, state: 'assigned', picking_type_code: 'internal', moves: [] },
+    ];
+    const hecho = yaHechoPorItem(items, pickings);
+    assert.deepStrictEqual(hecho.get(1), { arm: 2, ctrl: 0 });
+    assert.deepStrictEqual(hecho.get(2), { arm: 6, ctrl: 0 });
+    assert.deepStrictEqual(hecho.get(3), { arm: 0, ctrl: 0 });
+
+    // Completó el cepillo (3/3) y armó 6 alicates: al envío abierto va 1 cepillo y 6 alicates
+    const cargado = items.map((it) => ({ ...it, qty_armada: it.id === 2 ? 6 : it.id === 1 ? 3 : 6 }));
+    const resto = itemsSinLoHecho(cargado, hecho, 'qty_armada');
+    assert.deepStrictEqual(resto.map((it) => it.qty_armada), [1, 0, 6]);
+
+    // El Recolectar nuevo sólo trae el alicate: el cepillo queda como sobrante a sumar
+    const abiertos = [{ id: 30, sale_line_id: 103, product_id: 13, product_uom_qty: 6, state: 'assigned' }];
+    const plan = planQtyMovesArmado(abiertos, resto);
+    assert.deepStrictEqual(plan.writes.map((w) => [w.id, w.quantity]), [[30, 6]]);
+    assert.deepStrictEqual(plan.sobrantes, [{ sale_line_id: 101, product_id: 11, product_name: 'Cepillo Espejo', qty: 1 }]);
+    assert.strictEqual(plan.hayFaltante, false);
+
+    // Sin escanear el incompleto no se suma nada
+    const sinCepillo = itemsSinLoHecho(cargado.map((it) => (it.id === 1 ? { ...it, qty_armada: 2 } : it)), hecho, 'qty_armada');
+    assert.strictEqual(planQtyMovesArmado(abiertos, sinCepillo).sobrantes.length, 0);
+
+    // Ya entregado en una vuelta anterior (2 pasos): cuenta como controlado
+    const conEntrega = [
+        ...pickings.slice(0, 1),
+        { id: 2, state: 'done', picking_type_code: 'outgoing', moves: [
+            { id: 20, sale_line_id: 101, product_id: 11, quantity: 2 },
+            { id: 21, sale_line_id: 102, product_id: 12, quantity: 6 },
+        ] },
+    ];
+    assert.deepStrictEqual(yaHechoPorItem(items, conEntrega).get(2), { arm: 6, ctrl: 6 });
+    // 1 paso: la entrega es el armado, no hay control previo en Odoo
+    const unPaso = [{ id: 5, state: 'done', picking_type_code: 'outgoing', moves: [
+        { id: 50, sale_line_id: 101, product_id: 11, quantity: 3 },
+    ] }];
+    assert.deepStrictEqual(yaHechoPorItem(items, unPaso).get(1), { arm: 3, ctrl: 0 });
 }
 
 // Lo escaneado en la app no se pisa con lo de Odoo hasta que termina la etapa
@@ -742,6 +804,7 @@ testCotizacionParaArmar();
 testEtapaDesdeEnviosOdoo();
 testQtyDesdeMoves();
 testReabiertoPorProductosNuevos();
+testRearmarSoloLoQueFalta();
 testFuentesDeQty();
 testPlanIgualar();
 testConfirmarAlEmpezar();

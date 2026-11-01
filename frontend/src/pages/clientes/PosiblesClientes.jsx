@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { useToast } from '../../context/ToastContext';
@@ -12,6 +12,7 @@ import Select from '../../components/common/Select';
 import Modal from '../../components/common/Modal';
 import * as Icon from '../../components/common/icons';
 import LeadFicha from './LeadFicha';
+import { BotonPresentacion, ColaPresentaciones } from './Presentacion';
 import {
     STAGE_META, STAGE_ORDER, SOURCE_STATUS_META, SOURCE_STATUS_ORDER,
     fmtProxima, iniciales, hoyAr,
@@ -26,8 +27,14 @@ const SORTS = [
     { value: 'recientes', label: 'Cargados más recientes' },
     { value: 'nombre', label: 'Nombre' },
 ];
-// Posible cliente · origen · etapa · próxima acción
+// Posible cliente · origen · etapa · próxima acción (la presentación va aparte, fuera del botón de la fila)
 const COLUMNAS = 'minmax(220px, 2fr) minmax(120px, 1fr) 110px minmax(130px, 1fr)';
+const ANCHO_PRESENTACION = 140;
+const PRESENTACION_OPCIONES = [
+    { value: '', label: 'Con y sin presentación' },
+    { value: 'sin', label: 'Sin presentación' },
+    { value: 'con', label: 'Con presentación' },
+];
 
 function NuevoLead({ abierto, onClose, onCreado, t }) {
     const { showToast } = useToast();
@@ -79,7 +86,7 @@ function NuevoLead({ abierto, onClose, onCreado, t }) {
     );
 }
 
-function FilaLead({ l, onAbrir, isMobile, t }) {
+function FilaLead({ l, onAbrir, onPresentada, isMobile, t }) {
     const etapa = STAGE_META[l.stage] || STAGE_META.frio;
     const origen = SOURCE_STATUS_META[l.source_status || 'sin_estado'];
     const proxima = fmtProxima(l.next_action_date);
@@ -126,31 +133,38 @@ function FilaLead({ l, onAbrir, isMobile, t }) {
     );
     const estilos = {
         width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left',
-        fontFamily: t.font.family, borderTop: `1px solid ${t.color.border}`,
+        fontFamily: t.font.family,
     };
+    const presentacion = <BotonPresentacion lead={l} onEnviada={(at) => onPresentada(l.id, at)} />;
     if (isMobile) {
         return (
-            <button type="button" onClick={() => onAbrir(l)} {...hover}
-                style={{ ...estilos, padding: 12, display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
-                <div style={{ display: 'flex', gap: t.space[3], width: '100%', alignItems: 'flex-start' }}>
-                    {nombre}
-                    <Badge tone={etapa.tone} dot>{etapa.label}</Badge>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', gap: t.space[3] }}>
-                    {origenBadge}
-                    {accion}
-                </div>
-            </button>
+            <div {...hover} style={{ borderTop: `1px solid ${t.color.border}` }}>
+                <button type="button" onClick={() => onAbrir(l)}
+                    style={{ ...estilos, padding: 12, display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+                    <div style={{ display: 'flex', gap: t.space[3], width: '100%', alignItems: 'flex-start' }}>
+                        {nombre}
+                        <Badge tone={etapa.tone} dot>{etapa.label}</Badge>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', gap: t.space[3] }}>
+                        {origenBadge}
+                        {accion}
+                    </div>
+                </button>
+                {l.phone && <div style={{ padding: '0 12px 12px' }}>{presentacion}</div>}
+            </div>
         );
     }
     return (
-        <button type="button" onClick={() => onAbrir(l)} {...hover}
-            style={{ ...estilos, padding: '10px 16px', display: 'grid', gridTemplateColumns: COLUMNAS, gap: t.space[4], alignItems: 'center' }}>
-            {nombre}
-            {origenBadge}
-            <span><Badge tone={etapa.tone} dot>{etapa.label}</Badge></span>
-            {accion}
-        </button>
+        <div {...hover} style={{ display: 'flex', alignItems: 'center', borderTop: `1px solid ${t.color.border}` }}>
+            <button type="button" onClick={() => onAbrir(l)}
+                style={{ ...estilos, flex: 1, minWidth: 0, padding: '10px 16px', display: 'grid', gridTemplateColumns: COLUMNAS, gap: t.space[4], alignItems: 'center' }}>
+                {nombre}
+                {origenBadge}
+                <span><Badge tone={etapa.tone} dot>{etapa.label}</Badge></span>
+                {accion}
+            </button>
+            <div style={{ width: ANCHO_PRESENTACION, flexShrink: 0, paddingRight: 16 }}>{presentacion}</div>
+        </div>
     );
 }
 
@@ -169,18 +183,24 @@ export default function PosiblesClientes({ onResumen }) {
     const [stage, setStage] = useState('');
     const [city, setCity] = useState('');
     const [sort, setSort] = useState('accion');
+    const [presentacion, setPresentacion] = useState('');
     const [abierto, setAbierto] = useState(null);
     const [nuevo, setNuevo] = useState(false);
+    const [cola, setCola] = useState(false);
 
     useEffect(() => {
         const id = setTimeout(() => setBusqueda(search.trim()), 300);
         return () => clearTimeout(id);
     }, [search]);
 
-    const filtros = useCallback((offset) => ({
+    // Filtros de la lista que también usa la cola de presentaciones
+    const filtrosCola = useMemo(() => ({
         search: busqueda || undefined, status: status || undefined, stage: stage || undefined,
-        city: city || undefined, sort, limit: PAGE, offset,
+        city: city || undefined, sort,
     }), [busqueda, status, stage, city, sort]);
+    const filtros = useCallback((offset) => ({
+        ...filtrosCola, presentacion: presentacion || undefined, limit: PAGE, offset,
+    }), [filtrosCola, presentacion]);
 
     const cargarResumen = useCallback(async () => {
         const res = await api.get('/clientes/leads/resumen');
@@ -209,6 +229,12 @@ export default function PosiblesClientes({ onResumen }) {
     };
 
     const refrescar = () => { cargarLista(); cargarResumen(); };
+    // Se marca en la fila sin recargar toda la lista; los contadores sí se actualizan
+    const presentada = (id, at) => {
+        setRows((prev) => prev.map((r) => (r.id === id ? { ...r, presentacion_at: at } : r)));
+        cargarResumen();
+    };
+    const cerrarCola = () => { setCola(false); refrescar(); };
     // Lo que se cambia en la ficha se ve en la lista al cerrarla
     const huboCambios = useRef(false);
     const cerrarFicha = () => {
@@ -222,7 +248,9 @@ export default function PosiblesClientes({ onResumen }) {
         }))];
     const ciudades = [{ value: '', label: 'Todas las ciudades' },
         ...(resumen?.cities || []).map((c) => ({ value: c.city, label: `${c.city} · ${c.n}` }))];
-    const filtrosActivos = busqueda || status || stage || city;
+    const presentaciones = PRESENTACION_OPCIONES.map((o) => (
+        o.value && resumen?.presentacion ? { ...o, label: `${o.label} · ${fmtInt(resumen.presentacion[o.value])}` } : o));
+    const filtrosActivos = busqueda || status || stage || city || presentacion;
 
     return (
         <div>
@@ -244,6 +272,10 @@ export default function PosiblesClientes({ onResumen }) {
                     );
                 })}
                 <div style={{ flex: 1 }} />
+                <Button variant="secondary" leftIcon={<Icon.MessageCircle size={16} />} onClick={() => setCola(true)}
+                    disabled={resumen?.presentacion?.sin === 0}>
+                    Mandar presentaciones{resumen?.presentacion ? ` · ${fmtInt(resumen.presentacion.sin)}` : ''}
+                </Button>
                 <Button variant="primary" leftIcon={<Icon.Plus size={16} />} onClick={() => setNuevo(true)}>Agregar posible cliente</Button>
             </div>
 
@@ -254,10 +286,11 @@ export default function PosiblesClientes({ onResumen }) {
                 </div>
                 <Select value={status} onChange={setStatus} options={estados} placeholder="Estado de la agenda" style={{ width: isMobile ? '100%' : 230 }} />
                 <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 180 }} />
+                <Select value={presentacion} onChange={setPresentacion} options={presentaciones} placeholder="Presentación" style={{ width: isMobile ? '100%' : 210 }} />
                 <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 200 }} />
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />}
-                        onClick={() => { setSearch(''); setStatus(''); setStage(''); setCity(''); }}>
+                        onClick={() => { setSearch(''); setStatus(''); setStage(''); setCity(''); setPresentacion(''); }}>
                         Limpiar filtros
                     </Button>
                 )}
@@ -275,14 +308,17 @@ export default function PosiblesClientes({ onResumen }) {
             <Card padding={false} style={{ overflow: 'hidden' }}>
                 {!isMobile && (
                     <div style={{
-                        display: 'grid', gap: t.space[4], padding: '10px 16px', background: t.color.surface2,
-                        gridTemplateColumns: COLUMNAS, fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
+                        display: 'flex', alignItems: 'center', background: t.color.surface2,
+                        fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
                         color: t.color.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em',
                     }}>
-                        <span>Posible cliente</span>
-                        <span>Estado en la agenda</span>
-                        <span>Etapa</span>
-                        <span>Próxima acción</span>
+                        <div style={{ flex: 1, minWidth: 0, display: 'grid', gap: t.space[4], padding: '10px 16px', gridTemplateColumns: COLUMNAS }}>
+                            <span>Posible cliente</span>
+                            <span>Estado en la agenda</span>
+                            <span>Etapa</span>
+                            <span>Próxima acción</span>
+                        </div>
+                        <span style={{ width: ANCHO_PRESENTACION, flexShrink: 0, paddingRight: 16 }}>Presentación</span>
                     </div>
                 )}
                 {loading ? (
@@ -297,7 +333,7 @@ export default function PosiblesClientes({ onResumen }) {
                         </div>
                     </div>
                 ) : (
-                    rows.map((l) => <FilaLead key={l.id} l={l} onAbrir={setAbierto} isMobile={isMobile} t={t} />)
+                    rows.map((l) => <FilaLead key={l.id} l={l} onAbrir={setAbierto} onPresentada={presentada} isMobile={isMobile} t={t} />)
                 )}
                 {!loading && rows.length > 0 && (
                     <div style={{
@@ -321,6 +357,7 @@ export default function PosiblesClientes({ onResumen }) {
             <NuevoLead abierto={nuevo} onClose={() => setNuevo(false)} t={t}
                 onCreado={(id) => { setNuevo(false); refrescar(); setAbierto({ id }); }} />
             <LeadFicha leadId={abierto?.id} resumen={abierto} onClose={cerrarFicha} onCambio={() => { huboCambios.current = true; }} />
+            <ColaPresentaciones abierta={cola} filtros={filtrosCola} onClose={cerrarCola} />
         </div>
     );
 }

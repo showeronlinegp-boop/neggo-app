@@ -208,9 +208,11 @@ function sqlFueraPorFacturaOPos() {
         OR COALESCE(e.odoo_pos_count, 0) > 0)`;
 }
 
-// La base son los envíos de Odoo: 2 o más validados = ya se resolvió allá.
+// La base son los envíos de Odoo: 2 o más validados = ya se resolvió allá,
+// salvo que Odoo haya abierto un Recolectar nuevo (agregaron productos).
 function ordenEnviosYaHechos(odoo) {
-    return num(odoo?.done_picking_count) >= 2;
+    if (num(odoo?.done_picking_count) < 2) return false;
+    return !(odoo.pickings && clasificarEnvios(odoo.pickings).para_armar);
 }
 
 // Envío 1 = Recolectar (internal), envío 2 = Entrega (outgoing). En depósito de
@@ -303,6 +305,25 @@ function fuentesDeQty(estado, pickings) {
     };
 }
 
+// Lo que ya salió en envíos validados, por ítem: armado (envío 1) y controlado
+// (entrega, sólo en 2 pasos). Al rearmar es el piso: se arma sólo lo que falta.
+function yaHechoPorItem(items, pickings) {
+    const dosPasos = (pickings || []).some((p) => p && p.picking_type_code === 'internal');
+    const arm = qtyDesdeMoves(items, movesDePickings(pickings, dosPasos ? 'internal' : 'outgoing'));
+    const ctrl = dosPasos ? qtyDesdeMoves(items, movesDePickings(pickings, 'outgoing')) : [];
+    const ctrlPorId = new Map(ctrl.map((q) => [q.id, q.qty]));
+    return new Map(arm.map((q) => [q.id, { arm: q.qty, ctrl: ctrlPorId.get(q.id) || 0 }]));
+}
+
+// Ítems con la cantidad de la fase menos lo que ya salió: lo que hay que escribir en el envío abierto.
+function itemsSinLoHecho(items, hecho, campo) {
+    const clave = campo === 'qty_controlada' ? 'ctrl' : 'arm';
+    return (items || []).map((it) => ({
+        ...it,
+        [campo]: Math.max(0, clampQty(it[campo], it.qty_pedida) - num(hecho.get(it.id)?.[clave])),
+    }));
+}
+
 async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
     if (!envioId || !odoo) return;
     const { arm, ctrl } = fuentesDeQty(estado, odoo.pickings || []);
@@ -333,7 +354,8 @@ async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
     const nuevo = estadoSegunOdoo(localEstado, etapaDesdeOdoo(odoo));
     if (!envioId || nuevo === localEstado) return nuevo;
     if (nuevo === 'pendiente') {
-        // Odoo abrió un envío nuevo (agregaron productos): se arma de cero ese envío
+        // Odoo abrió un envío nuevo (agregaron productos): lo que ya salió queda hecho
+        // y se arma sólo lo nuevo y lo que quedó incompleto
         await db.query(
             `UPDATE pedido_envios
                 SET estado = 'pendiente',
@@ -347,9 +369,22 @@ async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
               WHERE id = $1 AND estado <> 'cancelado'`,
             [envioId]
         );
-        await db.query(
-            'UPDATE pedido_envio_items SET qty_armada = 0, qty_controlada = 0 WHERE envio_id = $1',
+        const { rows: items } = await db.query(
+            `SELECT id, odoo_line_id, odoo_product_id, qty_pedida
+               FROM pedido_envio_items WHERE envio_id = $1`,
             [envioId]
+        );
+        const hecho = yaHechoPorItem(items, odoo?.pickings || []);
+        await db.query(
+            `UPDATE pedido_envio_items i
+                SET qty_armada = v.arm, qty_controlada = v.ctrl
+               FROM unnest($1::int[], $2::numeric[], $3::numeric[]) AS v(id, arm, ctrl)
+              WHERE i.id = v.id`,
+            [
+                items.map((it) => it.id),
+                items.map((it) => hecho.get(it.id)?.arm || 0),
+                items.map((it) => hecho.get(it.id)?.ctrl || 0),
+            ]
         );
         return nuevo;
     }
@@ -496,10 +531,23 @@ function planQtyMovesArmado(moves, items, campo = 'qty_armada') {
             product_id: mv.product_id || null,
         });
     }
+    // Lo cargado que no tiene línea en el envío (lo incompleto de un envío anterior)
+    const enEnvio = (moves || []).filter((m) => m && m.state !== 'cancel');
+    const sobrantes = (items || [])
+        .filter((it) => it.odoo_line_id && it.odoo_product_id)
+        .filter((it) => !enEnvio.some((m) => m.sale_line_id === it.odoo_line_id || m.product_id === it.odoo_product_id))
+        .map((it) => ({
+            sale_line_id: it.odoo_line_id,
+            product_id: it.odoo_product_id,
+            product_name: it.product_name,
+            qty: clampQty(it[campo], it.qty_pedida),
+        }))
+        .filter((s) => s.qty > 0);
     return {
         writes,
+        sobrantes,
         hayFaltante: hayFaltanteEnMoves(writes),
-        hayAlgo: writes.some((w) => num(w.quantity) > 0),
+        hayAlgo: writes.some((w) => num(w.quantity) > 0) || sobrantes.length > 0,
     };
 }
 
@@ -734,6 +782,16 @@ async function persistirOdooPicking(envioId, patch) {
     await pool.query(`UPDATE pedido_envios SET ${sets.join(', ')} WHERE id = $1`, params);
 }
 
+async function loHechoEnOdoo(envio) {
+    let header = null;
+    try {
+        header = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer los envíos hechos en Odoo');
+    }
+    return yaHechoPorItem(envio.items || [], header?.pickings || []);
+}
+
 async function validarEnvio1AlTerminar(envio) {
     let pickingRef = envio.odoo_picking_id
         ? { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null, state: envio.odoo_picking_state || null }
@@ -782,7 +840,9 @@ async function validarEnvio1AlTerminar(envio) {
         throw errorDesdeOdoo(err, 'No pude leer las líneas del envío 1');
     }
 
-    const plan = planQtyMovesArmado(moves, envio.items || []);
+    // Si el pedido se rearma, en el envío abierto va sólo lo que falta de lo que ya salió
+    const items = itemsSinLoHecho(envio.items, await loHechoEnOdoo(envio), 'qty_armada');
+    let plan = planQtyMovesArmado(moves, items);
     if (!plan.hayAlgo) {
         return {
             picking: picking || pickingRef,
@@ -794,6 +854,12 @@ async function validarEnvio1AlTerminar(envio) {
     }
 
     try {
+        if (plan.sobrantes.length) {
+            // Lo incompleto de un envío anterior no tiene línea en el abierto: se la agrega
+            await odooService.addPickingMoves(pickingRef.id, plan.sobrantes, envio.company_key);
+            moves = await odooService.getPickingMoves(pickingRef.id, envio.company_key);
+            plan = planQtyMovesArmado(moves, items);
+        }
         await odooService.writePickingMoveQuantities(plan.writes, envio.company_key);
         // Sin backorder: lo que no se armó va al pedido de pendientes al cerrar el control
         const validated = await odooService.validateSalePicking(pickingRef.id, envio.company_key, {
@@ -834,7 +900,8 @@ async function validarSalidaAlSaldar(envio) {
     } catch (err) {
         throw errorDesdeOdoo(err, `No pude leer las líneas de ${salida.name || 'la entrega'}`);
     }
-    const plan = planQtyMovesArmado(moves, envio.items || [], 'qty_controlada');
+    const items = itemsSinLoHecho(envio.items, await loHechoEnOdoo(envio), 'qty_controlada');
+    const plan = planQtyMovesArmado(moves, items, 'qty_controlada');
     if (!plan.hayAlgo) {
         throw httpError(
             `No hay nada controlado para entregar en ${salida.name || 'la entrega de Odoo'}. Controlá los productos antes de cerrar.`,
@@ -1466,6 +1533,10 @@ async function cambiarEstado(id, estado, userId) {
     } else if (estado === 'armado' && actual === 'armando') {
         odooPatch = await validarEnvio1AlTerminar(envio);
     }
+    // Lo entregado en una vuelta anterior ya está controlado; el resto arranca en 0
+    const hechoCtrl = estado === 'controlando' && actual === 'armado' && num(envio.odoo_picking_done_count) >= 2
+        ? await loHechoEnOdoo(envio)
+        : new Map();
 
     const sets = ['estado = $2', 'updated_at = NOW()'];
     const params = [id, estado];
@@ -1510,9 +1581,12 @@ async function cambiarEstado(id, estado, userId) {
     );
 
     if (estado === 'controlando' && actual === 'armado') {
+        const items = envio.items || [];
         await pool.query(
-            `UPDATE pedido_envio_items SET qty_controlada = 0 WHERE envio_id = $1`,
-            [id]
+            `UPDATE pedido_envio_items i SET qty_controlada = v.qty
+               FROM unnest($1::int[], $2::numeric[]) AS v(id, qty)
+              WHERE i.id = v.id`,
+            [items.map((it) => it.id), items.map((it) => hechoCtrl.get(it.id)?.ctrl || 0)]
         );
     }
 
@@ -1944,6 +2018,8 @@ module.exports = {
     armandoRequiereConfirmado,
     primerPickingSalida,
     planQtyMovesArmado,
+    yaHechoPorItem,
+    itemsSinLoHecho,
     hayFaltanteEnMoves,
     esWizardBackorder,
     auditarTerminarArmado,

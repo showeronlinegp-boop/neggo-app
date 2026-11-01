@@ -5,6 +5,7 @@ import { fmtAR, fmtInt } from '../../theme/tokens';
 import Drawer from '../../components/common/Drawer';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
+import Input from '../../components/common/Input';
 import * as Icon from '../../components/common/icons';
 import BarrasMensuales from './BarrasMensuales';
 import Seguimiento from './Seguimiento';
@@ -117,6 +118,71 @@ function TopProductos({ productos, t }) {
     );
 }
 
+// Teléfono y ciudad: se editan acá y se guardan en el contacto de Odoo
+function Contacto({ partnerId, phone, city, onGuardado, t }) {
+    const [editando, setEditando] = useState(false);
+    const [form, setForm] = useState({ phone: '', city: '' });
+    const [guardando, setGuardando] = useState(false);
+    const [error, setError] = useState(null);
+
+    const abrir = () => {
+        setForm({ phone: phone || '', city: city || '' });
+        setError(null);
+        setEditando(true);
+    };
+
+    const guardar = async (e) => {
+        e.preventDefault();
+        setGuardando(true);
+        setError(null);
+        const res = await api.put(`/clientes/${partnerId}/contacto`, form);
+        setGuardando(false);
+        if (!res.success) { setError(res.error || 'No se pudo guardar'); return; }
+        onGuardado(res.data);
+        setEditando(false);
+    };
+
+    const caja = { background: t.color.surface2, borderRadius: t.radius.md, padding: '10px 12px' };
+    const etiqueta = { fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 4, display: 'block' };
+
+    if (!editando) {
+        return (
+            <div style={{ ...caja, display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: t.font.size.sm, color: t.color.text }}>
+                    <div><span style={{ color: t.color.textMuted }}>Teléfono: </span>{phone || <span style={{ color: t.color.textFaint }}>sin cargar</span>}</div>
+                    <div><span style={{ color: t.color.textMuted }}>Ciudad: </span>{city || <span style={{ color: t.color.textFaint }}>sin cargar</span>}</div>
+                </div>
+                <Button variant="ghost" size="sm" leftIcon={<Icon.Edit2 size={14} />} onClick={abrir}>
+                    {phone || city ? 'Editar' : 'Cargar teléfono y ciudad'}
+                </Button>
+            </div>
+        );
+    }
+
+    return (
+        <form onSubmit={guardar} style={{ ...caja, display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: t.space[3] }}>
+                <label>
+                    <span style={etiqueta}>Teléfono</span>
+                    <Input value={form.phone} maxLength={40} inputMode="tel" placeholder="Ej: 2477 123456" autoFocus
+                        onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+                </label>
+                <label>
+                    <span style={etiqueta}>Ciudad</span>
+                    <Input value={form.city} maxLength={80} placeholder="Ej: Pergamino"
+                        onChange={(e) => setForm({ ...form, city: e.target.value })} />
+                </label>
+            </div>
+            <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Se guarda en el contacto de Odoo.</div>
+            {error && <div style={{ fontSize: t.font.size.sm, color: t.color.danger }}>{error}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: t.space[2] }}>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setEditando(false)} disabled={guardando}>Cancelar</Button>
+                <Button type="submit" variant="primary" size="sm" disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</Button>
+            </div>
+        </form>
+    );
+}
+
 export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) {
     const { tokens: t } = useTheme();
     const [cliente, setCliente] = useState(null);
@@ -173,6 +239,12 @@ export default function ClienteFicha({ partnerId, resumen, onClose, onCambio }) 
                                 <Badge key={tag} tone="muted">{tag}</Badge>
                             ))}
                         </div>
+
+                        <Contacto t={t} partnerId={partnerId} phone={cliente.phone} city={cliente.city}
+                            onGuardado={({ phone, city }) => {
+                                setCliente((prev) => ({ ...prev, phone, city }));
+                                onCambio?.();
+                            }} />
 
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: t.space[3] }}>
                             <Dato t={t} label="Facturación 12 meses" value={fmtAR(cliente.revenue_12m)}

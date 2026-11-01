@@ -811,6 +811,133 @@ async function writePickingMoveQuantities(writes, companyKey) {
     }
 }
 
+const CAMPOS_MOVE_MOLDE = [
+    'id', 'picking_id', 'picking_type_id', 'product_id', 'product_uom', 'product_uom_qty', 'state',
+    'location_id', 'location_dest_id', 'location_final_id', 'procure_method',
+    'reference_ids', 'rule_id', 'warehouse_id', 'origin', 'partner_id', 'sale_line_id',
+];
+
+function m2oId(v) {
+    return Array.isArray(v) ? v[0] : (v || null);
+}
+
+// Copia de un move de la misma línea de venta, apuntando a otro envío
+function moveDesdeMolde(molde, { pickingId, qty, companyId, picking = null }) {
+    return {
+        picking_id: pickingId,
+        picking_type_id: m2oId(picking?.picking_type_id) || m2oId(molde.picking_type_id),
+        product_id: m2oId(molde.product_id),
+        product_uom: m2oId(molde.product_uom),
+        product_uom_qty: qty,
+        location_id: m2oId(picking?.location_id) || m2oId(molde.location_id),
+        location_dest_id: m2oId(picking?.location_dest_id) || m2oId(molde.location_dest_id),
+        location_final_id: m2oId(molde.location_final_id) || false,
+        procure_method: molde.procure_method || 'make_to_stock',
+        reference_ids: [[6, 0, molde.reference_ids || []]],
+        rule_id: m2oId(molde.rule_id) || false,
+        warehouse_id: m2oId(molde.warehouse_id) || false,
+        origin: molde.origin || false,
+        partner_id: m2oId(molde.partner_id) || false,
+        sale_line_id: m2oId(molde.sale_line_id),
+        company_id: companyId,
+    };
+}
+
+/**
+ * Agrega al envío abierto (Recolectar, o entrega en 1 paso) las unidades de
+ * líneas que no tienen move ahí: lo incompleto de un envío anterior validado
+ * sin backorder. En 2 pasos también suma esas unidades a la entrega abierta,
+ * para que el control las pueda entregar. adds: [{ sale_line_id, qty, product_name }].
+ */
+async function addPickingMoves(pickingId, adds, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const kwargs = withCompany(companyId);
+    const campos = ['id', 'name', 'state', 'picking_type_id', 'picking_type_code', 'location_id', 'location_dest_id'];
+    const [picking] = await callOdoo('stock.picking', 'read', [[pickingId], campos], kwargs) || [];
+    if (!picking) throw new Error(`No encontré el envío ${pickingId} en Odoo`);
+    const lineIds = [...new Set((adds || []).map((a) => a.sale_line_id).filter(Boolean))];
+    if (!lineIds.length) return [];
+
+    const moves = await callOdoo(
+        'stock.move',
+        'search_read',
+        // Con cancelados: lo que salió en 0 queda cancelado y sirve igual de molde
+        [[['sale_line_id', 'in', lineIds]]],
+        withCompany(companyId, { fields: CAMPOS_MOVE_MOLDE, order: 'id desc' })
+    ) || [];
+    const tipoEnvio = m2oId(picking.picking_type_id);
+    const dosPasos = picking.picking_type_code === 'internal';
+
+    // 2 pasos: la entrega abierta a la que apuntan los otros moves del envío
+    let entrega = null;
+    if (dosPasos) {
+        const delEnvio = await callOdoo(
+            'stock.move',
+            'search_read',
+            [[['picking_id', '=', pickingId], ['state', '!=', 'cancel']]],
+            withCompany(companyId, { fields: ['id', 'move_dest_ids'] })
+        ) || [];
+        const destIds = [...new Set(delEnvio.flatMap((m) => m.move_dest_ids || []))];
+        const destinos = destIds.length
+            ? await callOdoo('stock.move', 'read', [destIds, ['id', 'picking_id', 'state']], kwargs) || []
+            : [];
+        const entregaId = destinos
+            .filter((m) => m.state !== 'done' && m.state !== 'cancel')
+            .map((m) => m2oId(m.picking_id))
+            .find(Boolean) || null;
+        if (entregaId) {
+            [entrega] = await callOdoo('stock.picking', 'read', [[entregaId], campos], kwargs) || [];
+        }
+    }
+
+    const creados = [];
+    const entregasTocadas = new Set();
+    for (const add of adds) {
+        const qty = Number(add.qty) || 0;
+        if (qty <= 0) continue;
+        const nombre = add.product_name || `la línea ${add.sale_line_id}`;
+        const deLinea = moves.filter((m) => m2oId(m.sale_line_id) === add.sale_line_id);
+        const molde = deLinea.find((m) => m2oId(m.picking_type_id) === tipoEnvio);
+        if (!molde) throw new Error(`No encontré cómo sumar «${nombre}» al envío ${picking.name}`);
+
+        let salidaId = null;
+        if (dosPasos) {
+            const deSalida = deLinea.filter((m) => m2oId(m.picking_type_id) !== tipoEnvio
+                && m2oId(m.location_id) === m2oId(molde.location_dest_id));
+            const abierta = deSalida.find((m) => m.state !== 'done' && m.state !== 'cancel');
+            if (abierta) {
+                await callOdoo('stock.move', 'write', [[abierta.id], {
+                    product_uom_qty: (Number(abierta.product_uom_qty) || 0) + qty,
+                }], kwargs);
+                salidaId = abierta.id;
+                entregasTocadas.add(m2oId(abierta.picking_id));
+            } else if (deSalida.length && entrega) {
+                salidaId = await callOdoo('stock.move', 'create', [moveDesdeMolde(deSalida[0], {
+                    pickingId: entrega.id, qty, companyId, picking: entrega,
+                })], kwargs);
+                entregasTocadas.add(entrega.id);
+            } else {
+                throw new Error(`No encontré la entrega abierta para sumar «${nombre}»`);
+            }
+        }
+
+        const vals = moveDesdeMolde(molde, { pickingId, qty, companyId, picking });
+        if (salidaId) vals.move_dest_ids = [[4, salidaId]];
+        const id = await callOdoo('stock.move', 'create', [vals], kwargs);
+        creados.push({ id, sale_line_id: add.sale_line_id, qty, salida_id: salidaId });
+    }
+
+    if (creados.length) {
+        // Los moves nuevos nacen en borrador: se confirman con su envío
+        await callOdoo('stock.picking', 'action_confirm', [[pickingId]], kwargs);
+        if (entregasTocadas.size) {
+            await callOdoo('stock.picking', 'action_confirm', [[...entregasTocadas]], kwargs);
+        }
+        console.log(`📦 Odoo: sumé ${creados.length} línea(s) incompleta(s) al envío ${picking.name}`);
+    }
+    return creados;
+}
+
 function wizardContext(companyId, pickingId, action) {
     const fromAction = (action && typeof action.context === 'object' && action.context) || {};
     return {
@@ -1612,6 +1739,7 @@ module.exports = {
     getPicking,
     getPickingMoves,
     writePickingMoveQuantities,
+    addPickingMoves,
     validateSalePicking,
     getPickingBackorder,
     getSalidaDePicking,

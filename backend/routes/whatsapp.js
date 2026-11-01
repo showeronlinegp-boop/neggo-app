@@ -230,7 +230,12 @@ router.post('/send-now', async (req, res) => {
 
 router.get('/queue', async (req, res) => {
     try {
-        return ok(res, { now: new Date().toISOString(), messages: await queue.listQueue(pool) });
+        const busyUntil = await queue.getBusyUntil(pool);
+        return ok(res, {
+            now: new Date().toISOString(),
+            evolutionBusyUntil: busyUntil ? busyUntil.toISOString() : null,
+            messages: await queue.listQueue(pool),
+        });
     } catch (err) {
         return fail(res, err.message, 500);
     }

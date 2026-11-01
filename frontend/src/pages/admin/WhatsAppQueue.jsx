@@ -20,6 +20,7 @@ export default function WhatsAppQueue({ refreshKey }) {
     const { tokens: t } = useTheme();
     const [messages, setMessages] = useState([]);
     const [skew, setSkew] = useState(0);
+    const [busyUntil, setBusyUntil] = useState(null);
     const [now, setNow] = useState(Date.now());
 
     const load = useCallback(async () => {
@@ -27,6 +28,7 @@ export default function WhatsAppQueue({ refreshKey }) {
         if (!res.success) return;
         // Corrige la diferencia entre el reloj de la PC y el del servidor.
         setSkew(new Date(res.data.now).getTime() - Date.now());
+        setBusyUntil(res.data.evolutionBusyUntil || null);
         setMessages(res.data.messages || []);
     }, []);
 
@@ -71,6 +73,12 @@ export default function WhatsAppQueue({ refreshKey }) {
                     </span>
                 )}
             </div>
+            {busyUntil && new Date(busyUntil).getTime() > serverNow && (
+                <p style={{ margin: 0, padding: `0 ${t.space[5]}px ${t.space[3]}px`, color: t.color.textMuted, fontSize: t.font.size.sm }}>
+                    <Badge tone="warn">Esperando a Evolution</Badge>{' '}
+                    El último envío tardó demasiado o WhatsApp pidió bajar el ritmo. No sale nada hasta las {fmtWhen(busyUntil, { seconds: true })}.
+                </p>
+            )}
             {nextDelay > LATE_MS && (
                 <p style={{ margin: 0, padding: `0 ${t.space[5]}px ${t.space[3]}px`, color: t.color.textMuted, fontSize: t.font.size.sm }}>
                     <Badge tone="warn">Atrasada {Math.round(nextDelay / 60_000)} min</Badge>{' '}

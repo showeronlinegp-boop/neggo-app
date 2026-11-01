@@ -87,6 +87,9 @@ app.use('/api/pricelists', require('./routes/pricelists'));
 // Publicación en grupos de WhatsApp (Evolution API)
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
+// Imágenes para estados: sorteo y registro de descargas (se suben a mano)
+app.use('/api/estados-imagenes', require('./routes/estadosImagenes'));
+
 // Cola de reposición de Neggo (archivados y "queda poco")
 app.use('/api/reposicion', require('./routes/reposicion'));
 

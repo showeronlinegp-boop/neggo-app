@@ -109,6 +109,13 @@ function testEnvio() {
     // Solo etapas de la cadencia, y el id_externo es obligatorio
     assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'finalizado', mensaje: 'Hola' }, NOW).errors), ['etapa', 'id_externo']);
     assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_1', mensaje: '', id_externo: 'x', tipo: 'enviado' }, NOW).errors), ['mensaje', 'tipo']);
+    // El mensaje no puede hablar del IVA ni de impuestos (nota #93)
+    for (const mensaje of ['Precio final $1.200, IVA incluido', 'Todo con iva', 'Precios con I.V.A.', 'Sin impuestos extra']) {
+        assert.deepStrictEqual(campos(v.validarEnvio({ etapa: 'dia_1', mensaje, id_externo: 'x' }).errors), ['mensaje'], mensaje);
+    }
+    for (const mensaje of ['¡Hola! Te escribimos de Neggo Mayorista', 'La oferta sigue activa', 'Precio final $1.200']) {
+        assert.deepStrictEqual(v.validarEnvio({ etapa: 'dia_1', mensaje, id_externo: 'x' }).errors, [], mensaje);
+    }
 }
 
 function testClientePatch() {

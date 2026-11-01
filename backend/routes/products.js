@@ -80,6 +80,7 @@ router.get('/odoo', authenticate, async (req, res) => {
         search = '',
         category = '',
         include_inactive = 'false',
+        sin_imagen = 'false',
         pricelist_id,
         limit: rawLimit = '100',
         offset: rawOffset = '0'
@@ -101,6 +102,8 @@ router.get('/odoo', authenticate, async (req, res) => {
         const conditions = ['opc.company = $1'];
         if (include_inactive !== 'true') conditions.push('opc.active = true');
         conditions.push('opc.locally_archived = false');
+        // Solo los que no tienen foto en Odoo (has_image viene del sync)
+        if (sin_imagen === 'true') conditions.push('opc.has_image = false');
         const params = [company];
         let paramIdx = 2;
 

@@ -32,6 +32,7 @@ const ActivityLog       = lazy(() => import('./pages/admin/ActivityLog'));
 const AdminPanel        = lazy(() => import('./pages/admin/AdminPanel'));
 const OdooProducts      = lazy(() => import('./pages/admin/OdooProducts'));
 const WhatsAppPublish   = lazy(() => import('./pages/admin/WhatsAppPublish'));
+const EstadosImagenes   = lazy(() => import('./pages/admin/EstadosImagenes'));
 const Reposicion        = lazy(() => import('./pages/reposicion/Reposicion'));
 const Recorrida         = lazy(() => import('./pages/reposicion/Recorrida'));
 const PedidoEnvios      = lazy(() => import('./pages/pedidos/PedidoEnvios'));
@@ -99,6 +100,7 @@ export default function App() {
                         <Route path="/admin"                    element={<AdminPanel />} />
                         <Route path="/admin/odoo-products"     element={<OdooProducts />} />
                         <Route path="/admin/whatsapp"          element={<WhatsAppPublish />} />
+                        <Route path="/admin/estados"           element={<EstadosImagenes />} />
                         <Route path="/usuarios"                element={<Users />} />
                         <Route path="/actividad"               element={<ActivityLog />} />
 

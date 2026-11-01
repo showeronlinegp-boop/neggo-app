@@ -88,3 +88,7 @@ DO $$ BEGIN
         ADD CONSTRAINT whatsapp_batches_destino_check CHECK (destino IN ('grupo', 'estado'));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+-- Después de un timeout o de un rate-overlimit, Evolution puede seguir procesando el envío
+-- anterior (cortamos la espera, no su trabajo): hasta esta hora no sale nada más.
+ALTER TABLE whatsapp_settings ADD COLUMN IF NOT EXISTS evolution_busy_until TIMESTAMPTZ;

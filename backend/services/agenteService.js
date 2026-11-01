@@ -951,7 +951,7 @@ async function listarProductos({ rubros, stock, q, precio_min: precioMin, solo_p
             nombre: nuevos.limpiarNombre(r.name),
             precio: Number(r.list_price),
             rubro: labels.get(r.categ_name) || null,
-            categoria: r.categ_name || null,
+            categoria: labels.get(r.categ_name) || r.categ_name || null,
             stock: r.stock,
             vendidos_90d: Math.round(Number(r.vendidos) * 100) / 100,
             facturado_90d: Math.round(Number(r.facturado) * 100) / 100,
