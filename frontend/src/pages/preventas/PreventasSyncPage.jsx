@@ -183,6 +183,8 @@ export default function PreventasSyncPage() {
     const [recomputing, setRecomputing] = useState(false);
     const [bgRecomputing, setBgRecomputing] = useState(false);
     const [assigningVendor, setAssigningVendor] = useState(false);
+    const [vendorProgreso, setVendorProgreso] = useState(null);
+    const wasAssigningRef = useRef(false);
     const wasRunningRef = useRef(false);
     const wasApplyingRef = useRef(false);
     const [grupo, setGrupo] = useState('todos');
@@ -263,6 +265,32 @@ export default function PreventasSyncPage() {
         return () => clearTimeout(timer);
     }, []);
 
+    // Asignar proveedor corre en segundo plano en el backend: seguimos el avance y avisamos al terminar
+    useEffect(() => {
+        let timer;
+        async function checkVendorStatus() {
+            const res = await api.get('/preventas-sync/assign-vendor/status');
+            if (res.success) {
+                const { running, progreso, result, error } = res.data;
+                setAssigningVendor(running);
+                setVendorProgreso(running ? progreso : null);
+                if (!running && wasAssigningRef.current) {
+                    if (error) showToast(`No se pudo asignar proveedor: ${error}`, 'error');
+                    else if (result) {
+                        const sinPartner = result.sin_partner?.length ? `. Sin proveedor en Odoo: ${result.sin_partner.join(', ')}` : '';
+                        const msg = `Proveedor asignado: ${result.asignados} nuevos${result.omitidos > 0 ? `, ${result.omitidos} ya tenían` : ''}${result.errores > 0 ? `, ${result.errores} con error` : ''}${sinPartner}`;
+                        showToast(msg, result.errores > 0 ? 'warning' : 'success');
+                    }
+                    fetchDataRef.current(1);
+                }
+                wasAssigningRef.current = running;
+            }
+            timer = setTimeout(checkVendorStatus, wasAssigningRef.current ? 3000 : 10000);
+        }
+        checkVendorStatus();
+        return () => clearTimeout(timer);
+    }, []);
+
     const rowKey = row => row.supplier_product_id ? `sp:${row.supplier_product_id}` : `odoo:${row.odoo_product_id}`;
 
     function toggleSelect(row) { const key = rowKey(row); setSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; }); }
@@ -301,15 +329,14 @@ export default function PreventasSyncPage() {
     }
 
     async function handleAssignVendor() {
+        if (assigningVendor) return;
         setAssigningVendor(true);
         const res = await api.post('/preventas-sync/assign-vendor', supplierId ? { supplierId } : {});
-        setAssigningVendor(false);
         if (res.success) {
-            const { asignados, omitidos, errores } = res.data;
-            const msg = `Proveedor asignado: ${asignados} nuevos${omitidos > 0 ? `, ${omitidos} ya tenían` : ''}${errores > 0 ? `, ${errores} errores` : ''}`;
-            showToast(msg, errores > 0 ? 'warning' : 'success');
-            setPage(1); fetchData(1);
+            wasAssigningRef.current = true;
+            showToast('Asignando proveedores en Odoo — puede tardar unos minutos, te avisamos cuando termine', 'success');
         } else {
+            setAssigningVendor(false);
             showToast(res.error || 'Error al asignar proveedor', 'error');
         }
     }
@@ -497,6 +524,13 @@ export default function PreventasSyncPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: t.space[3] }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
                     {bgApplying && <Badge tone="warn">Aplicando cambios en Odoo…</Badge>}
+                    {assigningVendor && (
+                        <Badge tone="warn">
+                            {vendorProgreso?.total
+                                ? `Asignando proveedor en Odoo… ${vendorProgreso.hechos.toLocaleString('es-AR')} de ${vendorProgreso.total.toLocaleString('es-AR')}${vendorProgreso.proveedor ? ` · ${vendorProgreso.proveedor}` : ''}`
+                                : 'Asignando proveedor en Odoo…'}
+                        </Badge>
+                    )}
                     {(recomputing || bgRecomputing)
                         ? <Badge tone="warn">Calculando relaciones…</Badge>
                         : <Badge tone="success" dot>Datos al día</Badge>
