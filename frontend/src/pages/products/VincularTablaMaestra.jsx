@@ -197,6 +197,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     const [guardando, setGuardando] = useState(false);
     // Foto abierta en grande: { imageUrl, nombre, detalle }
     const [foto, setFoto] = useState(null);
+    // Ofertas tildadas para vincular varias de una (nota 140)
+    const [tildadas, setTildadas] = useState(() => new Set());
 
     const cargar = useCallback(async () => {
         const res = await api.get('/mappings/vincular/tarjetas');
@@ -209,29 +211,42 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
     const tarjetas = datos?.tarjetas || [];
     const tarjeta = tarjetas[indice];
 
-    const decidir = useCallback(async (mappingId) => {
+    // Al cambiar de tarjeta (o de ofertas) se destilda todo
+    useEffect(() => { setTildadas(new Set()); }, [tarjeta?.odoo_product_id, tarjeta?.ofertas?.length]);
+
+    function alternar(mappingId) {
+        setTildadas(prev => {
+            const nuevo = new Set(prev);
+            if (nuevo.has(mappingId)) nuevo.delete(mappingId); else nuevo.add(mappingId);
+            return nuevo;
+        });
+    }
+
+    // mappingIds: las ofertas elegidas (una o varias); [] = ninguna
+    const decidir = useCallback(async (mappingIds) => {
         if (!tarjeta || guardando) return;
         setGuardando(true);
-        const res = await api.post('/mappings/vincular/tarjetas', { odooProductId: tarjeta.odoo_product_id, mappingId });
+        const res = await api.post('/mappings/vincular/tarjetas', { odooProductId: tarjeta.odoo_product_id, mappingIds });
         setGuardando(false);
         if (!res.success) return showToast(res.error || 'Error al guardar', 'error');
         const quedan = res.data?.quedan || [];
         onCambio?.();
         if (quedan.length) {
             // Quedan ofertas de otros proveedores: la tarjeta sigue para vincular también esas (nota 139)
-            const elegida = tarjeta.ofertas.find(o => o.mapping_id === mappingId);
-            showToast(`Vínculo confirmado. Quedan ${quedan.length} de otros proveedores`, 'success');
+            const elegidas = tarjeta.ofertas.filter(o => mappingIds.includes(o.mapping_id)).map(o => o.proveedor);
+            showToast(`${mappingIds.length > 1 ? `${mappingIds.length} vínculos confirmados` : 'Vínculo confirmado'}. Quedan ${quedan.length} de otros proveedores`, 'success');
             setDatos(d => ({
                 ...d,
                 tarjetas: d.tarjetas.map(x => x.odoo_product_id !== tarjeta.odoo_product_id ? x : {
                     ...x,
                     ofertas: x.ofertas.filter(o => quedan.includes(o.mapping_id)),
-                    vinculada_con: [...(x.vinculada_con || []), elegida?.proveedor].filter(Boolean),
+                    vinculada_con: [...new Set([...(x.vinculada_con || []), ...elegidas])].filter(Boolean),
                 }),
             }));
             return;
         }
-        showToast(mappingId ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
+        showToast(mappingIds.length > 1 ? `${mappingIds.length} vínculos confirmados`
+            : mappingIds.length ? 'Vínculo confirmado' : 'Ninguna: no se vuelven a proponer', 'success');
         // Sale de la lista y queda una decisión más en el día
         const restantes = tarjetas.length - 1;
         setDatos(d => ({
@@ -249,7 +264,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
         if (tarjetas.length) setIndice(i => (i + 1) % tarjetas.length);
     }, [tarjetas.length]);
 
-    // Teclado: 1/2/3 elige, N = ninguna, espacio = saltear
+    // Teclado: 1/2/3 elige, Enter = vincular las tildadas, N = ninguna, espacio = saltear
     useEffect(() => {
         function onKey(e) {
             const tag = e.target?.tagName;
@@ -257,13 +272,14 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
             // Con la foto ampliada abierta no se decide nada por teclado
             if (!tarjeta || foto) return;
             const n = parseInt(e.key, 10);
-            if (n >= 1 && n <= tarjeta.ofertas.length) { e.preventDefault(); decidir(tarjeta.ofertas[n - 1].mapping_id); }
-            else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); decidir(null); }
+            if (n >= 1 && n <= tarjeta.ofertas.length) { e.preventDefault(); decidir([tarjeta.ofertas[n - 1].mapping_id]); }
+            else if (e.key === 'Enter' && tildadas.size) { e.preventDefault(); decidir([...tildadas]); }
+            else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); decidir([]); }
             else if (e.key === ' ') { e.preventDefault(); saltear(); }
         }
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [tarjeta, foto, decidir, saltear]);
+    }, [tarjeta, foto, decidir, saltear, tildadas]);
 
     if (!datos) return <Centrado><LoadingSpinner size="md" color={t.color.primary} /></Centrado>;
 
@@ -289,7 +305,8 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
             <Ayuda tokens={t}>
                 Ofertas con nombre parecido, de lo que más se vende a lo que menos. Las que eligió Claude van
                 primero, con el motivo (pueden ser de otro proveedor). Si hay de varios proveedores, después de
-                elegir una la tarjeta sigue con las de los otros, para vincularlo con todos.
+                elegir una la tarjeta sigue con las de los otros, para vincularlo con todos. Para vincular
+                varias de una, tildalas y tocá <Tecla tokens={t}>Enter</Tecla>.
                 Tocá <Tecla tokens={t}>1</Tecla> <Tecla tokens={t}>2</Tecla> <Tecla tokens={t}>3</Tecla> si es esa oferta,
                 {' '}<Tecla tokens={t}>N</Tecla> si no es ninguna y <Tecla tokens={t}>espacio</Tecla> para saltearla.
             </Ayuda>
@@ -342,15 +359,28 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], marginTop: t.space[5] }}>
                     {tarjeta.ofertas.map((o, i) => {
                         const dif = diferenciaPrecio(o.neto, tarjeta.standard_price);
+                        const tildada = tildadas.has(o.mapping_id);
                         return (
                             <div
                                 key={o.mapping_id}
                                 style={{
                                     display: 'flex', gap: t.space[3], alignItems: 'center',
                                     padding: '10px 14px', borderRadius: t.radius.sm,
-                                    border: `1px solid ${t.color.border}`, background: t.color.surface,
+                                    border: `1px solid ${tildada ? t.color.primary : t.color.border}`,
+                                    background: tildada ? t.color.primarySoft : t.color.surface,
                                 }}
                             >
+                                {/* Tilde para vincular varias de una (nota 140) */}
+                                <input
+                                    type="checkbox"
+                                    checked={tildada}
+                                    disabled={guardando}
+                                    // Suelta el foco para que Enter, N y los números sigan andando
+                                    onChange={e => { alternar(o.mapping_id); e.target.blur(); }}
+                                    title="Tildar para vincular varias de una"
+                                    aria-label={`Tildar ${o.nombre}`}
+                                    style={{ width: 18, height: 18, flexShrink: 0, cursor: 'pointer', accentColor: t.color.primary }}
+                                />
                                 {/* La foto va afuera del botón: tocarla la amplía sin elegir la oferta */}
                                 <FotoBoton
                                     tokens={t}
@@ -362,7 +392,7 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                                 <button
                                     type="button"
                                     disabled={guardando}
-                                    onClick={() => decidir(o.mapping_id)}
+                                    onClick={() => decidir([o.mapping_id])}
                                     style={{
                                         flex: 1, minWidth: 0,
                                         display: 'flex', gap: t.space[3], alignItems: 'center', textAlign: 'left',
@@ -398,7 +428,12 @@ export function TarjetasNombre({ tokens: t, onCambio }) {
                 </div>
 
                 <div style={{ display: 'flex', gap: t.space[3], marginTop: t.space[5], flexWrap: 'wrap' }}>
-                    <Button variant="danger" leftIcon={<Icon.X size={15} />} disabled={guardando} onClick={() => decidir(null)}>
+                    {tildadas.size > 0 && (
+                        <Button variant="primary" leftIcon={<Icon.Check size={15} />} disabled={guardando} onClick={() => decidir([...tildadas])}>
+                            Vincular {tildadas.size === 1 ? 'la tildada' : `las ${tildadas.size} tildadas`} (Enter)
+                        </Button>
+                    )}
+                    <Button variant="danger" leftIcon={<Icon.X size={15} />} disabled={guardando} onClick={() => decidir([])}>
                         Ninguna (N)
                     </Button>
                     <Button variant="ghost" leftIcon={<Icon.ArrowRight size={15} />} disabled={guardando || tarjetas.length < 2} onClick={saltear}>
