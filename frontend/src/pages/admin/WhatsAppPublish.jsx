@@ -54,7 +54,6 @@ export default function WhatsAppPublish() {
     const { user } = useAuth();
     const [status, setStatus] = useState(null);
     const [qr, setQr] = useState(null);
-    const [qrStatus, setQrStatus] = useState(null);
     const [groups, setGroups] = useState([]);
     const [groupJid, setGroupJid] = useState('');
     const [intervalSeconds, setIntervalSeconds] = useState('90');
@@ -63,7 +62,8 @@ export default function WhatsAppPublish() {
     const [category, setCategory] = useState('');
     const [destCategory, setDestCategory] = useState('');
     const [pricelistId, setPricelistId] = useState('');
-    const [destino, setDestino] = useState('grupo');
+    // Los estados no se usan más (se borró la instancia neggo-estados): las tandas van siempre al grupo.
+    const destino = 'grupo';
     const [scheduledAt, setScheduledAt] = useState(defaultSchedule);
     const [preview, setPreview] = useState(null);
     const [batches, setBatches] = useState([]);
@@ -115,26 +115,21 @@ export default function WhatsAppPublish() {
     }, [openId]);
 
     useQrRefresh(qr, setQr, 'grupo', loadStatus);
-    useQrRefresh(qrStatus, setQrStatus, 'estado', loadStatus);
 
     if (user && user.role !== 'admin') {
         return <p style={{ color: t.color.textMuted }}>Solo un administrador puede publicar en WhatsApp.</p>;
     }
 
     const evo = status?.evolution;
-    const evoStatus = status?.evolution_status;
     const connected = evo?.state === 'open';
-    const statusConnected = evoStatus?.state === 'open';
 
     async function connect(which) {
-        const key = which === 'estado' ? 'qr-estado' : 'qr';
-        setBusy(key); setError(null);
+        setBusy('qr'); setError(null);
         const res = await api.post('/whatsapp/connect', { destino: which });
         setBusy('');
         if (!res.success) { setError(res.error); return; }
         const next = { ...res.data, startedAt: Date.now() };
-        if (which === 'estado') setQrStatus(next);
-        else setQr(next);
+        setQr(next);
         loadStatus();
     }
 
@@ -260,44 +255,6 @@ export default function WhatsAppPublish() {
                     )}
                     {qr?.connected && <p style={{ color: t.color.success }}>El número de grupos ya está vinculado.</p>}
                 </Card>
-                <Card>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[3], flexWrap: 'wrap' }}>
-                        <div>
-                            <h2 style={sectionTitle}>Instancia de estados</h2>
-                            <p style={{ color: t.color.textMuted, margin: '6px 0 0', fontSize: t.font.size.sm }}>
-                                {evoStatus?.instance || 'neggo-estados'}
-                                {evoStatus?.error ? ` — ${evoStatus.error}` : ''}
-                            </p>
-                        </div>
-                        <Badge tone={statusConnected ? 'success' : 'warn'} dot>
-                            {statusConnected ? 'Conectado' : (evoStatus?.state || 'Sin conexión')}
-                        </Badge>
-                    </div>
-                    <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm }}>
-                        Otro número. Los estados salen solo por esta instancia, no por la de los grupos.
-                    </p>
-                    <Button variant="primary" onClick={() => connect('estado')} disabled={busy === 'qr-estado'}>
-                        {busy === 'qr-estado' ? 'Generando…' : 'Mostrar QR'}
-                    </Button>
-                    {qrStatus?.base64 && !qrStatus.connected && (
-                        <img
-                            alt="Código QR de la instancia de estados"
-                            src={qrStatus.base64.startsWith('data:') ? qrStatus.base64 : `data:image/png;base64,${qrStatus.base64}`}
-                            style={{ width: 220, height: 220, marginTop: t.space[4], background: '#fff', borderRadius: t.radius.md }}
-                        />
-                    )}
-                    {qrStatus?.base64 && !qrStatus.connected && (
-                        <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, margin: `${t.space[2]}px 0 0` }}>
-                            El QR se renueva solo. Escanealo con el teléfono que vas a vincular.
-                        </p>
-                    )}
-                    {qrStatus?.expired && (
-                        <p style={{ color: t.color.warn, fontSize: t.font.size.sm }}>
-                            El QR venció. Tocá Mostrar QR para generar otro.
-                        </p>
-                    )}
-                    {qrStatus?.connected && <p style={{ color: t.color.success }}>El número de estados ya está vinculado.</p>}
-                </Card>
             </div>
 
             <Card>
@@ -339,14 +296,8 @@ export default function WhatsAppPublish() {
 
             <Card>
                 <h2 style={sectionTitle}>Armar tanda con filtros</h2>
-                <div style={{ display: 'flex', gap: t.space[2], marginTop: t.space[3] }}>
-                    <Button variant={destino === 'grupo' ? 'primary' : 'secondary'} onClick={() => setDestino('grupo')}>Grupos</Button>
-                    <Button variant={destino === 'estado' ? 'primary' : 'secondary'} onClick={() => setDestino('estado')}>Estados</Button>
-                </div>
                 <p style={{ color: t.color.textMuted, fontSize: t.font.size.sm, marginTop: 10 }}>
-                    {destino === 'estado'
-                        ? 'Cada producto sale como estado de la otra instancia (otro número): foto, nombre y precio de catálogo, uno cada intervalo. Lo ven los contactos de ese WhatsApp, no los del grupo. La hora es de Argentina.'
-                        : 'Entra solo un producto de Odoo con foto y con precio de catálogo (lista del proveedor × 1,015 × markup de la empresa). La lista de cliente filtra proveedores y no cambia ese precio. La hora es de Argentina.'}
+                    {'Entra solo un producto de Odoo con foto y con precio de catálogo (lista del proveedor × 1,015 × markup de la empresa). La lista de cliente filtra proveedores y no cambia ese precio. La hora es de Argentina.'}
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: t.space[3], marginTop: t.space[4] }}>
                     <div>
