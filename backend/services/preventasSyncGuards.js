@@ -88,13 +88,17 @@ function motivoOmitir(prod) {
  * Acciones que pueden estar mal y requieren confirmación de a un producto. Motivo o null.
  */
 function motivoRevision(prod) {
-    if (prod.match_type === 'fuzzy_name' && num(prod.match_score) < FUZZY_MIN_AUTOMATICO) {
+    // Vínculo confirmado en la tabla maestra (product_mappings de Preventas): ya se revisó que
+    // es el mismo producto, no se vuelve a pedir (nota 143). El cambio de costo se sigue revisando.
+    const confirmado = prod.vinculo_confirmado === true;
+
+    if (!confirmado && prod.match_type === 'fuzzy_name' && num(prod.match_score) < FUZZY_MIN_AUTOMATICO) {
         return `Vinculado por nombre parecido (${num(prod.match_score)}%): confirmá que sea el mismo producto`;
     }
 
     const codScraper = codigoEnNombre(prod.scraper_name);
     const codOdoo = codigoEnNombre(prod.odoo_nombre);
-    if (codScraper && codOdoo && codScraper !== codOdoo) {
+    if (!confirmado && codScraper && codOdoo && codScraper !== codOdoo) {
         return `El código del nombre no coincide (${codScraper} en el proveedor, ${codOdoo} en Odoo)`;
     }
 

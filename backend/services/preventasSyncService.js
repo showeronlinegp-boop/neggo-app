@@ -21,6 +21,15 @@ const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
 const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
+// El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
+// ya se revisó que es el mismo producto (nota 143)
+const VINCULO_CONFIRMADO_EXPR = `EXISTS (
+    SELECT 1 FROM product_mappings pm
+    WHERE pm.supplier_product_id = pss.supplier_product_id
+      AND pm.odoo_product_id = pss.odoo_product_id
+      AND pm.odoo_company = 'preventas' AND pm.estado = 'confirmado'
+)`;
+
 async function getProductsToSync(pool, filters = {}) {
     const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
     const where = [];
@@ -107,7 +116,8 @@ async function getProductsToSync(pool, filters = {}) {
             opc.standard_price AS odoo_standard_price,
             opc.active      AS odoo_active,
             opc.categ_name  AS odoo_categoria,
-            opc.vendor_name AS odoo_vendor_name
+            opc.vendor_name AS odoo_vendor_name,
+            ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
@@ -227,7 +237,8 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                EXISTS (
                    SELECT 1 FROM scraping_runs r
                    WHERE r.supplier_id = pss.supplier_id AND r.status IN ('running', 'queued')
-               ) AS proveedor_scrapeando
+               ) AS proveedor_scrapeando,
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp ON sp.id = pss.supplier_product_id
         LEFT JOIN suppliers s ON s.id = sp.supplier_id
