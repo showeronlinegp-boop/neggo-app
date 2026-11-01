@@ -10,6 +10,21 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 
 // Categorías de los proveedores que todavía no tienen regla.
 // Se asigna la categoría de Odoo de cada empresa (o se ignora) sin salir de Proveedores.
+// Claude revisa tandas con scripts/categoriasClaude.js (nota 131): su propuesta llega precargada
+// en los selectores; nada se guarda hasta tocar Asignar.
+
+const TONO_CONFIANZA = { alta: 'success', media: 'primary', baja: 'warn' };
+
+// Propuesta de Claude de una fila, o null si todavía no la revisó
+function propuestaDe(row) {
+    if (!row.sug_revisada) return null;
+    if (!row.sug_categ_neggo && !row.sug_categ_preventas) return { sinPropuesta: true, motivo: row.sug_motivo };
+    return {
+        neggo: row.sug_categ_neggo, preventas: row.sug_categ_preventas,
+        confianza: row.sug_confianza, motivo: row.sug_motivo,
+    };
+}
+
 export default function PendingCategoriesModal({ isOpen, onClose, onChanged, initialSupplierId }) {
     const { tokens: t } = useTheme();
     const { showToast } = useToast();
@@ -23,6 +38,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
     // Elección por fila: { [clave]: { neggo: id, preventas: id } }
     const [choices, setChoices] = useState({});
     const [savingKey, setSavingKey] = useState(null);
+    const [asignandoLote, setAsignandoLote] = useState(null); // { hechas, total } mientras asigna en lote
 
     useEffect(() => {
         if (!isOpen) return;
@@ -36,8 +52,21 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         setLoading(true);
         const res = await api.get('/suppliers/pending-categories');
         setLoading(false);
-        if (res.success) setPending(res.data || []);
-        else showToast(res.error || 'Error al cargar categorías pendientes', 'error');
+        if (!res.success) return showToast(res.error || 'Error al cargar categorías pendientes', 'error');
+        const rows = res.data || [];
+        setPending(rows);
+        // Precargar los selectores con la propuesta de Claude
+        const iniciales = {};
+        for (const row of rows) {
+            const p = propuestaDe(row);
+            if (p && !p.sinPropuesta) {
+                iniciales[keyOf(row)] = {
+                    neggo: p.neggo ? String(p.neggo) : '',
+                    preventas: p.preventas ? String(p.preventas) : '',
+                };
+            }
+        }
+        setChoices(iniciales);
     }
 
     async function loadOdooCategories() {
@@ -63,7 +92,20 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         return found?.complete_name || found?.name || null;
     }
 
-    async function resolve(row, ignored) {
+    // Asigna de una las filas visibles con propuesta alta o media de Claude (con lo que haya en los selectores)
+    async function asignarSugeridas() {
+        const filas = filasParaLote;
+        setAsignandoLote({ hechas: 0, total: filas.length });
+        let ok = 0;
+        for (const row of filas) {
+            if (await resolve(row, false, true)) ok++;
+            setAsignandoLote(prev => ({ ...prev, hechas: prev.hechas + 1 }));
+        }
+        setAsignandoLote(null);
+        showToast(`Asigné ${ok} de ${filas.length} categorías`, ok === filas.length ? 'success' : 'warning');
+    }
+
+    async function resolve(row, ignored, silencioso = false) {
         const k = keyOf(row);
         const choice = choices[k] || {};
         const body = ignored
@@ -78,10 +120,14 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         setSavingKey(k);
         const res = await api.post(`/suppliers/${row.supplier_id}/rules`, body);
         setSavingKey(null);
-        if (!res.success) return showToast(res.error || 'Error al guardar la regla', 'error');
+        if (!res.success) {
+            showToast(`${row.source_category}: ${res.error || 'Error al guardar la regla'}`, 'error');
+            return false;
+        }
         setPending(prev => prev.filter(r => keyOf(r) !== k));
-        showToast(ignored ? `"${row.source_category}" ignorada` : `Regla creada para "${row.source_category}"`, 'success');
+        if (!silencioso) showToast(ignored ? `"${row.source_category}" ignorada` : `Regla creada para "${row.source_category}"`, 'success');
         onChanged?.();
+        return true;
     }
 
     // Proveedores con pendientes, para el filtro
@@ -94,6 +140,14 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         })),
     ];
     const visible = supplierFilter ? pending.filter(r => String(r.supplier_id) === supplierFilter) : pending;
+    const revisadas = visible.filter(r => r.sug_revisada).length;
+    // Para el lote: propuesta alta/media y selectores con algo elegido
+    const filasParaLote = visible.filter(r => {
+        const p = propuestaDe(r);
+        const c = choices[keyOf(r)] || {};
+        return p && !p.sinPropuesta && p.confianza !== 'baja' && (c.neggo || c.preventas);
+    });
+    const ocupado = !!asignandoLote;
 
     // Agrupar por proveedor manteniendo el orden del backend
     const groups = [];
@@ -124,11 +178,31 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
         >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[3], marginBottom: t.space[5], flexWrap: 'wrap' }}>
                 <Select value={supplierFilter} onChange={setSupplierFilter} options={supplierOptions} style={{ minWidth: 260 }} />
-                {loadingCategs && (
-                    <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family }}>
-                        Cargando categorías de Odoo…
-                    </span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
+                    {loadingCategs && (
+                        <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family }}>
+                            Cargando categorías de Odoo…
+                        </span>
+                    )}
+                    {!loading && visible.length > 0 && (
+                        <span
+                            title="Para que Claude revise más, pedile en la terminal una tanda de categorías (skill categorias-claude)"
+                            style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}
+                        >
+                            Claude revisó {revisadas} de {visible.length}
+                        </span>
+                    )}
+                    <Button
+                        size="sm" variant="primary"
+                        disabled={ocupado || filasParaLote.length === 0}
+                        onClick={asignarSugeridas}
+                        title="Asigna las propuestas de confianza alta y media tal como están en los selectores"
+                    >
+                        {asignandoLote
+                            ? `Asignando ${asignandoLote.hechas}/${asignandoLote.total}…`
+                            : `Asignar sugeridas (${filasParaLote.length})`}
+                    </Button>
+                </div>
             </div>
 
             {loading && <div style={{ padding: t.space[8], display: 'flex', justifyContent: 'center' }}><LoadingSpinner /></div>}
@@ -161,6 +235,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                             const k = keyOf(row);
                             const choice = choices[k] || {};
                             const saving = savingKey === k;
+                            const propuesta = propuestaDe(row);
                             return (
                                 <div key={k} style={{
                                     display: 'grid', gridTemplateColumns: 'minmax(180px, 1.3fr) 1fr 1fr auto',
@@ -185,6 +260,21 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                                 }}
                                             >
                                                 Ej: {row.sample_products.join(' · ')}
+                                            </div>
+                                        )}
+                                        {propuesta && (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], marginTop: 4, minWidth: 0 }}>
+                                                <Badge tone={propuesta.sinPropuesta ? 'muted' : TONO_CONFIANZA[propuesta.confianza]}>
+                                                    {propuesta.sinPropuesta ? 'Claude: sin categoría' : `Claude · ${propuesta.confianza}`}
+                                                </Badge>
+                                                {propuesta.motivo && (
+                                                    <span title={propuesta.motivo} style={{
+                                                        fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family,
+                                                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                    }}>
+                                                        {propuesta.motivo}
+                                                    </span>
+                                                )}
                                             </div>
                                         )}
                                     </div>
