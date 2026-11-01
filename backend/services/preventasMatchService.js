@@ -235,6 +235,12 @@ LEFT JOIN LATERAL (
       AND NOT EXISTS (
           SELECT 1 FROM preventas_sync_state pss2 WHERE pss2.odoo_product_id = opc2.odoo_id
       )
+      -- Un vínculo rechazado en la tabla maestra no se vuelve a proponer (nota 143)
+      AND NOT EXISTS (
+          SELECT 1 FROM product_mappings pmr
+          WHERE pmr.supplier_product_id = sp.id AND pmr.odoo_product_id = opc2.odoo_id
+            AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
+      )
       AND similarity(LOWER(sp.name), LOWER(opc2.name)) >= 0.75
     ORDER BY sim DESC
     LIMIT 1

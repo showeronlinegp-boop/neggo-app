@@ -97,6 +97,15 @@ test('fuzzy por debajo de 90 requiere revisión', () => {
     assert.match(motivoRevision(fila({ match_type: 'fuzzy_name', match_score: '78.72', estado: 'activar' })), /nombre parecido/);
     assert.strictEqual(motivoRevision(fila({ match_type: 'fuzzy_name', match_score: '92' })), null);
 });
+test('vínculo confirmado en la tabla maestra no pide revisar la identidad (nota 143)', () => {
+    assert.strictEqual(motivoRevision(fila({ match_type: 'fuzzy_name', match_score: '78.72', estado: 'activar', vinculo_confirmado: true })), null);
+    assert.strictEqual(motivoRevision(fila({
+        match_type: 'fuzzy_name', match_score: '95', vinculo_confirmado: true,
+        scraper_name: 'MOCHILITA INFANTIL {MAB86}', odoo_nombre: 'MOCHILITA INFANTIL (MAB96)',
+    })), null);
+    // El cambio de costo grande se sigue revisando aunque el vínculo esté confirmado
+    assert.match(motivoRevision(fila({ match_type: 'fuzzy_name', match_score: '78', vinculo_confirmado: true, costo: '24434.10', odoo_standard_price: '12217.05' })), /\+100\.0%/);
+});
 test('códigos distintos en el nombre requieren revisión (MAB86 ≠ MAB96)', () => {
     const r = motivoRevision(fila({
         match_type: 'fuzzy_name', match_score: '95',
