@@ -4,7 +4,6 @@ import { useToast } from '../../context/ToastContext';
 import { useTheme } from '../../theme/ThemeContext';
 import DataTable from '../../components/common/DataTable';
 import Modal from '../../components/common/Modal';
-import ConfirmDialog from '../../components/common/ConfirmDialog';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
@@ -167,6 +166,63 @@ function Numeros({ resumen: r, t }) {
     );
 }
 
+// ─── Confirmación de "Aplicar" (bloque o selección) con el desglose ───────────
+// conteo: { listos, revision_costo, revision_vinculo, sin_precio, sin_accion? }
+function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCosto, onClose, onConfirm }) {
+    const c = conteo || {};
+    const aAplicar = (c.listos || 0) + (incluirCosto ? (c.revision_costo || 0) : 0);
+    const fila = (texto, n, color) => n > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[4], padding: '3px 0', fontSize: t.font.size.sm, color: color || t.color.text }}>
+            <span>{texto}</span><span style={t.numericStyle}>{fmtN(n)}</span>
+        </div>
+    );
+    return (
+        <Modal
+            isOpen={!!tipo}
+            onClose={onClose}
+            title="Aplicar cambios en Odoo Preventas"
+            subtitle={alcance || (tipo === 'seleccion' ? 'Productos seleccionados' : undefined)}
+            size="sm"
+            footer={
+                <>
+                    <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+                    <Button variant="primary" disabled={aAplicar === 0} onClick={onConfirm}>
+                        {aAplicar === 0 ? 'Nada para aplicar' : `Aplicar ${fmtN(aAplicar)}`}
+                    </Button>
+                </>
+            }
+        >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4], fontFamily: t.font.family }}>
+                <div>
+                    {fila('Listos para aplicar', c.listos)}
+                    {fila('Con cambio de costo de más del 20%', c.revision_costo, t.color.warn)}
+                    {fila('Vinculados por nombre parecido u otro código (no entran)', c.revision_vinculo, t.color.textMuted)}
+                    {fila('Sin precio del proveedor (no se sincronizan)', c.sin_precio, t.color.textMuted)}
+                    {fila('Sin nada que hacer', c.sin_accion, t.color.textMuted)}
+                </div>
+                {c.revision_costo > 0 && (
+                    <label style={{
+                        display: 'flex', gap: t.space[3], alignItems: 'flex-start', cursor: 'pointer',
+                        padding: t.space[3], borderRadius: t.radius.md, background: t.color.warnSoft,
+                        fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.45,
+                    }}>
+                        <input type="checkbox" checked={incluirCosto} onChange={e => setIncluirCosto(e.target.checked)} style={{ marginTop: 3 }} />
+                        <span>
+                            Aplicar también los {fmtN(c.revision_costo)} con cambio de costo grande.
+                            <span style={{ display: 'block', color: t.color.textMuted, fontSize: t.font.size.xs, marginTop: 2 }}>
+                                Mirá antes la tabla: un salto de +100% suele ser un pack contado como unidad.
+                            </span>
+                        </span>
+                    </label>
+                )}
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                    Antes de escribir se vuelve a leer Odoo: si alguien cambió el costo a mano, ese producto se saltea.
+                </div>
+            </div>
+        </Modal>
+    );
+}
+
 // ─── Componente principal ──────────────────────────────────────────────────────
 export default function PreventasSyncPage() {
     const { tokens: t } = useTheme();
@@ -193,12 +249,17 @@ export default function PreventasSyncPage() {
     const [search, setSearch] = useState('');
     const [searchInput, setSearchInput] = useState('');
     const searchTimer = useRef(null);
-    const [selected, setSelected] = useState(new Set());
+    // Selección: key → fila (para saber qué revisión pide cada seleccionado)
+    const [selected, setSelected] = useState(new Map());
     const [detail, setDetail] = useState(null);
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
     const [verNumeros, setVerNumeros] = useState(false);
-    const [confirmarBloque, setConfirmarBloque] = useState(false);
+    // Qué haría el "Aplicar" en bloque con los filtros actuales (lo calcula el backend)
+    const [aplicables, setAplicables] = useState(null);
+    // Diálogo de confirmación: null | 'bloque' | 'seleccion'
+    const [confirmar, setConfirmar] = useState(null);
+    const [incluirCosto, setIncluirCosto] = useState(false);
 
     const sinVendor = vista === 'sin_vendor';
     const vistaDef = VISTAS.find(v => v.key === vista);
@@ -224,13 +285,13 @@ export default function PreventasSyncPage() {
             }),
             api.get('/preventas-sync/resumen', supplierId ? { supplierId } : undefined),
         ]);
-        if (prodRes.success) { setProductos(prodRes.data || []); setTotal(prodRes.pagination?.total || 0); }
+        if (prodRes.success) { setProductos(prodRes.data || []); setTotal(prodRes.pagination?.total || 0); setAplicables(prodRes.aplicables || null); }
         else showToast(prodRes.error || 'Error al cargar productos', 'error');
         if (resRes.success) setResumen(resRes.data || {});
         setLoading(false);
     }, [vista, sub, supplierId, matchType, search, page]);
 
-    useEffect(() => { setPage(1); fetchData(1); setSelected(new Set()); }, [vista, sub, supplierId, matchType, search]);
+    useEffect(() => { setPage(1); fetchData(1); setSelected(new Map()); }, [vista, sub, supplierId, matchType, search]);
     useEffect(() => { fetchData(page); }, [page]);
 
     const fetchDataRef = useRef(fetchData);
@@ -261,7 +322,7 @@ export default function PreventasSyncPage() {
             if (!running && wasApplyingRef.current) {
                 if (error) showToast(`Los cambios en bloque fallaron: ${error}`, 'error');
                 else if (result) showToast(`Cambios aplicados: ${resumenApply(result)}`, result.error > 0 || result.omitidos > 0 ? 'warning' : 'success');
-                fetchDataRef.current(1); setSelected(new Set());
+                fetchDataRef.current(1); setSelected(new Map());
             }
             wasApplyingRef.current = running;
             timer = setTimeout(checkApplyStatus, running ? 3000 : 10000);
@@ -298,8 +359,8 @@ export default function PreventasSyncPage() {
 
     const rowKey = row => row.supplier_product_id ? `sp:${row.supplier_product_id}` : `odoo:${row.odoo_product_id}`;
 
-    function toggleSelect(row) { const key = rowKey(row); setSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; }); }
-    function toggleAll() { setSelected(prev => prev.size === productos.length ? new Set() : new Set(productos.map(rowKey))); }
+    function toggleSelect(row) { const key = rowKey(row); setSelected(prev => { const n = new Map(prev); n.has(key) ? n.delete(key) : n.set(key, row); return n; }); }
+    function toggleAll() { setSelected(prev => prev.size === productos.length ? new Map() : new Map(productos.map(r => [rowKey(r), r]))); }
     function buildIds(keys) {
         const ids = [], odoo_ids = [];
         for (const k of keys) { if (k.startsWith('sp:')) ids.push(parseInt(k.slice(3))); else if (k.startsWith('odoo:')) odoo_ids.push(parseInt(k.slice(5))); }
@@ -309,14 +370,19 @@ export default function PreventasSyncPage() {
     function elegirVista(key) {
         // Tocar la tarjeta activa la deselecciona y vuelve a "todos"
         setVista(prev => prev === key ? 'todos' : key);
-        setSub('todos'); setMatchType('todos'); setPage(1); setSelected(new Set());
+        setSub('todos'); setMatchType('todos'); setPage(1); setSelected(new Map());
     }
 
-    // confirmar: aplica también lo que requiere revisión (solo un producto, desde el detalle)
-    async function handleApply(keys, confirmar = false) {
+    // confirmarUno: aplica también lo que requiere revisión (un solo producto, desde la fila o el detalle)
+    // aceptarCambioCosto: aplica también los cambios de costo grandes (selección de varios)
+    async function handleApply(keys, confirmarUno = false, aceptarCambioCosto = false) {
         setApplying(true);
         const { ids, odoo_ids } = buildIds(keys);
-        const res = await api.post('/preventas-sync/apply', { ids, odoo_ids, ...(confirmar ? { confirmar: true } : {}) });
+        const res = await api.post('/preventas-sync/apply', {
+            ids, odoo_ids,
+            ...(confirmarUno ? { confirmar: true } : {}),
+            ...(aceptarCambioCosto ? { aceptarCambioCosto: true } : {}),
+        });
         setApplying(false);
         if (res.success) {
             const r = res.data;
@@ -324,19 +390,25 @@ export default function PreventasSyncPage() {
             const unicoOmitido = keys.length === 1 && r.omitidos === 1 ? r.detalles.find(d => d.resultado === 'omitido') : null;
             if (unicoOmitido) showToast(`No se aplicó: ${unicoOmitido.motivo}`, 'warning');
             else showToast(`Aplicado: ${resumenApply(r)}`, r.error > 0 || r.omitidos > 0 ? 'warning' : 'success');
-            fetchData(page); setSelected(new Set());
+            fetchData(page); setSelected(new Map());
         }
         else showToast(res.error || 'Error al aplicar', 'error');
     }
 
-    async function handleApplyBloque() {
-        setConfirmarBloque(false);
+    // El bloque aplica la vista tal cual se ve filtrada (vista, proveedor, búsqueda y tipo de vínculo)
+    async function handleApplyBloque(aceptarCambioCosto) {
         setApplying(true);
-        const res = await api.post('/preventas-sync/apply', { ids: [], odoo_ids: [], grupo: filtro.grupo, estado: filtro.estado, supplierId: supplierId || undefined });
+        const res = await api.post('/preventas-sync/apply', {
+            ids: [], odoo_ids: [],
+            grupo: filtro.grupo, estado: filtro.estado, supplierId: supplierId || undefined,
+            matchType: matchType !== 'todos' ? matchType : undefined,
+            search: search || undefined,
+            ...(aceptarCambioCosto ? { aceptarCambioCosto: true } : {}),
+        });
         setApplying(false);
         if (res.success) {
             if (res.data.running) { setBgApplying(true); wasApplyingRef.current = true; showToast('Aplicando en segundo plano — te avisamos cuando termine', 'success'); }
-            else { const r = res.data; showToast(`Aplicado: ${resumenApply(r)}`, r.error > 0 || r.omitidos > 0 ? 'warning' : 'success'); setPage(1); fetchData(1); setSelected(new Set()); }
+            else { const r = res.data; showToast(`Aplicado: ${resumenApply(r)}`, r.error > 0 || r.omitidos > 0 ? 'warning' : 'success'); setPage(1); fetchData(1); setSelected(new Map()); }
         } else showToast(res.error || 'Error al aplicar', 'error');
     }
 
@@ -357,16 +429,40 @@ export default function PreventasSyncPage() {
         setRecomputing(true);
         const res = await api.post('/preventas-sync/recompute', {});
         setRecomputing(false);
-        if (res.success) { const s = res.data; showToast(`Recomputo listo: ${s.total} productos en ${s.elapsed_ms}ms`, 'success'); setPage(1); fetchData(1); setSelected(new Set()); }
+        if (res.success) { const s = res.data; showToast(`Recomputo listo: ${s.total} productos en ${s.elapsed_ms}ms`, 'success'); setPage(1); fetchData(1); setSelected(new Map()); }
         else showToast(res.error || 'Error al recomputar', 'error');
     }
 
     // ─── Cuántos cambios se aplicarían en bloque en la vista actual ───────────
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
     const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
-    const enBloque = sinVendor ? 0 : sumar(resumen, estadosVista.filter(e => ACCIONABLES.includes(e) && (supplierId || !INACTIVACION.includes(e))));
-    // El apply en bloque no conoce la búsqueda ni el tipo de vínculo: con esos filtros, solo por selección
-    const filtrosExtra = !!search || matchType !== 'todos';
+    // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
+    const bloque = sinVendor || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
+    const enBloque = bloque.listos + bloque.revision_costo;
+
+    // Lo mismo para la selección, con las filas tildadas
+    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_accion: 0 };
+    for (const row of selected.values()) {
+        if (!ACCION_LABEL[row.estado]) seleccion.sin_accion++;
+        else if (row.bloqueo_motivo) seleccion.sin_precio++;
+        else if (row.revision_tipo === 'vinculo') seleccion.revision_vinculo++;
+        else if (row.revision_tipo === 'costo') seleccion.revision_costo++;
+        else seleccion.listos++;
+    }
+
+    function abrirConfirmar(tipo) {
+        const c = tipo === 'bloque' ? bloque : seleccion;
+        // Si no hay ninguno listo, el tilde de los cambios de costo arranca marcado (si no, no se aplicaría nada)
+        setIncluirCosto(c.listos === 0 && c.revision_costo > 0);
+        setConfirmar(tipo);
+    }
+
+    function aplicarConfirmado() {
+        const tipo = confirmar;
+        setConfirmar(null);
+        if (tipo === 'bloque') handleApplyBloque(incluirCosto);
+        else handleApply([...selected.keys()], false, incluirCosto);
+    }
 
     const supplierOptions = [{ value: '', label: 'Todos los proveedores' }, ...suppliers.map(s => ({ value: String(s.id), label: s.name }))];
     const matchOptions = [
@@ -443,14 +539,27 @@ export default function PreventasSyncPage() {
                 if (label && row.bloqueo_motivo) {
                     accion = <span title={row.bloqueo_motivo} style={{ fontSize: t.font.size.xs, color: t.color.danger, fontFamily: t.font.family }}>Sin precio: no se sincroniza</span>;
                 } else if (label && row.revision_motivo) {
-                    accion = <Button size="sm" variant="secondary" title={row.revision_motivo} onClick={e => { e.stopPropagation(); setDetail(row); }}>Revisar</Button>;
+                    // Se confirma acá mismo, sin abrir el detalle: el motivo queda a la vista abajo
+                    accion = (
+                        <Button size="sm" variant="secondary" disabled={applying} title={`${row.revision_motivo}. Tocá para aplicarlo igual.`}
+                            onClick={e => { e.stopPropagation(); handleApply([rowKey(row)], true); }}>
+                            Confirmar
+                        </Button>
+                    );
                 } else if (label) {
                     accion = <Button size="sm" variant="accent" disabled={applying} onClick={e => { e.stopPropagation(); handleApply([rowKey(row)]); }}>{label}</Button>;
                 }
                 return (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[3], minWidth: 220 }}>
-                        <Badge tone={info.tone}>{info.label}</Badge>
-                        {accion}
+                    <div style={{ minWidth: 220, maxWidth: 300 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[3] }}>
+                            <Badge tone={info.tone}>{info.label}</Badge>
+                            {accion}
+                        </div>
+                        {label && !row.bloqueo_motivo && row.revision_motivo && (
+                            <div style={{ fontSize: t.font.size.xs, color: t.color.warn, fontFamily: t.font.family, marginTop: 4, lineHeight: 1.35 }}>
+                                {row.revision_motivo}
+                            </div>
+                        )}
                     </div>
                 );
             },
@@ -558,35 +667,35 @@ export default function PreventasSyncPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
                         {selected.size > 0 ? (
                             <>
-                                <button type="button" onClick={() => setSelected(new Set())} style={{ ...pillStyle(false), border: 'none', background: 'transparent' }}>Limpiar selección</button>
-                                <Button variant="primary" disabled={applying} onClick={() => handleApply([...selected])}>
+                                <button type="button" onClick={() => setSelected(new Map())} style={{ ...pillStyle(false), border: 'none', background: 'transparent' }}>Limpiar selección</button>
+                                <Button variant="primary" disabled={applying} onClick={() => abrirConfirmar('seleccion')}>
                                     {applying ? 'Aplicando…' : `Aplicar ${fmtN(selected.size)} seleccionados`}
                                 </Button>
                             </>
-                        ) : enBloque > 0 && !filtrosExtra ? (
-                            <Button variant="accent" disabled={applying || bgApplying} onClick={() => setConfirmarBloque(true)}>
+                        ) : enBloque > 0 ? (
+                            <Button variant="accent" disabled={applying || bgApplying} onClick={() => abrirConfirmar('bloque')}>
                                 {applying ? 'Aplicando…' : `Aplicar los ${fmtN(enBloque)} cambios`}
                             </Button>
                         ) : null}
                     </div>
                 </div>
 
-                {/* Avisos de por qué no hay "Aplicar" en bloque */}
+                {/* Avisos sobre el "Aplicar" en bloque */}
                 {selected.size === 0 && archivaSinProveedor && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                         Para archivar en bloque elegí un proveedor (no se archivan todos los proveedores juntos). También podés seleccionar productos.
                     </div>
                 )}
-                {selected.size === 0 && enBloque > 0 && filtrosExtra && (
+                {selected.size === 0 && bloque.revision_vinculo > 0 && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        Con búsqueda o filtro de vínculo no se aplica en bloque: seleccioná los productos que quieras aplicar.
+                        {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, confirmalos de a uno con "Confirmar" en la fila.
                     </div>
                 )}
 
                 {vistaDef?.subs && (
                     <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
                         {[{ key: 'todos', label: 'Todos', count: sumar(resumen, vistaDef.subs.map(s => s.key)) }, ...vistaDef.subs.map(s => ({ ...s, count: resumen[s.key] || 0 }))].map(s => (
-                            <button key={s.key} type="button" onClick={() => { setSub(s.key); setPage(1); setSelected(new Set()); }} style={pillStyle(sub === s.key)}>
+                            <button key={s.key} type="button" onClick={() => { setSub(s.key); setPage(1); setSelected(new Map()); }} style={pillStyle(sub === s.key)}>
                                 {s.label} <span style={t.numericStyle}>{fmtN(s.count)}</span>
                             </button>
                         ))}
@@ -616,13 +725,20 @@ export default function PreventasSyncPage() {
                 <DataTable columns={cols} data={productos} loading={loading} onRowClick={setDetail} pagination={{ page, pageSize: PAGE_SIZE, total }} onPageChange={p => setPage(p)} />
             </div>
 
-            <ConfirmDialog
-                isOpen={confirmarBloque}
-                onClose={() => setConfirmarBloque(false)}
-                onConfirm={handleApplyBloque}
-                title="Aplicar cambios en Odoo"
-                message={`Se van a aplicar ${fmtN(enBloque)} cambios en Odoo Preventas (${sinVendor ? '' : vistaDef ? vistaDef.titulo.toLowerCase() : 'todas las vistas'}${supplierId ? `, solo ${suppliers.find(s => String(s.id) === String(supplierId))?.name || 'el proveedor elegido'}` : ', todos los proveedores'}). Los que necesitan revisión se saltean. ¿Seguimos?`}
-                confirmLabel="Aplicar"
+            <ConfirmarAplicar
+                t={t}
+                tipo={confirmar}
+                conteo={confirmar === 'seleccion' ? seleccion : bloque}
+                alcance={confirmar === 'bloque' ? [
+                    vistaDef ? vistaDef.titulo : 'todas las vistas',
+                    supplierId ? suppliers.find(s => String(s.id) === String(supplierId))?.name || 'el proveedor elegido' : 'todos los proveedores',
+                    search ? `búsqueda "${search}"` : null,
+                    matchType !== 'todos' ? `vínculo: ${VINCULO_INFO[matchType]?.label || matchType}` : null,
+                ].filter(Boolean).join(' · ') : null}
+                incluirCosto={incluirCosto}
+                setIncluirCosto={setIncluirCosto}
+                onClose={() => setConfirmar(null)}
+                onConfirm={aplicarConfirmado}
             />
 
             {/* Detalle */}
