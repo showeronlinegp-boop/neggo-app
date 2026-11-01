@@ -146,8 +146,10 @@ export default function ProductMappings() {
         const res = await api.post('/mappings/auto-match', { supplierId: parseInt(selectedSupplier) });
         setAutoMatchLoading(false);
         if (res.success) {
-            const { matched = 0, autoLinked = 0, suggested = 0, noMatch = 0 } = res.data || {};
-            showToast(`Auto-match: ${matched + autoLinked} vinculados, ${suggested} sugeridos, ${noMatch} sin match`, 'success');
+            // Nada queda vinculado: todo es sugerido y se confirma en Vincular (Claude lo puede revisar antes)
+            const { ref = {}, total = {} } = res.data?.summary || {};
+            showToast(`Auto-match: ${ref.matched || 0} sugeridos por código y ${total.suggested || 0} por nombre ` +
+                `(${total.noMatch || 0} sin parecido). Se confirman en Vincular; pedile a Claude que los revise.`, 'success');
             fetchUnmapped(); fetchMappings(); fetchResumen();
         } else showToast(res.error || 'Error en auto-match', 'error');
     }
