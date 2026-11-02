@@ -324,13 +324,29 @@ function testOrdenSaleSaldoGrandeActiva() {
 }
 
 function testOrdenSaleSaldoResidualNoActiva() {
-    // $427 de $145.000: umbral = max(10000, 5% = 7250) = 10000 → no
+    // $427 de $145.000: umbral = $50.000 → no
     const m = bloqueDe([orden({
         state: 'sale',
         amount_total: 145000, amount_unpaid: 427,
         date_order: '2026-09-15 12:00:00',
     })]);
     assert.strictEqual(m.size, 0);
+}
+
+function testOrdenSaleSaldoBajoMinimoNoActiva() {
+    // $22.164 sin cobrar: menor a $50.000 → no
+    const m = bloqueDe([orden({ state: 'sale', amount_total: 22164.18, amount_unpaid: 22164.18, date_order: '2026-10-20 12:00:00' })]);
+    assert.strictEqual(m.size, 0);
+}
+
+function testOrdenSaleSaldoJusto50000Activa() {
+    const m = bloqueDe([orden({ state: 'sale', amount_total: 300000, amount_unpaid: 50000, date_order: '2026-10-20 12:00:00' })]);
+    assert.strictEqual(m.get(10).pedidos[0].tipo, 'orden_abierta');
+}
+
+function testCotizacionChicaIgualCuenta() {
+    const m = bloqueDe([orden({ amount_total: 5000, amount_unpaid: 5000 })]);
+    assert.strictEqual(m.get(10).pedidos[0].tipo, 'cotizacion_enviada');
 }
 
 function testOrdenSaleSenaDentroVentanaActiva() {
@@ -403,6 +419,9 @@ const tests = [
     testDraftNoPorDefault,
     testDraftSiIncluirBorradores,
     testCancelNunca,
+    testOrdenSaleSaldoBajoMinimoNoActiva,
+    testOrdenSaleSaldoJusto50000Activa,
+    testCotizacionChicaIgualCuenta,
 ];
 
 for (const t of tests) t();

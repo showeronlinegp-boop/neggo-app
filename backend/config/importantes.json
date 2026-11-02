@@ -12,8 +12,8 @@
     "excluir_por_defecto": true,
     "dias_cotizacion": 30,
     "dias_orden": 60,
-    "saldo_minimo": 10000,
-    "saldo_minimo_pct": 5,
+    "saldo_minimo": 50000,
+    "saldo_minimo_pct": 0,
     "incluir_borradores": false,
     "incluir_preventas": true
   }

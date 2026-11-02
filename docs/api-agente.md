@@ -165,7 +165,7 @@ Para no escribirle a un cliente que ya tiene algo en curso en Odoo, la lista de 
 Un pedido cuenta como activo si cumple **alguno**:
 
 1. **cotizacion_enviada:** `state = sent` y `date_order` dentro de los últimos `pedido_activo.dias_cotizacion` días (default 30).
-2. **orden_abierta:** `state = sale`, `date_order` dentro de `pedido_activo.dias_orden` días (default 60), y saldo sin cobrar `amount_unpaid` ≥ max(`saldo_minimo` default 10000, `saldo_minimo_pct` default 5 % de `amount_total`). Motivo: en Neggo se cobra en el POS (seña + saldo sobre la misma orden); restos chicos de redondeo no cuentan. `delivery_status` / `invoice_status` no sirven.
+2. **orden_abierta:** `state = sale`, `date_order` dentro de `pedido_activo.dias_orden` días (default 60), y saldo sin cobrar `amount_unpaid` ≥ `saldo_minimo` (default $50.000; `saldo_minimo_pct` default 0, si es > 0 el umbral es el mayor de los dos). Las cotizaciones enviadas cuentan sin importar el monto. Motivo: en Neggo se cobra en el POS (seña + saldo sobre la misma orden); restos chicos de redondeo no cuentan. `delivery_status` / `invoice_status` no sirven.
 3. **borrador:** `state = draft` solo si `pedido_activo.incluir_borradores` es true (default false); misma ventana que la cotización.
 
 Config en `backend/config/importantes.json` → `pedido_activo` (`excluir_por_defecto` default true). Matching: `partner_id child_of` los ids de la lista; si el partner no está en la lista, se usa `commercial_partner_id` o `parent_id`. Companies: Neggo y, si `pedido_activo.incluir_preventas` (default true), también Preventas (company "Precompras"), donde viven las órdenes de preventa con seña + saldo; cada pedido trae `compania: neggo | preventas`.
