@@ -24,7 +24,8 @@ const DIAS_MAX = 730;
 const TOP_MAX = 500;
 const LIMIT_DEFAULT = 50;
 const MOTIVOS = ['monto_acumulado', 'pedido_grande', 'manual'];
-const ORDENES = ['monto_desc', 'dias_sin_comprar_desc', 'tendencia_asc', 'ultima_compra_desc', 'nombre'];
+const ORDENES = ['dias_sin_comprar_desc', 'ultima_compra_asc', 'monto_desc', 'tendencia_asc', 'ultima_compra_desc', 'nombre'];
+const ORDEN_DEFAULT = 'dias_sin_comprar_desc';
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'importantes.json');
 
 function cargarConfig(file = CONFIG_PATH) {
@@ -238,13 +239,10 @@ function calcularImportantes({
 }
 
 /** Orden de la lista según ?orden=. */
-function ordenarImportantes(lista, orden = 'monto_desc') {
+function ordenarImportantes(lista, orden = ORDEN_DEFAULT) {
     const copy = lista.slice();
     const porNombre = (a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es') || a.id - b.id;
     switch (orden) {
-    case 'dias_sin_comprar_desc':
-        copy.sort((a, b) => (b.dias_sin_comprar ?? -1) - (a.dias_sin_comprar ?? -1) || porNombre(a, b));
-        break;
     case 'tendencia_asc':
         // Las caídas primero; sin_datos al final
         copy.sort((a, b) => {
@@ -263,8 +261,14 @@ function ordenarImportantes(lista, orden = 'monto_desc') {
         copy.sort(porNombre);
         break;
     case 'monto_desc':
-    default:
         copy.sort((a, b) => b.total_comprado - a.total_comprado || porNombre(a, b));
+        break;
+    case 'dias_sin_comprar_desc':
+    case 'ultima_compra_asc':
+    default:
+        // Para el seguimiento: el que compró hace más tiempo primero; empate: más total_comprado, después nombre
+        copy.sort((a, b) => (b.dias_sin_comprar ?? -1) - (a.dias_sin_comprar ?? -1)
+            || (b.total_comprado || 0) - (a.total_comprado || 0) || porNombre(a, b));
         break;
     }
     return copy;
@@ -303,6 +307,7 @@ module.exports = {
     LIMIT_DEFAULT,
     MOTIVOS,
     ORDENES,
+    ORDEN_DEFAULT,
     NUEVOS_DIAS,
     cargarConfig,
     ventanas,

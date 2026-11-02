@@ -67,7 +67,8 @@ function testQueryImportantes() {
     assert.strictEqual(def.value.top, null);
     assert.strictEqual(def.value.no_contactar, null); // default todos
     assert.strictEqual(def.value.limit, 50);
-    assert.strictEqual(def.value.orden, 'monto_desc');
+    assert.strictEqual(def.value.orden, 'dias_sin_comprar_desc');
+    assert.strictEqual(v.validarQueryImportantes({ orden: 'ultima_compra_asc' }, cfg).value.orden, 'ultima_compra_asc');
 
     const top = v.validarQueryImportantes({ top: '10', orden: 'nombre', motivo: 'pedido_grande' }, cfg);
     assert.deepStrictEqual(top.errors, []);

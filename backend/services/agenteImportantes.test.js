@@ -223,6 +223,21 @@ function testDiasSinComprar() {
     assert.ok(r[0].ultima_compra.startsWith('2026-09-30'));
 }
 
+function testOrdenDefaultDiasSinComprar() {
+    const l = [
+        { id: 1, nombre: 'B', total_comprado: 100, dias_sin_comprar: 10 },
+        { id: 2, nombre: 'A', total_comprado: 500, dias_sin_comprar: 40 },
+        { id: 3, nombre: 'C', total_comprado: 900, dias_sin_comprar: 10 },
+        { id: 4, nombre: 'D', total_comprado: 900, dias_sin_comprar: 10 },
+        { id: 5, nombre: 'E', total_comprado: 50, dias_sin_comprar: 2 },
+    ];
+    // Default: más días primero; empate: más total_comprado, después nombre
+    assert.deepStrictEqual(ordenarImportantes(l).map((c) => c.id), [2, 3, 4, 1, 5]);
+    assert.deepStrictEqual(ordenarImportantes(l, 'ultima_compra_asc').map((c) => c.id), [2, 3, 4, 1, 5]);
+    assert.deepStrictEqual(ordenarImportantes(l, 'dias_sin_comprar_desc').map((c) => c.id), [2, 3, 4, 1, 5]);
+    assert.deepStrictEqual(ordenarImportantes(l, 'monto_desc').map((c) => c.id), [3, 4, 2, 1, 5]);
+}
+
 function testOrden() {
     const lista = [
         { id: 1, nombre: 'B', total_comprado: 100, dias_sin_comprar: 5, ultima_compra: '2026-10-01', tendencia: { variacion_pct: -5, direccion: 'estable' } },
@@ -284,6 +299,7 @@ const tests = [
     testIntervaloHabitual,
     testDiasSinComprar,
     testOrden,
+    testOrdenDefaultDiasSinComprar,
     testResumenImportante,
     testPedidoFueraDeVentanaPedido,
     testEvaluarSinMarcaFase1,

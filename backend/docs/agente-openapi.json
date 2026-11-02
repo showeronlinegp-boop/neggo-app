@@ -365,14 +365,16 @@
             "schema": {
               "type": "string",
               "enum": [
-                "monto_desc",
                 "dias_sin_comprar_desc",
+                "ultima_compra_asc",
+                "monto_desc",
                 "tendencia_asc",
                 "ultima_compra_desc",
                 "nombre"
               ],
-              "default": "monto_desc"
-            }
+              "default": "dias_sin_comprar_desc"
+            },
+            "description": "Por defecto `dias_sin_comprar_desc`: el que compró hace más tiempo primero, para el seguimiento (empate: más `total_comprado`, después nombre). `ultima_compra_asc` es lo mismo. `monto_desc`: más comprado primero; `ultima_compra_desc`: compra más reciente primero; `tendencia_asc`: caídas primero; `nombre`."
           },
           {
             "name": "no_contactar",

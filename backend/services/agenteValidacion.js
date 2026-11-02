@@ -169,7 +169,7 @@ function validarQueryImportantes(query = {}, cfg = importantes.cargarConfig()) {
         monto_pedido_minimo: cfg.monto_pedido_minimo,
         top: null,
         motivo: null,
-        orden: 'monto_desc',
+        orden: importantes.ORDEN_DEFAULT,
         // Lista para analizar: por defecto vienen todos (también los de no_contactar)
         no_contactar: null,
         ...pag.value,
