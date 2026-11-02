@@ -11,6 +11,7 @@ const { ensureSchema } = require('./crmSchema');
 const { phoneKey, phoneDisplay } = require('./crmContacts');
 const { productLink } = require('./whatsappMessage');
 const nuevos = require('./agenteNuevos');
+const importantes = require('./agenteImportantes');
 const cotWeb = require('./agenteCotizacionesWeb');
 const testNotes = require('./testNotesService');
 
@@ -18,6 +19,7 @@ const COMPANY = 'neggo';
 const PAGE = 2000;
 const LINE_BATCH = 300;
 const NUEVOS_TTL_MS = 5 * 60 * 1000;
+const IMPORTANTES_TTL_MS = 5 * 60 * 1000;
 const TEMPLATE_TTL_MS = 60 * 60 * 1000;
 const VENDIDOS_TTL_MS = 6 * 60 * 60 * 1000;
 const VENDIDOS_DIAS = 90;
@@ -402,7 +404,167 @@ async function obtenerCliente(id) {
     const reserva = (await reservasActivas([id])).get(id) || null;
     const hoy = hoyAr();
     const info = meta(hoy);
-    return { data: armarCliente(ficha, row, hoy, info.ventana_abierta, conv, reserva), meta: info };
+    const data = armarCliente(ficha, row, hoy, info.ventana_abierta, conv, reserva);
+    // Fase 1: bloque importante con los defaults de config (sin marcas manuales)
+    data.importante = importantes.resumenImportante(ficha, importantes.cargarConfig(), hoy, null);
+    return { data, meta: info };
+}
+
+// =============================================
+// Clientes importantes (fase 1: solo lectura)
+// =============================================
+
+// Caché de la parte de Odoo por combinación de parámetros de ventana/montos.
+const importantesCache = new Map();
+
+function claveImportantes({ dias, dias_pedido, monto_minimo, monto_pedido_minimo, top }) {
+    return [dias, dias_pedido, monto_minimo, monto_pedido_minimo, top == null ? '-' : top].join('|');
+}
+
+/**
+ * Cuántos días de historia hay que leer para armar totales, tendencia, pedido grande
+ * e intervalo habitual. La última y la primera compra salen de toda la historia del partner.
+ */
+function lookbackImportantes(dias, diasPedido) {
+    return Math.max(dias * 2, diasPedido, 365);
+}
+
+async function calcularImportantesOdoo({ dias, dias_pedido: diasPedido, monto_minimo, monto_pedido_minimo, top }, hoy) {
+    const { companyId, context } = await neggoContext();
+    const lookback = lookbackImportantes(dias, diasPedido);
+    const desdeLookback = nuevos.desdeVentana(hoy, lookback);
+    const recientes = await readAll('pos.order',
+        [['company_id', '=', companyId], ['state', 'in', nuevos.POS_STATES],
+            ['date_order', '>=', nuevos.inicioDiaUtc(desdeLookback)]],
+        ['partner_id'], context);
+    const candidatos = [...new Set(recientes.map((t) => nuevos.m2oId(t.partner_id)).filter(Boolean))];
+    if (!candidatos.length) return [];
+
+    // Toda la historia de esos partners: hace falta para ultima_compra, primera compra y el intervalo
+    const todos = await readAll('pos.order',
+        [['company_id', '=', companyId], ['state', 'in', nuevos.POS_STATES], ['partner_id', 'in', candidatos]],
+        TICKET_FIELDS, context);
+    const clientes = await comprasDeTickets(todos, hoy, TODA_LA_HISTORIA, context);
+    if (!clientes.length) return [];
+    const base = await enriquecer(clientes, clientes.map((c) => c.id), context);
+
+    // categorias_compradas de la lista salen solo de la ventana (las recalcula calcularImportantes
+    // si le pasamos rubroPorProducto; acá ya vienen de enriquecer sobre toda la historia, así que
+    // las volvemos a calcular abajo con las compras de la ventana).
+    const productIds = new Set(base.flatMap((c) => c.compras.flatMap((k) => k.productos.map((p) => p.id))));
+    const categorias = await readCategorias([...productIds], context);
+    const nombresCategorias = await categoriasDeProductos();
+    const labels = health.rubroLabels([...nombresCategorias, ...categorias.values()]);
+    const rubroPorProducto = new Map([...categorias].map(([pid, cat]) => [pid, labels.get(cat) || null]));
+
+    const cfg = importantes.cargarConfig();
+    return importantes.calcularImportantes({
+        clientes: base,
+        hoy,
+        dias,
+        monto_minimo,
+        monto_pedido_minimo,
+        dias_pedido: diasPedido,
+        min_compras_intervalo: cfg.min_compras_intervalo,
+        top,
+        marcas: null, // fase 1: sin marcas
+        rubroPorProducto,
+    }).map((ev) => {
+        const b = base.find((c) => c.id === ev.id) || {};
+        return {
+            ...ev,
+            contacto_odoo: b.contacto_odoo || null,
+            telefono: b.telefono || null,
+            ciudad: b.ciudad || null,
+            rubro: b.rubro || null,
+        };
+    });
+}
+
+async function importantesDesdeOdoo(params, refresh) {
+    const hoy = hoyAr();
+    const clave = claveImportantes(params);
+    const hit = importantesCache.get(clave);
+    if (!refresh && hit && hit.hoy === hoy && Date.now() - hit.at < IMPORTANTES_TTL_MS) return hit.data;
+    const data = await odoo(() => calcularImportantesOdoo(params, hoy));
+    importantesCache.set(clave, { at: Date.now(), hoy, data });
+    return data;
+}
+
+function armarClienteImportante(base, row, conv, reserva = null) {
+    const noContactar = Boolean(row && row.no_contactar);
+    const etapa = row ? row.etapa : 'pendiente';
+    const pendiente = hayRespuestaPendiente(row, conv);
+    const enFlujoNuevos = Boolean(base.en_ventana_nuevos && etapa !== 'finalizado');
+    return {
+        id: base.id,
+        nombre: base.nombre,
+        contacto: (row && row.contacto) || base.contacto_odoo || null,
+        telefono: base.telefono,
+        ciudad: base.ciudad,
+        rubro: base.rubro,
+        categorias_compradas: base.categorias_compradas,
+        motivo_importante: base.motivo_importante,
+        pedidos_grandes: base.pedidos_grandes,
+        marca_manual: base.marca_manual,
+        total_comprado: base.total_comprado,
+        cantidad_compras: base.cantidad_compras,
+        ticket_promedio: base.ticket_promedio,
+        ultima_compra: base.ultima_compra,
+        dias_sin_comprar: base.dias_sin_comprar,
+        intervalo_habitual_dias: base.intervalo_habitual_dias,
+        tendencia: base.tendencia,
+        no_contactar: noContactar,
+        respuesta_pendiente: pendiente,
+        reserva_activa: reserva,
+        en_flujo_nuevos: enFlujoNuevos,
+    };
+}
+
+/** GET clientes/importantes (fase 1). */
+async function listarImportantes(query) {
+    await ensureSchema();
+    const {
+        dias, dias_pedido, monto_minimo, monto_pedido_minimo, top, motivo, orden,
+        no_contactar: noContactar, con_respuesta_pendiente: conRespuesta,
+        page, limit, offset, refresh,
+    } = query;
+    const base = await importantesDesdeOdoo(
+        { dias, dias_pedido, monto_minimo, monto_pedido_minimo, top }, refresh);
+    const ids = base.map((c) => c.id);
+    const segs = await seguimientos(ids);
+    const convs = await conversaciones(ids);
+    const reservas = await reservasActivas(ids);
+    const hoy = hoyAr();
+    const { ventana, ventana_anterior } = importantes.ventanas(hoy, dias);
+
+    let lista = base.map((c) => armarClienteImportante(
+        c, segs.get(c.id), convs.get(c.id), reservas.get(c.id) || null));
+
+    if (motivo) lista = lista.filter((c) => c.motivo_importante.includes(motivo));
+    if (noContactar !== null && noContactar !== undefined) {
+        lista = lista.filter((c) => c.no_contactar === noContactar);
+    }
+    if (conRespuesta !== undefined) lista = lista.filter((c) => c.respuesta_pendiente === conRespuesta);
+
+    lista = importantes.ordenarImportantes(lista, orden);
+
+    const filtros = { dias, monto_pedido_minimo, dias_pedido };
+    if (top != null) filtros.top = top;
+    else filtros.monto_minimo = monto_minimo;
+
+    return {
+        data: lista.slice(offset, offset + limit),
+        total: lista.length,
+        page,
+        limit,
+        meta: {
+            ...meta(hoy),
+            filtros,
+            ventana,
+            ventana_anterior,
+        },
+    };
 }
 
 // =============================================
@@ -1127,6 +1289,7 @@ async function listarFeedback({ page, limit, offset }) {
 module.exports = {
     AgenteError,
     listarNuevos,
+    listarImportantes,
     obtenerCliente,
     listarCotizacionesWeb,
     actualizarSeguimiento,

@@ -1,0 +1,11 @@
+{
+  "dias": 60,
+  "monto_minimo": 1000000,
+  "monto_pedido_minimo": 500000,
+  "dias_pedido": 60,
+  "toque_cada_dias": 30,
+  "factor_atraso": 1.5,
+  "caida_pct": 30,
+  "min_compras_intervalo": 3,
+  "pausa_entre_flujos_dias": 3
+}

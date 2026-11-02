@@ -4,7 +4,8 @@ API REST para que Grok Bot haga el seguimiento por WhatsApp de los **clientes nu
 
 - Va bajo `/api/agente`. Especificación completa en `GET /api/agente/openapi.json` y Swagger UI en `GET /api/agente/docs`. Las dos son públicas y no tienen datos.
 - **No escribe nada en Odoo.** Lee Odoo y la base local. Solo escribe en `crm_bot_seguimiento`, `crm_bot_interacciones` y `crm_bot_feedback`, y en `crm_events` cuando un cliente pide que no le escriban.
-- Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura) y `agenteValidacion.js`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql` y `050_agente_reservas.sql`.
+- Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1) y `agenteValidacion.js`. Config de importantes: `backend/config/importantes.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql` y `050_agente_reservas.sql`.
+- Versión viva: **3.4.0**. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`.
 
 ## Configuración
 
