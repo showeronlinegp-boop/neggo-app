@@ -1,7 +1,7 @@
 // Rutas de la API del agente (Grok Bot). Auth con API key (AGENTE_API_KEY), sin usuarios de la app.
 // GET    /api/agente/clientes/nuevos?dias=21&etapa=&no_contactar=false|true|todos&para_hoy=&page=&limit=&refresh=1
-// GET    /api/agente/clientes/importantes?dias=60&monto_minimo=|&top=&monto_pedido_minimo=&dias_pedido=&motivo=&orden=&no_contactar=todos&con_respuesta_pendiente=&page=&limit=&refresh=1
-//                                                 — clientes importantes (fase 1: solo lectura)
+// GET    /api/agente/clientes/importantes?dias=60&monto_minimo=|&top=&monto_pedido_minimo=&dias_pedido=&motivo=&orden=&no_contactar=todos&con_respuesta_pendiente=&incluir_pedido_activo=&page=&limit=&refresh=1
+//                                                 — clientes importantes (fase 1: solo lectura; por defecto excluye pedidos activos)
 // GET    /api/agente/clientes/cotizaciones-web?dias=30&no_contactar=false|true|todos&compro_despues=&page=&limit=
 //                                                 — carritos de la web sin confirmar, en vivo, por cliente
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)

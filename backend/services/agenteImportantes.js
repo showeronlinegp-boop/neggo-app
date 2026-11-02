@@ -20,6 +20,16 @@ const DEFAULTS = {
     pausa_entre_flujos_dias: 3,
 };
 
+const PEDIDO_ACTIVO_DEFAULTS = {
+    excluir_por_defecto: true,
+    dias_cotizacion: 30,
+    dias_orden: 60,
+    saldo_minimo: 50000,
+    saldo_minimo_pct: 0,
+    incluir_borradores: false,
+    incluir_preventas: true,
+};
+
 const DIAS_MAX = 730;
 const TOP_MAX = 500;
 const LIMIT_DEFAULT = 50;
@@ -27,6 +37,21 @@ const MOTIVOS = ['monto_acumulado', 'pedido_grande', 'manual'];
 const ORDENES = ['dias_sin_comprar_desc', 'ultima_compra_asc', 'monto_desc', 'tendencia_asc', 'ultima_compra_desc', 'nombre'];
 const ORDEN_DEFAULT = 'dias_sin_comprar_desc';
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'importantes.json');
+
+function mergePedidoActivo(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = { ...PEDIDO_ACTIVO_DEFAULTS };
+    for (const k of Object.keys(PEDIDO_ACTIVO_DEFAULTS)) {
+        if (src[k] === undefined || src[k] === null) continue;
+        if (typeof PEDIDO_ACTIVO_DEFAULTS[k] === 'boolean') {
+            if (typeof src[k] === 'boolean') out[k] = src[k];
+            continue;
+        }
+        const n = Number(src[k]);
+        if (Number.isFinite(n)) out[k] = n;
+    }
+    return out;
+}
 
 function cargarConfig(file = CONFIG_PATH) {
     let raw = {};
@@ -39,7 +64,65 @@ function cargarConfig(file = CONFIG_PATH) {
         const n = Number(raw[k]);
         if (Number.isFinite(n)) cfg[k] = n;
     }
+    cfg.pedido_activo = mergePedidoActivo(raw.pedido_activo);
     return cfg;
+}
+
+/**
+ * Clasifica sale.order ya leídas en pedidos activos por cliente.
+ * @param {Array<{ id, name, state, date_order, amount_total, amount_unpaid, partner }>} ordenes
+ * @param {object} cfg — bloque pedido_activo de la config
+ * @param {string} hoy — YYYY-MM-DD Argentina
+ * @returns {Map<number, { tiene: true, pedidos: object[] }>}
+ */
+function clasificarPedidosActivos(ordenes, cfg, hoy) {
+    const pa = mergePedidoActivo(cfg);
+    const desdeCot = desdeVentana(hoy, pa.dias_cotizacion);
+    const desdeOrd = desdeVentana(hoy, pa.dias_orden);
+    const porCliente = new Map();
+
+    for (const o of ordenes || []) {
+        const partner = Number(o.partner);
+        if (!Number.isFinite(partner)) continue;
+        const fecha = health.toArDate(o.date_order);
+        if (!fecha) continue;
+        const state = String(o.state || '');
+        const monto = round2(o.amount_total);
+        const saldo = round2(o.amount_unpaid);
+        let tipo = null;
+
+        if (state === 'sent' && fecha >= desdeCot) {
+            tipo = 'cotizacion_enviada';
+        } else if (state === 'sale' && fecha >= desdeOrd) {
+            const umbral = Math.max(pa.saldo_minimo, monto * (pa.saldo_minimo_pct / 100));
+            if (saldo >= umbral) tipo = 'orden_abierta';
+        } else if (state === 'draft' && pa.incluir_borradores && fecha >= desdeCot) {
+            tipo = 'borrador';
+        }
+        if (!tipo) continue;
+
+        const item = {
+            id: o.id,
+            referencia: o.name || null,
+            tipo,
+            estado: state,
+            fecha,
+            monto,
+            saldo,
+            dias: health.daysBetween(fecha, hoy),
+            compania: o.compania || 'neggo',
+        };
+        const lista = porCliente.get(partner) || [];
+        lista.push(item);
+        porCliente.set(partner, lista);
+    }
+
+    const out = new Map();
+    for (const [id, pedidos] of porCliente) {
+        pedidos.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+        out.set(id, { tiene: true, pedidos });
+    }
+    return out;
 }
 
 function fechaCompra(compra) {
@@ -302,6 +385,7 @@ function resumenImportante(cliente, cfg, hoy, marca = null) {
 
 module.exports = {
     DEFAULTS,
+    PEDIDO_ACTIVO_DEFAULTS,
     DIAS_MAX,
     TOP_MAX,
     LIMIT_DEFAULT,
@@ -317,4 +401,5 @@ module.exports = {
     calcularImportantes,
     ordenarImportantes,
     resumenImportante,
+    clasificarPedidosActivos,
 };
