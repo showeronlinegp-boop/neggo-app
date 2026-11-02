@@ -407,6 +407,9 @@ async function obtenerCliente(id) {
     const data = armarCliente(ficha, row, hoy, info.ventana_abierta, conv, reserva);
     // Fase 1: bloque importante con los defaults de config (sin marcas manuales)
     data.importante = importantes.resumenImportante(ficha, importantes.cargarConfig(), hoy, null);
+    const pedidosMap = await odoo(() => pedidosActivosOdoo([id], hoy));
+    data.pedido_activo = pedidosMap.get(id) || null;
+    if (data.importante) data.importante.pedido_activo = data.pedido_activo;
     return { data, meta: info };
 }
 
@@ -491,7 +494,7 @@ async function importantesDesdeOdoo(params, refresh) {
     return data;
 }
 
-function armarClienteImportante(base, row, conv, reserva = null) {
+function armarClienteImportante(base, row, conv, reserva = null, pedidoActivo = null) {
     const noContactar = Boolean(row && row.no_contactar);
     const etapa = row ? row.etapa : 'pendiente';
     const pendiente = hayRespuestaPendiente(row, conv);
@@ -518,7 +521,77 @@ function armarClienteImportante(base, row, conv, reserva = null) {
         respuesta_pendiente: pendiente,
         reserva_activa: reserva,
         en_flujo_nuevos: enFlujoNuevos,
+        pedido_activo: pedidoActivo || null,
     };
+}
+
+const PEDIDO_ACTIVO_FIELDS = [
+    'id', 'name', 'state', 'date_order', 'amount_total', 'amount_unpaid', 'partner_id', 'validity_date', 'company_id',
+];
+
+/**
+ * Pedidos activos (cotización enviada / orden abierta / borrador) leídos en vivo de Odoo.
+ * Devuelve Map idClienteLista -> bloque pedido_activo. No usa el caché de importantes.
+ */
+async function pedidosActivosOdoo(ids, hoy) {
+    const listIds = [...new Set((ids || []).map(Number).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!listIds.length) return new Map();
+    const pa = importantes.cargarConfig().pedido_activo;
+    const companies = await getCompanyIds();
+    if (!companies.neggo) throw new Error('No se pudo resolver company_id de Neggo');
+    // Las órdenes de Preventas (seña + saldo al llegar la mercadería) viven en la company Preventas
+    const companyIds = [companies.neggo];
+    if (pa.incluir_preventas && companies.preventas) companyIds.push(companies.preventas);
+    const context = { allowed_company_ids: companyIds };
+    const lookback = Math.max(pa.dias_cotizacion, pa.dias_orden);
+    const desde = nuevos.desdeVentana(hoy, lookback);
+    const states = ['sent', 'sale'];
+    if (pa.incluir_borradores) states.push('draft');
+
+    const ordenes = await readAll('sale.order',
+        [['company_id', 'in', companyIds], ['partner_id', 'child_of', listIds],
+            ['state', 'in', states], ['date_order', '>=', nuevos.inicioDiaUtc(desde)]],
+        PEDIDO_ACTIVO_FIELDS, context);
+    if (!ordenes.length) return new Map();
+
+    const idSet = new Set(listIds);
+    const partnerIds = [...new Set(ordenes.map((o) => nuevos.m2oId(o.partner_id)).filter(Boolean))];
+    const ancestro = new Map();
+    for (const id of listIds) ancestro.set(id, id);
+
+    const faltan = partnerIds.filter((pid) => !idSet.has(pid));
+    if (faltan.length) {
+        for (let i = 0; i < faltan.length; i += 500) {
+            const rows = await callOdoo('res.partner', 'read', [faltan.slice(i, i + 500)], {
+                fields: ['id', 'commercial_partner_id', 'parent_id'],
+                context: { active_test: false },
+            });
+            for (const r of rows) {
+                const commercial = nuevos.m2oId(r.commercial_partner_id);
+                const parent = nuevos.m2oId(r.parent_id);
+                if (idSet.has(commercial)) ancestro.set(r.id, commercial);
+                else if (idSet.has(parent)) ancestro.set(r.id, parent);
+            }
+        }
+    }
+
+    const mapped = [];
+    for (const o of ordenes) {
+        const pid = nuevos.m2oId(o.partner_id);
+        const listId = ancestro.get(pid);
+        if (!listId) continue;
+        mapped.push({
+            id: o.id,
+            name: o.name,
+            state: o.state,
+            date_order: o.date_order,
+            amount_total: o.amount_total,
+            amount_unpaid: o.amount_unpaid,
+            partner: listId,
+            compania: nuevos.m2oId(o.company_id) === companies.preventas ? 'preventas' : 'neggo',
+        });
+    }
+    return importantes.clasificarPedidosActivos(mapped, pa, hoy);
 }
 
 /** GET clientes/importantes (fase 1). */
@@ -527,6 +600,7 @@ async function listarImportantes(query) {
     const {
         dias, dias_pedido, monto_minimo, monto_pedido_minimo, top, motivo, orden,
         no_contactar: noContactar, con_respuesta_pendiente: conRespuesta,
+        incluir_pedido_activo: incluirPedidoActivo = false,
         page, limit, offset, refresh,
     } = query;
     const base = await importantesDesdeOdoo(
@@ -537,9 +611,10 @@ async function listarImportantes(query) {
     const reservas = await reservasActivas(ids);
     const hoy = hoyAr();
     const { ventana, ventana_anterior } = importantes.ventanas(hoy, dias);
+    const cfg = importantes.cargarConfig();
 
     let lista = base.map((c) => armarClienteImportante(
-        c, segs.get(c.id), convs.get(c.id), reservas.get(c.id) || null));
+        c, segs.get(c.id), convs.get(c.id), reservas.get(c.id) || null, null));
 
     if (motivo) lista = lista.filter((c) => c.motivo_importante.includes(motivo));
     if (noContactar !== null && noContactar !== undefined) {
@@ -547,9 +622,22 @@ async function listarImportantes(query) {
     }
     if (conRespuesta !== undefined) lista = lista.filter((c) => c.respuesta_pendiente === conRespuesta);
 
+    // Pedidos activos en vivo (fuera del caché de 5 min): después de los otros filtros
+    const pedidosMap = await odoo(() => pedidosActivosOdoo(lista.map((c) => c.id), hoy));
+    let excluidosPedidoActivo = 0;
+    if (!incluirPedidoActivo && cfg.pedido_activo.excluir_por_defecto) {
+        const antes = lista.length;
+        lista = lista.filter((c) => !pedidosMap.has(c.id));
+        excluidosPedidoActivo = antes - lista.length;
+    }
+    lista = lista.map((c) => ({ ...c, pedido_activo: pedidosMap.get(c.id) || null }));
+
     lista = importantes.ordenarImportantes(lista, orden);
 
-    const filtros = { dias, monto_pedido_minimo, dias_pedido };
+    const filtros = {
+        dias, monto_pedido_minimo, dias_pedido,
+        incluir_pedido_activo: Boolean(incluirPedidoActivo),
+    };
     if (top != null) filtros.top = top;
     else filtros.monto_minimo = monto_minimo;
 
@@ -563,6 +651,7 @@ async function listarImportantes(query) {
             filtros,
             ventana,
             ventana_anterior,
+            excluidos_pedido_activo: excluidosPedidoActivo,
         },
     };
 }

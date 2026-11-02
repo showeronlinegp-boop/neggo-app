@@ -85,6 +85,9 @@ function testQueryImportantes() {
     assert.deepStrictEqual(campos(v.validarQueryImportantes({ motivo: 'otro' }, cfg).errors), ['motivo']);
     assert.strictEqual(v.validarQueryImportantes({ no_contactar: 'false' }, cfg).value.no_contactar, false);
     assert.strictEqual(v.validarQueryImportantes({ refresh: '1' }, cfg).value.refresh, true);
+    assert.strictEqual(def.value.incluir_pedido_activo, false);
+    assert.strictEqual(v.validarQueryImportantes({ incluir_pedido_activo: 'true' }, cfg).value.incluir_pedido_activo, true);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ incluir_pedido_activo: 'si' }, cfg).errors), ['incluir_pedido_activo']);
 }
 
 function testFechasIso() {

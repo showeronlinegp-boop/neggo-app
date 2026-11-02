@@ -172,6 +172,7 @@ function validarQueryImportantes(query = {}, cfg = importantes.cargarConfig()) {
         orden: importantes.ORDEN_DEFAULT,
         // Lista para analizar: por defecto vienen todos (también los de no_contactar)
         no_contactar: null,
+        incluir_pedido_activo: false,
         ...pag.value,
         refresh: query.refresh === '1' || query.refresh === 'true',
     };
@@ -219,6 +220,12 @@ function validarQueryImportantes(query = {}, cfg = importantes.cargarConfig()) {
         const b = booleanoQuery(query.con_respuesta_pendiente);
         if (b === undefined) errors.push({ campo: 'con_respuesta_pendiente', error: 'Tiene que ser true o false' });
         else value.con_respuesta_pendiente = b;
+    }
+
+    if (query.incluir_pedido_activo !== undefined) {
+        const b = booleanoQuery(query.incluir_pedido_activo);
+        if (b === undefined) errors.push({ campo: 'incluir_pedido_activo', error: 'Tiene que ser true o false' });
+        else value.incluir_pedido_activo = b;
     }
 
     return { value, errors };

@@ -5,7 +5,7 @@ const assert = require('assert');
 const { calcularClientesNuevos } = require('./agenteNuevos');
 const {
     calcularImportantes, evaluarCliente, calcularTendencia, intervaloHabitualDias, ventanas,
-    ordenarImportantes, resumenImportante, DEFAULTS,
+    ordenarImportantes, resumenImportante, clasificarPedidosActivos, DEFAULTS, PEDIDO_ACTIVO_DEFAULTS,
 } = require('./agenteImportantes');
 
 const HOY = '2026-10-29';
@@ -280,6 +280,97 @@ function testEvaluarSinMarcaFase1() {
     assert.ok(!ev.motivo_importante.includes('manual'));
 }
 
+function orden(extra = {}) {
+    return {
+        id: 1,
+        name: 'S00001',
+        state: 'sent',
+        date_order: '2026-10-20 15:00:00',
+        amount_total: 100000,
+        amount_unpaid: 100000,
+        partner: 10,
+        ...extra,
+    };
+}
+
+function bloqueDe(ordenes, cfg = PEDIDO_ACTIVO_DEFAULTS) {
+    return clasificarPedidosActivos(ordenes, cfg, HOY);
+}
+
+function testCotizacionEnviadaRecienteActiva() {
+    const m = bloqueDe([orden()]);
+    assert.strictEqual(m.size, 1);
+    const b = m.get(10);
+    assert.strictEqual(b.tiene, true);
+    assert.strictEqual(b.pedidos[0].tipo, 'cotizacion_enviada');
+    assert.strictEqual(b.pedidos[0].fecha, '2026-10-20');
+    assert.strictEqual(b.pedidos[0].dias, 9);
+}
+
+function testCotizacionEnviadaViejaNoActiva() {
+    // Ventana cotización: 30 días → desde 2026-09-30; el 29/09 no entra
+    const m = bloqueDe([orden({ date_order: '2026-09-29 12:00:00' })]);
+    assert.strictEqual(m.size, 0);
+}
+
+function testOrdenSaleSaldoGrandeActiva() {
+    const m = bloqueDe([orden({
+        state: 'sale', name: 'S00002',
+        amount_total: 197000, amount_unpaid: 77000,
+        date_order: '2026-09-15 12:00:00',
+    })]);
+    assert.strictEqual(m.get(10).pedidos[0].tipo, 'orden_abierta');
+    assert.strictEqual(m.get(10).pedidos[0].saldo, 77000);
+}
+
+function testOrdenSaleSaldoResidualNoActiva() {
+    // $427 de $145.000: umbral = max(10000, 5% = 7250) = 10000 → no
+    const m = bloqueDe([orden({
+        state: 'sale',
+        amount_total: 145000, amount_unpaid: 427,
+        date_order: '2026-09-15 12:00:00',
+    })]);
+    assert.strictEqual(m.size, 0);
+}
+
+function testOrdenSaleSenaDentroVentanaActiva() {
+    const m = bloqueDe([orden({
+        state: 'sale',
+        amount_total: 197000, amount_unpaid: 77000,
+        date_order: '2026-09-01 12:00:00',
+    })]);
+    assert.strictEqual(m.size, 1);
+    assert.strictEqual(m.get(10).pedidos[0].tipo, 'orden_abierta');
+}
+
+function testOrdenSaleFueraVentanaNoActiva() {
+    // Ventana orden: 60 días → desde 2026-08-31; el 30/08 no entra
+    const m = bloqueDe([orden({
+        state: 'sale',
+        amount_total: 197000, amount_unpaid: 77000,
+        date_order: '2026-08-30 12:00:00',
+    })]);
+    assert.strictEqual(m.size, 0);
+}
+
+function testDraftNoPorDefault() {
+    const m = bloqueDe([orden({ state: 'draft' })]);
+    assert.strictEqual(m.size, 0);
+}
+
+function testDraftSiIncluirBorradores() {
+    const m = bloqueDe([orden({ state: 'draft' })], { ...PEDIDO_ACTIVO_DEFAULTS, incluir_borradores: true });
+    assert.strictEqual(m.get(10).pedidos[0].tipo, 'borrador');
+}
+
+function testCancelNunca() {
+    const m = bloqueDe([
+        orden({ state: 'cancel' }),
+        orden({ state: 'cancel', id: 2, name: 'S00002', amount_unpaid: 50000 }),
+    ], { ...PEDIDO_ACTIVO_DEFAULTS, incluir_borradores: true });
+    assert.strictEqual(m.size, 0);
+}
+
 const tests = [
     testVentanas,
     testMontoJustoCalifica,
@@ -303,6 +394,15 @@ const tests = [
     testResumenImportante,
     testPedidoFueraDeVentanaPedido,
     testEvaluarSinMarcaFase1,
+    testCotizacionEnviadaRecienteActiva,
+    testCotizacionEnviadaViejaNoActiva,
+    testOrdenSaleSaldoGrandeActiva,
+    testOrdenSaleSaldoResidualNoActiva,
+    testOrdenSaleSenaDentroVentanaActiva,
+    testOrdenSaleFueraVentanaNoActiva,
+    testDraftNoPorDefault,
+    testDraftSiIncluirBorradores,
+    testCancelNunca,
 ];
 
 for (const t of tests) t();

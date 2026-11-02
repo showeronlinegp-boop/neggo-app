@@ -5,7 +5,7 @@ API REST para que Grok Bot haga el seguimiento por WhatsApp de los **clientes nu
 - Va bajo `/api/agente`. Especificación completa en `GET /api/agente/openapi.json` y Swagger UI en `GET /api/agente/docs`. Las dos son públicas y no tienen datos.
 - **No escribe nada en Odoo.** Lee Odoo y la base local. Solo escribe en `crm_bot_seguimiento`, `crm_bot_interacciones` y `crm_bot_feedback`, y en `crm_events` cuando un cliente pide que no le escriban.
 - Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1) y `agenteValidacion.js`. Config de importantes: `backend/config/importantes.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql` y `050_agente_reservas.sql`.
-- Versión viva: **3.4.0**. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`.
+- Versión viva: **3.5.0**. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo.
 
 ## Configuración
 
@@ -157,6 +157,27 @@ curl -s -H "Authorization: Bearer $KEY" "$API/feedback"
 ```
 
 En Windows, `curl` manda los argumentos de `-d` en la codificación de la consola y las tildes llegan rotas (la API responde 422). Para probar textos con tildes, guardá el JSON en un archivo UTF-8 y mandalo con `--data-binary @archivo.json`.
+
+## Pedidos activos (3.5.0)
+
+Para no escribirle a un cliente que ya tiene algo en curso en Odoo, la lista de importantes mira `sale.order` de la company Neggo **en vivo** (fuera del caché de 5 minutos).
+
+Un pedido cuenta como activo si cumple **alguno**:
+
+1. **cotizacion_enviada:** `state = sent` y `date_order` dentro de los últimos `pedido_activo.dias_cotizacion` días (default 30).
+2. **orden_abierta:** `state = sale`, `date_order` dentro de `pedido_activo.dias_orden` días (default 60), y saldo sin cobrar `amount_unpaid` ≥ max(`saldo_minimo` default 10000, `saldo_minimo_pct` default 5 % de `amount_total`). Motivo: en Neggo se cobra en el POS (seña + saldo sobre la misma orden); restos chicos de redondeo no cuentan. `delivery_status` / `invoice_status` no sirven.
+3. **borrador:** `state = draft` solo si `pedido_activo.incluir_borradores` es true (default false); misma ventana que la cotización.
+
+Config en `backend/config/importantes.json` → `pedido_activo` (`excluir_por_defecto` default true). Matching: `partner_id child_of` los ids de la lista; si el partner no está en la lista, se usa `commercial_partner_id` o `parent_id`. Companies: Neggo y, si `pedido_activo.incluir_preventas` (default true), también Preventas (company "Precompras"), donde viven las órdenes de preventa con seña + saldo; cada pedido trae `compania: neggo | preventas`.
+
+- `GET /clientes/importantes`: cada ítem trae `pedido_activo` (`null` o `{ tiene: true, pedidos: [...] }` ordenados por fecha desc). Query `incluir_pedido_activo` (default `false`): si es false y `excluir_por_defecto`, se sacan de la lista **después** de motivo / no_contactar / con_respuesta_pendiente y **antes** de paginar. `meta.excluidos_pedido_activo` (siempre) y `meta.filtros.incluir_pedido_activo`.
+- `GET /clientes/{id}`: `data.pedido_activo` y, si hay bloque importante, `data.importante.pedido_activo`.
+
+### Changelog 3.5.0
+
+- Nuevo bloque `pedido_activo` en importantes y en la ficha del cliente.
+- Query `incluir_pedido_activo` y `meta.excluidos_pedido_activo` en `GET /clientes/importantes`.
+- Config `pedido_activo` en `importantes.json` (umbrales de saldo y ventanas).
 
 ## Cómo lo usa Grok
 
