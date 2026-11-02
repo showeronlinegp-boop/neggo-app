@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test:agente": "node services/agenteNuevos.test.js && node services/agenteValidacion.test.js"
+    "test:agente": "node services/agenteNuevos.test.js && node services/agenteImportantes.test.js && node services/agenteValidacion.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
