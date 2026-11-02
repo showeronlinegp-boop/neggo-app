@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const {
     getOdooImage,
+    writeOdooImage,
     hashBuffer,
     detectContentType,
     etagMatches,
@@ -48,6 +49,8 @@ function mockOdoo({ writeDate = '2026-01-01 12:00:00', images = {}, down = false
         calls,
         callOdoo,
         getCompanyIds: async () => ({ neggo: 7, preventas: 8 }),
+        // Sin memoria de verificación: cada pedido vuelve a comparar con Odoo (nota 146)
+        verificacionMs: 0,
     };
 }
 
@@ -169,6 +172,74 @@ async function testMissingImageClearsLocal() {
     console.log('si Odoo ya no tiene foto se borra la local ok');
 }
 
+// Nota 146: comparada con Odoo hace poco → se sirve del disco sin llamar a Odoo
+async function testVerificadaHacePocoNoLlamaOdoo() {
+    const root = tmpRoot();
+    let reloj = 1_000_000;
+    const memoria = { storageRoot: root, verificadas: new Map(), verificacionMs: 10 * 60 * 1000, ahora: () => reloj };
+    const opts = { kind: 'template', company: 'neggo', id: 99, size: '128' };
+
+    await getOdooImage(opts, {
+        ...mockOdoo({ images: { 'product.template:99:image_128': JPEG.toString('base64') } }),
+        ...memoria,
+    });
+
+    // 5 minutos después: ni una llamada a Odoo, aunque Odoo tenga otra foto
+    reloj += 5 * 60 * 1000;
+    const enseguida = mockOdoo({ writeDate: '2026-05-05 12:00:00', images: { 'product.template:99:image_128': JPEG2.toString('base64') } });
+    const img1 = await getOdooImage(opts, { ...enseguida, ...memoria });
+    assert.strictEqual(enseguida.calls.length, 0, 'dentro de los 10 minutos no se le pregunta a Odoo');
+    assert.ok(img1.buffer.equals(JPEG));
+
+    // Pasados los 10 minutos se vuelve a comparar y aparece la foto nueva
+    reloj += 6 * 60 * 1000;
+    const despues = mockOdoo({ writeDate: '2026-05-05 12:00:00', images: { 'product.template:99:image_128': JPEG2.toString('base64') } });
+    const img2 = await getOdooImage(opts, { ...despues, ...memoria });
+    assert.ok(despues.calls.length > 0, 'vencida la memoria se compara con Odoo');
+    assert.ok(img2.buffer.equals(JPEG2));
+    console.log('memoria de 10 minutos ok');
+}
+
+// Nota 146: con Odoo caído y sin copia local no se queda marcada como verificada
+async function testSinCopiaSiemprePreguntaOdoo() {
+    const root = tmpRoot();
+    const memoria = { storageRoot: root, verificadas: new Map(), verificacionMs: 10 * 60 * 1000, ahora: () => 5 };
+    const opts = { kind: 'template', company: 'neggo', id: 77, size: '128' };
+    await assert.rejects(getOdooImage(opts, { ...mockOdoo({ down: true }), ...memoria }));
+    const odoo = mockOdoo({ images: { 'product.template:77:image_128': PNG.toString('base64') } });
+    const img = await getOdooImage(opts, { ...odoo, ...memoria });
+    assert.ok(odoo.calls.length > 0);
+    assert.ok(img.buffer.equals(PNG));
+    console.log('sin copia local siempre se pregunta a Odoo ok');
+}
+
+// Nota 146: subir una foto desde la app olvida la memoria de todos los tamaños
+async function testSubirFotoOlvidaVerificacion() {
+    const root = tmpRoot();
+    const memoria = { storageRoot: root, verificadas: new Map(), verificacionMs: 10 * 60 * 1000, ahora: () => 5 };
+    const opts = { kind: 'template', company: 'neggo', id: 99, size: '256' };
+    await getOdooImage(opts, {
+        ...mockOdoo({ images: { 'product.template:99:image_256': JPEG.toString('base64') } }),
+        ...memoria,
+    });
+
+    const nueva = mockOdoo({
+        writeDate: '2026-06-06 12:00:00',
+        images: {
+            image_128: JPEG2.toString('base64'), image_256: JPEG2.toString('base64'),
+            image_512: JPEG2.toString('base64'), image_1024: JPEG2.toString('base64'),
+        },
+    });
+    const callOdoo = async (model, method, args, kwargs) => (method === 'write' ? true : nueva.callOdoo(model, method, args, kwargs));
+    const pool = { query: async () => ({ rows: [{ image_url: '/api/products/odoo-image/neggo/99' }] }) };
+    await writeOdooImage(10, JPEG2.toString('base64'), { ...nueva, callOdoo, pool, ...memoria });
+
+    // El 256 no se baja al subir (solo 128/512/1024), pero no puede quedar la vieja 10 minutos
+    const img = await getOdooImage(opts, { ...nueva, ...memoria });
+    assert.ok(img.buffer.equals(JPEG2), 'después de subir la foto se ve la nueva en todos los tamaños');
+    console.log('subir foto olvida la memoria ok');
+}
+
 async function run() {
     testHelpers();
     await testFetchAndPersist();
@@ -176,6 +247,9 @@ async function run() {
     await testRefreshWhenOdooChanges();
     await testFallbackWhenOdooDown();
     await testMissingImageClearsLocal();
+    await testVerificadaHacePocoNoLlamaOdoo();
+    await testSinCopiaSiemprePreguntaOdoo();
+    await testSubirFotoOlvidaVerificacion();
     console.log('✅ odooImage: todos los tests pasaron');
 }
 
