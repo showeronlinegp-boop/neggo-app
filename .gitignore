@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 .env
 volumes/pg_data/
 volumes/pg_data.bak/
