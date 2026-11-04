@@ -4,8 +4,9 @@ API REST para que Grok Bot haga el seguimiento por WhatsApp de los **clientes nu
 
 - Va bajo `/api/agente`. Especificación completa en `GET /api/agente/openapi.json` y Swagger UI en `GET /api/agente/docs`. Las dos son públicas y no tienen datos.
 - **No escribe nada en Odoo.** Lee Odoo y la base local. Solo escribe en `crm_bot_seguimiento`, `crm_bot_interacciones` y `crm_bot_feedback`, y en `crm_events` cuando un cliente pide que no le escriban.
-- Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1) y `agenteValidacion.js`. Config de importantes: `backend/config/importantes.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql` y `050_agente_reservas.sql`.
-- Versión viva: **3.6.0** (posibles clientes, ver al final). Antes, 3.5.0. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo.
+- Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1), `agenteInactivos.js` (clientes inactivos, lógica pura) y `agenteValidacion.js`. Config: `backend/config/importantes.json` y `backend/config/inactivos.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql`, `050_agente_reservas.sql` y `059_agente_inactivos.sql`.
+- Versión viva: **3.7.0** (clientes inactivos). 3.6.0: posibles clientes, ver al final. Antes, 3.5.0. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo. Clientes inactivos con su propio seguimiento (primer y segundo toque): ver sección abajo.
+- Servidor de prueba (solo `/api/agente`, sin jobs): `node backend/scripts/agentePrueba.js` con `DATABASE_URL` apuntando a una copia de la base.
 
 ## Configuración
 
@@ -178,6 +179,34 @@ Config en `backend/config/importantes.json` → `pedido_activo` (`excluir_por_de
 - Nuevo bloque `pedido_activo` en importantes y en la ficha del cliente.
 - Query `incluir_pedido_activo` y `meta.excluidos_pedido_activo` en `GET /clientes/importantes`.
 - Config `pedido_activo` en `importantes.json` (umbrales de saldo y ventanas).
+
+## Clientes inactivos (3.7.0)
+
+`inactivo = dias_sin_comprar > dias_min AND dias_sin_comprar <= dias_max AND total_historico >= monto_historico_min AND cantidad_compras >= compras_min AND NOT excluido`.
+
+- Mismas compras que nuevos e importantes (tickets del POS de Neggo; seña y saldo de un pedido = una compra). `dias_sin_comprar` en hora de Argentina; 60 días justos no entran.
+- Excluidos (en este orden, cada uno cuenta una vez en `meta.excluidos`): marca manual (`PATCH /clientes/{id}/inactivo`), pedido activo (misma regla que importantes), cadencia de nuevos (primera compra en los últimos 21 días y etapa distinta de finalizado) y quien hoy es importante con los defaults de `importantes.json`.
+- Config en `backend/config/inactivos.json`: `dias_min` 60, `dias_max` 365, `monto_historico_min` 0, `compras_min` 1, `reintento_dias` 15, `max_toques` 2 (1 o 2), `pausa_entre_flujos_dias` 3. Una clave fuera de rango usa el default y avisa en el log.
+- La lectura de Odoo (un año y un día de clientes, con toda su historia) se comparte con importantes en la misma caché de 5 minutos: la primera llamada tarda lo mismo que importantes (~19 s medidos el 04/11/2026) y las siguientes ~0,3 s. Los pedidos activos se leen en vivo.
+- `intervalo_habitual_dias`: mediana de días entre compras de **toda la historia** (en importantes es de los últimos 365 días), null con menos de 3 compras. `top_productos`: hasta 10, por veces y después por cantidad; empate, el id más chico. `categorias_compradas`: de toda la historia.
+
+Seguimiento (tabla `crm_bot_seguimiento_inactivo`, envíos en `crm_bot_interacciones` con `flujo = 'inactivos'`, `tipo_inactivo` y `ciclo_desde` = fecha de la última compra):
+
+1. `primer_toque`: es inactivo y no recibió ningún toque desde su última compra.
+2. `segundo_toque`: desde el primer toque pasaron `reintento_dias` sin respuesta ni compra.
+3. Con `max_toques` toques el ciclo se cierra. Si contesta después de un toque, no hay más toques en ese ciclo (mientras la respuesta está pendiente, `toca_hoy` es null).
+4. Si vuelve a comprar sale de la lista; cuando pase otra vez los 60 días arranca otro ciclo (el guardado es de otra compra y no cuenta).
+5. Convivencia: un mensaje por día entre todos los flujos (`ya_contactado_hoy`) y pausa de `pausa_entre_flujos_dias` desde el último enviado de cualquier flujo (`pausa_entre_flujos`). Una sola reserva activa por cliente, de cualquier flujo (también se chequea al reservar de nuevos).
+6. `vence` = hoy + 2 días hábiles.
+
+`POST /clientes/{id}/envios` acepta `tipo_inactivo` en lugar de `etapa` (exactamente uno, si no 422). `POST /envios/{id}/confirmar` acepta `enviado_at` opcional (no futuro, con 1 minuto de margen, ni anterior a la reserva) para los dos flujos. `GET /clientes/{id}` trae el bloque `inactivo`. `GET /clientes/inactivos/resumen` es el tablero; `recuperados_30d` cuenta a los que recibieron un toque confirmado y volvieron a comprar dentro de los 30 días siguientes, con esa compra en los últimos 30 días.
+
+### Changelog 3.7.0
+
+- `GET /clientes/inactivos`, `GET /clientes/inactivos/resumen`, `PATCH /clientes/{id}/inactivo`, `PATCH /clientes/{id}/seguimiento-inactivo`.
+- `tipo_inactivo` en envíos; `flujo` y `tipo_inactivo` en `Interaccion` y en `reserva_activa`; `enviado_at` en confirmar.
+- Códigos nuevos: `no_es_inactivo`, `ciclo_cerrado`, `tipo_no_corresponde`, `en_flujo_nuevos`, `ya_contactado_hoy`, `pausa_entre_flujos`.
+- Migración 059.
 
 ## Cómo lo usa Grok
 

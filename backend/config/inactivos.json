@@ -1,0 +1,9 @@
+{
+  "dias_min": 60,
+  "dias_max": 365,
+  "monto_historico_min": 0,
+  "compras_min": 1,
+  "reintento_dias": 15,
+  "max_toques": 2,
+  "pausa_entre_flujos_dias": 3
+}
