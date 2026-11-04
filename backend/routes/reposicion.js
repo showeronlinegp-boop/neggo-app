@@ -89,6 +89,15 @@ router.get('/proveedores', async (req, res) => {
     }
 });
 
+router.get('/accesos', async (req, res) => {
+    try {
+        return ok(res, await reposicion.listarAccesos());
+    } catch (err) {
+        console.error('❌ Error listando accesos de proveedores:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
 router.get('/proveedor', async (req, res) => {
     const nombre = String(req.query.nombre || '').trim();
     if (!nombre) return fail(res, 'nombre es requerido', 400);

@@ -20,6 +20,7 @@ import ReposicionCotizaciones from './ReposicionCotizaciones';
 import ReposicionPrecios from './ReposicionPrecios';
 import ReposicionPropuestas from './ReposicionPropuestas';
 import VincularReposicionModal from './VincularReposicionModal';
+import ArmarPedido from './ArmarPedido';
 import { descargarPedidoPDF } from './pedidoPdf';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
@@ -778,7 +779,7 @@ export default function Reposicion() {
 
             {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={cargarCola} onError={mostrarError} />}
 
-            {(pendiente || encargado) && (nConviene > 0 || soloConviene) && (
+            {encargado && (nConviene > 0 || soloConviene) && (
                 <label style={{
                     display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', alignSelf: 'flex-start',
                     fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family,
@@ -844,6 +845,16 @@ export default function Reposicion() {
                         </div>
                     </div>
                 </Card>
+            ) : pendiente ? (
+                <ArmarPedido
+                    items={items}
+                    isMobile={isMobile}
+                    onVerFoto={setFoto}
+                    onVincular={setAVincular}
+                    onError={mostrarError}
+                    onAviso={(msg) => { setError(null); setAviso(msg); }}
+                    onChanged={cargar}
+                />
             ) : (
                 grupos.map(([proveedor, lista]) => {
                     const cerrado = contraidos.has(proveedor);

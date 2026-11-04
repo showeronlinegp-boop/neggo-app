@@ -543,6 +543,28 @@ async function listarProveedores() {
     }));
 }
 
+/**
+ * Cómo se entra al catálogo de cada proveedor. No devuelve la clave.
+ * Sin web queda como PDF: el pedido se arma en la pantalla.
+ */
+async function listarAccesos() {
+    const { rows } = await pool.query(
+        `SELECT name,
+                NULLIF(BTRIM(odoo_vendor_name), '') AS odoo_vendor_name,
+                NULLIF(BTRIM(website_url), '') AS website_url,
+                (NULLIF(BTRIM(COALESCE(scrape_config->>'password', '')), '') IS NOT NULL) AS pide_clave
+         FROM suppliers
+         WHERE active = true
+         ORDER BY name`
+    );
+    return rows.map(r => ({
+        name: r.name,
+        odoo_vendor_name: r.odoo_vendor_name,
+        website_url: r.website_url,
+        pide_clave: !!r.pide_clave,
+    }));
+}
+
 /** Busca un producto de Neggo por código de barras exacto (recorrida). */
 async function buscarPorBarcode(barcode) {
     const code = String(barcode || '').trim();
@@ -843,6 +865,7 @@ module.exports = {
     buscarProductos,
     buscarPorBarcode,
     listarProveedores,
+    listarAccesos,
     detalleProveedor,
     colaParaAgente,
     resolverLote,
