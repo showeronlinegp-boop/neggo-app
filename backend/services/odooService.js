@@ -367,6 +367,20 @@ async function findSaleTagIdByName(name) {
 }
 
 /**
+ * De estas sale.order, devuelve los ids de las que tienen la etiqueta. Solo lectura.
+ */
+async function findSaleOrderIdsWithTag(orderIds, tagName, companyKey) {
+    if (!Array.isArray(orderIds) || orderIds.length === 0) return [];
+    const companyId = await resolveCompanyId(companyKey);
+    return await callOdoo(
+        'sale.order',
+        'search',
+        [[['id', 'in', orderIds], ['tag_ids.name', '=ilike', tagName]]],
+        withCompany(companyId)
+    ) || [];
+}
+
+/**
  * Agrega etiquetas a una sale.order sin sacarle las que ya tiene.
  */
 async function addSaleOrderTags(orderId, tagIds, companyKey) {
@@ -1788,6 +1802,7 @@ module.exports = {
     // Órdenes de venta
     createSaleOrder,
     findSaleTagIdByName,
+    findSaleOrderIdsWithTag,
     addSaleOrderTags,
     cancelSaleOrder,
     getSaleOrders,

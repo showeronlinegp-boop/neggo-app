@@ -14,6 +14,7 @@ const {
     groupQuotationsBySupplier,
     supplierNetCost,
 } = require('../services/supplierBreakdown');
+const { ETIQUETA_PENDIENTES } = require('../services/pedidoEnvioService');
 
 // =============================================
 // Helper: re-sincroniza las líneas de los sale.orders en Odoo
@@ -789,6 +790,18 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
         const quotations  = await odooService.getPreventasQuotations(['sent']);
 
         if (quotations.length === 0) return ok(res, []);
+
+        // Nota 160: marca las cotizaciones que son pedidos pendientes. Si Odoo falla acá,
+        // la pantalla carga igual, sin la marca.
+        let pendientes = new Set();
+        try {
+            pendientes = new Set(await odooService.findSaleOrderIdsWithTag(
+                quotations.map(q => q.id), ETIQUETA_PENDIENTES, 'preventas'
+            ));
+        } catch (err) {
+            console.warn(`⚠️ No pude leer la etiqueta "${ETIQUETA_PENDIENTES}" en Odoo:`, err.message);
+        }
+        for (const q of quotations) q.es_pendiente = pendientes.has(q.id);
 
         const productIds = [...new Set(
             quotations.flatMap(q => (q.lines || []).map(l => l.product_id).filter(Boolean))

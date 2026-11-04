@@ -192,6 +192,7 @@ export default function OdooSupplierBreakdown() {
                         const isUnmapped = supplier.supplier_name === 'Sin proveedor';
                         const pdfProducts = supplier.products.filter(p => !excluded.has(productKey(key, p)));
                         const allIncluded = pdfProducts.length === supplier.products.length;
+                        const conPendientes = supplier.products.filter(p => p.quotations.some(q => q.es_pendiente)).length;
                         return (
                             <Card key={key} padding={false} style={{ border: isUnmapped ? `1px solid ${t.color.warn}66` : undefined }}>
                                 {/* Cabecera del proveedor */}
@@ -204,6 +205,7 @@ export default function OdooSupplierBreakdown() {
                                     <Icon.ChevronRight size={14} color={t.color.textFaint} style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }} />
                                     <span style={{ fontWeight: t.font.weight.semibold, fontSize: 15, color: isUnmapped ? t.color.warn : t.color.text, flex: 1, fontFamily: t.font.family }}>{supplier.supplier_name}</span>
                                     <Badge tone="muted">{supplier.total_products} producto{supplier.total_products !== 1 ? 's' : ''}</Badge>
+                                    {conPendientes > 0 && <Badge tone="warn">{conPendientes} de pedidos pendientes</Badge>}
                                     <span style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>{supplier.total_qty.toLocaleString('es-AR')} unid.</span>
                                     {supplier.total_cost != null && <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.success, ...t.numericStyle }}>{fmtAR(supplier.total_cost)}</span>}
                                     {!isUnmapped && (
@@ -291,8 +293,8 @@ export default function OdooSupplierBreakdown() {
                                                             <td style={tdStyle}>
                                                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                                                     {product.quotations.map((q, qi) => (
-                                                                        <Badge key={qi} tone="primary" title={`${q.client || 'Sin cliente'} — ${fmtDate(q.date)}`}>
-                                                                            {q.quotation_name} × {q.qty}
+                                                                        <Badge key={qi} tone={q.es_pendiente ? 'warn' : 'primary'} title={`${q.client || 'Sin cliente'} — ${fmtDate(q.date)}`}>
+                                                                            {q.es_pendiente ? 'Pendiente · ' : ''}{q.quotation_name} × {q.qty}
                                                                         </Badge>
                                                                     ))}
                                                                 </div>
