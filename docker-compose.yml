@@ -140,6 +140,9 @@ services:
   evolution:
     image: evoapicloud/evolution-api:v2.3.7
     restart: unless-stopped
+    # Antes de arrancar se parchea getMessage: sin esto, al reconectar Evolution contesta
+    # los pedidos de reintento del grupo con mensajes vacíos, en ráfaga.
+    entrypoint: ["/bin/bash", "-c", "node /parches/parcheGetMessage.js && . ./Docker/scripts/deploy_database.sh && npm run start:prod"]
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -163,6 +166,7 @@ services:
       - CACHE_LOCAL_ENABLED=true
     volumes:
       - evolution_instances:/evolution/instances
+      - ./evolution:/parches:ro
     depends_on:
       postgres:
         condition: service_healthy
