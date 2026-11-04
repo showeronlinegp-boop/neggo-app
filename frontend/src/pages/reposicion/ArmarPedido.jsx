@@ -445,11 +445,11 @@ export default function ArmarPedido({
                                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
                                             <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
                                             {' · '}
-                                            {p.cotizaciones.map(c => `${c.name}${c.partner_name ? ` (${clienteCorto(c.partner_name)})` : ''} × ${fmtInt(c.qty)}`).join(' · ')}
+                                            {p.cotizaciones.filter(c => !c.llego && !c.separado).map(c => `${c.name}${c.partner_name ? ` (${clienteCorto(c.partner_name)})` : ''} × ${fmtInt(c.qty - (c.qty_llegada || 0))}`).join(' · ')}
                                         </div>
                                     </div>
                                     <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family, ...t.numericStyle }}>
-                                        × {fmtInt(p.qty_total)}
+                                        × {fmtInt(p.qty_falta ?? p.qty_total)}
                                     </span>
                                     <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={reponiendoCotiz}
                                         onClick={() => onReponerCotiz({ odoo_ids: [p.odoo_id] })}>

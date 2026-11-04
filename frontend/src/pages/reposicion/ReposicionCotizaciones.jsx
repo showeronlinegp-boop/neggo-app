@@ -44,6 +44,8 @@ function EstadoCola({ p, company, conSeparado = false }) {
     if (company !== 'neggo') return null;
     if (p.llego) return <Llego llego={p.llego} />;
     if (conSeparado && p.separado) return <Badge tone="success" dot>Separado</Badge>;
+    // Por proveedor: una cotización llegó y otra está separada, no falta nada
+    if (conSeparado && p.qty_falta === 0) return <Badge tone="success" dot>Está todo</Badge>;
     if (p.en_cache === false) return <Badge tone="muted">No está en Neggo</Badge>;
     if (p.es_liquidar) return <Badge tone="muted">Liquidar</Badge>;
     if (p.estado_cola === 'encargado') return <Badge tone="accent" dot>Encargado</Badge>;
@@ -156,6 +158,9 @@ function FilaProducto({ p, company, busy, onReponer, onSeparar, onQuitar, onArch
                 justifyContent: 'flex-end', minWidth: isMobile ? undefined : 180, flexWrap: 'wrap',
             }}>
                 <EstadoCola p={p} company={company} />
+                {deNeggo && !p.llego && p.qty_llegada > 0 && (
+                    <Badge tone="success">Llegaron {fmtInt(p.qty_llegada)} de {fmtInt(p.qty)}</Badge>
+                )}
                 {deNeggo && p.active === false && !p.llego && <Badge tone="muted">Archivado</Badge>}
                 {puedeReponer(p, company) && (
                     <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={busy}
@@ -358,7 +363,7 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                         display: 'flex', alignItems: 'center', gap: isMobile ? `${t.space[2]}px ${t.space[3]}px` : t.space[3],
                         flexWrap: isMobile ? 'wrap' : 'nowrap',
                         padding: isMobile ? '10px 12px' : '8px 16px', borderTop: `1px solid ${t.color.border}`,
-                        background: p.llego || p.separado ? t.color.successSoft : tildados.has(p.odoo_id) && reponible ? t.color.primarySoft : undefined,
+                        background: p.llego || p.separado || p.qty_falta === 0 ? t.color.successSoft : tildados.has(p.odoo_id) && reponible ? t.color.primarySoft : undefined,
                         fontFamily: t.font.family,
                     }}>
                         <span style={{ width: isMobile ? 22 : 16, flexShrink: 0, display: 'inline-flex' }}>
@@ -542,7 +547,11 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
         try {
             // Lo que ya llegó o está separado no se le pide al proveedor
             const aPedir = items.map(p => ({ ...p, qty: qtyPedir(p) })).filter(p => p.qty > 0);
-            await descargarPedidoPDF(vendor, aPedir.length ? aPedir : items.map(p => ({ ...p, qty: p.qty_total })), { prefijo: 'cotizaciones' });
+            if (!aPedir.length) {
+                onAviso(`No hay nada para pedirle a ${vendor}: ya llegó o está separado.`);
+                return;
+            }
+            await descargarPedidoPDF(vendor, aPedir, { prefijo: 'cotizaciones' });
         } catch (err) {
             onError(err.message || 'No se pudo generar el PDF');
         } finally {

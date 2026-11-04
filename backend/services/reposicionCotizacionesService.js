@@ -140,11 +140,12 @@ function resumirPorProducto(cotizaciones) {
                 cotizaciones: [],
             };
             prev.qty_total += p.qty;
-            // Lo que falta conseguir: sin llegar y sin separar
-            if (!p.llego && !p.separado) prev.qty_falta += p.qty;
+            // Lo que falta conseguir: sin separar y sin lo que ya llegó (puede ser una parte)
+            if (!p.separado) prev.qty_falta += Math.max(p.qty - (p.llego ? p.qty : (p.qty_llegada || 0)), 0);
             if (p.puede_reponer) prev.puede_reponer = true;
             prev.cotizaciones.push({
                 name: c.name, partner_name: c.partner_name, qty: p.qty,
+                qty_llegada: p.qty_llegada || 0,
                 llego: p.llego || null, separado: p.separado || null,
             });
             porProducto.set(key, prev);
@@ -161,14 +162,45 @@ function resumirPorProducto(cotizaciones) {
 }
 
 /**
- * Primer ingreso en o después de la fecha de la cotización. Null si todavía no llegó.
- * @param {Array<{ingreso_id, comprobante, at}>} ingresos — del producto, más viejos primero
+ * Reparte lo que entró en los ingresos entre las cotizaciones, la más vieja primero. A cada una
+ * solo le sirve lo que entró en o después de su fecha, y una unidad no se cuenta dos veces.
+ * @param {Array<{odoo_order_id, date_order, productos: Array<{odoo_id, qty}>}>} cotizaciones
+ * @param {Map<number, Array<{ingreso_id, comprobante, at, qty}>>} ingresos — más viejos primero
+ * @returns {Map<string, {llego, qty_llegada}>} clave `${odoo_order_id}|${odoo_id}`; llego es el
+ *   ingreso que completó la cantidad, o null si todavía falta
  */
-function llegadaDesde(ingresos, desde) {
-    if (!ingresos || !ingresos.length) return null;
-    if (!desde) return ingresos[ingresos.length - 1];
-    const limite = new Date(desde).getTime();
-    return ingresos.find(i => new Date(i.at).getTime() >= limite) || null;
+function repartirIngresos(cotizaciones, ingresos) {
+    const quedan = new Map();
+    for (const [odooId, lista] of ingresos || []) {
+        quedan.set(odooId, lista.map(i => ({ ...i, queda: Number(i.qty) || 0 })));
+    }
+    const ordenadas = [...cotizaciones].sort((a, b) =>
+        String(a.date_order || '').localeCompare(String(b.date_order || '')) || (a.odoo_order_id - b.odoo_order_id)
+    );
+    const reparto = new Map();
+    for (const c of ordenadas) {
+        const limite = c.date_order ? new Date(c.date_order).getTime() : null;
+        for (const p of c.productos) {
+            let recibido = 0;
+            let ultimo = null;
+            for (const ingreso of quedan.get(p.odoo_id) || []) {
+                if (recibido >= p.qty) break;
+                if (ingreso.queda <= 0) continue;
+                if (limite != null && new Date(ingreso.at).getTime() < limite) continue;
+                const toma = Math.min(ingreso.queda, p.qty - recibido);
+                ingreso.queda -= toma;
+                recibido += toma;
+                ultimo = ingreso;
+            }
+            reparto.set(`${c.odoo_order_id}|${p.odoo_id}`, {
+                llego: ultimo && recibido >= p.qty
+                    ? { ingreso_id: ultimo.ingreso_id, comprobante: ultimo.comprobante, at: ultimo.at }
+                    : null,
+                qty_llegada: recibido,
+            });
+        }
+    }
+    return reparto;
 }
 
 /**
@@ -260,13 +292,15 @@ async function datosProductos(odooIds) {
 /**
  * Ingresos que trajeron estos productos para Neggo, con el mismo criterio que cierra la cola
  * de reposición: matcheado, activo para Neggo, no rechazado y no todo a Preventas.
- * @returns {Map<number, Array<{ingreso_id, comprobante, at}>>} más viejos primero
+ * qty es lo que quedó para Neggo: lo ingresado menos lo confirmado para Preventas.
+ * @returns {Map<number, Array<{ingreso_id, comprobante, at, qty}>>} más viejos primero
  */
 async function ingresosNeggo(odooIds, desde) {
     if (!odooIds.length) return new Map();
     const { rows } = await pool.query(
         `SELECT ii.odoo_product_id AS odoo_id, im.id AS ingreso_id,
-                im.comprobante_numero AS comprobante, im.created_at AS at
+                im.comprobante_numero AS comprobante, im.created_at AS at,
+                ii.cantidad - COALESCE(ii.preventa_qty_confirmed, 0) AS qty
          FROM ingreso_items ii
          JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
          WHERE ii.odoo_product_id = ANY($1::int[])
@@ -282,7 +316,7 @@ async function ingresosNeggo(odooIds, desde) {
     const mapa = new Map();
     for (const r of rows) {
         if (!mapa.has(r.odoo_id)) mapa.set(r.odoo_id, []);
-        mapa.get(r.odoo_id).push({ ingreso_id: r.ingreso_id, comprobante: r.comprobante, at: r.at });
+        mapa.get(r.odoo_id).push({ ingreso_id: r.ingreso_id, comprobante: r.comprobante, at: r.at, qty: Number(r.qty) });
     }
     return mapa;
 }
@@ -324,6 +358,7 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
     } catch (err) {
         console.warn(`⚠️ Reposición/cotizaciones: no se pudieron leer los ingresos: ${err.message}`);
     }
+    const reparto = repartirIngresos(deNeggo, ingresos);
 
     let separados = new Map();
     try {
@@ -338,7 +373,9 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
             const productos = c.productos
                 .map(p => {
                     const prod = completarProducto(p, info.get(claveProducto(c.company, p.odoo_id)));
-                    prod.llego = c.company === 'neggo' ? llegadaDesde(ingresos.get(p.odoo_id), c.date_order) : null;
+                    const llegada = c.company === 'neggo' ? reparto.get(`${c.odoo_order_id}|${p.odoo_id}`) : null;
+                    prod.llego = llegada?.llego || null;
+                    prod.qty_llegada = llegada?.qty_llegada || 0;
                     prod.separado = c.company === 'neggo' ? separados.get(`${c.odoo_order_id}|${p.odoo_id}`) || null : null;
                     prod.puede_reponer = puedeReponer(prod, c.company);
                     return prod;
@@ -509,7 +546,7 @@ module.exports = {
     contarListos,
     armarCotizaciones,
     resumirPorProducto,
-    llegadaDesde,
+    repartirIngresos,
     puedeReponer,
     qtyParaCola,
 };

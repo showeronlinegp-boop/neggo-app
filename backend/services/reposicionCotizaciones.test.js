@@ -3,7 +3,7 @@
 
 const assert = require('assert');
 const {
-    armarCotizaciones, resumirPorProducto, llegadaDesde, puedeReponer, qtyParaCola, contarListos,
+    armarCotizaciones, resumirPorProducto, repartirIngresos, puedeReponer, qtyParaCola, contarListos,
 } = require('./reposicionCotizacionesService');
 
 const COMPANIES = { neggo: 1, preventas: 50 };
@@ -60,14 +60,61 @@ function testResumir() {
 }
 
 function testLlegada() {
-    const ingresos = [
-        { ingreso_id: 1, comprobante: 'A-1', at: '2026-10-01T10:00:00Z' },
-        { ingreso_id: 2, comprobante: 'A-2', at: '2026-10-20T10:00:00Z' },
-    ];
-    assert.strictEqual(llegadaDesde(ingresos, '2026-10-10T00:00:00Z').ingreso_id, 2, 'el primero después de la cotización');
-    assert.strictEqual(llegadaDesde(ingresos, '2026-10-25T00:00:00Z'), null, 'un ingreso viejo no cuenta');
-    assert.strictEqual(llegadaDesde([], '2026-10-25T00:00:00Z'), null);
-    assert.strictEqual(llegadaDesde(undefined, null), null);
+    const cot = (id, date_order, qty) => ({ odoo_order_id: id, date_order, productos: [{ odoo_id: 100, qty }] });
+    const ingreso = (ingreso_id, at, qty) => ({ ingreso_id, comprobante: `A-${ingreso_id}`, at, qty });
+    const de = (r, id) => r.get(`${id}|100`);
+
+    // Un ingreso viejo no cuenta
+    let r = repartirIngresos([cot(1, '2026-10-25T00:00:00Z', 2)], new Map([[100, [ingreso(1, '2026-10-01T10:00:00Z', 9)]]]));
+    assert.deepStrictEqual(de(r, 1), { llego: null, qty_llegada: 0 });
+
+    // Sin ingresos
+    r = repartirIngresos([cot(1, null, 2)], new Map());
+    assert.deepStrictEqual(de(r, 1), { llego: null, qty_llegada: 0 });
+
+    // Entró menos de lo pedido: no «llegó», pero se sabe cuánto hay
+    r = repartirIngresos([cot(1, '2026-10-10T00:00:00Z', 5)], new Map([[100, [ingreso(2, '2026-10-20T10:00:00Z', 3)]]]));
+    assert.strictEqual(de(r, 1).llego, null, '3 de 5 no alcanzan');
+    assert.strictEqual(de(r, 1).qty_llegada, 3);
+
+    // Dos ingresos completan la cantidad: queda el que la completó
+    r = repartirIngresos([cot(1, '2026-10-10T00:00:00Z', 5)], new Map([[100, [
+        ingreso(2, '2026-10-20T10:00:00Z', 3), ingreso(3, '2026-10-21T10:00:00Z', 4),
+    ]]]));
+    assert.strictEqual(de(r, 1).llego.ingreso_id, 3);
+    assert.strictEqual(de(r, 1).qty_llegada, 5);
+
+    // Dos clientes: primero la cotización más vieja, aunque venga después en la lista
+    r = repartirIngresos(
+        [cot(2, '2026-10-12T00:00:00Z', 3), cot(1, '2026-10-10T00:00:00Z', 2)],
+        new Map([[100, [ingreso(2, '2026-10-20T10:00:00Z', 4)]]])
+    );
+    assert.strictEqual(de(r, 1).llego.ingreso_id, 2, 'a la vieja le alcanza');
+    assert.strictEqual(de(r, 2).llego, null, 'a la nueva no: la misma unidad no cuenta dos veces');
+    assert.strictEqual(de(r, 2).qty_llegada, 2);
+
+    // Un ingreso anterior a la cotización nueva sigue sin servirle, aunque sobre
+    r = repartirIngresos(
+        [cot(1, '2026-10-10T00:00:00Z', 1), cot(2, '2026-10-25T00:00:00Z', 1)],
+        new Map([[100, [ingreso(2, '2026-10-20T10:00:00Z', 5)]]])
+    );
+    assert.ok(de(r, 1).llego);
+    assert.strictEqual(de(r, 2).qty_llegada, 0);
+}
+
+function testLlegadaParcial() {
+    const [p] = resumirPorProducto([
+        { name: 'S1', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 100, qty: 5, qty_llegada: 3, vendor_name: 'Z', llego: null, puede_reponer: true }] },
+    ]);
+    assert.strictEqual(p.qty_falta, 2, 'solo falta lo que no entró');
+    assert.strictEqual(p.llego, null);
+    assert.strictEqual(qtyParaCola(p), 2);
+
+    const [listo] = resumirPorProducto([
+        { name: 'S1', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 100, qty: 2, qty_llegada: 2, vendor_name: 'Z', llego: { ingreso_id: 1 } }] },
+        { name: 'S2', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 100, qty: 3, qty_llegada: 0, vendor_name: 'Z', llego: null, separado: { at: 'x' } }] },
+    ]);
+    assert.strictEqual(listo.qty_falta, 0, 'una llegó y la otra está separada: no falta nada');
 }
 
 function testLlegadaPorProducto() {
@@ -112,6 +159,7 @@ function testSeparado() {
 testArmar();
 testResumir();
 testLlegada();
+testLlegadaParcial();
 testLlegadaPorProducto();
 testPuedeReponer();
 testSeparado();
