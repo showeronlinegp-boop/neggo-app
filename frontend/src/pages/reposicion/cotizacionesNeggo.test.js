@@ -60,4 +60,12 @@ assert.equal(r.completas, 1);
 assert.deepEqual(r.proveedores, [{ nombre: 'ZLE', n: 1 }]);
 assert.equal(r.otrosProveedores, 0);
 
+// Nota 150: lo separado no se espera y la cotización con todo separado está lista
+const conSeparado = {
+    cotizaciones: [{ name: 'S9', company: 'neggo', n_llegados: 0, n_listos: 1, productos: [{ odoo_id: 9 }] }],
+    productos: [{ odoo_id: 9, company: 'neggo', vendor_name: 'ZLE', cotizaciones: [{ name: 'S9', qty: 1, separado: { at: 'x' } }], separado: { at: 'x' } }],
+};
+assert.equal(esperasPorProducto(conSeparado).size, 0);
+assert.deepEqual(cotizacionesCompletas(conSeparado).map(c => c.name), ['S9']);
+
 console.log('✅ cotizacionesNeggo: ok');
