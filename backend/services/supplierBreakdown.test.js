@@ -35,6 +35,18 @@ function testGroupUsesSupplierCost() {
     console.log('agrupado ok');
 }
 
+function testMarcaPendientes() {
+    const linea = { product_id: 7, product_name: 'Vaso', quantity: 1, unit_price: 100 };
+    const grouped = groupQuotationsBySupplier([
+        { id: 1, name: 'S0001', es_pendiente: true, lines: [linea] },
+        { id: 2, name: 'S0002', es_pendiente: false, lines: [linea] },
+        { id: 3, name: 'S0003', lines: [linea] },
+    ], {}, { 7: 'Cast' });
+    assert.deepStrictEqual(grouped[0].products[0].quotations.map(q => q.es_pendiente), [true, false, false]);
+    console.log('marca de pendientes ok');
+}
+
 testNetCost();
 testGroupUsesSupplierCost();
+testMarcaPendientes();
 console.log('pedidos x proveedor ok');

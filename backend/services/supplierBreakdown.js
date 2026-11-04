@@ -91,6 +91,7 @@ function groupQuotationsBySupplier(quotations, cacheByProductId = {}, localSuppl
                 quotation_name: quotation.name,
                 client:         quotation.client,
                 date:           quotation.date,
+                es_pendiente:   !!quotation.es_pendiente,
                 qty,
                 unit_price:     line.unit_price,
             });
