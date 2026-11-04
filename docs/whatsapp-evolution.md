@@ -33,9 +33,30 @@ WHATSAPP_MAX_ATTEMPTS=3
 docker compose up -d --build
 ```
 
-Eso inicia Postgres, Evolution API (`evoapicloud/evolution-api:v2.3.7`), el backend, nginx y Chrome. El backend espera a que Evolution arranque. En ese servidor hay dos instancias: `neggo` para los grupos y `neggo-estados` para los estados. Cada una es otro número de WhatsApp. Las sesiones se guardan en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
+Eso inicia Postgres, Evolution API (imagen `neggo-evolution:2.3.7-no-empty-retry`, parche sobre `v2.3.7`), el backend, nginx y Chrome. El backend espera a que Evolution arranque. En ese servidor hay dos instancias: `neggo` para los grupos y `neggo-estados` para los estados. Cada una es otro número de WhatsApp. Las sesiones se guardan en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
 
-La cola no manda nada sin texto y foto válidos, ni si la instancia de Evolution no está en estado `open`. Al reiniciar espera unos 30 s y exige WhatsApp conectado antes del primer envío: así no salen mensajes vacíos en ráfaga cuando Baileys todavía está vinculando la sesión.
+La cola no manda nada sin texto y foto válidos, ni si la instancia de Evolution no está en estado `open`. Al reiniciar espera unos 30 s y exige WhatsApp conectado antes del primer envío.
+
+### Mensajes vacíos en ráfaga al prender
+
+Si al levantar el servidor aparecen burbujas vacías (sin texto ni foto) en el grupo de avisos, **no es la cola de Neggo**: es un bug de Evolution 2.3.7 ([#2705](https://github.com/evolution-foundation/evolution-api/issues/2705)). Al reconectar, WhatsApp pide reenviar mensajes viejos; `getMessage` no los encuentra y Baileys reenvía `{ conversation: '' }` → burbujas vacías. La imagen de Neggo parchea eso y guarda los mensajes en Postgres para poder responder bien el retry.
+
+**Corte inmediato** (hasta rebuildar Evolution):
+
+```bash
+docker compose stop evolution
+```
+
+Eso frena las ráfagas vacías. La cola de productos también queda quieta. Después:
+
+```bash
+docker compose build evolution
+docker compose up -d evolution backend
+```
+
+**Importante:** el número de **estados** (`neggo-estados`) no tiene que ser admin de la comunidad ni del grupo de avisos. Los estados van a la agenda de ese WhatsApp, no al grupo. Si ese número es admin, al reconectar Evolution las burbujas vacías aparecen ahí.
+
+Para cortar solo la cola de productos sin bajar Evolution: en el `.env` poné `WHATSAPP_SENDING_ENABLED=0` y reiniciá el backend.
 
 La app queda en http://localhost . Evolution escucha solo en esta PC, en http://localhost:8080 . No hace falta abrir ese puerto: el QR se ve dentro de Neggo.
 
@@ -66,9 +87,10 @@ El estado se manda a los contactos que Evolution tiene guardados en la base de e
 ## 6. Después de actualizar el código
 
 ```bash
-docker compose up -d --build backend
+docker compose build evolution backend
+docker compose up -d evolution backend
 cd frontend && npm install && npm run build
-docker compose up -d nginx evolution
+docker compose up -d nginx
 ```
 
-El backend crea las tablas de la cola al arrancar, también si Postgres ya tenía datos.
+El backend crea las tablas de la cola al arrancar, también si Postgres ya tenía datos. Hay que **rebuildar** `evolution` (no solo `up`): el parche anti-vacío vive en la imagen.

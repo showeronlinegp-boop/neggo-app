@@ -206,6 +206,7 @@ async function ensureInstance(which = 'grupo') {
     const { instance } = config(which);
     try {
         await connectionState(which);
+        if (which === 'estado') await ensureStatusIgnoresGroups().catch(() => {});
         return { created: false, instance };
     } catch (err) {
         if (err.status && err.status !== 404) throw err;
@@ -224,9 +225,24 @@ async function ensureInstance(which = 'grupo') {
     return { created: true, instance };
 }
 
+// El número de estados no tiene que meterse en grupos: si es admin de la
+// comunidad, al reconectar Evolution puede soltar vacíos en avisos (#2705).
+async function ensureStatusIgnoresGroups() {
+    const { instance } = config('estado');
+    await request(`/settings/set/${encodeURIComponent(instance)}`, {
+        method: 'POST',
+        body: {
+            groupsIgnore: true,
+            readMessages: false,
+            alwaysOnline: false,
+        },
+    });
+}
+
 async function connectQr(which = 'grupo') {
     const { instance } = config(which);
     await ensureInstance(which);
+    if (which === 'estado') await ensureStatusIgnoresGroups().catch(() => {});
     const state = await connectionState(which).catch(() => null);
     if (state === 'open') {
         return { connected: true, state, instance, base64: null, pairingCode: null };
@@ -317,6 +333,7 @@ module.exports = {
     connectionState,
     assertReady,
     ensureInstance,
+    ensureStatusIgnoresGroups,
     connectQr,
     fetchGroups,
     sendImage,

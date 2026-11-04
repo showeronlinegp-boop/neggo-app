@@ -45,6 +45,9 @@ services:
       - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-neggo}
       - EVOLUTION_STATUS_INSTANCE=${EVOLUTION_STATUS_INSTANCE:-neggo-estados}
       - WHATSAPP_MAX_ATTEMPTS=${WHATSAPP_MAX_ATTEMPTS:-3}
+      - WHATSAPP_SENDING_ENABLED=${WHATSAPP_SENDING_ENABLED:-1}
+      - WHATSAPP_BOOT_GRACE_MS=${WHATSAPP_BOOT_GRACE_MS:-30000}
+      - WHATSAPP_MIN_PROCESS_GAP_MS=${WHATSAPP_MIN_PROCESS_GAP_MS:-10000}
       # API del agente (Grok Bot). Sin clave (o con menos de 32 caracteres) la API queda deshabilitada
       - AGENTE_API_KEY=${AGENTE_API_KEY:-}
       # Máximo de ejecuciones de tareas del bot (Claude Code) en 24 horas
@@ -139,10 +142,14 @@ services:
     networks:
       - neggo-net
 
-  # Evolution API v2 (imagen oficial). Adentro hay dos instancias: grupos y estados.
-  # Cada una vincula otro número. El QR se muestra en la app; el puerto 8080 solo escucha en esta PC.
+  # Evolution API v2.3.7 parcheado (evolution/Dockerfile).
+  # El stock reenvía burbujas vacías al reconectar (issue #2705); el parche lo corta.
+  # Adentro hay dos instancias: grupos y estados. Cada una vincula otro número.
   evolution:
-    image: evoapicloud/evolution-api:v2.3.7
+    build:
+      context: ./evolution
+      dockerfile: Dockerfile
+    image: neggo-evolution:2.3.7-no-empty-retry
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
@@ -156,8 +163,10 @@ services:
       - DATABASE_CONNECTION_URI=postgresql://neggo:${POSTGRES_PASSWORD:-neggo_pass}@postgres:5432/neggo_app?schema=evolution_api
       - DATABASE_CONNECTION_CLIENT_NAME=evolution_neggo
       - DATABASE_SAVE_DATA_INSTANCE=true
-      - DATABASE_SAVE_DATA_NEW_MESSAGE=false
-      - DATABASE_SAVE_MESSAGE_UPDATE=false
+      # Hay que guardar mensajes: si no, al reconectar getMessage no encuentra nada
+      # y (sin el parche) Baileys reenvía vacíos a los grupos.
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
       # Los estados se mandan a todos los contactos guardados: sin esto Evolution responde "Contacts not found"
       - DATABASE_SAVE_DATA_CONTACTS=true
       - DATABASE_SAVE_DATA_CHATS=false

@@ -13,11 +13,17 @@ const BOOT_GRACE_MS = Number(process.env.WHATSAPP_BOOT_GRACE_MS) || 30_000;
 // mensajes más cerca que esto. Evita ráfagas si algo raro pasa con los gaps.
 const MIN_PROCESS_GAP_MS = Number(process.env.WHATSAPP_MIN_PROCESS_GAP_MS) || 10_000;
 
+function sendingEnabled() {
+    const raw = String(process.env.WHATSAPP_SENDING_ENABLED ?? '1').trim().toLowerCase();
+    return !(raw === '0' || raw === 'false' || raw === 'off' || raw === 'no');
+}
+
 let timer = null;
 let busy = false;
 let startedAt = 0;
 let lastSendAt = 0;
 let bootLogged = false;
+let disabledLogged = false;
 
 async function loadOdooImage(message) {
     if (!message.image_template_id) {
@@ -45,6 +51,13 @@ function startWhatsappWorker(pool) {
     );
     timer = setInterval(() => {
         if (busy) return;
+        if (!sendingEnabled()) {
+            if (!disabledLogged) {
+                disabledLogged = true;
+                console.warn('⏸️ WhatsApp: envíos cortados (WHATSAPP_SENDING_ENABLED=0)');
+            }
+            return;
+        }
         const sinceBoot = Date.now() - startedAt;
         if (sinceBoot < BOOT_GRACE_MS) {
             if (!bootLogged) {
@@ -89,6 +102,7 @@ module.exports = {
     startWhatsappWorker,
     stopWhatsappWorker,
     loadOdooImage,
+    sendingEnabled,
     BOOT_GRACE_MS,
     MIN_PROCESS_GAP_MS,
 };
