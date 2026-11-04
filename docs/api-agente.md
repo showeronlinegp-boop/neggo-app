@@ -5,7 +5,7 @@ API REST para que Grok Bot haga el seguimiento por WhatsApp de los **clientes nu
 - Va bajo `/api/agente`. Especificación completa en `GET /api/agente/openapi.json` y Swagger UI en `GET /api/agente/docs`. Las dos son públicas y no tienen datos.
 - **No escribe nada en Odoo.** Lee Odoo y la base local. Solo escribe en `crm_bot_seguimiento`, `crm_bot_interacciones` y `crm_bot_feedback`, y en `crm_events` cuando un cliente pide que no le escriban.
 - Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1) y `agenteValidacion.js`. Config de importantes: `backend/config/importantes.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql` y `050_agente_reservas.sql`.
-- Versión viva: **3.5.0**. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo.
+- Versión viva: **3.6.0** (posibles clientes, ver al final). Antes, 3.5.0. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo.
 
 ## Configuración
 
@@ -194,3 +194,46 @@ Flujo diario, de lunes a viernes de 9 a 18:
 4. Cuando el cliente contesta, hace `POST interacciones` con `tipo: "recibido"`. Si se presenta, guarda su nombre con `PATCH clientes/{id}` (`contacto`).
 5. Si el cliente pide que no le escriban, hace `PATCH clientes/{id}` con `no_contactar: true`.
 6. Si un dato no le alcanza o algo no anda, lo cuenta en `POST feedback`.
+
+## Posibles clientes (3.6.0)
+
+Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos de la agenda que todavía no están en Odoo. Código: `services/agenteLeads.js` (cadencia, zona y cola, lógica pura), `agenteLeadsService.js`, `agenteLeadsValidacion.js`. Migración `060_agente_leads.sql` (tablas `crm_bot_lead_seguimiento` y `crm_bot_lead_mensajes`, aparte de las de clientes).
+
+**A quién se le escribe**
+- Solo a los celulares de la **zona**: `backend/config/leadsZona.json` (150 km de Pergamino). Va primero `prioridad_1` (Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y después `prioridad_2`. Para sumar una característica, se agrega ahí y se reinicia el backend.
+- **Nunca a los de Churn** (nos bloquearon o no quieren que los contactemos). El que le pide al bot que no le escriba **pasa a Churn**.
+- NRI = no les llegan las difusiones (no agendaron el número): entran.
+- Ni a los que ya están en Odoo (se chequea en vivo antes de cada envío), ni a los que el equipo movió de Frío en el CRM.
+
+**Tope diario:** `AGENTE_LEADS_TOPE_DIARIO` en el `.env` (por defecto **15**; 0 apaga los envíos). Cuenta todos los mensajes de la cadencia del día, confirmados y reservas vigentes. Las respuestas de la charla no cuentan. Un pedido de más da 409 `tope_diario`.
+
+**Cadencia:** `presentacion` → `recordatorio` (7 días después) → `cierre` (14 días después del recordatorio). Al confirmar el cierre, el resultado queda `sin_respuesta`. Una presentación mandada a mano desde la app (nota #81) cuenta como la presentación. Si contesta, la cadencia se frena: Grok sigue la charla y marca el resultado.
+
+**Resultado** (`PATCH /leads/{id}`):
+- `resultado: interesado` → pasa a **Templado** en el CRM y el equipo recibe una acción de WhatsApp para hoy en Mi día.
+- `resultado: no_interesado` → **Descartado**.
+- `no_contactar: true` → Descartado, **Churn** y no se le escribe más (el agente no lo puede desmarcar).
+- `nota` opcional: queda en la ficha.
+
+**Odoo:** la API no escribe en Odoo. Los posibles clientes se cargan en Odoo cuando compran o se les arma una cotización, como siempre. El sync de clientes los vincula solo por teléfono. `GET /leads` dispara ese sync si pasaron 24 h.
+
+**En la app:** Clientes → pestaña **Bot de leads** (cuántos van hoy contra el tope, respuestas sin atender, últimos mensajes y la zona).
+
+### Cómo lo usa Grok (posibles clientes)
+
+1. `GET /leads?con_respuesta_pendiente=true`: contesta (`POST /leads/{id}/mensajes`, `enviado`) o marca `POST /leads/{id}/revisado`. Cuando sabe cómo terminó, hace `PATCH /leads/{id}` con `resultado` o `no_contactar`.
+2. `GET /leads?para_hoy=true&limit=<meta.quedan_hoy>`: la cola ya viene ordenada.
+3. Para cada uno con `puede_enviar_ahora`: `GET /leads/{id}` → `POST /leads/{id}/envios` (`etapa = toca_hoy`) → manda el WhatsApp → `POST /leads/envios/{id_externo}/confirmar` (o `cancelar`).
+4. Cuando contesta: `POST /leads/{id}/mensajes` con `tipo: "recibido"`.
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" "$API/leads?para_hoy=true&limit=15"
+curl -s -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"etapa":"presentacion","mensaje":"Buenas, ¿todo bien? Soy Mariano de Neggo Mayorista…","id_externo":"grok-lead-183-presentacion"}' \
+  "$API/leads/183/envios"
+curl -s -X POST -H "Authorization: Bearer $KEY" "$API/leads/envios/grok-lead-183-presentacion/confirmar"
+curl -s -X PATCH -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"resultado":"interesado","nota":"Tiene un bazar en Rojas, quiere la lista"}' "$API/leads/183"
+```
+
+Códigos 409 propios: `tope_diario`, `ya_en_odoo`, `fuera_de_zona`, `churn`, `seguido_por_el_equipo`, `respondio` (además de los de envíos: `fuera_de_horario`, `no_contactar`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `id_externo_usado`, `id_externo_distinto`).

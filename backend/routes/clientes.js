@@ -10,6 +10,7 @@
 // GET    /api/clientes/leads/resumen
 // POST   /api/clientes/leads          — alta a mano { name, phone, email, city }
 // POST   /api/clientes/leads/importar — { csv, dry_run } CSV de Google Contacts (solo admin)
+// GET    /api/clientes/leads/bot      — lo que hace Grok Bot con los posibles clientes (tope del día, respuestas)
 // GET    /api/clientes/leads/:id
 // POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
 //
@@ -40,6 +41,7 @@ const clientes = require('../services/clientMetricsService');
 const followups = require('../services/crmFollowupService');
 const leads = require('../services/crmLeadService');
 const botMonitor = require('../services/agenteMonitorService');
+const botLeads = require('../services/agenteLeadsService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -138,6 +140,14 @@ router.post('/leads/importar', authenticate, requireRole('admin'), async (req, r
         return ok(res, await leads.importGoogleContacts(csv, { userId: req.user.id, dryRun: Boolean(dryRun) }));
     } catch (err) {
         return handle(res, err, 'No se pudieron importar los contactos');
+    }
+});
+
+router.get('/leads/bot', ...auth, async (req, res) => {
+    try {
+        return ok(res, await botLeads.resumenBot());
+    } catch (err) {
+        return handle(res, err, 'No se pudo leer la actividad del bot con posibles clientes');
     }
 });
 
