@@ -24,12 +24,17 @@ const BASE_WHERE = `
     AND opc.list_price > 0
 `;
 
-// Ni lo que ya está en cola ni lo publicado en los últimos $2 días.
+// Variantes de la misma plantilla (colores, modelos): mismo nombre, foto, precio y link.
+// Para el sorteo cuentan como un solo producto: se compara por plantilla (el propio producto
+// también está en la caché, así que queda cubierto).
+
+// Ni lo que ya está en cola ni lo publicado en los últimos $2 días (tampoco otra variante).
 const NOT_RECENT = `
     NOT EXISTS (
         SELECT 1 FROM whatsapp_messages wm
         JOIN whatsapp_batches wb ON wb.id = wm.batch_id
-        WHERE wm.odoo_id = opc.odoo_id
+        JOIN odoo_products_cache sib ON sib.odoo_id = wm.odoo_id AND sib.company = wm.company
+        WHERE sib.template_id = opc.template_id
           AND wm.company = opc.company
           AND (
               (wm.status IN ('pendiente', 'enviando') AND wb.status IN ('programada', 'en_curso', 'pausada'))
@@ -38,11 +43,13 @@ const NOT_RECENT = `
     )
 `;
 
-// Ni lo descargado como imagen de estado en los últimos $2 días (tabla de sql/estados_imagenes.sql).
+// Ni lo descargado como imagen de estado en los últimos $2 días (tabla de sql/estados_imagenes.sql),
+// tampoco otra variante de la misma plantilla.
 const NOT_DOWNLOADED = `
     NOT EXISTS (
         SELECT 1 FROM estado_imagenes_descargas eid
-        WHERE eid.odoo_id = opc.odoo_id
+        JOIN odoo_products_cache sib ON sib.odoo_id = eid.odoo_id AND sib.company = eid.company
+        WHERE sib.template_id = opc.template_id
           AND eid.company = opc.company
           AND eid.created_at > NOW() - ($2::int * INTERVAL '1 day')
     )
@@ -97,7 +104,7 @@ async function attachLinks(products, company, loadUrls = odooWebsiteUrls) {
 async function listCategories(pool, company) {
     assertCompany(company);
     const { rows } = await pool.query(`
-        SELECT opc.categ_name AS name, COUNT(*)::int AS count
+        SELECT opc.categ_name AS name, COUNT(DISTINCT opc.template_id)::int AS count
         FROM odoo_products_cache opc
         WHERE ${BASE_WHERE}
           AND NULLIF(TRIM(opc.categ_name), '') IS NOT NULL
@@ -115,14 +122,23 @@ async function pickRandom(pool, { company, category, count = 20, excludeIds = []
         throw new Error(`La cantidad tiene que estar entre 1 y ${MAX_PICK}`);
     }
     const exclude = (excludeIds || []).map(Number).filter(Number.isInteger);
+    // Una variante al azar por plantilla; lo excluido saca a toda su plantilla.
     const { rows } = await pool.query(`
-        SELECT opc.odoo_id, opc.company, opc.name, opc.categ_name, opc.template_id, opc.list_price
-        FROM odoo_products_cache opc
-        WHERE ${BASE_WHERE}
-          AND opc.categ_name = $3
-          AND NOT (opc.odoo_id = ANY($4::int[]))
-          AND ${NOT_RECENT}
-          ${excludeDownloaded ? `AND ${NOT_DOWNLOADED}` : ''}
+        SELECT * FROM (
+            SELECT DISTINCT ON (opc.template_id)
+                   opc.odoo_id, opc.company, opc.name, opc.categ_name, opc.template_id, opc.list_price
+            FROM odoo_products_cache opc
+            WHERE ${BASE_WHERE}
+              AND opc.categ_name = $3
+              AND NOT (opc.odoo_id = ANY($4::int[]))
+              AND opc.template_id NOT IN (
+                  SELECT ex.template_id FROM odoo_products_cache ex
+                  WHERE ex.company = $1 AND ex.odoo_id = ANY($4::int[]) AND ex.template_id IS NOT NULL
+              )
+              AND ${NOT_RECENT}
+              ${excludeDownloaded ? `AND ${NOT_DOWNLOADED}` : ''}
+            ORDER BY opc.template_id, random()
+        ) uno_por_plantilla
         ORDER BY random()
         LIMIT $5
     `, [company, RECENT_DAYS, String(category), exclude, n]);
