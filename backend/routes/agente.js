@@ -32,6 +32,16 @@
 // GET    /api/agente/reposicion/pendientes?proveedor=   — cola para reponer, con ventas y cantidad sugerida
 // GET    /api/agente/reposicion/encargados?proveedor=   — lo que ya se pidió y todavía no llegó
 // GET    /api/agente/reposicion/cotizaciones?proveedor= — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
+// GET    /api/agente/leads?para_hoy=&con_respuesta_pendiente=&respondio=&etapa=&resultado=&no_contactar=&page=&limit=
+//                                                 — posibles clientes de la zona (para_hoy: la cola del día, ordenada)
+// GET    /api/agente/leads/:id                   — ficha en vivo con los últimos mensajes
+// POST   /api/agente/leads/:id/envios            — { etapa, mensaje, id_externo } RESERVA (presentacion | recordatorio | cierre)
+// GET    /api/agente/leads/envios/:idExterno     — estado del envío
+// POST   /api/agente/leads/envios/:idExterno/confirmar | cancelar
+// POST   /api/agente/leads/:id/mensajes          — { tipo, mensaje, fecha?, id_externo? } la charla
+// GET    /api/agente/leads/:id/mensajes?page=&limit=
+// POST   /api/agente/leads/:id/revisado          — leyó la respuesta y no hace falta contestar
+// PATCH  /api/agente/leads/:id                   — { no_contactar, contacto, resultado: interesado | no_interesado, nota }
 //
 // Públicas (sin datos): GET /api/agente/openapi.json y GET /api/agente/docs (Swagger UI)
 
@@ -43,6 +53,8 @@ const agente = require('../services/agenteService');
 const agenteReposicion = require('../services/agenteReposicion');
 const agenteNotas = require('../services/agenteNotas');
 const v = require('../services/agenteValidacion');
+const agenteLeads = require('../services/agenteLeadsService');
+const vLeads = require('../services/agenteLeadsValidacion');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
 const SWAGGER_VERSION = '5.17.14';
@@ -428,6 +440,118 @@ for (const [lista, fn] of Object.entries(LISTAS_REPOSICION)) {
         }
     });
 }
+
+// ── Posibles clientes (leads) ───────────────────────────────
+// Solo la zona de config/leadsZona.json, sin Churn, con tope diario (AGENTE_LEADS_TOPE_DIARIO)
+
+function handleLeads(res, err, generic) {
+    if (err instanceof agenteLeads.AgenteError) {
+        const body = { success: false, error: err.message, codigo: err.codigo || null };
+        if (err.details) body.details = err.details;
+        return res.status(err.status).json(body);
+    }
+    return handle(res, err, generic);
+}
+
+router.get('/leads', async (req, res) => {
+    const { value, errors } = vLeads.validarQueryLeads(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agenteLeads.listarLeads(value));
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudieron leer los posibles clientes');
+    }
+});
+
+// Las rutas de envíos van antes que /leads/:id para que "envios" no se tome como id
+router.get('/leads/envios/:idExterno', async (req, res) => {
+    const idExterno = parseIdExterno(req, res);
+    if (!idExterno) return undefined;
+    try {
+        return res.json({ success: true, data: await agenteLeads.estadoEnvio(idExterno) });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo leer el envío');
+    }
+});
+
+for (const accion of ['confirmar', 'cancelar']) {
+    router.post(`/leads/envios/:idExterno/${accion}`, async (req, res) => {
+        const idExterno = parseIdExterno(req, res);
+        if (!idExterno) return undefined;
+        try {
+            const fn = accion === 'confirmar' ? agenteLeads.confirmarEnvio : agenteLeads.cancelarEnvio;
+            const { data, repetida } = await fn(idExterno);
+            return res.json({ success: true, data, repetido: repetida });
+        } catch (err) {
+            return handleLeads(res, err, `No se pudo ${accion} el envío`);
+        }
+    });
+}
+
+router.get('/leads/:id', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        const { data, meta } = await agenteLeads.obtenerLead(p.id);
+        return res.json({ success: true, data, meta });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo leer el posible cliente');
+    }
+});
+
+router.post('/leads/:id/envios', async (req, res) => {
+    const p = parse(req, res, vLeads.validarEnvioLead);
+    if (!p) return undefined;
+    try {
+        const { data, repetida } = await agenteLeads.reservarEnvio(p.id, p.value);
+        return res.status(repetida ? 200 : 201).json({ success: true, data, repetido: repetida });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo reservar el envío');
+    }
+});
+
+router.post('/leads/:id/mensajes', async (req, res) => {
+    const p = parse(req, res, (b) => vLeads.validarMensajeLead(b));
+    if (!p) return undefined;
+    try {
+        const { data, repetida } = await agenteLeads.registrarMensaje(p.id, p.value);
+        return res.status(repetida ? 200 : 201).json({ success: true, data, repetido: repetida });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo guardar el mensaje');
+    }
+});
+
+router.get('/leads/:id/mensajes', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    const pag = v.validarPaginacion(req.query);
+    if (pag.errors.length) return invalid(res, pag.errors);
+    try {
+        return sendPage(res, await agenteLeads.listarMensajes(p.id, pag.value));
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudieron leer los mensajes');
+    }
+});
+
+router.post('/leads/:id/revisado', async (req, res) => {
+    const p = parse(req, res, null);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agenteLeads.marcarRevisado(p.id) });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo marcar como revisado');
+    }
+});
+
+router.patch('/leads/:id', async (req, res) => {
+    const p = parse(req, res, vLeads.validarLeadPatch);
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agenteLeads.actualizarLead(p.id, p.value) });
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo actualizar el posible cliente');
+    }
+});
 
 // Ruta inexistente (con API key válida): 404 con código, como el resto de los errores
 router.use((req, res) => res.status(404).json({
