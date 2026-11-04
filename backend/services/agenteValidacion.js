@@ -5,6 +5,7 @@
 const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
 const { DIAS_DEFAULT: COTIZACIONES_DIAS_DEFAULT } = require('./agenteCotizacionesWeb');
 const importantes = require('./agenteImportantes');
+const inactivos = require('./agenteInactivos');
 
 const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -21,6 +22,8 @@ const TAREA_TIPOS = ['duda', 'mejora', 'error'];
 const MENCIONA_IVA_RE = /\b(?:iva|i\.v\.a|impuestos?)\b/i;
 // Margen para relojes desfasados: una fecha puede estar hasta 5 minutos en el futuro
 const FUTURO_MAX_MS = 5 * 60 * 1000;
+// enviado_at de confirmar: hasta 1 minuto en el futuro
+const ENVIADO_FUTURO_MS = 60 * 1000;
 
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -385,15 +388,26 @@ function validarInteraccion(body, now = new Date()) {
 }
 
 /**
- * Body de POST clientes/:id/envios (reserva): { etapa, mensaje, id_externo, productos_recomendados? }.
+ * Body de POST clientes/:id/envios (reserva):
+ * { etapa | tipo_inactivo, mensaje, id_externo, productos_recomendados? }.
+ * Viene exactamente uno de etapa (cadencia de nuevos) o tipo_inactivo (clientes inactivos).
  * No lleva fecha: los controles y las fechas usan siempre la hora del servidor.
  */
 function validarEnvio(body) {
     if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
-    const errors = camposDesconocidos(body, ['etapa', 'mensaje', 'id_externo', 'productos_recomendados']);
+    const errors = camposDesconocidos(body, ['etapa', 'tipo_inactivo', 'mensaje', 'id_externo', 'productos_recomendados']);
     const value = { productos_recomendados: [] };
-    if (ETAPAS_ENVIO.includes(body.etapa)) value.etapa = body.etapa;
-    else errors.push({ campo: 'etapa', error: `Es obligatorio y tiene que ser uno de: ${ETAPAS_ENVIO.join(', ')}` });
+    const conEtapa = body.etapa !== undefined && body.etapa !== null;
+    const conTipo = body.tipo_inactivo !== undefined && body.tipo_inactivo !== null;
+    if (conEtapa && conTipo) {
+        errors.push({ campo: 'tipo_inactivo', error: 'Mandá etapa (clientes nuevos) o tipo_inactivo (inactivos), no los dos' });
+    } else if (conTipo) {
+        if (inactivos.TIPOS.includes(body.tipo_inactivo)) value.tipo_inactivo = body.tipo_inactivo;
+        else errors.push({ campo: 'tipo_inactivo', error: `Tiene que ser uno de: ${inactivos.TIPOS.join(', ')}` });
+    } else if (ETAPAS_ENVIO.includes(body.etapa)) value.etapa = body.etapa;
+    else {
+        errors.push({ campo: 'etapa', error: `Es obligatorio (o tipo_inactivo) y tiene que ser uno de: ${ETAPAS_ENVIO.join(', ')}` });
+    }
     value.mensaje = validarTexto('mensaje', body.mensaje, { obligatorio: true }, errors);
     if (value.mensaje && MENCIONA_IVA_RE.test(value.mensaje)) {
         errors.push({ campo: 'mensaje', error: 'No menciones el IVA ni impuestos: los precios son finales, poné solo el precio' });
@@ -404,6 +418,151 @@ function validarEnvio(body) {
         if (!Array.isArray(lista) || lista.length > 20 || !lista.every((x) => Number.isInteger(x) && x > 0)) {
             errors.push({ campo: 'productos_recomendados', error: 'Tiene que ser una lista de hasta 20 product_id' });
         } else value.productos_recomendados = [...new Set(lista)];
+    }
+    return { value, errors };
+}
+
+/** Body de POST envios/:idExterno/confirmar: { enviado_at? } (vacío también vale). */
+function validarConfirmar(body, now = new Date()) {
+    if (body === undefined || body === null) return { value: {}, errors: [] };
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['enviado_at']);
+    const value = {};
+    if (body.enviado_at !== undefined && body.enviado_at !== null) {
+        const d = parseIso(body.enviado_at);
+        if (!d) errors.push({ campo: 'enviado_at', error: 'Tiene que ser un datetime ISO 8601 (YYYY-MM-DDTHH:mm:ss-03:00)' });
+        else if (d.getTime() > now.getTime() + ENVIADO_FUTURO_MS) errors.push({ campo: 'enviado_at', error: 'No puede ser una fecha futura' });
+        else value.enviado_at = d;
+    }
+    return { value, errors };
+}
+
+/** ?dias_min, ?dias_max, ?monto_historico_min y ?compras_min de inactivos, con defaults de config. */
+function validarReglaInactivos(query, cfg, errors) {
+    const value = {
+        dias_min: cfg.dias_min,
+        dias_max: cfg.dias_max,
+        monto_historico_min: cfg.monto_historico_min,
+        compras_min: cfg.compras_min,
+    };
+    const dado = (k) => query[k] !== undefined && query[k] !== '';
+    if (dado('dias_min')) {
+        const n = entero(query.dias_min, { min: 1, max: inactivos.DIAS_MIN_MAX });
+        if (n === null) errors.push({ campo: 'dias_min', error: `Tiene que ser un entero de 1 a ${inactivos.DIAS_MIN_MAX}` });
+        else value.dias_min = n;
+    }
+    if (dado('dias_max')) {
+        const n = entero(query.dias_max, { min: 1, max: inactivos.DIAS_MAX_MAX });
+        if (n === null) errors.push({ campo: 'dias_max', error: `Tiene que ser un entero hasta ${inactivos.DIAS_MAX_MAX}` });
+        else value.dias_max = n;
+    }
+    if (value.dias_max <= value.dias_min && !errors.some((e) => e.campo === 'dias_min' || e.campo === 'dias_max')) {
+        errors.push({ campo: 'dias_max', error: `Tiene que ser mayor que dias_min (${value.dias_min})` });
+    }
+    if (dado('monto_historico_min')) {
+        const n = numeroNoNegativo(query.monto_historico_min);
+        if (n === null) errors.push({ campo: 'monto_historico_min', error: 'Tiene que ser un número mayor o igual a 0' });
+        else value.monto_historico_min = n;
+    }
+    if (dado('compras_min')) {
+        const n = entero(query.compras_min, { min: 1, max: inactivos.COMPRAS_MIN_MAX });
+        if (n === null) errors.push({ campo: 'compras_min', error: `Tiene que ser un entero de 1 a ${inactivos.COMPRAS_MIN_MAX}` });
+        else value.compras_min = n;
+    }
+    return value;
+}
+
+/** Query de GET clientes/inactivos. Defaults en config/inactivos.json. */
+function validarQueryInactivos(query = {}, cfg = inactivos.cargarConfig()) {
+    const errors = [];
+    const regla = validarReglaInactivos(query, cfg, errors);
+    const pag = validarPaginacion(query, inactivos.LIMIT_DEFAULT);
+    errors.push(...pag.errors);
+    const value = {
+        ...regla,
+        orden: inactivos.ORDEN_DEFAULT,
+        // Lista para analizar: por defecto vienen todos (también los de no_contactar)
+        no_contactar: null,
+        ...pag.value,
+        refresh: query.refresh === '1' || query.refresh === 'true',
+    };
+    for (const campo of ['rubro', 'ciudad']) {
+        if (query[campo] === undefined || !String(query[campo]).trim()) continue;
+        const s = String(query[campo]).trim();
+        if (s.length > 100) errors.push({ campo, error: 'Hasta 100 caracteres' });
+        else value[campo] = s;
+    }
+    if (query.orden !== undefined && query.orden !== '') {
+        if (inactivos.ORDENES.includes(query.orden)) value.orden = query.orden;
+        else errors.push({ campo: 'orden', error: `Tiene que ser uno de: ${inactivos.ORDENES.join(', ')}` });
+    }
+    if (query.no_contactar !== undefined) {
+        const b = query.no_contactar === 'todos' ? null : booleanoQuery(query.no_contactar);
+        if (b === undefined) errors.push({ campo: 'no_contactar', error: 'Tiene que ser true, false o todos' });
+        else value.no_contactar = b;
+    }
+    for (const campo of ['toca_hoy', 'con_respuesta_pendiente', 'con_telefono']) {
+        if (query[campo] === undefined) continue;
+        const b = booleanoQuery(query[campo]);
+        if (b === undefined) errors.push({ campo, error: 'Tiene que ser true o false' });
+        else value[campo] = b;
+    }
+    return { value, errors };
+}
+
+/** Query de GET clientes/inactivos/resumen: la misma regla que la lista, sin filtros ni páginas. */
+function validarQueryResumenInactivos(query = {}, cfg = inactivos.cargarConfig()) {
+    const errors = [];
+    const regla = validarReglaInactivos(query, cfg, errors);
+    return { value: { ...regla, refresh: query.refresh === '1' || query.refresh === 'true' }, errors };
+}
+
+/** Body de PATCH clientes/:id/inactivo: { marca: 'excluido' | null, nota }. */
+function validarInactivoPatch(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = camposDesconocidos(body, ['marca', 'nota']);
+    const value = {};
+    if (!('marca' in body)) errors.push({ campo: 'marca', error: `Es obligatorio: ${inactivos.MARCAS.join(', ')} o null` });
+    else if (body.marca === null || inactivos.MARCAS.includes(body.marca)) value.marca = body.marca;
+    else errors.push({ campo: 'marca', error: `Tiene que ser ${inactivos.MARCAS.join(', ')} o null` });
+    value.nota = null;
+    if (body.nota !== undefined && body.nota !== null) {
+        if (typeof body.nota !== 'string') errors.push({ campo: 'nota', error: 'Tiene que ser texto' });
+        else if (body.nota.trim().length > inactivos.NOTA_MAX) errors.push({ campo: 'nota', error: `Máximo ${inactivos.NOTA_MAX} caracteres` });
+        else if (body.nota.includes('�')) errors.push({ campo: 'nota', error: 'Tiene caracteres inválidos: mandalo en UTF-8' });
+        else value.nota = body.nota.trim() || null;
+    }
+    if (value.marca && !value.nota && !errors.some((e) => e.campo === 'nota')) {
+        errors.push({ campo: 'nota', error: 'Es obligatoria cuando se pone una marca: contá por qué' });
+    }
+    return { value, errors };
+}
+
+/** Body de PATCH clientes/:id/seguimiento-inactivo: { ultimo_contacto?, toques_enviados?, proxima_accion?, cerrado? }. */
+function validarSeguimientoInactivo(body, now = new Date()) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const permitidos = ['ultimo_contacto', 'toques_enviados', 'proxima_accion', 'cerrado'];
+    const errors = camposDesconocidos(body, permitidos);
+    const value = {};
+    if (!permitidos.some((k) => k in body)) {
+        errors.push({ campo: 'body', error: `Mandá al menos uno de: ${permitidos.join(', ')}` });
+    }
+    if ('ultimo_contacto' in body) {
+        const d = validarFechaPasada('ultimo_contacto', body.ultimo_contacto, now, errors);
+        if (d) value.ultimo_contacto = d;
+    }
+    if ('toques_enviados' in body) {
+        if (Number.isInteger(body.toques_enviados) && body.toques_enviados >= 0 && body.toques_enviados <= inactivos.TIPOS.length) {
+            value.toques_enviados = body.toques_enviados;
+        } else errors.push({ campo: 'toques_enviados', error: `Tiene que ser un entero de 0 a ${inactivos.TIPOS.length}` });
+    }
+    if ('proxima_accion' in body) {
+        if (body.proxima_accion === null || esFechaSimple(body.proxima_accion)) value.proxima_accion = body.proxima_accion;
+        else errors.push({ campo: 'proxima_accion', error: 'Tiene que ser una fecha YYYY-MM-DD o null' });
+    }
+    if ('cerrado' in body) {
+        if (typeof body.cerrado === 'boolean') value.cerrado = body.cerrado;
+        else errors.push({ campo: 'cerrado', error: 'Tiene que ser true o false' });
     }
     return { value, errors };
 }
@@ -526,6 +685,11 @@ module.exports = {
     validarSeguimiento,
     validarInteraccion,
     validarEnvio,
+    validarConfirmar,
+    validarQueryInactivos,
+    validarQueryResumenInactivos,
+    validarInactivoPatch,
+    validarSeguimientoInactivo,
     validarIdExternoRuta,
     validarClientePatch,
     validarFeedback,

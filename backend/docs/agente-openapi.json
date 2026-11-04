@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "API del agente de Neggo (Grok Bot)",
-    "version": "3.5.0",
-    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo."
+    "version": "3.6.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo.\n\n**Clientes inactivos (3.6.0):** `GET /clientes/inactivos` lista a los que compraron alguna vez y llevan **más de 60 días** sin comprar (60 justos no entran; hasta `dias_max`, 365 por defecto). Defaults en `backend/config/inactivos.json` (editable sin tocar código). Quedan afuera los que tienen un pedido activo, los que están en la cadencia de nuevos, los que hoy califican como importantes (ese flujo gana) y los marcados a mano con `PATCH /clientes/{id}/inactivo` (`marca: excluido`, con nota). `no_contactar` y `respuesta_pendiente` no los sacan de la lista, pero bloquean el envío. `meta.excluidos` dice cuántos se sacaron por cada motivo.\nSeguimiento propio (no usa `etapa`): `toca_hoy` es `primer_toque` (nunca contactado como inactivo desde su última compra) o `segundo_toque` (pasaron `reintento_dias`, 15, sin respuesta ni compra). Después del segundo, el ciclo se cierra hasta que vuelva a comprar; si vuelve a comprar y otra vez pasa los 60 días, arranca un ciclo nuevo. Si contesta al primer toque, no hay segundo en ese ciclo.\nConvivencia: prioridad nuevos > importantes > inactivos; un solo mensaje por día por cliente entre todos los flujos (409 `ya_contactado_hoy`), y si recibió un mensaje de cualquier flujo en los últimos `pausa_entre_flujos_dias` (3) inactivos no toca (409 `pausa_entre_flujos`). Una sola reserva activa por cliente, de cualquier flujo.\nPara mandar: `POST /clientes/{id}/envios` con `tipo_inactivo` en lugar de `etapa` (exactamente uno de los dos; id_externo sugerido `grok-<cliente>-inactivo<N>-AAAAMMDD`), mandar el WhatsApp y `POST /envios/{id_externo}/confirmar` (con `enviado_at` opcional) o `cancelar`. Mismas reglas de horario, reserva de 10 minutos, IVA y productos que en nuevos. Errores nuevos: `no_es_inactivo`, `ciclo_cerrado`, `tipo_no_corresponde`, `en_flujo_nuevos`, `ya_contactado_hoy`, `pausa_entre_flujos`.\nTablero: `GET /clientes/inactivos/resumen`. Corrección a mano del ciclo: `PATCH /clientes/{id}/seguimiento-inactivo`. `GET /clientes/{id}` trae el bloque `inactivo`.\n\n**Flujo diario de inactivos:** `GET /clientes/inactivos?toca_hoy=true&con_telefono=true` → para cada uno con `puede_enviar_ahora`, `GET /clientes/{id}` (mirá `inactivo.toca_hoy`) → reservar con `tipo_inactivo` → mandar → confirmar."
   },
   "servers": [
     {
@@ -561,7 +561,445 @@
             "$ref": "#/components/responses/NoAutorizado"
           },
           "422": {
-            "$ref": "#/components/responses/DatosInvalidos"
+            "$ref": "#/components/responses/Validacion"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/inactivos": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "listarClientesInactivos",
+        "summary": "Clientes inactivos (más de 60 días sin comprar)",
+        "description": "Compraron alguna vez y llevan más de `dias_min` días sin comprar (hasta `dias_max`). Excluye pedido activo, cadencia de nuevos, importantes y marca manual (`meta.excluidos`). Solo lectura. Orden por defecto `dias_sin_comprar_asc`: primero los que dejaron hace menos, que son los más fáciles de recuperar.",
+        "parameters": [
+          {
+            "name": "dias_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 730,
+              "default": 60
+            },
+            "description": "Días sin comprar: estrictamente mayor (60 justos no entran). Default de config.",
+            "example": 60
+          },
+          {
+            "name": "dias_max",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1825,
+              "default": 365
+            },
+            "description": "No buscar más atrás que esto (≤). Tiene que ser mayor que dias_min.",
+            "example": 365
+          },
+          {
+            "name": "monto_historico_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": "Suma de todas sus compras ≥ este valor"
+          },
+          {
+            "name": "compras_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Cantidad mínima de compras históricas"
+          },
+          {
+            "name": "rubro",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Rubro principal o alguno de categorias_compradas (sin distinguir tildes)",
+            "example": "Librería"
+          },
+          {
+            "name": "ciudad",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Ciudad exacta, sin distinguir mayúsculas ni tildes",
+            "example": "Pergamino"
+          },
+          {
+            "name": "orden",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "dias_sin_comprar_asc",
+                "dias_sin_comprar_desc",
+                "total_historico_desc",
+                "ultima_compra_desc",
+                "nombre"
+              ],
+              "default": "dias_sin_comprar_asc"
+            }
+          },
+          {
+            "name": "toca_hoy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: solo a los que les toca un toque hoy"
+          },
+          {
+            "name": "no_contactar",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false",
+                "todos"
+              ],
+              "default": "todos"
+            }
+          },
+          {
+            "name": "con_respuesta_pendiente",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "con_telefono",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            },
+            "description": "Recalcula la parte de Odoo (la caché dura 5 minutos y la comparte con importantes)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista paginada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data",
+                    "pagination",
+                    "meta"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClienteInactivo"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/MetaInactivos"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": 1596,
+                      "nombre": "Bazar Las Rosas",
+                      "contacto": "Carla",
+                      "telefono": "+5492477000000",
+                      "ciudad": "Pergamino",
+                      "rubro": "Bazar",
+                      "categorias_compradas": [
+                        {
+                          "rubro": "Bazar",
+                          "monto": 812000,
+                          "porcentaje": 64
+                        }
+                      ],
+                      "ultima_compra": "2026-08-20T11:20:00-03:00",
+                      "dias_sin_comprar": 75,
+                      "monto_ultima_compra": 184500,
+                      "primera_compra": "2025-11-04",
+                      "cantidad_compras": 9,
+                      "total_historico": 1268000,
+                      "ticket_promedio": 140888.89,
+                      "intervalo_habitual_dias": 21,
+                      "top_productos": [
+                        {
+                          "id": 23866,
+                          "nombre": "Goma Maped Lapiz Tinta",
+                          "cantidad_total": 48,
+                          "veces": 4,
+                          "ultima_vez": "2026-08-20"
+                        }
+                      ],
+                      "marca_manual": null,
+                      "no_contactar": false,
+                      "respuesta_pendiente": false,
+                      "reserva_activa": null,
+                      "toca_hoy": "primer_toque",
+                      "motivo_toca_hoy": "75 días sin comprar; nunca contactado como inactivo",
+                      "vence": "2026-11-05",
+                      "puede_enviar_ahora": true,
+                      "seguimiento_inactivo": {
+                        "ciclo_desde_compra": "2026-08-20",
+                        "toques_enviados": 0,
+                        "ultimo_contacto": null,
+                        "ultimo_tipo": null,
+                        "proxima_accion": "2026-11-03",
+                        "cerrado": false,
+                        "actualizado": null
+                      }
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 50,
+                    "total": 1,
+                    "pages": 1
+                  },
+                  "meta": {
+                    "hoy": "2026-11-03",
+                    "ahora": "2026-11-03T09:00:00-03:00",
+                    "ventana_envio": "lunes a viernes de 9 a 18 (hora de Argentina)",
+                    "ventana_abierta": true,
+                    "abre_a": null,
+                    "filtros": {
+                      "dias_min": 60,
+                      "dias_max": 365,
+                      "monto_historico_min": 0,
+                      "compras_min": 1
+                    },
+                    "excluidos": {
+                      "pedido_activo": 3,
+                      "en_flujo_nuevos": 0,
+                      "es_importante": 0,
+                      "manual": 2
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/inactivos/resumen": {
+      "get": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "resumenClientesInactivos",
+        "summary": "Tablero del día de inactivos",
+        "description": "Totales con la misma regla que la lista (acepta dias_min, dias_max, monto_historico_min y compras_min).",
+        "parameters": [
+          {
+            "name": "dias_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 730,
+              "default": 60
+            },
+            "description": "Días sin comprar: estrictamente mayor (60 justos no entran). Default de config.",
+            "example": 60
+          },
+          {
+            "name": "dias_max",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1825,
+              "default": 365
+            },
+            "description": "No buscar más atrás que esto (≤). Tiene que ser mayor que dias_min.",
+            "example": 365
+          },
+          {
+            "name": "monto_historico_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": "Suma de todas sus compras ≥ este valor"
+          },
+          {
+            "name": "compras_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Cantidad mínima de compras históricas"
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            },
+            "description": "Recalcula la parte de Odoo (la caché dura 5 minutos y la comparte con importantes)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ResumenInactivos"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/MetaInactivos"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "total_inactivos": 180,
+                    "por_tramo": {
+                      "61_90": 40,
+                      "91_180": 70,
+                      "181_365": 70
+                    },
+                    "monto_historico_total": 54000000,
+                    "toca_hoy": {
+                      "primer_toque": 25,
+                      "segundo_toque": 6
+                    },
+                    "puede_enviar_ahora": 28,
+                    "bloqueados": {
+                      "respuesta_pendiente": 2,
+                      "no_contactar": 5,
+                      "sin_telefono": 12
+                    },
+                    "excluidos": {
+                      "pedido_activo": 3,
+                      "en_flujo_nuevos": 1,
+                      "es_importante": 9,
+                      "manual": 2
+                    },
+                    "recuperados_30d": 7
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
           },
           "502": {
             "$ref": "#/components/responses/OdooCaido"
@@ -983,7 +1421,7 @@
         ],
         "operationId": "reservarEnvio",
         "summary": "Paso 1: reservar el mensaje de la etapa que toca (antes de mandarlo)",
-        "description": "Valida todo con la hora del servidor y bloquea la etapa por 10 minutos (`reservado_hasta`). No avanza la etapa: eso lo hace confirmar. El `mensaje` no puede mencionar el IVA ni impuestos (422 `datos_invalidos`). `id_externo` único por envío (por ejemplo `grok-<cliente>-<etapa>`); con el mismo id y el mismo contenido devuelve la reserva ya hecha (200, `repetido: true`). 409 con `codigo`: fuera_de_horario, no_contactar, sin_telefono, respuesta_pendiente, etapa_no_corresponde, ya_enviado, etapa_reservada, id_externo_distinto, reserva_cancelada, reserva_vencida.",
+        "description": "Valida todo con la hora del servidor y bloquea la etapa por 10 minutos (`reservado_hasta`). No avanza la etapa: eso lo hace confirmar. El `mensaje` no puede mencionar el IVA ni impuestos (422 `datos_invalidos`). `id_externo` único por envío (por ejemplo `grok-<cliente>-<etapa>`); con el mismo id y el mismo contenido devuelve la reserva ya hecha (200, `repetido: true`). 409 con `codigo`: fuera_de_horario, no_contactar, sin_telefono, respuesta_pendiente, etapa_no_corresponde, ya_enviado, etapa_reservada, id_externo_distinto, reserva_cancelada, reserva_vencida. Para inactivos mandá `tipo_inactivo` en lugar de `etapa` (exactamente uno): además de los controles de siempre, valida que sea inactivo (409 `no_es_inactivo`, `en_flujo_nuevos`), el ciclo (`ciclo_cerrado`), el toque que corresponde (`tipo_no_corresponde`), un mensaje por día (`ya_contactado_hoy`) y la pausa entre flujos (`pausa_entre_flujos`). Una sola reserva activa por cliente, de cualquier flujo (`etapa_reservada`).",
         "parameters": [
           {
             "name": "id",
@@ -1251,7 +1689,7 @@
         ],
         "operationId": "confirmarEnvio",
         "summary": "Paso 3: el WhatsApp salió",
-        "description": "Registra el envío con la hora del servidor, avanza la etapa, actualiza el último contacto y calcula la próxima acción. Se confirma aunque la reserva haya vencido (si nadie más tomó la etapa) o se haya cancelado por no contactar: el mensaje salió y tiene que quedar. Responde 200; reintentar devuelve 200 con `repetido: true`. 409: reserva_cancelada (la canceló el agente), o ya_enviado si otro envío ocupó la etapa.",
+        "description": "Registra el envío con la hora del servidor, avanza la etapa, actualiza el último contacto y calcula la próxima acción. Se confirma aunque la reserva haya vencido (si nadie más tomó la etapa) o se haya cancelado por no contactar: el mensaje salió y tiene que quedar. Responde 200; reintentar devuelve 200 con `repetido: true`. 409: reserva_cancelada (la canceló el agente), o ya_enviado si otro envío ocupó la etapa. En inactivos suma el toque al ciclo (toques_enviados, proxima_accion = envío + reintento_dias, cerrado al llegar a max_toques). Body opcional: `enviado_at`.",
         "parameters": [
           {
             "name": "id_externo",
@@ -1347,6 +1785,19 @@
           },
           "503": {
             "$ref": "#/components/responses/Deshabilitada"
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmarEnvio"
+              },
+              "example": {
+                "enviado_at": "2026-11-03T10:16:30-03:00"
+              }
+            }
           }
         }
       }
@@ -1625,6 +2076,201 @@
           },
           "500": {
             "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}/inactivo": {
+      "patch": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "marcarInactivo",
+        "summary": "Excluir (o volver a incluir) a un cliente de inactivos",
+        "description": "Para sacar a empleados internos, duplicados o clientes que no queremos recuperar. `marca: null` quita la marca. Guarda la fecha y queda en la ficha del cliente. Idempotente: misma marca y nota → 200 con `repetido: true`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InactivoPatch"
+              },
+              "example": {
+                "marca": "excluido",
+                "nota": "Es empleado de Neggo"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/InactivoEstado"
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1596,
+                    "nombre": "Bazar Las Rosas",
+                    "marca_manual": {
+                      "marca": "excluido",
+                      "nota": "Es empleado de Neggo",
+                      "at": "2026-11-03T10:00:00-03:00"
+                    },
+                    "seguimiento_inactivo": {
+                      "ciclo_desde_compra": null,
+                      "toques_enviados": 0,
+                      "ultimo_contacto": null,
+                      "ultimo_tipo": null,
+                      "proxima_accion": null,
+                      "cerrado": false,
+                      "actualizado": "2026-11-03T10:00:00-03:00"
+                    }
+                  },
+                  "repetido": false
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/clientes/{id}/seguimiento-inactivo": {
+      "patch": {
+        "tags": [
+          "Clientes"
+        ],
+        "operationId": "actualizarSeguimientoInactivo",
+        "summary": "Corregir a mano el ciclo de inactivos",
+        "description": "Corrige el ciclo actual (el de la última compra). `ultimo_contacto` nunca retrocede. Para registrar un toque usá `POST envios` con `tipo_inactivo`. 409 `no_es_inactivo` si el cliente no tiene compras.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "ID del cliente (res.partner de Odoo)",
+            "example": 1596
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeguimientoInactivoPatch"
+              },
+              "example": {
+                "cerrado": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/InactivoEstado"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": {
+                    "id": 1596,
+                    "nombre": "Bazar Las Rosas",
+                    "marca_manual": null,
+                    "seguimiento_inactivo": {
+                      "ciclo_desde_compra": "2026-08-20",
+                      "toques_enviados": 1,
+                      "ultimo_contacto": "2026-11-03T10:16:30-03:00",
+                      "ultimo_tipo": "primer_toque",
+                      "proxima_accion": "2026-11-18",
+                      "cerrado": true,
+                      "actualizado": "2026-11-03T11:00:00-03:00"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
           },
           "502": {
             "$ref": "#/components/responses/OdooCaido"
@@ -3508,10 +4154,17 @@
           "reserva_activa": {
             "type": "object",
             "nullable": true,
-            "description": "Reserva sin confirmar y sin vencer: mientras exista, puede_enviar_ahora es false",
+            "description": "Reserva sin confirmar y sin vencer, de cualquier flujo: mientras exista, puede_enviar_ahora es false",
             "properties": {
               "id_externo": {
                 "type": "string"
+              },
+              "flujo": {
+                "type": "string",
+                "enum": [
+                  "nuevos",
+                  "inactivos"
+                ]
               },
               "etapa": {
                 "type": "string",
@@ -3519,12 +4172,21 @@
                   "dia_1",
                   "dia_7",
                   "dia_15"
-                ]
+                ],
+                "nullable": true
+              },
+              "tipo_inactivo": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TipoInactivo"
+                  }
+                ],
+                "nullable": true
               },
               "reservado_hasta": {
                 "type": "string",
                 "format": "date-time",
-                "example": "2026-10-17T10:00:00-03:00"
+                "example": "2026-11-03T10:00:00-03:00"
               }
             }
           },
@@ -3550,6 +4212,9 @@
           },
           "pedido_activo": {
             "$ref": "#/components/schemas/PedidoActivo"
+          },
+          "inactivo": {
+            "$ref": "#/components/schemas/InactivoFicha"
           }
         }
       },
@@ -3578,6 +4243,14 @@
           },
           "seguimiento": {
             "$ref": "#/components/schemas/Seguimiento"
+          },
+          "seguimiento_inactivo": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SeguimientoInactivo"
+              }
+            ],
+            "description": "Solo en las respuestas de envíos de inactivos"
           }
         }
       },
@@ -3623,7 +4296,6 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "etapa",
           "mensaje",
           "id_externo"
         ],
@@ -3635,7 +4307,15 @@
               "dia_7",
               "dia_15"
             ],
-            "description": "Tiene que ser la de toca_hoy"
+            "description": "Cadencia de nuevos: tiene que ser la de toca_hoy"
+          },
+          "tipo_inactivo": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TipoInactivo"
+              }
+            ],
+            "description": "Inactivos: tiene que ser el toca_hoy de inactivos (si no, 409 tipo_no_corresponde)"
           },
           "mensaje": {
             "type": "string",
@@ -3646,7 +4326,7 @@
           "id_externo": {
             "type": "string",
             "pattern": "^[A-Za-z0-9._:-]{1,100}$",
-            "description": "Único por envío; el mismo en los reintentos",
+            "description": "Único por envío; el mismo en los reintentos. Sugerido para inactivos: grok-<cliente>-inactivo<N>-AAAAMMDD",
             "example": "grok-1596-dia_7"
           },
           "productos_recomendados": {
@@ -3657,7 +4337,8 @@
             "maxItems": 20,
             "description": "product_id de los productos que recomienda el mensaje (para auditar y no repetir)"
           }
-        }
+        },
+        "description": "Exactamente uno de etapa (clientes nuevos) o tipo_inactivo (inactivos): ninguno o los dos → 422 datos_invalidos"
       },
       "EnvioRegistrado": {
         "type": "object",
@@ -3728,6 +4409,14 @@
               "recibido"
             ]
           },
+          "flujo": {
+            "type": "string",
+            "enum": [
+              "nuevos",
+              "inactivos"
+            ],
+            "description": "De qué flujo es el envío (los sueltos de la conversación quedan en nuevos)"
+          },
           "etapa": {
             "type": "string",
             "enum": [
@@ -3736,6 +4425,14 @@
               "dia_7",
               "dia_15",
               "finalizado"
+            ],
+            "nullable": true
+          },
+          "tipo_inactivo": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TipoInactivo"
+              }
             ],
             "nullable": true
           },
@@ -3973,7 +4670,13 @@
               "datos_invalidos",
               "odoo_caido",
               "deshabilitada",
-              "error_interno"
+              "error_interno",
+              "no_es_inactivo",
+              "ciclo_cerrado",
+              "tipo_no_corresponde",
+              "en_flujo_nuevos",
+              "ya_contactado_hoy",
+              "pausa_entre_flujos"
             ]
           }
         }
@@ -5024,6 +5727,573 @@
             }
           }
         }
+      },
+      "TipoInactivo": {
+        "type": "string",
+        "enum": [
+          "primer_toque",
+          "segundo_toque"
+        ],
+        "description": "Toque del seguimiento de inactivos"
+      },
+      "SeguimientoInactivo": {
+        "type": "object",
+        "description": "Estado del ciclo actual de inactivos (el ciclo arranca con la última compra)",
+        "properties": {
+          "ciclo_desde_compra": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Fecha de la última compra: si vuelve a comprar, arranca otro ciclo"
+          },
+          "toques_enviados": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "ultimo_contacto": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Último toque de inactivos confirmado en este ciclo"
+          },
+          "ultimo_tipo": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TipoInactivo"
+              }
+            ],
+            "nullable": true
+          },
+          "proxima_accion": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "cerrado": {
+            "type": "boolean",
+            "description": "Ciclo cerrado: ya no hay toques hasta que vuelva a comprar"
+          },
+          "actualizado": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "TopProducto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "product_id (el de /productos)"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "cantidad_total": {
+            "type": "number"
+          },
+          "veces": {
+            "type": "integer",
+            "description": "En cuántas compras apareció"
+          },
+          "ultima_vez": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      },
+      "MarcaInactivo": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "marca": {
+            "type": "string",
+            "enum": [
+              "excluido"
+            ]
+          },
+          "nota": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ClienteInactivo": {
+        "type": "object",
+        "description": "Liviano: sin las compras completas (están en GET /clientes/{id})",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true
+          },
+          "telefono": {
+            "type": "string",
+            "nullable": true
+          },
+          "ciudad": {
+            "type": "string",
+            "nullable": true
+          },
+          "rubro": {
+            "type": "string",
+            "nullable": true
+          },
+          "categorias_compradas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoriaComprada"
+            },
+            "description": "De toda la historia"
+          },
+          "ultima_compra": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dias_sin_comprar": {
+            "type": "integer",
+            "description": "Días desde la última compra, hora de Argentina"
+          },
+          "monto_ultima_compra": {
+            "type": "number"
+          },
+          "primera_compra": {
+            "type": "string",
+            "format": "date"
+          },
+          "cantidad_compras": {
+            "type": "integer",
+            "description": "De toda la historia"
+          },
+          "total_historico": {
+            "type": "number"
+          },
+          "ticket_promedio": {
+            "type": "number",
+            "nullable": true
+          },
+          "intervalo_habitual_dias": {
+            "type": "number",
+            "nullable": true,
+            "description": "Mediana de días entre compras de toda la historia; null con menos de 3 compras"
+          },
+          "top_productos": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/TopProducto"
+            },
+            "description": "Lo que solía llevar: por veces y después por cantidad"
+          },
+          "marca_manual": {
+            "$ref": "#/components/schemas/MarcaInactivo"
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "respuesta_pendiente": {
+            "type": "boolean"
+          },
+          "reserva_activa": {
+            "type": "object",
+            "nullable": true,
+            "description": "Reserva sin confirmar y sin vencer, de cualquier flujo: mientras exista, puede_enviar_ahora es false",
+            "properties": {
+              "id_externo": {
+                "type": "string"
+              },
+              "flujo": {
+                "type": "string",
+                "enum": [
+                  "nuevos",
+                  "inactivos"
+                ]
+              },
+              "etapa": {
+                "type": "string",
+                "enum": [
+                  "dia_1",
+                  "dia_7",
+                  "dia_15"
+                ],
+                "nullable": true
+              },
+              "tipo_inactivo": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TipoInactivo"
+                  }
+                ],
+                "nullable": true
+              },
+              "reservado_hasta": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-11-03T10:00:00-03:00"
+              }
+            }
+          },
+          "toca_hoy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TipoInactivo"
+              }
+            ],
+            "nullable": true
+          },
+          "motivo_toca_hoy": {
+            "type": "string",
+            "nullable": true,
+            "description": "Por qué le toca (o por qué no) hoy"
+          },
+          "vence": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Hoy + 2 días hábiles; si no salió, se recalcula"
+          },
+          "puede_enviar_ahora": {
+            "type": "boolean"
+          },
+          "seguimiento_inactivo": {
+            "$ref": "#/components/schemas/SeguimientoInactivo"
+          }
+        }
+      },
+      "FiltrosInactivos": {
+        "type": "object",
+        "properties": {
+          "dias_min": {
+            "type": "integer"
+          },
+          "dias_max": {
+            "type": "integer"
+          },
+          "monto_historico_min": {
+            "type": "number"
+          },
+          "compras_min": {
+            "type": "integer"
+          }
+        }
+      },
+      "ExcluidosInactivos": {
+        "type": "object",
+        "description": "Cumplían la regla pero quedaron afuera (cada cliente cuenta en un solo motivo, en este orden: manual, pedido_activo, en_flujo_nuevos, es_importante)",
+        "properties": {
+          "pedido_activo": {
+            "type": "integer"
+          },
+          "en_flujo_nuevos": {
+            "type": "integer"
+          },
+          "es_importante": {
+            "type": "integer"
+          },
+          "manual": {
+            "type": "integer"
+          }
+        }
+      },
+      "MetaInactivos": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Meta"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "filtros": {
+                "$ref": "#/components/schemas/FiltrosInactivos"
+              },
+              "excluidos": {
+                "$ref": "#/components/schemas/ExcluidosInactivos"
+              }
+            }
+          }
+        ]
+      },
+      "ResumenInactivos": {
+        "type": "object",
+        "properties": {
+          "total_inactivos": {
+            "type": "integer"
+          },
+          "por_tramo": {
+            "type": "object",
+            "description": "Por días sin comprar. Con dias_max > 365 aparece además mas_de_365",
+            "properties": {
+              "61_90": {
+                "type": "integer"
+              },
+              "91_180": {
+                "type": "integer"
+              },
+              "181_365": {
+                "type": "integer"
+              },
+              "mas_de_365": {
+                "type": "integer"
+              }
+            }
+          },
+          "monto_historico_total": {
+            "type": "number"
+          },
+          "toca_hoy": {
+            "type": "object",
+            "properties": {
+              "primer_toque": {
+                "type": "integer"
+              },
+              "segundo_toque": {
+                "type": "integer"
+              }
+            }
+          },
+          "puede_enviar_ahora": {
+            "type": "integer"
+          },
+          "bloqueados": {
+            "type": "object",
+            "properties": {
+              "respuesta_pendiente": {
+                "type": "integer"
+              },
+              "no_contactar": {
+                "type": "integer"
+              },
+              "sin_telefono": {
+                "type": "integer"
+              }
+            }
+          },
+          "excluidos": {
+            "$ref": "#/components/schemas/ExcluidosInactivos"
+          },
+          "recuperados_30d": {
+            "type": "integer",
+            "description": "Clientes con un toque de inactivo confirmado que volvieron a comprar dentro de los 30 días siguientes, con esa compra en los últimos 30 días"
+          }
+        }
+      },
+      "InactivoPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "marca"
+        ],
+        "properties": {
+          "marca": {
+            "type": "string",
+            "enum": [
+              "excluido"
+            ],
+            "nullable": true,
+            "description": "excluido saca al cliente de la lista; null quita la marca"
+          },
+          "nota": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Obligatoria si marca no es null (por qué)"
+          }
+        }
+      },
+      "SeguimientoInactivoPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "ultimo_contacto": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Nunca retrocede: se guarda el más nuevo"
+          },
+          "toques_enviados": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "proxima_accion": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "cerrado": {
+            "type": "boolean"
+          }
+        }
+      },
+      "InactivoEstado": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "nombre": {
+            "type": "string"
+          },
+          "marca_manual": {
+            "$ref": "#/components/schemas/MarcaInactivo"
+          },
+          "seguimiento_inactivo": {
+            "$ref": "#/components/schemas/SeguimientoInactivo"
+          }
+        }
+      },
+      "InactivoFicha": {
+        "type": "object",
+        "description": "Bloque inactivo de GET /clientes/{id}, con los defaults de config/inactivos.json",
+        "properties": {
+          "es_inactivo": {
+            "type": "boolean"
+          },
+          "motivo_exclusion": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "pedido_activo",
+              "en_flujo_nuevos",
+              "es_importante",
+              null
+            ],
+            "description": "Cumple la regla de días y montos pero está excluido por esto"
+          },
+          "ultima_compra": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dias_sin_comprar": {
+            "type": "integer",
+            "description": "Días desde la última compra, hora de Argentina"
+          },
+          "monto_ultima_compra": {
+            "type": "number"
+          },
+          "primera_compra": {
+            "type": "string",
+            "format": "date"
+          },
+          "cantidad_compras": {
+            "type": "integer",
+            "description": "De toda la historia"
+          },
+          "total_historico": {
+            "type": "number"
+          },
+          "ticket_promedio": {
+            "type": "number",
+            "nullable": true
+          },
+          "intervalo_habitual_dias": {
+            "type": "number",
+            "nullable": true,
+            "description": "Mediana de días entre compras de toda la historia; null con menos de 3 compras"
+          },
+          "top_productos": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/TopProducto"
+            },
+            "description": "Lo que solía llevar: por veces y después por cantidad"
+          },
+          "marca_manual": {
+            "$ref": "#/components/schemas/MarcaInactivo"
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "respuesta_pendiente": {
+            "type": "boolean"
+          },
+          "reserva_activa": {
+            "type": "object",
+            "nullable": true,
+            "description": "Reserva sin confirmar y sin vencer, de cualquier flujo: mientras exista, puede_enviar_ahora es false",
+            "properties": {
+              "id_externo": {
+                "type": "string"
+              },
+              "flujo": {
+                "type": "string",
+                "enum": [
+                  "nuevos",
+                  "inactivos"
+                ]
+              },
+              "etapa": {
+                "type": "string",
+                "enum": [
+                  "dia_1",
+                  "dia_7",
+                  "dia_15"
+                ],
+                "nullable": true
+              },
+              "tipo_inactivo": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TipoInactivo"
+                  }
+                ],
+                "nullable": true
+              },
+              "reservado_hasta": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-11-03T10:00:00-03:00"
+              }
+            }
+          },
+          "toca_hoy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TipoInactivo"
+              }
+            ],
+            "nullable": true
+          },
+          "motivo_toca_hoy": {
+            "type": "string",
+            "nullable": true,
+            "description": "Por qué le toca (o por qué no) hoy"
+          },
+          "vence": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Hoy + 2 días hábiles; si no salió, se recalcula"
+          },
+          "puede_enviar_ahora": {
+            "type": "boolean"
+          },
+          "seguimiento_inactivo": {
+            "$ref": "#/components/schemas/SeguimientoInactivo"
+          }
+        }
+      },
+      "ConfirmarEnvio": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enviado_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Cuándo salió de verdad. Opcional: sin esto se usa la hora del servidor. No puede ser futura (1 minuto de margen) ni anterior a la reserva"
+          }
+        }
       }
     },
     "responses": {
@@ -5094,7 +6364,7 @@
         }
       },
       "Conflicto": {
-        "description": "La operación no corresponde. Mirá el codigo: fuera_de_horario, no_contactar, sin_telefono, respuesta_pendiente, etapa_no_corresponde, ya_enviado, etapa_reservada, reserva_cancelada, transicion_invalida, id_externo_usado",
+        "description": "La operación no corresponde. Mirá el codigo: fuera_de_horario, no_contactar, sin_telefono, respuesta_pendiente, etapa_no_corresponde, ya_enviado, etapa_reservada, reserva_cancelada, transicion_invalida, id_externo_usado, y en inactivos: no_es_inactivo, ciclo_cerrado, tipo_no_corresponde, en_flujo_nuevos, ya_contactado_hoy, pausa_entre_flujos",
         "content": {
           "application/json": {
             "schema": {

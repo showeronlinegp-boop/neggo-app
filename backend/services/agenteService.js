@@ -12,6 +12,7 @@ const { phoneKey, phoneDisplay } = require('./crmContacts');
 const { productLink } = require('./whatsappMessage');
 const nuevos = require('./agenteNuevos');
 const importantes = require('./agenteImportantes');
+const inactivos = require('./agenteInactivos');
 const cotWeb = require('./agenteCotizacionesWeb');
 const testNotes = require('./testNotesService');
 
@@ -306,15 +307,16 @@ async function seguimientos(ids, db = pool) {
     return new Map(rows.map((r) => [r.odoo_partner_id, r]));
 }
 
-/** Reserva activa (no vencida) de cada cliente: { id_externo, etapa, reservado_hasta }. */
+/** Reserva activa (no vencida) de cada cliente, de cualquier flujo: { id_externo, flujo, etapa, tipo_inactivo, reservado_hasta }. */
 async function reservasActivas(ids, db = pool) {
     const { rows } = await db.query(
-        `SELECT DISTINCT ON (odoo_partner_id) odoo_partner_id, id_externo, etapa, reservado_hasta
+        `SELECT DISTINCT ON (odoo_partner_id) odoo_partner_id, id_externo, flujo, etapa, tipo_inactivo, reservado_hasta
          FROM crm_bot_interacciones
          WHERE odoo_partner_id = ANY($1::int[]) AND envio_etapa AND estado = 'reservado' AND reservado_hasta >= NOW()
          ORDER BY odoo_partner_id, reservado_hasta DESC`, [ids]);
     return new Map(rows.map((r) => [r.odoo_partner_id, {
-        id_externo: r.id_externo, etapa: r.etapa, reservado_hasta: nuevos.toArIso(r.reservado_hasta),
+        id_externo: r.id_externo, flujo: r.flujo, etapa: r.etapa, tipo_inactivo: r.tipo_inactivo,
+        reservado_hasta: nuevos.toArIso(r.reservado_hasta),
     }]));
 }
 
@@ -410,6 +412,34 @@ async function obtenerCliente(id) {
     const pedidosMap = await odoo(() => pedidosActivosOdoo([id], hoy));
     data.pedido_activo = pedidosMap.get(id) || null;
     if (data.importante) data.importante.pedido_activo = data.pedido_activo;
+    // Bloque inactivo con los defaults de config/inactivos.json
+    const si = (await segInactivos([id])).get(id) || null;
+    const enFlujoNuevos = enCadenciaNuevos(ficha.fecha_primera_compra, row, hoy);
+    const ev = evaluarInactivo(ficha, {
+        regla: inactivos.cargarConfig(),
+        hoy,
+        si,
+        pedidoActivo: Boolean(data.pedido_activo),
+        enFlujoNuevos,
+        esImportante: Boolean(data.importante && data.importante.es_importante),
+    });
+    const { _codigo, ...estado } = estadoInactivo({ base: ficha, m: ev.m, row, conv, reserva, si, hoy, ventanaAbierta: info.ventana_abierta, esInactivo: ev.es_inactivo });
+    if (!ev.es_inactivo) estado.motivo_toca_hoy = motivoNoInactivo(ev, inactivos.cargarConfig());
+    data.inactivo = {
+        es_inactivo: ev.es_inactivo,
+        motivo_exclusion: ev.motivo_exclusion,
+        dias_sin_comprar: ev.m.dias_sin_comprar,
+        ultima_compra: ev.m.ultima_compra,
+        monto_ultima_compra: ev.m.monto_ultima_compra,
+        primera_compra: ev.m.primera_compra,
+        cantidad_compras: ev.m.cantidad_compras,
+        total_historico: ev.m.total_historico,
+        ticket_promedio: ev.m.ticket_promedio,
+        intervalo_habitual_dias: ev.m.intervalo_habitual_dias,
+        top_productos: ev.m.top_productos,
+        marca_manual: formatMarca(si),
+        ...estado,
+    };
     return { data, meta: info };
 }
 
@@ -424,41 +454,72 @@ function claveImportantes({ dias, dias_pedido, monto_minimo, monto_pedido_minimo
     return [dias, dias_pedido, monto_minimo, monto_pedido_minimo, top == null ? '-' : top].join('|');
 }
 
+// Historia mínima que se lee: un año y un día, para que importantes (365) e inactivos
+// (dias_max 365 + el día de hoy) compartan la misma lectura de Odoo con los defaults
+const HISTORIA_DIAS_MIN = 366;
+const HISTORIA_TTL_MS = 5 * 60 * 1000;
+
 /**
  * Cuántos días de historia hay que leer para armar totales, tendencia, pedido grande
  * e intervalo habitual. La última y la primera compra salen de toda la historia del partner.
  */
 function lookbackImportantes(dias, diasPedido) {
-    return Math.max(dias * 2, diasPedido, 365);
+    return Math.max(dias * 2, diasPedido, HISTORIA_DIAS_MIN);
 }
 
-async function calcularImportantesOdoo({ dias, dias_pedido: diasPedido, monto_minimo, monto_pedido_minimo, top }, hoy) {
+/**
+ * Clientes que compraron en los últimos `lookback` días, con TODA su historia de compras,
+ * enriquecidos (partner, rubro, categorías) y el rubro de cada producto. Es la lectura pesada
+ * de Odoo que comparten importantes e inactivos.
+ */
+async function calcularHistoriaOdoo(lookback, hoy) {
     const { companyId, context } = await neggoContext();
-    const lookback = lookbackImportantes(dias, diasPedido);
     const desdeLookback = nuevos.desdeVentana(hoy, lookback);
     const recientes = await readAll('pos.order',
         [['company_id', '=', companyId], ['state', 'in', nuevos.POS_STATES],
             ['date_order', '>=', nuevos.inicioDiaUtc(desdeLookback)]],
         ['partner_id'], context);
     const candidatos = [...new Set(recientes.map((t) => nuevos.m2oId(t.partner_id)).filter(Boolean))];
-    if (!candidatos.length) return [];
+    if (!candidatos.length) return { base: [], rubroPorProducto: new Map() };
 
     // Toda la historia de esos partners: hace falta para ultima_compra, primera compra y el intervalo
     const todos = await readAll('pos.order',
         [['company_id', '=', companyId], ['state', 'in', nuevos.POS_STATES], ['partner_id', 'in', candidatos]],
         TICKET_FIELDS, context);
     const clientes = await comprasDeTickets(todos, hoy, TODA_LA_HISTORIA, context);
-    if (!clientes.length) return [];
+    if (!clientes.length) return { base: [], rubroPorProducto: new Map() };
     const base = await enriquecer(clientes, clientes.map((c) => c.id), context);
 
-    // categorias_compradas de la lista salen solo de la ventana (las recalcula calcularImportantes
-    // si le pasamos rubroPorProducto; acá ya vienen de enriquecer sobre toda la historia, así que
-    // las volvemos a calcular abajo con las compras de la ventana).
+    // categorias_compradas de importantes salen solo de la ventana (las recalcula calcularImportantes
+    // con rubroPorProducto; las de enriquecer son de toda la historia, que es lo que usa inactivos).
     const productIds = new Set(base.flatMap((c) => c.compras.flatMap((k) => k.productos.map((p) => p.id))));
     const categorias = await readCategorias([...productIds], context);
     const nombresCategorias = await categoriasDeProductos();
     const labels = health.rubroLabels([...nombresCategorias, ...categorias.values()]);
     const rubroPorProducto = new Map([...categorias].map(([pid, cat]) => [pid, labels.get(cat) || null]));
+    return { base, rubroPorProducto };
+}
+
+// Caché por lookback. Guarda la promesa: dos pedidos a la vez hacen una sola lectura
+const historiaCache = new Map();
+
+async function historiaDesdeOdoo(lookback, refresh) {
+    const hoy = hoyAr();
+    const hit = historiaCache.get(lookback);
+    if (!refresh && hit && hit.hoy === hoy && Date.now() - hit.at < HISTORIA_TTL_MS) return hit.promise;
+    const promise = odoo(() => calcularHistoriaOdoo(lookback, hoy));
+    historiaCache.set(lookback, { at: Date.now(), hoy, promise });
+    try {
+        return await promise;
+    } catch (err) {
+        if (historiaCache.get(lookback)?.promise === promise) historiaCache.delete(lookback);
+        throw err;
+    }
+}
+
+async function calcularImportantesOdoo({ dias, dias_pedido: diasPedido, monto_minimo, monto_pedido_minimo, top }, hoy, refresh = false) {
+    const { base, rubroPorProducto } = await historiaDesdeOdoo(lookbackImportantes(dias, diasPedido), refresh);
+    if (!base.length) return [];
 
     const cfg = importantes.cargarConfig();
     return importantes.calcularImportantes({
@@ -489,7 +550,7 @@ async function importantesDesdeOdoo(params, refresh) {
     const clave = claveImportantes(params);
     const hit = importantesCache.get(clave);
     if (!refresh && hit && hit.hoy === hoy && Date.now() - hit.at < IMPORTANTES_TTL_MS) return hit.data;
-    const data = await odoo(() => calcularImportantesOdoo(params, hoy));
+    const data = await odoo(() => calcularImportantesOdoo(params, hoy, refresh));
     importantesCache.set(clave, { at: Date.now(), hoy, data });
     return data;
 }
@@ -887,7 +948,9 @@ function formatInteraccion(r) {
         cliente_id: r.odoo_partner_id,
         fecha: nuevos.toArIso(r.fecha),
         tipo: r.tipo,
+        flujo: r.flujo || 'nuevos',
         etapa: r.etapa,
+        tipo_inactivo: r.tipo_inactivo || null,
         envio_de_etapa: r.envio_etapa,
         estado: r.envio_etapa ? r.estado : null,
         reservado_hasta: r.estado === 'reservado' && r.reservado_hasta ? nuevos.toArIso(r.reservado_hasta) : null,
@@ -916,6 +979,8 @@ function exigirMismoContenido(previa, value) {
     const distinto = previa.mensaje !== value.mensaje
         || (value.etapa !== undefined && (previa.etapa || null) !== (value.etapa || null))
         || (value.tipo !== undefined && previa.tipo !== value.tipo)
+        || (value.tipo_inactivo !== undefined && (previa.tipo_inactivo || null) !== (value.tipo_inactivo || null))
+        || (value.tipo_inactivo === undefined && value.etapa !== undefined && previa.flujo === 'inactivos')
         || (value.productos_recomendados !== undefined && productos(previa.productos_recomendados) !== productos(value.productos_recomendados));
     if (distinto) {
         throw new AgenteError(409, 'Ese id_externo ya se usó con otro contenido (mensaje, etapa o productos). Usá un id_externo nuevo', 'id_externo_distinto');
@@ -976,7 +1041,11 @@ async function vencerReservas(db, id) {
 
 async function respuestaEnvio(cliente, r, repetida) {
     const row = (await seguimientos([cliente.id])).get(cliente.id);
-    return { data: { envio: formatInteraccion(r), cliente: await estadoCliente(cliente, row) }, repetida };
+    const estado = await estadoCliente(cliente, row);
+    if (r.flujo === 'inactivos') {
+        estado.seguimiento_inactivo = formatSeguimientoInactivoRow((await segInactivos([cliente.id])).get(cliente.id) || null);
+    }
+    return { data: { envio: formatInteraccion(r), cliente: estado }, repetida };
 }
 
 /**
@@ -1000,6 +1069,7 @@ async function reservarEnvio(id, value) {
         }
         return respuestaEnvio(cliente, repetida, true);
     }
+    if (value.tipo_inactivo) return reservarEnvioInactivo(cliente, value);
     const ahora = new Date();
     if (!nuevos.ventanaAbierta(ahora)) {
         throw new AgenteError(409, `Fuera del horario de envío: ${nuevos.VENTANA_ENVIO.texto}. Abre: ${nuevos.abreA(ahora)}`, 'fuera_de_horario');
@@ -1021,6 +1091,8 @@ async function reservarEnvio(id, value) {
             if (previas.length) {
                 throw new AgenteError(409, `La etapa ${value.etapa} está reservada por otro envío (${previas[0].id_externo})`, 'etapa_reservada');
             }
+            // Una sola reserva activa por cliente, sin importar el flujo
+            await exigirSinReservaActiva(db, id);
             const conv = (await conversaciones([id], db)).get(id);
             if (hayRespuestaPendiente(seg, conv)) {
                 throw new AgenteError(409, 'El cliente contestó y todavía no se revisó su respuesta', 'respuesta_pendiente');
@@ -1063,7 +1135,7 @@ async function exigirEnvio(db, idExterno) {
  * vencido o el cliente haya pedido no contactar después: el mensaje salió y tiene que quedar.
  * Solo falla si la reserva se canceló o si otro envío ya ocupó la etapa.
  */
-async function confirmarEnvio(idExterno) {
+async function confirmarEnvio(idExterno, { enviado_at: enviadoAt = null } = {}) {
     const previa = await exigirEnvio(pool, idExterno);
     const cliente = await exigirCliente(previa.odoo_partner_id);
     if (previa.estado === 'enviado') return respuestaEnvio(cliente, previa, true);
@@ -1072,23 +1144,31 @@ async function confirmarEnvio(idExterno) {
     if (previa.estado === 'cancelado' && previa.motivo_cancelacion !== 'no_contactar') {
         throw new AgenteError(409, 'Ese envío se canceló: no se puede confirmar', 'reserva_cancelada');
     }
+    // enviado_at (opcional): cuándo salió de verdad. No puede ser anterior a la reserva (1 minuto de margen)
+    if (enviadoAt && enviadoAt.getTime() < new Date(previa.fecha).getTime() - 60 * 1000) {
+        throw new AgenteError(422, 'Datos inválidos', 'datos_invalidos',
+            [{ campo: 'enviado_at', error: `No puede ser anterior a la reserva (${nuevos.toArIso(previa.fecha)})` }]);
+    }
+    if (previa.flujo === 'inactivos') return confirmarEnvioInactivo(cliente, previa, enviadoAt);
     const ficha = await odoo(() => fichaOdoo(cliente.id));
     try {
         const r = await enTransaccion(async (db) => {
             const seg = await lockSeguimiento(db, cliente.id);
             const { rows: [row] } = await db.query(
-                `UPDATE crm_bot_interacciones SET estado = 'enviado', fecha = NOW(), reservado_hasta = NULL, motivo_cancelacion = NULL
+                `UPDATE crm_bot_interacciones SET estado = 'enviado', fecha = COALESCE($2, NOW()), reservado_hasta = NULL, motivo_cancelacion = NULL
                  WHERE id = $1 AND (estado IN ('reservado', 'vencido') OR (estado = 'cancelado' AND motivo_cancelacion = 'no_contactar'))
-                 RETURNING *`, [previa.id]);
+                 RETURNING *`, [previa.id, enviadoAt]);
             if (!row) throw new AgenteError(409, 'El envío cambió de estado mientras se confirmaba', 'reserva_cancelada');
             // La etapa solo avanza: si ya estaba más adelante (o finalizado), queda como está
             const avanza = !nuevos.errorTransicion({ actual: seg.etapa, nueva: row.etapa, noContactar: seg.no_contactar });
             await db.query(
                 `UPDATE crm_bot_seguimiento
-                 SET ultimo_contacto = GREATEST(ultimo_contacto, NOW()), updated_at = NOW()
-                     ${avanza ? ', etapa = $2, proxima_accion = $3' : ''}
+                 SET ultimo_contacto = GREATEST(ultimo_contacto, $2), updated_at = NOW()
+                     ${avanza ? ', etapa = $3, proxima_accion = $4' : ''}
                  WHERE odoo_partner_id = $1`,
-                avanza ? [cliente.id, row.etapa, nuevos.proximaAccion(ficha.fecha_primera_compra, row.etapa)] : [cliente.id]);
+                avanza
+                    ? [cliente.id, row.fecha, row.etapa, nuevos.proximaAccion(ficha.fecha_primera_compra, row.etapa)]
+                    : [cliente.id, row.fecha]);
             return row;
         });
         console.log(`✅ Agente: envío ${r.etapa} confirmado para ${cliente.id}`);
@@ -1141,6 +1221,389 @@ async function listarInteracciones(id, { page, limit, offset }) {
         `SELECT * FROM crm_bot_interacciones WHERE odoo_partner_id = $1
          ORDER BY fecha DESC, id DESC LIMIT $2 OFFSET $3`, [id, limit, offset]);
     return { data: rows.map(formatInteraccion), total: count.total, page, limit };
+}
+
+// =============================================
+// Clientes inactivos (más de dias_min días sin comprar)
+// =============================================
+// Flujo aparte de nuevos e importantes. Prioridad: nuevos > importantes > inactivos.
+// Estado propio en crm_bot_seguimiento_inactivo; los envíos van a crm_bot_interacciones con
+// flujo = 'inactivos'. Todas las escrituras toman antes el lock de crm_bot_seguimiento del
+// cliente, así que no se pisan con los envíos de los otros flujos.
+
+const SEG_INACT_SELECT = `SELECT odoo_partner_id, ciclo_desde_compra::text AS ciclo_desde_compra, toques_enviados,
+                                 ultimo_contacto, ultimo_tipo, proxima_accion::text AS proxima_accion, cerrado,
+                                 marca, marca_nota, marca_at, updated_at
+                          FROM crm_bot_seguimiento_inactivo`;
+
+async function segInactivos(ids, db = pool) {
+    const { rows } = await db.query(`${SEG_INACT_SELECT} WHERE odoo_partner_id = ANY($1::int[])`, [ids]);
+    return new Map(rows.map((r) => [r.odoo_partner_id, r]));
+}
+
+async function lockSegInactivo(db, id) {
+    await db.query('INSERT INTO crm_bot_seguimiento_inactivo (odoo_partner_id) VALUES ($1) ON CONFLICT (odoo_partner_id) DO NOTHING', [id]);
+    const { rows: [row] } = await db.query(`${SEG_INACT_SELECT} WHERE odoo_partner_id = $1 FOR UPDATE`, [id]);
+    return row;
+}
+
+function formatMarca(si) {
+    return si && si.marca ? { marca: si.marca, nota: si.marca_nota || null, at: si.marca_at ? nuevos.toArIso(si.marca_at) : null } : null;
+}
+
+/** En la cadencia de nuevos: primera compra dentro de la ventana de nuevos y etapa distinta de finalizado (igual que importantes). */
+function enCadenciaNuevos(fechaPrimeraCompra, row, hoy) {
+    const etapa = row ? row.etapa : 'pendiente';
+    return Boolean(fechaPrimeraCompra && fechaPrimeraCompra >= nuevos.desdeVentana(hoy, nuevos.DIAS_DEFAULT) && etapa !== 'finalizado');
+}
+
+/** Regla + exclusiones de un cliente (con toda su historia). */
+function evaluarInactivo(cliente, { regla, hoy, si, pedidoActivo, enFlujoNuevos, esImportante }) {
+    const m = inactivos.metricas(cliente, hoy);
+    const cumple = inactivos.cumpleRegla(m, regla);
+    const motivo = cumple ? inactivos.motivoExclusion({ marca: formatMarca(si), pedidoActivo, enFlujoNuevos, esImportante }) : null;
+    return { m, cumple, motivo_exclusion: motivo, es_inactivo: cumple && !motivo };
+}
+
+/** Día (Argentina) del último mensaje que recibió el cliente, de cualquier flujo. */
+function ultimoContactoDia(row, conv, si) {
+    const fechas = [row && row.ultimo_contacto, conv && conv.ultimo_enviado, si && si.ultimo_contacto]
+        .filter(Boolean).map((f) => new Date(f).getTime());
+    return fechas.length ? health.toArDate(new Date(Math.max(...fechas))) : null;
+}
+
+/** toca_hoy, vigencia, bloqueos y seguimiento_inactivo. Mismo cálculo en la lista, la ficha y la reserva. */
+function estadoInactivo({ base, m, row, conv, reserva, si, hoy, ventanaAbierta, esInactivo, cfg = inactivos.cargarConfig() }) {
+    const noContactar = Boolean(row && row.no_contactar);
+    const pendiente = hayRespuestaPendiente(row, conv);
+    const ciclo = inactivos.cicloActual(si, m.ultima_fecha);
+    const t = inactivos.tocaHoy({
+        esInactivo,
+        diasSinComprar: m.dias_sin_comprar,
+        ciclo,
+        hoy,
+        cfg,
+        noContactar,
+        respuestaPendiente: pendiente,
+        ultimoRecibido: conv && conv.ultimo_recibido,
+        ultimoContactoDia: ultimoContactoDia(row, conv, si),
+    });
+    return {
+        no_contactar: noContactar,
+        respuesta_pendiente: pendiente,
+        reserva_activa: reserva || null,
+        toca_hoy: t.toca,
+        motivo_toca_hoy: t.motivo,
+        vence: t.vence,
+        puede_enviar_ahora: Boolean(t.toca && base.telefono && ventanaAbierta && !pendiente && !reserva && !noContactar),
+        seguimiento_inactivo: {
+            ciclo_desde_compra: ciclo.ciclo_desde_compra,
+            toques_enviados: ciclo.toques_enviados,
+            ultimo_contacto: ciclo.ultimo_contacto ? nuevos.toArIso(ciclo.ultimo_contacto) : null,
+            ultimo_tipo: ciclo.ultimo_tipo,
+            proxima_accion: esInactivo ? (t.proxima_accion || ciclo.proxima_accion || null) : null,
+            cerrado: ciclo.cerrado || t.cerrado,
+            actualizado: ciclo.actualizado ? nuevos.toArIso(ciclo.actualizado) : null,
+        },
+        _codigo: t.codigo,
+    };
+}
+
+function armarClienteInactivo(base, m, row, conv, reserva, si, hoy, ventanaAbierta, cfg) {
+    const { _codigo, ...estado } = estadoInactivo({ base, m, row, conv, reserva, si, hoy, ventanaAbierta, esInactivo: true, cfg });
+    return {
+        id: base.id,
+        nombre: base.nombre,
+        contacto: (row && row.contacto) || base.contacto_odoo || null,
+        telefono: base.telefono,
+        ciudad: base.ciudad,
+        rubro: base.rubro,
+        categorias_compradas: base.categorias_compradas,
+        ultima_compra: m.ultima_compra,
+        dias_sin_comprar: m.dias_sin_comprar,
+        monto_ultima_compra: m.monto_ultima_compra,
+        primera_compra: m.primera_compra,
+        cantidad_compras: m.cantidad_compras,
+        total_historico: m.total_historico,
+        ticket_promedio: m.ticket_promedio,
+        intervalo_habitual_dias: m.intervalo_habitual_dias,
+        top_productos: m.top_productos,
+        marca_manual: formatMarca(si),
+        ...estado,
+    };
+}
+
+/**
+ * Todos los inactivos de la regla (sin filtros de la query) y cuántos quedaron afuera por
+ * cada exclusión. Lo comparten la lista y el resumen.
+ */
+async function evaluarInactivos(regla, refresh) {
+    await ensureSchema();
+    const cfg = inactivos.cargarConfig();
+    const impCfg = importantes.cargarConfig();
+    const hoy = hoyAr();
+    const info = meta(hoy);
+    const { base } = await historiaDesdeOdoo(Math.max(regla.dias_max + 1, HISTORIA_DIAS_MIN), refresh);
+
+    const candidatos = [];
+    for (const c of base) {
+        const m = inactivos.metricas(c, hoy);
+        if (inactivos.cumpleRegla(m, regla)) candidatos.push({ c, m });
+    }
+    const ids = candidatos.map((x) => x.c.id);
+    const segs = await seguimientos(ids);
+    const convs = await conversaciones(ids);
+    const reservas = await reservasActivas(ids);
+    const sis = await segInactivos(ids);
+    // Pedidos activos en vivo (fuera de la caché), como en importantes
+    const pedidosMap = await odoo(() => pedidosActivosOdoo(ids, hoy));
+
+    const excluidos = { manual: 0, pedido_activo: 0, en_flujo_nuevos: 0, es_importante: 0 };
+    const lista = [];
+    for (const { c, m } of candidatos) {
+        const row = segs.get(c.id);
+        const si = sis.get(c.id) || null;
+        const imp = importantes.evaluarCliente(c, {
+            hoy,
+            dias: impCfg.dias,
+            monto_minimo: impCfg.monto_minimo,
+            monto_pedido_minimo: impCfg.monto_pedido_minimo,
+            dias_pedido: impCfg.dias_pedido,
+            min_compras_intervalo: impCfg.min_compras_intervalo,
+        }, null);
+        const motivo = inactivos.motivoExclusion({
+            marca: formatMarca(si),
+            pedidoActivo: pedidosMap.has(c.id),
+            enFlujoNuevos: enCadenciaNuevos(c.fecha_primera_compra, row, hoy),
+            esImportante: imp.motivo_importante.length > 0,
+        });
+        if (motivo) {
+            excluidos[motivo] += 1;
+            continue;
+        }
+        lista.push(armarClienteInactivo(c, m, row, convs.get(c.id), reservas.get(c.id) || null, si, hoy, info.ventana_abierta, cfg));
+    }
+    return { lista, excluidos, base, hoy, info };
+}
+
+/** GET clientes/inactivos. */
+async function listarInactivos(query) {
+    const { dias_min, dias_max, monto_historico_min, compras_min, orden, page, limit, offset, refresh } = query;
+    const regla = { dias_min, dias_max, monto_historico_min, compras_min };
+    const { lista, excluidos, info } = await evaluarInactivos(regla, refresh);
+    const filtrada = inactivos.ordenar(inactivos.filtrar(lista, query), orden);
+    return {
+        data: filtrada.slice(offset, offset + limit),
+        total: filtrada.length,
+        page,
+        limit,
+        meta: { ...info, filtros: regla, excluidos },
+    };
+}
+
+/** GET clientes/inactivos/resumen: el tablero del día. */
+async function resumenInactivos(query) {
+    const { dias_min, dias_max, monto_historico_min, compras_min, refresh } = query;
+    const regla = { dias_min, dias_max, monto_historico_min, compras_min };
+    const { lista, excluidos, base, hoy, info } = await evaluarInactivos(regla, refresh);
+    // Toques confirmados de los últimos 60 días: los que pueden tener una compra en los últimos 30
+    const { rows } = await pool.query(
+        `SELECT odoo_partner_id AS id, fecha FROM crm_bot_interacciones
+         WHERE flujo = 'inactivos' AND envio_etapa AND estado = 'enviado' AND fecha >= NOW() - INTERVAL '60 days'`);
+    const compras = new Map(base.map((c) => [c.id, c.compras]));
+    const recuperados = inactivos.recuperados(rows, compras, hoy);
+    return { data: inactivos.resumir(lista, excluidos, recuperados), meta: { ...info, filtros: regla } };
+}
+
+async function exigirSinReservaActiva(db, id) {
+    const { rows: [r] } = await db.query(
+        `SELECT id_externo FROM crm_bot_interacciones
+         WHERE odoo_partner_id = $1 AND envio_etapa AND estado = 'reservado' AND reservado_hasta >= NOW() LIMIT 1`, [id]);
+    if (r) throw new AgenteError(409, `El cliente ya tiene una reserva activa (${r.id_externo}): confirmala o cancelala primero`, 'etapa_reservada');
+}
+
+const MENSAJES_EXCLUSION = {
+    manual: 'Está excluido a mano del seguimiento de inactivos',
+    pedido_activo: 'Tiene un pedido activo (sin entregar o sin cobrar del todo)',
+    en_flujo_nuevos: 'Está en la cadencia de clientes nuevos',
+    es_importante: 'Hoy califica como cliente importante: ese flujo tiene prioridad',
+};
+
+/** Por qué un cliente no es inactivo, para leer. */
+function motivoNoInactivo(ev, regla) {
+    if (ev.motivo_exclusion) return MENSAJES_EXCLUSION[ev.motivo_exclusion];
+    const dias = ev.m.dias_sin_comprar;
+    if (dias === null) return 'El cliente no tiene compras';
+    if (dias <= regla.dias_min || dias > regla.dias_max) {
+        return `No es inactivo: ${dias} días sin comprar (tiene que ser más de ${regla.dias_min} y hasta ${regla.dias_max})`;
+    }
+    return `No es inactivo: no llega a ${regla.compras_min} compras o a $${regla.monto_historico_min} de total histórico`;
+}
+
+/** POST clientes/:id/envios con tipo_inactivo: reserva un toque de inactivos. */
+async function reservarEnvioInactivo(cliente, value) {
+    const { id } = cliente;
+    const ahora = new Date();
+    if (!nuevos.ventanaAbierta(ahora)) {
+        throw new AgenteError(409, `Fuera del horario de envío: ${nuevos.VENTANA_ENVIO.texto}. Abre: ${nuevos.abreA(ahora)}`, 'fuera_de_horario');
+    }
+    const ficha = await odoo(() => fichaOdoo(id));
+    if (!ficha.telefono) throw new AgenteError(409, 'El cliente no tiene un celular válido en Odoo', 'sin_telefono');
+    const hoy = hoyAr();
+    const cfg = inactivos.cargarConfig();
+    const pedidosMap = await odoo(() => pedidosActivosOdoo([id], hoy));
+    const esImportante = importantes.resumenImportante(ficha, importantes.cargarConfig(), hoy, null).es_importante;
+    try {
+        const r = await enTransaccion(async (db) => {
+            const seg = await lockSeguimiento(db, id);
+            if (seg.no_contactar) throw new AgenteError(409, 'El cliente pidió no recibir mensajes', 'no_contactar');
+            await vencerReservas(db, id);
+            await exigirSinReservaActiva(db, id);
+            const si = (await segInactivos([id], db)).get(id) || null;
+            const enFlujoNuevos = enCadenciaNuevos(ficha.fecha_primera_compra, seg, hoy);
+            if (enFlujoNuevos) throw new AgenteError(409, MENSAJES_EXCLUSION.en_flujo_nuevos, 'en_flujo_nuevos');
+            const ev = evaluarInactivo(ficha, { regla: cfg, hoy, si, pedidoActivo: pedidosMap.has(id), enFlujoNuevos, esImportante });
+            if (!ev.es_inactivo) throw new AgenteError(409, motivoNoInactivo(ev, cfg), 'no_es_inactivo');
+            const conv = (await conversaciones([id], db)).get(id);
+            const estado = estadoInactivo({ base: ficha, m: ev.m, row: seg, conv, reserva: null, si, hoy, ventanaAbierta: true, esInactivo: true, cfg });
+            if (estado._codigo && estado._codigo !== 'todavia_no') {
+                throw new AgenteError(409, estado.motivo_toca_hoy, estado._codigo);
+            }
+            if (value.tipo_inactivo !== estado.toca_hoy) {
+                throw new AgenteError(409, estado.toca_hoy
+                    ? `Hoy no le toca ${value.tipo_inactivo}: le toca ${estado.toca_hoy}`
+                    : `Hoy no le toca ningún toque de inactivos: ${estado.motivo_toca_hoy}`, 'tipo_no_corresponde');
+            }
+            const { rows: [row] } = await db.query(
+                `INSERT INTO crm_bot_interacciones
+                    (odoo_partner_id, fecha, tipo, etapa, mensaje, id_externo, envio_etapa, estado, reservado_hasta,
+                     productos_recomendados, flujo, tipo_inactivo, ciclo_desde)
+                 VALUES ($1, NOW(), 'enviado', NULL, $2, $3, true, 'reservado', NOW() + ($4::int * INTERVAL '1 second'),
+                         $5, 'inactivos', $6, $7)
+                 RETURNING *`,
+                [id, value.mensaje, value.id_externo, nuevos.RESERVA_SEGUNDOS, value.productos_recomendados,
+                    value.tipo_inactivo, ev.m.ultima_fecha]);
+            return row;
+        });
+        console.log(`📦 Agente: reserva ${value.tipo_inactivo} (inactivos) para ${id} (${value.id_externo})`);
+        return respuestaEnvio(cliente, r, false);
+    } catch (err) {
+        if (!esDuplicado(err)) throw err;
+        const r = await porIdExterno(pool, id, value.id_externo);
+        if (r) return respuestaEnvio(cliente, r, true);
+        throw new AgenteError(409, `El ${value.tipo_inactivo} de este ciclo ya está reservado o enviado`, 'etapa_reservada');
+    }
+}
+
+/**
+ * Suma el toque confirmado al ciclo. Si el envío es de un ciclo viejo (el cliente volvió a
+ * comprar en el medio), no toca el ciclo nuevo.
+ */
+async function avanzarCicloInactivo(db, id, { ciclo, tipo, fecha }) {
+    const cfg = inactivos.cargarConfig();
+    const prev = await lockSegInactivo(db, id);
+    if (prev.ciclo_desde_compra && ciclo && prev.ciclo_desde_compra > ciclo) return;
+    const mismo = prev.ciclo_desde_compra === ciclo;
+    const n = inactivos.numeroToque(tipo);
+    const toques = Math.max(mismo ? Number(prev.toques_enviados) || 0 : 0, n);
+    const ultimo = mismo && prev.ultimo_contacto && new Date(prev.ultimo_contacto) > new Date(fecha) ? prev.ultimo_contacto : fecha;
+    const cerrado = toques >= cfg.max_toques || (mismo && prev.cerrado);
+    const proxima = cerrado ? null : health.addDays(health.toArDate(new Date(ultimo)), cfg.reintento_dias);
+    await db.query(
+        `UPDATE crm_bot_seguimiento_inactivo
+         SET ciclo_desde_compra = $2, toques_enviados = $3, ultimo_contacto = $4, ultimo_tipo = $5,
+             proxima_accion = $6, cerrado = $7, updated_at = NOW()
+         WHERE odoo_partner_id = $1`,
+        [id, ciclo, toques, ultimo, inactivos.TIPOS[toques - 1], proxima, cerrado]);
+}
+
+async function confirmarEnvioInactivo(cliente, previa, enviadoAt) {
+    const r = await enTransaccion(async (db) => {
+        await lockSeguimiento(db, cliente.id);
+        const { rows: [row] } = await db.query(
+            `UPDATE crm_bot_interacciones SET estado = 'enviado', fecha = COALESCE($2, NOW()), reservado_hasta = NULL, motivo_cancelacion = NULL
+             WHERE id = $1 AND (estado IN ('reservado', 'vencido') OR (estado = 'cancelado' AND motivo_cancelacion = 'no_contactar'))
+             RETURNING *, ciclo_desde::text AS ciclo_texto`, [previa.id, enviadoAt]);
+        if (!row) throw new AgenteError(409, 'El envío cambió de estado mientras se confirmaba', 'reserva_cancelada');
+        await db.query(
+            `UPDATE crm_bot_seguimiento SET ultimo_contacto = GREATEST(ultimo_contacto, $2), updated_at = NOW()
+             WHERE odoo_partner_id = $1`, [cliente.id, row.fecha]);
+        await avanzarCicloInactivo(db, cliente.id, { ciclo: row.ciclo_texto, tipo: row.tipo_inactivo, fecha: row.fecha });
+        return row;
+    });
+    console.log(`✅ Agente: ${r.tipo_inactivo} (inactivos) confirmado para ${cliente.id}`);
+    return respuestaEnvio(cliente, r, false);
+}
+
+function formatSeguimientoInactivoRow(si) {
+    return {
+        ciclo_desde_compra: si ? si.ciclo_desde_compra || null : null,
+        toques_enviados: si ? Number(si.toques_enviados) || 0 : 0,
+        ultimo_contacto: si && si.ultimo_contacto ? nuevos.toArIso(si.ultimo_contacto) : null,
+        ultimo_tipo: si ? si.ultimo_tipo || null : null,
+        proxima_accion: si ? si.proxima_accion || null : null,
+        cerrado: Boolean(si && si.cerrado),
+        actualizado: si && si.updated_at ? nuevos.toArIso(si.updated_at) : null,
+    };
+}
+
+/**
+ * PATCH clientes/:id/inactivo: { marca: 'excluido' | null, nota }. Saca (o vuelve a meter) al
+ * cliente de la lista. Queda en la ficha del cliente (crm_events). Misma marca y nota → repetido.
+ */
+async function marcarInactivo(id, { marca, nota }) {
+    const cliente = await exigirCliente(id);
+    const out = await enTransaccion(async (db) => {
+        await lockSeguimiento(db, id);
+        const prev = await lockSegInactivo(db, id);
+        const igual = (prev.marca || null) === marca && (marca === null || (prev.marca_nota || null) === nota);
+        if (igual) return { si: prev, repetido: true };
+        await db.query(
+            `UPDATE crm_bot_seguimiento_inactivo SET marca = $2, marca_nota = $3, marca_at = NOW(), updated_at = NOW()
+             WHERE odoo_partner_id = $1`, [id, marca, marca ? nota : null]);
+        const texto = marca
+            ? `Excluido del seguimiento de inactivos (Grok Bot): ${nota}`
+            : `Vuelve al seguimiento de inactivos (Grok Bot)${nota ? `: ${nota}` : ''}`;
+        await db.query(
+            `INSERT INTO crm_events (odoo_partner_id, kind, text, meta, user_id) VALUES ($1, 'nota', $2, $3, NULL)`,
+            [id, texto, JSON.stringify({ origen: 'agente', flujo: 'inactivos', marca, nota })]);
+        return { si: (await segInactivos([id], db)).get(id), repetido: false };
+    });
+    if (!out.repetido) console.log(`✅ Agente: cliente ${id} ${marca ? 'excluido de' : 'vuelve a'} inactivos`);
+    return {
+        data: { id, nombre: cliente.nombre, marca_manual: formatMarca(out.si), seguimiento_inactivo: formatSeguimientoInactivoRow(out.si) },
+        repetido: out.repetido,
+    };
+}
+
+/**
+ * PATCH clientes/:id/seguimiento-inactivo: corrige a mano el ciclo actual. ultimo_contacto
+ * nunca retrocede. Si el ciclo guardado es de una compra vieja, se arranca el de la última compra.
+ */
+async function actualizarSeguimientoInactivo(id, value) {
+    const cliente = await exigirCliente(id);
+    const ficha = await odoo(() => fichaOdoo(id));
+    const m = inactivos.metricas(ficha, hoyAr());
+    if (!m.ultima_fecha) throw new AgenteError(409, 'El cliente no tiene compras', 'no_es_inactivo');
+    const si = await enTransaccion(async (db) => {
+        await lockSeguimiento(db, id);
+        const prev = await lockSegInactivo(db, id);
+        const ciclo = inactivos.cicloActual(prev, m.ultima_fecha);
+        const toques = 'toques_enviados' in value ? value.toques_enviados : ciclo.toques_enviados;
+        let ultimo = ciclo.ultimo_contacto;
+        if (value.ultimo_contacto && (!ultimo || value.ultimo_contacto > new Date(ultimo))) ultimo = value.ultimo_contacto;
+        const tipo = toques === ciclo.toques_enviados && ciclo.ultimo_tipo ? ciclo.ultimo_tipo : (inactivos.TIPOS[toques - 1] || null);
+        await db.query(
+            `UPDATE crm_bot_seguimiento_inactivo
+             SET ciclo_desde_compra = $2, toques_enviados = $3, ultimo_contacto = $4, ultimo_tipo = $5,
+                 proxima_accion = $6, cerrado = $7, updated_at = NOW()
+             WHERE odoo_partner_id = $1`,
+            [id, m.ultima_fecha, toques, ultimo, tipo,
+                'proxima_accion' in value ? value.proxima_accion : ciclo.proxima_accion,
+                'cerrado' in value ? value.cerrado : ciclo.cerrado]);
+        return (await segInactivos([id], db)).get(id);
+    });
+    return { id, nombre: cliente.nombre, marca_manual: formatMarca(si), seguimiento_inactivo: formatSeguimientoInactivoRow(si) };
 }
 
 // =============================================
@@ -1379,6 +1842,10 @@ module.exports = {
     AgenteError,
     listarNuevos,
     listarImportantes,
+    listarInactivos,
+    resumenInactivos,
+    marcarInactivo,
+    actualizarSeguimientoInactivo,
     obtenerCliente,
     listarCotizacionesWeb,
     actualizarSeguimiento,

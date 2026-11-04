@@ -2,13 +2,18 @@
 // GET    /api/agente/clientes/nuevos?dias=21&etapa=&no_contactar=false|true|todos&para_hoy=&page=&limit=&refresh=1
 // GET    /api/agente/clientes/importantes?dias=60&monto_minimo=|&top=&monto_pedido_minimo=&dias_pedido=&motivo=&orden=&no_contactar=todos&con_respuesta_pendiente=&incluir_pedido_activo=&page=&limit=&refresh=1
 //                                                 — clientes importantes (fase 1: solo lectura; por defecto excluye pedidos activos)
+// GET    /api/agente/clientes/inactivos?dias_min=60&dias_max=365&monto_historico_min=&compras_min=&rubro=&ciudad=&orden=&toca_hoy=&no_contactar=&con_respuesta_pendiente=&con_telefono=&page=&limit=&refresh=1
+//                                                 — clientes con más de 60 días sin comprar y qué toque les corresponde
+// GET    /api/agente/clientes/inactivos/resumen  — el tablero del día de inactivos
+// PATCH  /api/agente/clientes/:id/inactivo       — { marca: excluido | null, nota } saca al cliente de inactivos
+// PATCH  /api/agente/clientes/:id/seguimiento-inactivo — { ultimo_contacto, toques_enviados, proxima_accion, cerrado }
 // GET    /api/agente/clientes/cotizaciones-web?dias=30&no_contactar=false|true|todos&compro_despues=&page=&limit=
 //                                                 — carritos de la web sin confirmar, en vivo, por cliente
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
-// POST   /api/agente/clientes/:id/envios         — { etapa, mensaje, id_externo, productos_recomendados } RESERVA el mensaje de la cadencia
+// POST   /api/agente/clientes/:id/envios         — { etapa | tipo_inactivo, mensaje, id_externo, productos_recomendados } RESERVA el mensaje
 // GET    /api/agente/envios/:idExterno           — estado del envío (reservado | enviado | cancelado | vencido)
-// POST   /api/agente/envios/:idExterno/confirmar — el WhatsApp salió: avanza la etapa
+// POST   /api/agente/envios/:idExterno/confirmar — { enviado_at? } el WhatsApp salió: avanza la etapa o el ciclo de inactivos
 // POST   /api/agente/envios/:idExterno/cancelar  — el WhatsApp no salió: libera la etapa
 // POST   /api/agente/clientes/:id/revisado       — el agente leyó las respuestas del cliente
 // PATCH  /api/agente/clientes/:id/seguimiento    — { etapa, ultimo_contacto, proxima_accion }
@@ -135,6 +140,27 @@ router.get('/clientes/importantes', async (req, res) => {
     }
 });
 
+router.get('/clientes/inactivos', async (req, res) => {
+    const { value, errors } = v.validarQueryInactivos(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agente.listarInactivos(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudo armar la lista de clientes inactivos');
+    }
+});
+
+router.get('/clientes/inactivos/resumen', async (req, res) => {
+    const { value, errors } = v.validarQueryResumenInactivos(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        const { data, meta } = await agente.resumenInactivos(value);
+        return res.json({ success: true, data, meta });
+    } catch (err) {
+        return handle(res, err, 'No se pudo armar el resumen de clientes inactivos');
+    }
+});
+
 router.get('/clientes/cotizaciones-web', async (req, res) => {
     const { value, errors } = v.validarQueryCotizacionesWeb(req.query);
     if (errors.length) return invalid(res, errors);
@@ -163,6 +189,27 @@ router.get('/productos', async (req, res) => {
         return sendPage(res, await agente.listarProductos(value));
     } catch (err) {
         return handle(res, err, 'No se pudieron leer los productos');
+    }
+});
+
+router.patch('/clientes/:id/inactivo', async (req, res) => {
+    const p = parse(req, res, v.validarInactivoPatch);
+    if (!p) return undefined;
+    try {
+        const { data, repetido } = await agente.marcarInactivo(p.id, p.value);
+        return res.json({ success: true, data, repetido });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar la marca de inactivo');
+    }
+});
+
+router.patch('/clientes/:id/seguimiento-inactivo', async (req, res) => {
+    const p = parse(req, res, (b) => v.validarSeguimientoInactivo(b));
+    if (!p) return undefined;
+    try {
+        return res.json({ success: true, data: await agente.actualizarSeguimientoInactivo(p.id, p.value) });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar el seguimiento de inactivos');
     }
 });
 
@@ -211,9 +258,15 @@ for (const accion of ['confirmar', 'cancelar']) {
     router.post(`/envios/:idExterno/${accion}`, async (req, res) => {
         const idExterno = parseIdExterno(req, res);
         if (!idExterno) return undefined;
+        let opciones = {};
+        if (accion === 'confirmar') {
+            const c = v.validarConfirmar(req.body);
+            if (c.errors.length) return invalid(res, c.errors);
+            opciones = c.value;
+        }
         try {
             const fn = accion === 'confirmar' ? agente.confirmarEnvio : agente.cancelarEnvio;
-            const { data, repetida } = await fn(idExterno);
+            const { data, repetida } = await fn(idExterno, opciones);
             return res.json({ success: true, data, repetido: repetida });
         } catch (err) {
             return handle(res, err, `No se pudo ${accion} el envío`);
