@@ -795,13 +795,15 @@ export default function Reposicion() {
 
             <Tabs
                 fullWidth={isMobile}
+                scrollable={isMobile}
+                // En el celular van sin íconos: las seis pestañas no entran y se deslizan
                 tabs={[
-                    { value: 'pendiente', label: isMobile ? 'Pend.' : 'Pendientes', count: nPend, icon: <Icon.Package size={14} /> },
-                    { value: 'encargado', label: isMobile ? 'Encarg.' : 'Encargados', count: nEnc, icon: <Icon.ShoppingCart size={14} /> },
-                    { value: 'resueltos', label: isMobile ? 'Resuel.' : 'Resueltos', icon: <Icon.Check size={14} /> },
-                    { value: 'ordenes', label: 'Órdenes', icon: <Icon.ClipboardList size={14} /> },
-                    { value: 'cotizaciones', label: isMobile ? 'Cotiz.' : 'Cotizaciones', icon: <Icon.Tag size={14} /> },
-                    { value: 'propuestas', label: isMobile ? 'Propuest.' : 'Propuestas', icon: <Icon.ShoppingBag size={14} /> },
+                    { value: 'pendiente', label: isMobile ? 'Pend.' : 'Pendientes', count: nPend, icon: isMobile ? null : <Icon.Package size={14} /> },
+                    { value: 'encargado', label: isMobile ? 'Encarg.' : 'Encargados', count: nEnc, icon: isMobile ? null : <Icon.ShoppingCart size={14} /> },
+                    { value: 'resueltos', label: isMobile ? 'Resuel.' : 'Resueltos', icon: isMobile ? null : <Icon.Check size={14} /> },
+                    { value: 'ordenes', label: 'Órdenes', icon: isMobile ? null : <Icon.ClipboardList size={14} /> },
+                    { value: 'cotizaciones', label: isMobile ? 'Cotiz.' : 'Cotizaciones', icon: isMobile ? null : <Icon.Tag size={14} /> },
+                    { value: 'propuestas', label: isMobile ? 'Propuest.' : 'Propuestas', icon: isMobile ? null : <Icon.ShoppingBag size={14} /> },
                 ]}
                 value={tab}
                 onChange={(v) => { setTab(v); setAviso(null); setFiltroCotiz(null); setArmarProveedor(null); }}
