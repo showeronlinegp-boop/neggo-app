@@ -4,10 +4,14 @@
 // Solo lectura de Odoo: cotizaciones vivas (borrador o enviada) y sus productos físicos.
 // Cada producto se cruza con el cache de la empresa de la cotización y, para Neggo,
 // con el estado en la cola de reposición.
+// Nota 149: también marca lo de Neggo que ya llegó en un ingreso después de la cotización
+// (para avisarle al cliente) y manda a la cola en lote lo que falta pedir, con la cantidad
+// que espera el cliente.
 
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { ETIQUETA_PENDIENTES } = require('./pedidoEnvioService');
+const reposicion = require('./reposicionService');
 
 const ESTADOS_VIVOS = ['draft', 'sent'];
 const LOTE_ORDENES = 200;
@@ -105,17 +109,46 @@ function resumirPorProducto(cotizaciones) {
                 standard_price: p.standard_price ?? null,
                 vendor_name: p.vendor_name || 'Sin proveedor',
                 estado_cola: p.estado_cola || null,
+                puede_reponer: !!p.puede_reponer,
                 qty_total: 0,
                 cotizaciones: [],
             };
             prev.qty_total += p.qty;
-            prev.cotizaciones.push({ name: c.name, partner_name: c.partner_name, qty: p.qty });
+            prev.cotizaciones.push({ name: c.name, partner_name: c.partner_name, qty: p.qty, llego: p.llego || null });
             porProducto.set(key, prev);
         }
+    }
+    // Llegó solo si llegó para todas sus cotizaciones (un ingreso viejo no cubre una cotización nueva)
+    for (const p of porProducto.values()) {
+        p.llego = p.cotizaciones.every(c => c.llego) ? p.cotizaciones[0].llego : null;
     }
     return [...porProducto.values()].sort((a, b) =>
         a.vendor_name.localeCompare(b.vendor_name, 'es') || (b.qty_total - a.qty_total)
     );
+}
+
+/**
+ * Primer ingreso en o después de la fecha de la cotización. Null si todavía no llegó.
+ * @param {Array<{ingreso_id, comprobante, at}>} ingresos — del producto, más viejos primero
+ */
+function llegadaDesde(ingresos, desde) {
+    if (!ingresos || !ingresos.length) return null;
+    if (!desde) return ingresos[ingresos.length - 1];
+    const limite = new Date(desde).getTime();
+    return ingresos.find(i => new Date(i.at).getTime() >= limite) || null;
+}
+
+/** Se puede mandar a la cola: de Neggo, conocido, no Liquidar, fuera de la cola y sin llegar. */
+function puedeReponer(p, company) {
+    return company === 'neggo' && p.en_cache !== false && !p.es_liquidar && !p.estado_cola && !p.llego;
+}
+
+/**
+ * Cuánto pedir por producto al mandarlo a la cola: lo que esperan los clientes, mínimo 1.
+ */
+function qtyParaCola(p) {
+    const n = Math.round(Number(p.qty_total) || 0);
+    return n > 0 ? n : 1;
 }
 
 async function leerOdoo({ refrescar = false } = {}) {
@@ -182,6 +215,36 @@ async function datosProductos(odooIds) {
     return new Map(rows.map(r => [claveProducto(r.company, r.odoo_id), r]));
 }
 
+/**
+ * Ingresos que trajeron estos productos para Neggo, con el mismo criterio que cierra la cola
+ * de reposición: matcheado, activo para Neggo, no rechazado y no todo a Preventas.
+ * @returns {Map<number, Array<{ingreso_id, comprobante, at}>>} más viejos primero
+ */
+async function ingresosNeggo(odooIds, desde) {
+    if (!odooIds.length) return new Map();
+    const { rows } = await pool.query(
+        `SELECT ii.odoo_product_id AS odoo_id, im.id AS ingreso_id,
+                im.comprobante_numero AS comprobante, im.created_at AS at
+         FROM ingreso_items ii
+         JOIN ingreso_mercaderia im ON im.id = ii.ingreso_id
+         WHERE ii.odoo_product_id = ANY($1::int[])
+           AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
+           AND ii.estado_item = 'matched'
+           AND ii.odoo_active IS DISTINCT FROM FALSE
+           AND im.estado IS DISTINCT FROM 'rechazado'
+           AND COALESCE(ii.preventa_qty_confirmed, 0) < ii.cantidad
+           AND ($2::timestamptz IS NULL OR im.created_at >= $2::timestamptz)
+         ORDER BY im.created_at`,
+        [odooIds, desde || null]
+    );
+    const mapa = new Map();
+    for (const r of rows) {
+        if (!mapa.has(r.odoo_id)) mapa.set(r.odoo_id, []);
+        mapa.get(r.odoo_id).push({ ingreso_id: r.ingreso_id, comprobante: r.comprobante, at: r.at });
+    }
+    return mapa;
+}
+
 function completarProducto(p, info) {
     if (!info) return { ...p, name: p.nombre_odoo, vendor_name: 'Sin proveedor', en_cache: false, estado_cola: null };
     return {
@@ -209,14 +272,30 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
     const odooIds = [...new Set(cotizaciones.flatMap(c => c.productos.map(p => p.odoo_id)))];
     const info = await datosProductos(odooIds);
 
+    // Lo de Neggo que ya entró en un ingreso desde la cotización más vieja
+    const deNeggo = cotizaciones.filter(c => c.company === 'neggo');
+    const desde = deNeggo.reduce((min, c) => (!min || (c.date_order && c.date_order < min) ? c.date_order : min), null);
+    const idsNeggo = [...new Set(deNeggo.flatMap(c => c.productos.map(p => p.odoo_id)))];
+    let ingresos = new Map();
+    try {
+        ingresos = await ingresosNeggo(idsNeggo, desde);
+    } catch (err) {
+        console.warn(`⚠️ Reposición/cotizaciones: no se pudieron leer los ingresos: ${err.message}`);
+    }
+
     const filtro = proveedor ? String(proveedor).trim().toLowerCase() : null;
     const completas = cotizaciones
-        .map(c => ({
-            ...c,
-            productos: c.productos
-                .map(p => completarProducto(p, info.get(claveProducto(c.company, p.odoo_id))))
-                .filter(p => !filtro || p.vendor_name.toLowerCase() === filtro),
-        }))
+        .map(c => {
+            const productos = c.productos
+                .map(p => {
+                    const prod = completarProducto(p, info.get(claveProducto(c.company, p.odoo_id)));
+                    prod.llego = c.company === 'neggo' ? llegadaDesde(ingresos.get(p.odoo_id), c.date_order) : null;
+                    prod.puede_reponer = puedeReponer(prod, c.company);
+                    return prod;
+                })
+                .filter(p => !filtro || p.vendor_name.toLowerCase() === filtro);
+            return { ...c, productos, n_llegados: productos.filter(p => p.llego).length };
+        })
         .filter(c => c.productos.length > 0);
 
     return {
@@ -226,9 +305,48 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
     };
 }
 
+/**
+ * Manda a la cola de reposición los productos de Neggo de las cotizaciones que todavía no
+ * se pidieron, con la cantidad que esperan los clientes. Filtra por odoo_ids, por proveedor
+ * o va todo. Los que ya están en la cola, llegaron o son de Liquidar no se tocan.
+ */
+async function reponerLote({ odooIds = null, proveedor = null } = {}, userId) {
+    const { productos } = await listar({ refrescar: false });
+    const ids = Array.isArray(odooIds) && odooIds.length ? new Set(odooIds.map(Number)) : null;
+    const prov = proveedor ? String(proveedor).trim().toLowerCase() : null;
+    const candidatos = productos.filter(p =>
+        p.company === 'neggo' && p.puede_reponer
+        && (!ids || ids.has(p.odoo_id))
+        && (!prov || p.vendor_name.toLowerCase() === prov)
+    );
+
+    const agregados = [];
+    const errores = [];
+    for (const p of candidatos) {
+        try {
+            const nota = `Cotización pendiente ${p.cotizaciones.map(c => c.name).join(', ')}`;
+            const item = await reposicion.agregarReponer(p.odoo_id, userId, nota);
+            const qty = qtyParaCola(p);
+            await pool.query(
+                `UPDATE reposicion_items SET qty_decidida = $2 WHERE id = $1 AND qty_decidida IS NULL`,
+                [item.id, qty]
+            );
+            agregados.push({ id: item.id, odoo_id: p.odoo_id, name: item.name, vendor_name: p.vendor_name, qty });
+        } catch (err) {
+            errores.push({ odoo_id: p.odoo_id, name: p.name, error: err.message });
+        }
+    }
+    console.log(`✅ Reposición/cotizaciones: ${agregados.length} a la cola${errores.length ? `, ⚠️ ${errores.length} con error` : ''}`);
+    return { agregados, errores };
+}
+
 module.exports = {
     listar,
+    reponerLote,
     // Puros, para tests
     armarCotizaciones,
     resumirPorProducto,
+    llegadaDesde,
+    puedeReponer,
+    qtyParaCola,
 };

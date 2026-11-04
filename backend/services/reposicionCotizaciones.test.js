@@ -2,7 +2,9 @@
 // Sin base de datos ni Odoo. node backend/services/reposicionCotizaciones.test.js
 
 const assert = require('assert');
-const { armarCotizaciones, resumirPorProducto } = require('./reposicionCotizacionesService');
+const {
+    armarCotizaciones, resumirPorProducto, llegadaDesde, puedeReponer, qtyParaCola,
+} = require('./reposicionCotizacionesService');
 
 const COMPANIES = { neggo: 1, preventas: 50 };
 
@@ -57,6 +59,43 @@ function testResumir() {
     assert.strictEqual(res[1].qty_total, 5, 'dentro del proveedor, más cantidad primero');
 }
 
+function testLlegada() {
+    const ingresos = [
+        { ingreso_id: 1, comprobante: 'A-1', at: '2026-10-01T10:00:00Z' },
+        { ingreso_id: 2, comprobante: 'A-2', at: '2026-10-20T10:00:00Z' },
+    ];
+    assert.strictEqual(llegadaDesde(ingresos, '2026-10-10T00:00:00Z').ingreso_id, 2, 'el primero después de la cotización');
+    assert.strictEqual(llegadaDesde(ingresos, '2026-10-25T00:00:00Z'), null, 'un ingreso viejo no cuenta');
+    assert.strictEqual(llegadaDesde([], '2026-10-25T00:00:00Z'), null);
+    assert.strictEqual(llegadaDesde(undefined, null), null);
+}
+
+function testLlegadaPorProducto() {
+    const llego = { ingreso_id: 2, comprobante: 'A-2', at: '2026-10-20T10:00:00Z' };
+    const res = resumirPorProducto([
+        { name: 'S1', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 100, qty: 1, vendor_name: 'Z', llego }] },
+        { name: 'S2', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 100, qty: 1, vendor_name: 'Z', llego: null }] },
+        { name: 'S3', company: 'neggo', empresa: 'Neggo', productos: [{ odoo_id: 101, qty: 1, vendor_name: 'Z', llego }] },
+    ]);
+    assert.strictEqual(res.find(p => p.odoo_id === 100).llego, null, 'falta para una cotización: no llegó');
+    assert.strictEqual(res.find(p => p.odoo_id === 101).llego.ingreso_id, 2);
+}
+
+function testPuedeReponer() {
+    const base = { en_cache: true, es_liquidar: false, estado_cola: null, llego: null };
+    assert.strictEqual(puedeReponer(base, 'neggo'), true);
+    assert.strictEqual(puedeReponer(base, 'preventas'), false, 'solo Neggo');
+    assert.strictEqual(puedeReponer({ ...base, en_cache: false }, 'neggo'), false);
+    assert.strictEqual(puedeReponer({ ...base, es_liquidar: true }, 'neggo'), false);
+    assert.strictEqual(puedeReponer({ ...base, estado_cola: 'pendiente' }, 'neggo'), false);
+    assert.strictEqual(puedeReponer({ ...base, llego: { ingreso_id: 1 } }, 'neggo'), false, 'ya llegó');
+    assert.strictEqual(qtyParaCola({ qty_total: 3 }), 3);
+    assert.strictEqual(qtyParaCola({ qty_total: 0.4 }), 1, 'mínimo 1');
+}
+
 testArmar();
 testResumir();
+testLlegada();
+testLlegadaPorProducto();
+testPuedeReponer();
 console.log('✅ reposicionCotizaciones: ok');

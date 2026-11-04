@@ -21,6 +21,7 @@ import ReposicionPrecios from './ReposicionPrecios';
 import ReposicionPropuestas from './ReposicionPropuestas';
 import VincularReposicionModal from './VincularReposicionModal';
 import ArmarPedido from './ArmarPedido';
+import BloqueCotizaciones from './BloqueCotizaciones';
 import { descargarPedidoPDF } from './pedidoPdf';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
@@ -624,15 +625,55 @@ export default function Reposicion() {
         else setError(res.error || 'No se pudo cargar los proveedores');
     }, []);
 
+    // Cotizaciones «Pendiente» de Odoo para el bloque de arriba y Armar pedido (nota 149)
+    const [cotiz, setCotiz] = useState({ data: null, loading: false, error: null });
+    const [reponiendoCotiz, setReponiendoCotiz] = useState(false);
+    // Proveedor a abrir en Armar pedido al venir desde Cotizaciones; n fuerza el cambio
+    const [armarProveedor, setArmarProveedor] = useState(null);
+    const [filtroCotiz, setFiltroCotiz] = useState(null);
+
+    const cargarCotiz = useCallback(async (refrescar = false) => {
+        setCotiz(prev => ({ ...prev, loading: true }));
+        const res = await api.get('/reposicion/cotizaciones', refrescar ? { refrescar: 1 } : undefined);
+        setCotiz(prev => res.success
+            ? { data: res.data, loading: false, error: null }
+            : { ...prev, loading: false, error: res.error || 'No se pudieron leer las cotizaciones' });
+    }, []);
+
     const cargar = useCallback(async () => {
         if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') setRecargarVista(n => n + 1);
-        await Promise.all([cargarCola(), cargarProveedores()]);
-    }, [tab, cargarCola, cargarProveedores]);
+        const extra = tab === 'pendiente' ? [cargarCotiz(true)] : [];
+        await Promise.all([cargarCola(), cargarProveedores(), ...extra]);
+    }, [tab, cargarCola, cargarProveedores, cargarCotiz]);
 
     useEffect(() => { cargarCola(); }, [cargarCola]);
     useEffect(() => { cargarProveedores(); }, [cargarProveedores]);
+    useEffect(() => { if (tab === 'pendiente') cargarCotiz(); }, [tab, cargarCotiz]);
 
     const mostrarError = useCallback((msg) => setError(msg), []);
+
+    // Manda a la cola lo de Neggo que esperan los clientes: todo, de un proveedor o algunos productos
+    const reponerCotiz = useCallback(async (filtro = {}) => {
+        setReponiendoCotiz(true);
+        setError(null);
+        const res = await api.post('/reposicion/cotizaciones/reponer', filtro);
+        setReponiendoCotiz(false);
+        if (!res.success) { setError(res.error || 'No se pudo mandar a la cola'); return null; }
+        const { agregados = [], errores = [] } = res.data || {};
+        const de = filtro.proveedor ? ` de ${filtro.proveedor}` : '';
+        const texto = agregados.length
+            ? `${agregados.length} producto${agregados.length === 1 ? '' : 's'}${de} entr${agregados.length === 1 ? 'ó' : 'aron'} a la cola con la cantidad que esperan los clientes.`
+            : `No había nada${de} para mandar a la cola.`;
+        setAviso(errores.length ? `${texto} ${errores.length} no se pudo: ${errores[0].error}` : texto);
+        await Promise.all([cargarCola({ silencioso: true }), cargarProveedores(), cargarCotiz()]);
+        return res.data;
+    }, [cargarCola, cargarProveedores, cargarCotiz]);
+
+    const irAArmar = useCallback((vendor) => {
+        setArmarProveedor({ nombre: vendor, n: Date.now() });
+        setAviso(null);
+        setTab('pendiente');
+    }, []);
 
     // PDF rápido desde el encabezado del proveedor: todo lo de la lista, con la cantidad
     // cargada en «Decidir» (una unidad si no se cargó ninguna).
@@ -763,8 +804,22 @@ export default function Reposicion() {
                     { value: 'propuestas', label: isMobile ? 'Propuest.' : 'Propuestas', icon: <Icon.ShoppingBag size={14} /> },
                 ]}
                 value={tab}
-                onChange={(v) => { setTab(v); setAviso(null); }}
+                onChange={(v) => { setTab(v); setAviso(null); setFiltroCotiz(null); setArmarProveedor(null); }}
             />
+
+            {pendiente && (
+                <BloqueCotizaciones
+                    data={cotiz.data}
+                    loading={cotiz.loading}
+                    error={cotiz.error}
+                    trabajando={reponiendoCotiz}
+                    onVer={() => { setFiltroCotiz(null); setTab('cotizaciones'); setAviso(null); }}
+                    onVerListas={() => { setFiltroCotiz('listas'); setTab('cotizaciones'); setAviso(null); }}
+                    onReponerTodo={() => reponerCotiz({})}
+                    onReponerProveedor={(nombre) => reponerCotiz({ proveedor: nombre })}
+                    isMobile={isMobile}
+                />
+            )}
 
             {encargado && (
                 <div style={{
@@ -820,6 +875,8 @@ export default function Reposicion() {
             ) : cotizaciones ? (
                 <ReposicionCotizaciones
                     recargar={recargarVista}
+                    filtroInicial={filtroCotiz}
+                    onArmarPedido={irAArmar}
                     onCambioCola={cargarProveedores}
                     onAviso={(msg) => { setError(null); setAviso(msg); }}
                     onError={mostrarError}
@@ -848,6 +905,10 @@ export default function Reposicion() {
             ) : pendiente ? (
                 <ArmarPedido
                     items={items}
+                    cotizaciones={cotiz.data}
+                    proveedorInicial={armarProveedor}
+                    reponiendoCotiz={reponiendoCotiz}
+                    onReponerCotiz={reponerCotiz}
                     isMobile={isMobile}
                     onVerFoto={setFoto}
                     onVincular={setAVincular}
