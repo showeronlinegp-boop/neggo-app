@@ -6,7 +6,11 @@
 // GET    /api/reposicion/proveedor?nombre=           — catálogo + cola con métricas
 // GET    /api/reposicion/ordenes?dias=7&refrescar=1  — ventas y POS de Neggo: pendientes y revisadas
 // GET    /api/reposicion/cotizaciones?refrescar=1    — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
-// POST   /api/reposicion/ordenes/revisar             — { origen: venta|pos, odoo_order_id, order_name? }
+// POST   /api/reposicion/cotizaciones/reponer        — { odoo_ids?, proveedor? } lo de Neggo sin pedir → cola
+// POST   /api/reposicion/cotizaciones/separado       — { odoo_order_id, odoo_id, separado } tilde de Neggo (no va a Odoo)
+// POST   /api/reposicion/cotizaciones/quitar         — { odoo_order_id, odoo_id } borra el producto de la cotización en Odoo
+// POST   /api/reposicion/cotizaciones/cancelar       — { odoo_order_id } cancela la cotización en Odoo
+// POST   /api/reposicion/ordenes/revisar            — { origen: venta|pos, odoo_order_id, order_name? }
 // POST   /api/reposicion/ordenes/reabrir             — { origen, odoo_order_id }
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
 // POST   /api/reposicion/archivar                    — { odoo_id } archiva en Odoo y encola
@@ -124,6 +128,62 @@ router.get('/cotizaciones', async (req, res) => {
     } catch (err) {
         console.error('❌ Error listando cotizaciones pendientes:', err.message);
         return fail(res, err.message, 500);
+    }
+});
+
+router.post('/cotizaciones/reponer', async (req, res) => {
+    const odooIds = Array.isArray(req.body.odoo_ids)
+        ? req.body.odoo_ids.map(n => parseInt(n, 10)).filter(Number.isInteger)
+        : null;
+    if (Array.isArray(req.body.odoo_ids) && !odooIds.length) return fail(res, 'odoo_ids no tiene productos válidos', 400);
+    const proveedor = typeof req.body.proveedor === 'string' && req.body.proveedor.trim() ? req.body.proveedor.trim() : null;
+    try {
+        return ok(res, await cotizaciones.reponerLote({ odooIds, proveedor }, req.user.id));
+    } catch (err) {
+        console.error('❌ Error mandando cotizaciones a la cola:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+// Nota 150: separado, quitar producto y cancelar cotización (solo Neggo)
+function idsCotizacion(body, conProducto = true) {
+    const odooOrderId = parseInt(body.odoo_order_id, 10);
+    const odooId = parseInt(body.odoo_id, 10);
+    if (!Number.isInteger(odooOrderId)) return { error: 'odoo_order_id es requerido' };
+    if (conProducto && !Number.isInteger(odooId)) return { error: 'odoo_id es requerido' };
+    return { odooOrderId, odooId };
+}
+
+router.post('/cotizaciones/separado', async (req, res) => {
+    const ids = idsCotizacion(req.body);
+    if (ids.error) return fail(res, ids.error, 400);
+    try {
+        return ok(res, await cotizaciones.marcarSeparado({ ...ids, separado: req.body.separado !== false }, req.user.id));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error marcando separado en cotización:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/cotizaciones/quitar', async (req, res) => {
+    const ids = idsCotizacion(req.body);
+    if (ids.error) return fail(res, ids.error, 400);
+    try {
+        return ok(res, await cotizaciones.quitarProducto(ids, req.user.id));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error quitando producto de la cotización:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
+    }
+});
+
+router.post('/cotizaciones/cancelar', async (req, res) => {
+    const ids = idsCotizacion(req.body, false);
+    if (ids.error) return fail(res, ids.error, 400);
+    try {
+        return ok(res, await cotizaciones.cancelarCotizacion(ids, req.user.id));
+    } catch (err) {
+        if (!err.statusCode) console.error('❌ Error cancelando cotización:', err.message);
+        return fail(res, err.message, err.statusCode || 500);
     }
 });
 

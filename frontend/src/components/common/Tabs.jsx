@@ -1,6 +1,7 @@
 import { useTheme } from '../../theme/ThemeContext';
 
-export default function Tabs({ tabs = [], value, onChange, style, fullWidth }) {
+// scrollable: en pantallas angostas las pestañas no se aprietan, se deslizan de costado
+export default function Tabs({ tabs = [], value, onChange, style, fullWidth, scrollable }) {
   const { tokens: t } = useTheme();
 
   return (
@@ -8,6 +9,7 @@ export default function Tabs({ tabs = [], value, onChange, style, fullWidth }) {
       display: 'flex',
       gap: fullWidth ? 0 : 4,
       borderBottom: `1px solid ${t.color.border}`,
+      ...(scrollable ? { overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } : null),
       ...style,
     }}>
       {tabs.map(tab => {
@@ -32,7 +34,9 @@ export default function Tabs({ tabs = [], value, onChange, style, fullWidth }) {
               cursor: 'pointer',
               background: 'transparent',
               transition: 'color 120ms',
-              flex: fullWidth ? 1 : undefined,
+              flex: fullWidth ? (scrollable ? '1 0 auto' : 1) : undefined,
+              flexShrink: scrollable ? 0 : undefined,
+              whiteSpace: scrollable ? 'nowrap' : undefined,
               minWidth: 0,
             }}
           >
