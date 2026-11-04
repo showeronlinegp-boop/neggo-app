@@ -6,6 +6,7 @@
 // GET    /api/reposicion/proveedor?nombre=           — catálogo + cola con métricas
 // GET    /api/reposicion/ordenes?dias=7&refrescar=1  — ventas y POS de Neggo: pendientes y revisadas
 // GET    /api/reposicion/cotizaciones?refrescar=1    — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
+// POST   /api/reposicion/cotizaciones/reponer        — { odoo_ids?, proveedor? } lo de Neggo sin pedir → cola
 // POST   /api/reposicion/ordenes/revisar             — { origen: venta|pos, odoo_order_id, order_name? }
 // POST   /api/reposicion/ordenes/reabrir             — { origen, odoo_order_id }
 // POST   /api/reposicion                             — { odoo_id, nota?, origen? }
@@ -123,6 +124,20 @@ router.get('/cotizaciones', async (req, res) => {
         return ok(res, await cotizaciones.listar({ refrescar: req.query.refrescar === '1' }));
     } catch (err) {
         console.error('❌ Error listando cotizaciones pendientes:', err.message);
+        return fail(res, err.message, 500);
+    }
+});
+
+router.post('/cotizaciones/reponer', async (req, res) => {
+    const odooIds = Array.isArray(req.body.odoo_ids)
+        ? req.body.odoo_ids.map(n => parseInt(n, 10)).filter(Number.isInteger)
+        : null;
+    if (Array.isArray(req.body.odoo_ids) && !odooIds.length) return fail(res, 'odoo_ids no tiene productos válidos', 400);
+    const proveedor = typeof req.body.proveedor === 'string' && req.body.proveedor.trim() ? req.body.proveedor.trim() : null;
+    try {
+        return ok(res, await cotizaciones.reponerLote({ odooIds, proveedor }, req.user.id));
+    } catch (err) {
+        console.error('❌ Error mandando cotizaciones a la cola:', err.message);
         return fail(res, err.message, 500);
     }
 });

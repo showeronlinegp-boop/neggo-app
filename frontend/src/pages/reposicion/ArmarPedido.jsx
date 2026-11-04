@@ -18,6 +18,7 @@ import {
     proveedoresDelPedido,
     recomendarDePedidos,
 } from './pedidoDestino';
+import { clienteCorto, esperasPorProducto, reponiblesDe, textoEspera } from './cotizacionesNeggo';
 
 const ETIQUETA_ACCESO = {
     abierta: 'Catálogo web',
@@ -45,9 +46,12 @@ function Thumb({ it, onVerFoto, size }) {
     );
 }
 
-export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, onError, onAviso, onChanged }) {
+export default function ArmarPedido({
+    items, cotizaciones = null, proveedorInicial = null, reponiendoCotiz = false, onReponerCotiz,
+    isMobile, onVerFoto, onVincular, onError, onAviso, onChanged,
+}) {
     const { tokens: t } = useTheme();
-    const [proveedor, setProveedor] = useState(null);
+    const [proveedor, setProveedor] = useState(proveedorInicial?.nombre ?? null);
     const [lados, setLados] = useState({});
     const [solapa, setSolapa] = useState('todos');
     const [elegidos, setElegidos] = useState({});
@@ -91,11 +95,25 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
         }
     }, [grupos, proveedor]);
 
+    // Desde Cotizaciones → «Armar pedido»: abre ese proveedor
+    useEffect(() => {
+        if (!proveedorInicial?.nombre) return;
+        setProveedor(proveedorInicial.nombre);
+        setSolapa('todos');
+    }, [proveedorInicial]);
+
+    // Lo que esperan los clientes en cotizaciones «Pendiente» de Neggo (nota 149)
+    const esperas = useMemo(() => esperasPorProducto(cotizaciones), [cotizaciones]);
+    const deCotizaciones = useMemo(() => reponiblesDe(cotizaciones, proveedor), [cotizaciones, proveedor]);
+
     const acceso = accesoDe(proveedor, accesos);
     const delProveedor = items.filter(it => destinoDe(it, lados[it.id]) === proveedor);
+    // Primero lo que tiene un cliente esperando
     const visibles = filtrarSolapa(delProveedor, solapa)
         .slice()
-        .sort((a, b) => Number(estaVinculado(a)) - Number(estaVinculado(b)) || String(a.name).localeCompare(String(b.name), 'es'));
+        .sort((a, b) => Number(esperas.has(b.odoo_id)) - Number(esperas.has(a.odoo_id))
+            || Number(estaVinculado(a)) - Number(estaVinculado(b))
+            || String(a.name).localeCompare(String(b.name), 'es'));
     const sinAsignar = delProveedor.filter(it => !estaVinculado(it)).length;
     const vinculados = delProveedor.length - sinAsignar;
     const tildados = delProveedor.filter(it => elegidos[it.id]);
@@ -216,6 +234,9 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
                 {grupos.map(g => {
                     const activo = g.nombre === proveedor;
                     const acc = accesoDe(g.nombre, accesos);
+                    const nClientes = esperas.size
+                        ? items.filter(it => esperas.has(it.odoo_id) && destinoDe(it, lados[it.id]) === g.nombre).length
+                        : 0;
                     return (
                         <button
                             key={g.nombre}
@@ -242,6 +263,12 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
                             <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2 }}>
                                 {ETIQUETA_ACCESO[acc.tipo]}{g.sin > 0 ? ` · ${g.sin} sin asignar` : ''}
                             </div>
+                            {nClientes > 0 && (
+                                <div style={{ fontSize: t.font.size.xs, color: t.color.accent, marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, ...t.numericStyle }}>
+                                    <Icon.Users size={11} />
+                                    {nClientes} para clientes
+                                </div>
+                            )}
                         </button>
                     );
                 })}
@@ -316,6 +343,14 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
                                         <span style={{ fontWeight: t.font.weight.medium, color: t.color.text, fontSize: t.font.size.sm, fontFamily: t.font.family }}>{it.name}</span>
                                         <Badge tone={asignado ? 'success' : 'warn'}>{asignado ? 'Asignado' : 'Sin asignar'}</Badge>
                                     </div>
+                                    {esperas.has(it.odoo_id) && (
+                                        <div
+                                            title={esperas.get(it.odoo_id).map(c => `${c.name} · ${c.partner_name || 'sin cliente'} × ${fmtInt(c.qty)}`).join('\n')}
+                                            style={{ marginTop: 4 }}
+                                        >
+                                            <Badge tone="accent" dot>{textoEspera(esperas.get(it.odoo_id))}</Badge>
+                                        </div>
+                                    )}
                                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginTop: 2 }}>
                                         <span style={{ fontFamily: t.font.mono }}>{it.internal_ref || it.barcode || '—'}</span>
                                         {' · '}
@@ -384,6 +419,47 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
                         {trabajando ? 'Pasando…' : 'Pasar a encargados'}
                     </Button>
                 </div>
+
+                {deCotizaciones.length > 0 && onReponerCotiz && (
+                    <div style={{ borderTop: borde, padding: '12px 16px 16px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: 180 }}>
+                                <div style={{ fontWeight: t.font.weight.semibold, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
+                                    De cotizaciones pendientes · {deCotizaciones.length}
+                                </div>
+                                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginTop: 2 }}>
+                                    Clientes esperando mercadería de {proveedor} que todavía no está en la cola. Entra con la cantidad que pidieron.
+                                </div>
+                            </div>
+                            <Button size="sm" variant="secondary" leftIcon={<Icon.Plus size={13} />} disabled={reponiendoCotiz}
+                                onClick={() => onReponerCotiz({ proveedor })}>
+                                {reponiendoCotiz ? 'Sumando…' : `Sumar todos (${deCotizaciones.length})`}
+                            </Button>
+                        </div>
+                        <div style={{ marginTop: 8 }}>
+                            {deCotizaciones.map(p => (
+                                <div key={p.odoo_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderTop: borde }}>
+                                    <Thumb it={p} onVerFoto={onVerFoto} size={36} />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>{p.name}</div>
+                                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
+                                            <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
+                                            {' · '}
+                                            {p.cotizaciones.map(c => `${c.name}${c.partner_name ? ` (${clienteCorto(c.partner_name)})` : ''} × ${fmtInt(c.qty)}`).join(' · ')}
+                                        </div>
+                                    </div>
+                                    <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family, ...t.numericStyle }}>
+                                        × {fmtInt(p.qty_total)}
+                                    </span>
+                                    <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={reponiendoCotiz}
+                                        onClick={() => onReponerCotiz({ odoo_ids: [p.odoo_id] })}>
+                                        Reponer
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 <div style={{ borderTop: borde, padding: '12px 16px 16px' }}>
                     <div style={{ fontWeight: t.font.weight.semibold, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
