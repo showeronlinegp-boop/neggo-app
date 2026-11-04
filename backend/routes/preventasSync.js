@@ -2,7 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { ok, fail, paginated }       = require('../utils/response');
+const { ok, fail }                  = require('../utils/response');
 const { getProductsToSync, applyChanges, getResumen } = require('../services/preventasSyncService');
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
@@ -28,8 +28,14 @@ router.get('/products', authenticate, async (req, res) => {
         const limit  = Math.min(parseInt(pageSize, 10) || 100, 500);
         const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
 
-        const { rows, total } = await getProductsToSync(pool, { supplierId, grupo, estado, matchType, search, sinVendor: sinVendor === 'true', limit, offset });
-        return paginated(res, rows, total, limit, offset);
+        const { rows, total, aplicables } = await getProductsToSync(pool, { supplierId, grupo, estado, matchType, search, sinVendor: sinVendor === 'true', limit, offset });
+        // aplicables: qué haría el "Aplicar" en bloque con estos filtros (listos / a revisar / sin precio)
+        return res.json({
+            success: true,
+            data: rows,
+            aplicables,
+            pagination: { total, limit, offset, pages: Math.ceil(total / limit) },
+        });
     } catch (err) {
         console.error('❌ products preventas-sync:', err.message);
         return fail(res, err.message, 500);
@@ -37,12 +43,14 @@ router.get('/products', authenticate, async (req, res) => {
 });
 
 // POST /api/preventas-sync/apply
-// Body: { ids?, odoo_ids?, grupo?, estado?, supplierId? }
+// Body: { ids?, odoo_ids?, grupo?, estado?, supplierId?, matchType?, search?, confirmar?, aceptarCambioCosto? }
+// - aceptarCambioCosto: aplica también los cambios de costo de más del 20% (nunca los vínculos dudosos)
 // - Con IDs específicos: síncrono (batch pequeño, respuesta inmediata)
 // - Sin IDs (grupo completo): background — devuelve { running: true } de inmediato
 router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
     try {
-        const { ids = [], odoo_ids = [], grupo, estado, supplierId, confirmar } = req.body;
+        const { ids = [], odoo_ids = [], grupo, estado, supplierId, matchType, search, confirmar } = req.body;
+        const aceptarCambioCosto = req.body.aceptarCambioCosto === true;
         if (!Array.isArray(ids) || !Array.isArray(odoo_ids)) {
             return fail(res, 'ids y odoo_ids deben ser arrays');
         }
@@ -59,7 +67,7 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
                 return fail(res, 'Ya hay un apply masivo en progreso', 409);
             }
             bulkApplyJob = { running: true, result: null, error: null, startedAt: new Date(), finishedAt: null };
-            applyChanges(pool, [], [], { grupo, estado, supplierId })
+            applyChanges(pool, [], [], { grupo, estado, supplierId, matchType, search }, { aceptarCambioCosto })
                 .then(result => {
                     bulkApplyJob = { running: false, result, error: null, startedAt: bulkApplyJob.startedAt, finishedAt: new Date() };
                     console.log(`✅ Bulk apply completado: ${result.ok} ok, ${result.error} errores`);
@@ -77,7 +85,7 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
         }
 
         // IDs específicos: síncrono
-        return ok(res, await applyChanges(pool, ids, odoo_ids, { grupo, estado, supplierId }, { confirmar: confirmar === true }));
+        return ok(res, await applyChanges(pool, ids, odoo_ids, { grupo, estado, supplierId }, { confirmar: confirmar === true, aceptarCambioCosto }));
     } catch (err) {
         console.error('❌ apply preventas-sync:', err.message);
         return fail(res, err.message, 500);

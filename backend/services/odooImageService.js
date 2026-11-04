@@ -2,6 +2,12 @@
 // La fuente de verdad es Odoo. En disco queda una copia (volumes/storage/photos/odoo)
 // para no pedir el binario en cada carga; si Odoo cambió (checksum/write_date) se
 // refresca y se pisa el archivo local. No vive solo en RAM.
+//
+// Preguntarle a Odoo si la foto cambió tarda ~1,2 s por foto. Con varias pantallas con
+// fotos abiertas, el navegador (6 descargas a la vez por host) encolaba cientos y las
+// fotos de la pantalla actual tardaban minutos (nota 146). Por eso, si la copia local se
+// comparó con Odoo hace menos de VERIFICACION_MS, se sirve directo del disco. Las fotos
+// que se suben desde la app se ven al toque (writeOdooImage olvida la verificación).
 
 const fs = require('fs');
 const fsp = fs.promises;
@@ -13,6 +19,11 @@ const { detectMime } = require('./whatsappMessage');
 
 const TAMANIOS = ['128', '256', '512', '1024', '1920'];
 const KINDS = { product: 'product.product', template: 'product.template' };
+
+// Cuánto se confía en la copia local sin volver a preguntarle a Odoo (nota 146)
+const VERIFICACION_MS = 10 * 60 * 1000;
+// clave de foto (storageRoot + stem) → momento en que se comparó con Odoo
+const verificadas = new Map();
 
 function defaultStorageRoot() {
     return process.env.STORAGE_PATH || path.join(__dirname, '..', 'storage');
@@ -26,7 +37,28 @@ function depsWith(overrides = {}) {
         fsp: overrides.fsp || fsp,
         fs: overrides.fs || fs,
         storageRoot: overrides.storageRoot || defaultStorageRoot(),
+        verificadas: overrides.verificadas || verificadas,
+        verificacionMs: overrides.verificacionMs ?? VERIFICACION_MS,
+        ahora: overrides.ahora || Date.now,
     };
+}
+
+function claveVerificada(d, company, kind, id, size) {
+    return `${d.storageRoot}|${cacheStem(company, kind, id, size)}`;
+}
+
+function marcarVerificada(d, company, kind, id, size) {
+    d.verificadas.set(claveVerificada(d, company, kind, id, size), d.ahora());
+}
+
+function verificadaHacePoco(d, company, kind, id, size) {
+    const cuando = d.verificadas.get(claveVerificada(d, company, kind, id, size));
+    return cuando !== undefined && d.ahora() - cuando < d.verificacionMs;
+}
+
+// Todos los tamaños de esa foto vuelven a compararse con Odoo en el próximo pedido
+function olvidarVerificacion(d, company, kind, id) {
+    for (const size of TAMANIOS) d.verificadas.delete(claveVerificada(d, company, kind, id, size));
 }
 
 function hashBuffer(buf) {
@@ -220,6 +252,8 @@ async function getOdooImage(opts, overrides) {
 
     const model = KINDS[kind];
     const local = await loadLocal(d, company, kind, id, size);
+    // Comparada con Odoo hace poco: se sirve del disco sin esperar a Odoo (nota 146)
+    if (local && verificadaHacePoco(d, company, kind, id, size)) return local;
 
     let companyId;
     try {
@@ -244,6 +278,7 @@ async function getOdooImage(opts, overrides) {
     }
 
     if (local && fp && shouldUseLocal(local, fp.fingerprint)) {
+        marcarVerificada(d, company, kind, id, size);
         return local;
     }
 
@@ -272,16 +307,19 @@ async function getOdooImage(opts, overrides) {
             fingerprint,
             writeDate: (fp && fp.write_date) || fetched.writeDate,
         });
+        marcarVerificada(d, company, kind, id, size);
         return { ...saved, fromCache: true, buffer: local.buffer };
     }
 
-    return saveLocal(d, {
+    const saved = await saveLocal(d, {
         company, kind, id, size,
         buffer: fetched.buffer,
         contentType: fetched.contentType,
         fingerprint,
         writeDate: (fp && fp.write_date) || fetched.writeDate,
     });
+    marcarVerificada(d, company, kind, id, size);
+    return saved;
 }
 
 function applyImageHeaders(res, img) {
@@ -344,6 +382,9 @@ async function writeOdooImage(odooProductId, base64, overrides) {
     await d.callOdoo('product.product', 'write', [[odooProductId], { image_1920: base64 }], ctx);
     const [product] = await d.callOdoo('product.product', 'read', [[odooProductId], ['product_tmpl_id']], ctx);
     const templateId = product?.product_tmpl_id?.[0] || null;
+    // La foto cambió: ningún tamaño guardado sirve sin volver a compararlo con Odoo
+    olvidarVerificacion(d, 'neggo', 'product', odooProductId);
+    if (templateId) olvidarVerificacion(d, 'neggo', 'template', templateId);
 
     const { rows } = await d.pool.query(
         `UPDATE odoo_products_cache

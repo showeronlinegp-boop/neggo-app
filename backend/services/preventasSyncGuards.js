@@ -3,7 +3,8 @@
 //   node backend/services/preventasSyncGuards.test.js
 //
 //   motivoOmitir   → datos inválidos o viejos: la acción NO se aplica nunca (ni confirmando)
-//   motivoRevision → la acción puede estar mal: solo se aplica confirmándola de a un producto
+//   motivoRevision → la acción puede estar mal: se confirma de a un producto si el vínculo es
+//                    dudoso; si es solo un cambio de costo grande, también se acepta en bloque a propósito
 //   motivoOdoo     → Odoo cambió desde el último sync: no se pisa lo que está en Odoo
 
 // Cambio de costo (%) a partir del cual se pide revisión manual
@@ -85,33 +86,53 @@ function motivoOmitir(prod) {
 }
 
 /**
- * Acciones que pueden estar mal y requieren confirmación de a un producto. Motivo o null.
+ * Revisión por el vínculo: puede ser OTRO producto (nombre parecido o código distinto).
+ * Se confirma de a un producto, nunca en bloque. Motivo o null.
  */
-function motivoRevision(prod) {
+function motivoRevisionVinculo(prod) {
     // Vínculo confirmado en la tabla maestra (product_mappings de Preventas): ya se revisó que
-    // es el mismo producto, no se vuelve a pedir (nota 143). El cambio de costo se sigue revisando.
-    const confirmado = prod.vinculo_confirmado === true;
+    // es el mismo producto, no se vuelve a pedir (nota 143)
+    if (prod.vinculo_confirmado === true) return null;
 
-    if (!confirmado && prod.match_type === 'fuzzy_name' && num(prod.match_score) < FUZZY_MIN_AUTOMATICO) {
+    if (prod.match_type === 'fuzzy_name' && num(prod.match_score) < FUZZY_MIN_AUTOMATICO) {
         return `Vinculado por nombre parecido (${num(prod.match_score)}%): confirmá que sea el mismo producto`;
     }
 
     const codScraper = codigoEnNombre(prod.scraper_name);
     const codOdoo = codigoEnNombre(prod.odoo_nombre);
-    if (!confirmado && codScraper && codOdoo && codScraper !== codOdoo) {
+    if (codScraper && codOdoo && codScraper !== codOdoo) {
         return `El código del nombre no coincide (${codScraper} en el proveedor, ${codOdoo} en Odoo)`;
     }
+    return null;
+}
 
-    if (ESTADOS_PRECIO.includes(prod.estado)) {
-        const costo = num(prod.costo);
-        const costoOdoo = num(prod.odoo_standard_price);
-        if (costo !== null && costoOdoo > 0) {
-            const pct = ((costo - costoOdoo) / costoOdoo) * 100;
-            if (Math.abs(pct) > UMBRAL_REVISION_PCT) {
-                return `Cambio de costo de ${pct > 0 ? '+' : ''}${pct.toFixed(1)}% (más del ${UMBRAL_REVISION_PCT}%)`;
-            }
-        }
-    }
+/**
+ * Revisión por un cambio de costo grande (más del umbral). Es el mismo producto: se puede
+ * aceptar en bloque si el usuario lo pide a propósito (nota 145). Motivo o null.
+ */
+function motivoRevisionCosto(prod) {
+    if (!ESTADOS_PRECIO.includes(prod.estado)) return null;
+    const costo = num(prod.costo);
+    const costoOdoo = num(prod.odoo_standard_price);
+    if (costo === null || !(costoOdoo > 0)) return null;
+    const pct = ((costo - costoOdoo) / costoOdoo) * 100;
+    if (Math.abs(pct) <= UMBRAL_REVISION_PCT) return null;
+    return `Cambio de costo de ${pct > 0 ? '+' : ''}${pct.toFixed(1)}% (más del ${UMBRAL_REVISION_PCT}%)`;
+}
+
+/**
+ * Acciones que pueden estar mal y requieren confirmación. Motivo o null.
+ * opciones.aceptarCambioCosto: el usuario aceptó los cambios de costo grandes (queda solo el vínculo)
+ */
+function motivoRevision(prod, opciones = {}) {
+    return motivoRevisionVinculo(prod)
+        || (opciones.aceptarCambioCosto === true ? null : motivoRevisionCosto(prod));
+}
+
+/** Qué revisión pide la fila: 'vinculo' | 'costo' | null */
+function tipoRevision(prod) {
+    if (motivoRevisionVinculo(prod)) return 'vinculo';
+    if (motivoRevisionCosto(prod)) return 'costo';
     return null;
 }
 
@@ -138,6 +159,7 @@ function motivoOdoo(prod, odoo) {
 }
 
 module.exports = {
-    codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo,
+    codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoRevisionVinculo,
+    motivoRevisionCosto, tipoRevision, motivoOdoo,
     UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO,
 };

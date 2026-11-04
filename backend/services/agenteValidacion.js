@@ -4,6 +4,7 @@
 
 const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
 const { DIAS_DEFAULT: COTIZACIONES_DIAS_DEFAULT } = require('./agenteCotizacionesWeb');
+const importantes = require('./agenteImportantes');
 
 const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -76,20 +77,20 @@ function esObjeto(body) {
     return body && typeof body === 'object' && !Array.isArray(body);
 }
 
-/** ?dias: entero de 1 a 90, por defecto el de clientes nuevos (21). */
-function validarDias(value, porDefecto = DIAS_DEFAULT) {
+/** ?dias: entero de 1 a max, por defecto el de clientes nuevos (21). */
+function validarDias(value, porDefecto = DIAS_DEFAULT, max = DIAS_MAX, campo = 'dias') {
     if (value === undefined || value === '') return { value: porDefecto, errors: [] };
-    const n = entero(value, { min: 1, max: DIAS_MAX });
+    const n = entero(value, { min: 1, max });
     return n === null
-        ? { value: null, errors: [{ campo: 'dias', error: `Tiene que ser un entero de 1 a ${DIAS_MAX}` }] }
+        ? { value: null, errors: [{ campo, error: `Tiene que ser un entero de 1 a ${max}` }] }
         : { value: n, errors: [] };
 }
 
 /** ?page y ?limit. */
-function validarPaginacion(query = {}) {
+function validarPaginacion(query = {}, limitPorDefecto = LIMIT_DEFAULT) {
     const errors = [];
     let page = 1;
-    let limit = LIMIT_DEFAULT;
+    let limit = limitPorDefecto;
     if (query.page !== undefined && query.page !== '') {
         page = entero(query.page, { min: 1, max: Number.MAX_SAFE_INTEGER });
         if (page === null) errors.push({ campo: 'page', error: 'Tiene que ser un entero mayor a 0' });
@@ -98,7 +99,14 @@ function validarPaginacion(query = {}) {
         limit = entero(query.limit, { min: 1, max: LIMIT_MAX });
         if (limit === null) errors.push({ campo: 'limit', error: `Tiene que ser un entero de 1 a ${LIMIT_MAX}` });
     }
-    return { value: { page, limit, offset: ((page || 1) - 1) * (limit || LIMIT_DEFAULT) }, errors };
+    return { value: { page, limit, offset: ((page || 1) - 1) * (limit || limitPorDefecto) }, errors };
+}
+
+/** Número >= 0 (montos). Null si no es válido. */
+function numeroNoNegativo(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 /** Query de GET reposicion/*: ?proveedor opcional (nombre exacto, sin distinguir mayúsculas). */
@@ -132,6 +140,94 @@ function validarQueryNuevos(query = {}) {
         if (b === undefined) errors.push({ campo, error: 'Tiene que ser true o false' });
         else value[campo] = b;
     }
+    return { value, errors };
+}
+
+/**
+ * Query de GET clientes/importantes (fase 1).
+ * Defaults de dias / montos / dias_pedido salen de config/importantes.json.
+ */
+function validarQueryImportantes(query = {}, cfg = importantes.cargarConfig()) {
+    const errors = [];
+    // meses / meses_pedido ya no existen: hay que usar dias / dias_pedido
+    if (query.meses !== undefined) {
+        errors.push({ campo: 'meses', error: 'Ya no se usa: mandá dias (1 a 730)' });
+    }
+    if (query.meses_pedido !== undefined) {
+        errors.push({ campo: 'meses_pedido', error: 'Ya no se usa: mandá dias_pedido (1 a 730)' });
+    }
+
+    const dias = validarDias(query.dias, cfg.dias, importantes.DIAS_MAX, 'dias');
+    const diasPedido = validarDias(query.dias_pedido, cfg.dias_pedido, importantes.DIAS_MAX, 'dias_pedido');
+    const pag = validarPaginacion(query, importantes.LIMIT_DEFAULT);
+    errors.push(...dias.errors, ...diasPedido.errors, ...pag.errors);
+
+    const value = {
+        dias: dias.value,
+        dias_pedido: diasPedido.value,
+        monto_minimo: cfg.monto_minimo,
+        monto_pedido_minimo: cfg.monto_pedido_minimo,
+        top: null,
+        motivo: null,
+        orden: importantes.ORDEN_DEFAULT,
+        // Lista para analizar: por defecto vienen todos (también los de no_contactar)
+        no_contactar: null,
+        incluir_pedido_activo: false,
+        ...pag.value,
+        refresh: query.refresh === '1' || query.refresh === 'true',
+    };
+
+    const tieneMonto = query.monto_minimo !== undefined && query.monto_minimo !== '';
+    const tieneTop = query.top !== undefined && query.top !== '';
+    if (tieneMonto && tieneTop) {
+        errors.push({ campo: 'monto_minimo', error: 'No se puede combinar con top: usá uno u otro' });
+        errors.push({ campo: 'top', error: 'No se puede combinar con monto_minimo: usá uno u otro' });
+    }
+    if (tieneMonto) {
+        const n = numeroNoNegativo(query.monto_minimo);
+        if (n === null) errors.push({ campo: 'monto_minimo', error: 'Tiene que ser un número mayor o igual a 0' });
+        else value.monto_minimo = n;
+    }
+    if (tieneTop) {
+        const n = entero(query.top, { min: 1, max: importantes.TOP_MAX });
+        if (n === null) errors.push({ campo: 'top', error: `Tiene que ser un entero de 1 a ${importantes.TOP_MAX}` });
+        else value.top = n;
+    }
+
+    if (query.monto_pedido_minimo !== undefined && query.monto_pedido_minimo !== '') {
+        const n = numeroNoNegativo(query.monto_pedido_minimo);
+        if (n === null) errors.push({ campo: 'monto_pedido_minimo', error: 'Tiene que ser un número mayor o igual a 0' });
+        else value.monto_pedido_minimo = n;
+    }
+
+    if (query.motivo !== undefined && query.motivo !== '') {
+        if (importantes.MOTIVOS.includes(query.motivo)) value.motivo = query.motivo;
+        else errors.push({ campo: 'motivo', error: `Tiene que ser uno de: ${importantes.MOTIVOS.join(', ')}` });
+    }
+
+    if (query.orden !== undefined && query.orden !== '') {
+        if (importantes.ORDENES.includes(query.orden)) value.orden = query.orden;
+        else errors.push({ campo: 'orden', error: `Tiene que ser uno de: ${importantes.ORDENES.join(', ')}` });
+    }
+
+    if (query.no_contactar !== undefined) {
+        const b = query.no_contactar === 'todos' ? null : booleanoQuery(query.no_contactar);
+        if (b === undefined) errors.push({ campo: 'no_contactar', error: 'Tiene que ser true, false o todos' });
+        else value.no_contactar = b;
+    }
+
+    if (query.con_respuesta_pendiente !== undefined) {
+        const b = booleanoQuery(query.con_respuesta_pendiente);
+        if (b === undefined) errors.push({ campo: 'con_respuesta_pendiente', error: 'Tiene que ser true o false' });
+        else value.con_respuesta_pendiente = b;
+    }
+
+    if (query.incluir_pedido_activo !== undefined) {
+        const b = booleanoQuery(query.incluir_pedido_activo);
+        if (b === undefined) errors.push({ campo: 'incluir_pedido_activo', error: 'Tiene que ser true o false' });
+        else value.incluir_pedido_activo = b;
+    }
+
     return { value, errors };
 }
 
@@ -422,6 +518,7 @@ module.exports = {
     validarDias,
     validarPaginacion,
     validarQueryNuevos,
+    validarQueryImportantes,
     validarQueryCotizacionesWeb,
     validarQueryProductos,
     validarQueryReposicion,

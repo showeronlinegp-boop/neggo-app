@@ -3,7 +3,7 @@
 // Los casos salen de datos reales encontrados en la auditoría del 2026-10-20.
 
 const assert = require('assert');
-const { codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo } = require('./preventasSyncGuards');
+const { codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo } = require('./preventasSyncGuards');
 
 // Fila típica de un cambio de precio correcto: todo coincide y el cambio es chico
 function fila(overrides = {}) {
@@ -118,6 +118,20 @@ test('mismo código con distinta puntuación no requiere revisión', () => {
     assert.strictEqual(motivoRevision(fila({
         scraper_name: 'PELAPAPA PELADOR {CTE-012} ANCHO', odoo_nombre: 'PELAPAPA PELADOR {CTE012} ANCHO',
     })), null);
+});
+test('aceptar cambios de costo en bloque no saltea un vínculo dudoso (nota 145)', () => {
+    const costoGrande = { costo: '24434.10', odoo_standard_price: '12217.05' };
+    assert.strictEqual(motivoRevision(fila(costoGrande), { aceptarCambioCosto: true }), null);
+    assert.match(motivoRevision(fila({ ...costoGrande, match_type: 'fuzzy_name', match_score: '78' }), { aceptarCambioCosto: true }), /nombre parecido/);
+    assert.match(motivoRevision(fila({
+        ...costoGrande, scraper_name: 'MOCHILITA {MAB86}', odoo_nombre: 'MOCHILITA (MAB96)',
+    }), { aceptarCambioCosto: true }), /no coincide/);
+});
+test('tipoRevision distingue vínculo dudoso de cambio de costo', () => {
+    assert.strictEqual(tipoRevision(fila()), null);
+    assert.strictEqual(tipoRevision(fila({ costo: '1500.00' })), 'costo');
+    // Si pasan las dos cosas, manda el vínculo (no se acepta en bloque)
+    assert.strictEqual(tipoRevision(fila({ costo: '1500.00', match_type: 'fuzzy_name', match_score: '70' })), 'vinculo');
 });
 
 // ─── motivoOdoo ──────────────────────────────────────────────────────────────
