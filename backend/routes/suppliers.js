@@ -86,6 +86,16 @@ router.get('/', authenticate, async (req, res) => {
             params.push(req.query.active === 'true');
         }
 
+        // El catálogo web es lo que se vincula con Odoo. La fuente de Preventas
+        // (neggo_scraper) no decide quién aparece: Renacer y Pan Lin la usan y
+        // además tienen ofertas web para relacionar.
+        if (req.query.catalogo === 'web') {
+            query += `${params.length ? ' AND' : ' WHERE'} EXISTS (
+                SELECT 1 FROM supplier_products spw
+                WHERE spw.supplier_id = suppliers.id AND spw.source = 'web'
+            )`;
+        }
+
         query += ` ORDER BY name ASC`;
 
         const result = await pool.query(query, params);

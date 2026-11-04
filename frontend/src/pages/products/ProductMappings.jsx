@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../../api/client';
 import { useToast } from '../../context/ToastContext';
 import { useTheme } from '../../theme/ThemeContext';
@@ -22,6 +22,14 @@ const FILTER_OPTS = [
     { value: 'partial',  label: 'Parciales' },
 ];
 
+const UNMAPPED_PAGE = 80;
+const ODOO_PAGE = 80;
+const ODOO_ESTADO = [
+    { value: 'todos', label: 'Todos' },
+    { value: 'activos', label: 'Activos' },
+    { value: 'archivados', label: 'Archivados' },
+];
+
 const MATCH_TONE = {
     auto_ref:   'primary',
     auto_fuzzy: 'warn',
@@ -42,15 +50,23 @@ export default function ProductMappings() {
     // Tab Vincular
     const [unmapped, setUnmapped] = useState([]);
     const [unmappedLoading, setUnmappedLoading] = useState(false);
+    const [unmappedHasMore, setUnmappedHasMore] = useState(false);
     const [unmappedSearch, setUnmappedSearch] = useState('');
+    const [unmappedQuery, setUnmappedQuery] = useState('');
     const [selectedLeft, setSelectedLeft] = useState(null);
     const [odooProducts, setOdooProducts] = useState([]);
     const [odooLoading, setOdooLoading] = useState(false);
+    const [odooTotal, setOdooTotal] = useState(0);
     const [odooSearch, setOdooSearch] = useState('');
+    const [odooQuery, setOdooQuery] = useState('');
+    const [odooEstado, setOdooEstado] = useState('todos');
     const [odooCompany, setOdooCompany] = useState('neggo');
     const [selectedRight, setSelectedRight] = useState(null);
     const [mappings, setMappings] = useState([]);
     const [mappingsLoading, setMappingsLoading] = useState(false);
+    const [mappingsTotal, setMappingsTotal] = useState(0);
+    const [mappingsSearch, setMappingsSearch] = useState('');
+    const [mappingsQuery, setMappingsQuery] = useState('');
     const [autoMatchLoading, setAutoMatchLoading] = useState(false);
     const [confirmUnlink, setConfirmUnlink] = useState(null);
     // Foto abierta en grande (A mano y Comparación): { imageUrl, nombre, detalle }
@@ -66,7 +82,7 @@ export default function ProductMappings() {
     const CMP_PAGE_SIZE = 50;
 
     useEffect(() => {
-        api.get('/suppliers', { active: 'true' }).then(r => r.success && setSuppliers(r.data || []));
+        api.get('/suppliers', { active: 'true', catalogo: 'web' }).then(r => r.success && setSuppliers(r.data || []));
         fetchResumen();
     }, []);
 
@@ -87,40 +103,106 @@ export default function ProductMappings() {
     }
 
     useEffect(() => {
-        if (selectedSupplier) { fetchUnmapped(); fetchMappings(); }
-    }, [selectedSupplier, unmappedSearch]);
+        const espera = setTimeout(() => setUnmappedQuery(unmappedSearch.trim()), 300);
+        return () => clearTimeout(espera);
+    }, [unmappedSearch]);
 
-    useEffect(() => { fetchOdooProducts(); }, [odooSearch, odooCompany]);
+    const pedidoSinVincular = useRef(0);
+    const cargarSinVincular = useCallback(async (offset = 0, append = false) => {
+        const pedido = ++pedidoSinVincular.current;
+        if (!append) setUnmapped([]);
+        setUnmappedLoading(true);
+        const res = await api.get('/mappings', {
+            ...(selectedSupplier ? { supplierId: selectedSupplier } : {}),
+            unmapped: true,
+            source: 'web',
+            search: unmappedQuery,
+            limit: UNMAPPED_PAGE,
+            offset,
+        });
+        if (pedido !== pedidoSinVincular.current) return;
+        setUnmappedLoading(false);
+        if (!res.success) return;
+        const rows = res.data || [];
+        setUnmappedHasMore(!!res.hasMore);
+        setUnmapped(prev => append ? [...prev, ...rows] : rows);
+    }, [selectedSupplier, unmappedQuery]);
+
+    useEffect(() => {
+        if (activeTab !== 'vincular') return;
+        cargarSinVincular(0, false);
+    }, [activeTab, cargarSinVincular]);
+
+    useEffect(() => {
+        const espera = setTimeout(() => setMappingsQuery(mappingsSearch.trim()), 300);
+        return () => clearTimeout(espera);
+    }, [mappingsSearch]);
+
+    const pedidoVinculos = useRef(0);
+    const cargarVinculos = useCallback(async (offset = 0, append = false) => {
+        if (!selectedSupplier) {
+            setMappings([]);
+            setMappingsTotal(0);
+            return;
+        }
+        const pedido = ++pedidoVinculos.current;
+        if (!append) setMappings([]);
+        setMappingsLoading(true);
+        const res = await api.get('/mappings', {
+            supplierId: selectedSupplier,
+            status: 'confirmado',
+            company: 'neggo',
+            source: 'web',
+            search: mappingsQuery,
+            limit: UNMAPPED_PAGE,
+            offset,
+        });
+        if (pedido !== pedidoVinculos.current) return;
+        setMappingsLoading(false);
+        if (!res.success) return;
+        const rows = res.data || [];
+        setMappingsTotal(res.pagination?.total ?? rows.length);
+        setMappings(prev => append ? [...prev, ...rows] : rows);
+    }, [selectedSupplier, mappingsQuery]);
+
+    useEffect(() => {
+        cargarVinculos(0, false);
+    }, [cargarVinculos]);
+
+    useEffect(() => {
+        const espera = setTimeout(() => setOdooQuery(odooSearch.trim()), 300);
+        return () => clearTimeout(espera);
+    }, [odooSearch]);
+
+    const pedidoOdoo = useRef(0);
+    const cargarOdoo = useCallback(async (offset = 0, append = false) => {
+        const pedido = ++pedidoOdoo.current;
+        if (!append) setOdooProducts([]);
+        setOdooLoading(true);
+        const res = await api.get('/products/odoo', {
+            company: odooCompany,
+            search: odooQuery,
+            estado: odooEstado,
+            limit: ODOO_PAGE,
+            offset,
+        });
+        if (pedido !== pedidoOdoo.current) return;
+        setOdooLoading(false);
+        if (!res.success) return;
+        const rows = res.data || [];
+        setOdooTotal(res.pagination?.total ?? rows.length);
+        setOdooProducts(prev => append ? [...prev, ...rows] : rows);
+    }, [odooCompany, odooQuery, odooEstado]);
+
+    useEffect(() => { cargarOdoo(0, false); }, [cargarOdoo]);
 
     useEffect(() => {
         if (activeTab === 'comparacion' && selectedSupplier) fetchComparison();
     }, [activeTab, selectedSupplier, cmpSearch, cmpFilter, cmpPage]);
 
-    async function fetchUnmapped() {
-        setUnmappedLoading(true);
-        const res = await api.get('/mappings', { supplierId: selectedSupplier, unmapped: true, search: unmappedSearch, limit: 50 });
-        if (res.success) setUnmapped(res.data || []);
-        setUnmappedLoading(false);
-    }
-
-    async function fetchOdooProducts() {
-        if (!odooSearch && !odooCompany) return;
-        setOdooLoading(true);
-        const res = await api.get('/products/odoo', { company: odooCompany, search: odooSearch, limit: 50 });
-        if (res.success) setOdooProducts(res.data || []);
-        setOdooLoading(false);
-    }
-
-    async function fetchMappings() {
-        setMappingsLoading(true);
-        const res = await api.get('/mappings', { supplierId: selectedSupplier, status: 'confirmado', company: 'neggo', limit: 100 });
-        if (res.success) setMappings(res.data || []);
-        setMappingsLoading(false);
-    }
-
     async function fetchComparison() {
         setCmpLoading(true);
-        const res = await api.get('/mappings/comparison', { supplierId: selectedSupplier, search: cmpSearch, filter: cmpFilter, limit: CMP_PAGE_SIZE, offset: (cmpPage - 1) * CMP_PAGE_SIZE });
+        const res = await api.get('/mappings/comparison', { supplierId: selectedSupplier, source: 'web', search: cmpSearch, filter: cmpFilter, limit: CMP_PAGE_SIZE, offset: (cmpPage - 1) * CMP_PAGE_SIZE });
         if (res.success) { setCmpData(res.data || []); setCmpTotal(res.pagination?.total ?? res.data?.length ?? 0); }
         else showToast(res.error || 'Error al cargar comparación', 'error');
         setCmpLoading(false);
@@ -129,13 +211,13 @@ export default function ProductMappings() {
     async function handleLink() {
         if (!selectedLeft || !selectedRight) return;
         const res = await api.post('/mappings', { supplierProductId: selectedLeft.supplier_product_id || selectedLeft.id, odooProductId: selectedRight.odoo_id, odooCompany });
-        if (res.success) { showToast('Vínculo creado', 'success'); setSelectedLeft(null); setSelectedRight(null); fetchUnmapped(); fetchMappings(); fetchResumen(); }
+        if (res.success) { showToast('Vínculo creado', 'success'); setSelectedLeft(null); setSelectedRight(null); cargarSinVincular(0, false); cargarVinculos(0, false); fetchResumen(); }
         else showToast(res.error || 'Error al crear vínculo', 'error');
     }
 
     async function handleUnlink(id) {
         const res = await api.del(`/mappings/${id}`);
-        if (res.success) { showToast('Vínculo eliminado', 'success'); fetchUnmapped(); fetchMappings(); fetchResumen(); }
+        if (res.success) { showToast('Vínculo eliminado', 'success'); cargarSinVincular(0, false); cargarVinculos(0, false); fetchResumen(); }
         else showToast(res.error || 'Error al desvincular', 'error');
         setConfirmUnlink(null);
     }
@@ -150,14 +232,14 @@ export default function ProductMappings() {
             const { ref = {}, total = {} } = res.data?.summary || {};
             showToast(`Auto-match: ${ref.matched || 0} sugeridos por código y ${total.suggested || 0} por nombre ` +
                 `(${total.noMatch || 0} sin parecido). Se confirman en Vincular; pedile a Claude que los revise.`, 'success');
-            fetchUnmapped(); fetchMappings(); fetchResumen();
+            cargarSinVincular(0, false); cargarVinculos(0, false); fetchResumen();
         } else showToast(res.error || 'Error en auto-match', 'error');
     }
 
     const supplierOptions = [
-        { value: '', label: 'Seleccioná un proveedor' },
-        // Los de fuente interna (neggo_scraper) son los mismos productos de Odoo: no hay nada que vincular
-        ...suppliers.filter(s => s.scraper_key !== 'neggo_scraper').map(s => ({ value: String(s.id), label: s.name })),
+        { value: '', label: activeTab === 'vincular' ? 'Todos los proveedores' : 'Seleccioná un proveedor' },
+        // Quien tenga catálogo web entra, aunque Preventas le lea la copia interna (neggo_scraper)
+        ...suppliers.map(s => ({ value: String(s.id), label: s.name })),
     ];
 
     const conCantidad = (label, n) => (n ? `${label} · ${n.toLocaleString('es-AR')}` : label);
@@ -229,6 +311,11 @@ export default function ProductMappings() {
                             <div style={{ padding: `14px 16px`, borderBottom: `1px solid ${t.color.border}` }}>
                                 <div style={{ fontSize: 15, fontWeight: t.font.weight.semibold, color: t.color.text, marginBottom: t.space[3], fontFamily: t.font.family }}>
                                     Sin vincular
+                                    {unmapped.length > 0 && (
+                                        <span style={{ marginLeft: 8, fontSize: t.font.size.sm, fontWeight: t.font.weight.regular, color: t.color.textMuted }}>
+                                            · {unmapped.length.toLocaleString('es-AR')}{unmappedHasMore ? '+' : ''}
+                                        </span>
+                                    )}
                                 </div>
                                 <Input
                                     value={unmappedSearch}
@@ -238,20 +325,35 @@ export default function ProductMappings() {
                                 />
                             </div>
                             <div style={{ flex: 1, overflowY: 'auto', maxHeight: 360, padding: t.space[2] }}>
-                                {unmappedLoading ? (
+                                {unmappedLoading && unmapped.length === 0 ? (
                                     <Centered><LoadingSpinner size="sm" color={t.color.primary} /></Centered>
                                 ) : unmapped.length === 0 ? (
-                                    <EmptyPanel tokens={t} msg={selectedSupplier ? 'No hay productos sin vincular' : 'Seleccioná un proveedor'} />
-                                ) : unmapped.map(p => (
-                                    <ProductItem
-                                        key={p.id || p.supplier_product_id}
-                                        product={p}
-                                        selected={selectedLeft?.id === p.id}
-                                        onClick={() => setSelectedLeft(p)}
-                                        onFoto={setFoto}
-                                        tokens={t}
-                                    />
-                                ))}
+                                    <EmptyPanel tokens={t} msg={unmappedQuery ? 'Ningún producto coincide' : 'No hay productos sin vincular'} />
+                                ) : (
+                                    <>
+                                        {unmapped.map(p => (
+                                            <ProductItem
+                                                key={p.id || p.supplier_product_id}
+                                                product={p}
+                                                selected={selectedLeft?.id === p.id}
+                                                onClick={() => setSelectedLeft(p)}
+                                                onFoto={setFoto}
+                                                tokens={t}
+                                            />
+                                        ))}
+                                        {unmappedHasMore && (
+                                            <div style={{ padding: 8, textAlign: 'center' }}>
+                                                <Button
+                                                    variant="ghost"
+                                                    disabled={unmappedLoading}
+                                                    onClick={() => cargarSinVincular(unmapped.length, true)}
+                                                >
+                                                    {unmappedLoading ? 'Cargando…' : 'Cargar más'}
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
                             </div>
                         </Card>
 
@@ -283,6 +385,11 @@ export default function ProductMappings() {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], marginBottom: t.space[3] }}>
                                     <span style={{ fontSize: 15, fontWeight: t.font.weight.semibold, color: t.color.text, flex: 1, fontFamily: t.font.family }}>
                                         Productos Odoo
+                                        {odooTotal > 0 && (
+                                            <span style={{ marginLeft: 8, fontSize: t.font.size.sm, fontWeight: t.font.weight.regular, color: t.color.textMuted }}>
+                                                · {odooProducts.length.toLocaleString('es-AR')} de {odooTotal.toLocaleString('es-AR')}
+                                            </span>
+                                        )}
                                     </span>
                                     <div style={{
                                         display: 'flex', background: t.color.surface2,
@@ -301,6 +408,18 @@ export default function ProductMappings() {
                                         ))}
                                     </div>
                                 </div>
+                                <div style={{ display: 'flex', gap: 4, marginBottom: t.space[3] }}>
+                                    {ODOO_ESTADO.map(op => (
+                                        <button key={op.value} type="button" onClick={() => { setOdooEstado(op.value); setSelectedRight(null); }} style={{
+                                            padding: '0 10px', height: 26, borderRadius: t.radius.sm,
+                                            fontSize: t.font.size.xs, fontWeight: t.font.weight.medium,
+                                            fontFamily: t.font.family, cursor: 'pointer',
+                                            border: `1px solid ${odooEstado === op.value ? t.color.primary : t.color.border}`,
+                                            background: odooEstado === op.value ? t.color.primarySoft : t.color.surface,
+                                            color: odooEstado === op.value ? t.color.primary : t.color.textMuted,
+                                        }}>{op.label}</button>
+                                    ))}
+                                </div>
                                 <Input
                                     value={odooSearch}
                                     onChange={e => setOdooSearch(e.target.value)}
@@ -309,43 +428,67 @@ export default function ProductMappings() {
                                 />
                             </div>
                             <div style={{ flex: 1, overflowY: 'auto', maxHeight: 360, padding: t.space[2] }}>
-                                {odooLoading ? (
+                                {odooLoading && odooProducts.length === 0 ? (
                                     <Centered><LoadingSpinner size="sm" color={t.color.primary} /></Centered>
                                 ) : odooProducts.length === 0 ? (
-                                    <EmptyPanel tokens={t} msg="Buscá un producto de Odoo" />
-                                ) : odooProducts.map(p => (
-                                    <OdooItem
-                                        key={p.id}
-                                        product={p}
-                                        selected={selectedRight?.id === p.id}
-                                        onClick={() => setSelectedRight(p)}
-                                        onFoto={setFoto}
-                                        tokens={t}
-                                    />
-                                ))}
+                                    <EmptyPanel tokens={t} msg={odooQuery ? 'Ningún producto coincide' : 'No hay productos de Odoo'} />
+                                ) : (
+                                    <>
+                                        {odooProducts.map(p => (
+                                            <OdooItem
+                                                key={p.id}
+                                                product={p}
+                                                selected={selectedRight?.id === p.id}
+                                                onClick={() => setSelectedRight(p)}
+                                                onFoto={setFoto}
+                                                tokens={t}
+                                            />
+                                        ))}
+                                        {odooProducts.length < odooTotal && (
+                                            <div style={{ padding: 8, textAlign: 'center' }}>
+                                                <Button
+                                                    variant="ghost"
+                                                    disabled={odooLoading}
+                                                    onClick={() => cargarOdoo(odooProducts.length, true)}
+                                                >
+                                                    {odooLoading ? 'Cargando…' : 'Cargar más'}
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
                             </div>
                         </Card>
                     </div>
 
-                    {/* Vínculos existentes */}
-                    <Card padding={false}>
-                        <div style={{ padding: `16px ${t.layout.cardPadX}px`, borderBottom: `1px solid ${t.color.border}` }}>
+                    {/* Vínculos existentes: solo del proveedor elegido */}
+                    {selectedSupplier && <Card padding={false}>
+                        <div style={{ padding: `16px ${t.layout.cardPadX}px`, borderBottom: `1px solid ${t.color.border}`, display: 'flex', gap: t.space[3], alignItems: 'center', flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 15, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>
                                 Vínculos existentes
-                                {mappings.length > 0 && (
+                                {mappingsTotal > 0 && (
                                     <span style={{ marginLeft: 8, fontSize: t.font.size.sm, fontWeight: t.font.weight.regular, color: t.color.textMuted }}>
-                                        · {mappings.length}
+                                        · {mappings.length.toLocaleString('es-AR')} de {mappingsTotal.toLocaleString('es-AR')}
                                     </span>
                                 )}
                             </span>
+                            <div style={{ width: 280, marginLeft: 'auto' }}>
+                                <Input
+                                    value={mappingsSearch}
+                                    onChange={e => setMappingsSearch(e.target.value)}
+                                    placeholder="Buscar en los vínculos…"
+                                    leftIcon={<Icon.Search size={14} />}
+                                />
+                            </div>
                         </div>
-                        {mappingsLoading ? (
+                        {mappingsLoading && mappings.length === 0 ? (
                             <Centered style={{ padding: 32 }}><LoadingSpinner size="sm" color={t.color.primary} /></Centered>
                         ) : mappings.length === 0 ? (
                             <div style={{ padding: '32px 24px', textAlign: 'center', fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family }}>
-                                No hay vínculos para este proveedor.
+                                {mappingsQuery ? 'Ningún vínculo coincide' : 'No hay vínculos para este proveedor.'}
                             </div>
                         ) : (
+                            <>
                             <div style={{ overflowX: 'auto' }}>
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: t.font.size.sm }}>
                                     <thead>
@@ -386,8 +529,20 @@ export default function ProductMappings() {
                                     </tbody>
                                 </table>
                             </div>
+                            {mappings.length < mappingsTotal && (
+                                <div style={{ padding: 8, textAlign: 'center' }}>
+                                    <Button
+                                        variant="ghost"
+                                        disabled={mappingsLoading}
+                                        onClick={() => cargarVinculos(mappings.length, true)}
+                                    >
+                                        {mappingsLoading ? 'Cargando…' : 'Cargar más'}
+                                    </Button>
+                                </div>
+                            )}
+                            </>
                         )}
-                    </Card>
+                    </Card>}
 
                     <ConfirmDialog
                         isOpen={!!confirmUnlink}
@@ -455,8 +610,9 @@ function ProductItem({ product: p, selected, onClick, onFoto, tokens: t }) {
                     {p.name || p.product_name}
                 </div>
                 <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, fontFamily: t.font.family }}>
+                    {p.supplier_name && <span>{p.supplier_name} · </span>}
                     <span style={{ fontFamily: t.font.mono }}>{p.sku}</span>
-                    {p.raw_price != null && <> · {fmtAR(p.raw_price)}</>}
+                    {(p.precio_neto != null || p.raw_price != null) && <> · {fmtAR(p.precio_neto ?? p.raw_price)}</>}
                 </div>
                 {p.source_category && (
                     <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 2, fontFamily: t.font.family }}>{p.source_category}</div>
@@ -491,12 +647,17 @@ function OdooItem({ product: p, selected, onClick, onFoto, tokens: t }) {
                 onAbrir={() => onFoto({ imageUrl: p.image_url, nombre: p.name, detalle: p.internal_ref })}
             />
             <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: t.font.family }}>
-                    {p.name}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: t.font.family, flex: 1 }}>
+                        {p.name}
+                    </div>
+                    {(!p.active || p.locally_archived) && (
+                        <span style={{ flexShrink: 0, fontSize: 10, fontWeight: t.font.weight.semibold, color: t.color.textMuted, fontFamily: t.font.family }}>Archivado</span>
+                    )}
                 </div>
                 <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, fontFamily: t.font.family }}>
                     Ref: <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
-                    {p.list_price != null && <> · {fmtAR(p.list_price)}</>}
+                    {p.standard_price != null && <> · costo {fmtAR(p.standard_price)}</>}
                 </div>
                 {p.categ_name && (
                     <div style={{ fontSize: 11, color: t.color.textFaint, marginTop: 2, fontFamily: t.font.family }}>{p.categ_name}</div>

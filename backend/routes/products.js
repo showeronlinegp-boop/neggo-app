@@ -70,6 +70,7 @@ router.get('/odoo/sync/status', authenticate, async (req, res) => {
 //   company   — 'neggo' | 'preventas' (requerido)
 //   search    — búsqueda por nombre o referencia interna
 //   category  — filtra por categ_name (texto parcial)
+//   estado    — 'activos' | 'archivados' | 'todos' (Vincular). Si no viene, sigue el filtro de siempre.
 //   limit     — número de resultados (default: 100, max: 500)
 //   offset    — paginación (default: 0)
 // =============================================
@@ -80,6 +81,7 @@ router.get('/odoo', authenticate, async (req, res) => {
         search = '',
         category = '',
         include_inactive = 'false',
+        estado = '',
         sin_imagen = 'false',
         pricelist_id,
         limit: rawLimit = '100',
@@ -100,17 +102,35 @@ router.get('/odoo', authenticate, async (req, res) => {
 
     try {
         const conditions = ['opc.company = $1'];
-        if (include_inactive !== 'true') conditions.push('opc.active = true');
-        conditions.push('opc.locally_archived = false');
+        if (estado === 'todos') {
+            // Activos y archivados, también los archivados solo en la app
+        } else if (estado === 'archivados') {
+            conditions.push('(opc.active = false OR opc.locally_archived = true)');
+        } else if (estado === 'activos') {
+            conditions.push('opc.active = true');
+            conditions.push('opc.locally_archived = false');
+        } else {
+            if (include_inactive !== 'true') conditions.push('opc.active = true');
+            conditions.push('opc.locally_archived = false');
+        }
         // Solo los que no tienen foto en Odoo (has_image viene del sync)
         if (sin_imagen === 'true') conditions.push('opc.has_image = false');
         const params = [company];
         let paramIdx = 2;
 
         if (search) {
-            conditions.push(`(opc.name ILIKE $${paramIdx} OR opc.internal_ref ILIKE $${paramIdx})`);
-            params.push(`%${search}%`);
-            paramIdx++;
+            // Cada palabra tiene que aparecer en el nombre, la referencia o el código de barras
+            const partes = String(search).trim().split(/\s+/).filter(Boolean).slice(0, 6);
+            const palabras = partes.filter(w => w.length >= 2);
+            const tokens = palabras.length ? palabras : partes;
+            const sinAcento = `'áéíóúàèìòùäëïöüñÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÑ', 'aeiouaeiouaeiounAEIOUAEIOUAEIOUN'`;
+            const plano = (expr) => `translate(COALESCE(${expr}, ''), ${sinAcento})`;
+            for (const w of tokens) {
+                const folded = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ñ/gi, 'n').replace(/[%_\\]/g, ch => '\\' + ch);
+                conditions.push(`(${plano('opc.name')} ILIKE $${paramIdx} ESCAPE '\\' OR ${plano('opc.internal_ref')} ILIKE $${paramIdx} ESCAPE '\\' OR ${plano('opc.barcode')} ILIKE $${paramIdx} ESCAPE '\\')`);
+                params.push(`%${folded}%`);
+                paramIdx++;
+            }
         }
 
         if (category) {
@@ -133,7 +153,7 @@ router.get('/odoo', authenticate, async (req, res) => {
             `SELECT
                 opc.id, opc.odoo_id, opc.company, opc.name, opc.internal_ref, opc.barcode,
                 opc.list_price, opc.standard_price, opc.categ_name, opc.image_url,
-                opc.qty_available, opc.active, opc.synced_at,
+                opc.qty_available, opc.active, opc.locally_archived, opc.synced_at,
                 sp.raw_price,
                 sp.supplier_id,
                 CASE
@@ -328,6 +348,8 @@ router.get('/odoo/web-categories', authenticate, async (req, res) => {
 //   supplierId  — filtra por proveedor (requerido)
 //   category    — filtra por source_category (texto parcial)
 //   search      — búsqueda por nombre o SKU
+//   source      — 'web' | 'neggo'
+//   match       — 'words': cada palabra tiene que aparecer en el nombre, el código o el barcode
 //   available   — 'true' | 'false'
 //   limit       — default 100, max 500
 //   offset      — default 0
@@ -338,6 +360,8 @@ router.get('/supplier', authenticate, async (req, res) => {
         supplierId,
         category = '',
         search = '',
+        source,
+        match,
         available,
         sort = 'name',
         limit: rawLimit = '100',
@@ -362,7 +386,21 @@ router.get('/supplier', authenticate, async (req, res) => {
             params.push(`%${category}%`);
         }
 
-        if (search) {
+        if (source === 'web' || source === 'neggo') {
+            conditions.push(`sp.source = $${idx++}`);
+            params.push(source);
+        }
+
+        if (search && match === 'words') {
+            // Cada palabra tiene que aparecer en el nombre o en el código, en cualquier orden
+            const words = String(search).trim().split(/\s+/).filter(w => w.length >= 2).slice(0, 6);
+            if (!words.length) conditions.push('FALSE');
+            for (const w of words) {
+                conditions.push(`(sp.name ILIKE $${idx} OR sp.sku ILIKE $${idx} OR COALESCE(sp.barcode, '') ILIKE $${idx})`);
+                params.push(`%${w}%`);
+                idx++;
+            }
+        } else if (search) {
             conditions.push(`(sp.name ILIKE $${idx} OR sp.sku ILIKE $${idx})`);
             params.push(`%${search}%`);
             idx++;
