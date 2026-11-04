@@ -59,19 +59,25 @@ async function registrarDecision(mapping, decision, userId) {
 // Lista de mappings con JOIN a supplier_products y odoo_products_cache
 //
 // Query params:
-//   supplierId — filtra por proveedor
-//   company    — 'neggo' | 'preventas'
-//   status     — 'active' | 'suggested' | 'rejected'
-//   unmapped   — 'true' → devuelve supplier_products disponibles SIN vínculo confirmado
-//   search     — búsqueda por nombre del producto proveedor (y SKU en modo unmapped)
-//   limit      — default 100, max 500
-//   offset     — default 0
+//   supplierId    — filtra por proveedor
+//   company       — 'neggo' | 'preventas'
+//   odooProductId — filtra por el producto de Odoo
+//   source        — 'web' | 'neggo' (fuente del producto del proveedor)
+//   status        — 'confirmado' | 'sugerido' | 'rechazado' | 'active' | 'inactive'
+//   unmapped      — 'true' → productos de proveedor disponibles SIN vínculo confirmado.
+//                   Sin supplierId y sin búsqueda devuelve solo el total (dashboard).
+//                   Con source o búsqueda, lista de todos los proveedores, de a una página.
+//   search        — búsqueda por nombre del producto proveedor (y SKU en modo unmapped)
+//   limit         — default 100, max 500
+//   offset        — default 0
 // =============================================
 
 router.get('/', authenticate, async (req, res) => {
     const {
         supplierId,
         company,
+        odooProductId,
+        source,
         status,
         unmapped,
         search = '',
@@ -85,8 +91,10 @@ router.get('/', authenticate, async (req, res) => {
     try {
         // Modo "no mapeados": devuelve supplier_products sin vínculo confirmado
         if (unmapped === 'true') {
-            // Sin supplierId → solo retornar el conteo total (para el dashboard)
-            if (!supplierId) {
+            const fuente = source === 'web' || source === 'neggo' ? source : null;
+            const supplier = supplierId ? parseInt(supplierId, 10) : null;
+            // El dashboard pide el total, sin listar: sin proveedor, sin búsqueda y sin fuente
+            if (!supplier && !String(search).trim() && !fuente) {
                 const { rows: countRows } = await pool.query(
                     `SELECT COUNT(*) AS total
                      FROM supplier_products sp
@@ -99,8 +107,8 @@ router.get('/', authenticate, async (req, res) => {
                 return res.json({ success: true, data: [], total: parseInt(countRows[0].total, 10) });
             }
 
-            const rows = await getUnmappedProducts(parseInt(supplierId, 10), { search: String(search), limit, offset });
-            return ok(res, rows);
+            const { rows, hasMore } = await getUnmappedProducts(supplier, { search: String(search), limit, offset, source: fuente });
+            return res.json({ success: true, data: rows, hasMore });
         }
 
         // Modo normal: lista de mappings con JOINs
@@ -121,6 +129,18 @@ router.get('/', authenticate, async (req, res) => {
             params.push(company);
         }
 
+        if (odooProductId) {
+            const odooId = parseInt(odooProductId, 10);
+            if (!odooId) return fail(res, 'odooProductId inválido', 400);
+            conditions.push(`pm.odoo_product_id = $${idx++}`);
+            params.push(odooId);
+        }
+
+        if (source === 'web' || source === 'neggo') {
+            conditions.push(`sp.source = $${idx++}`);
+            params.push(source);
+        }
+
         if (['confirmado', 'sugerido', 'rechazado'].includes(status)) {
             conditions.push(`pm.estado = $${idx++}`);
             params.push(status);
@@ -131,8 +151,17 @@ router.get('/', authenticate, async (req, res) => {
         }
 
         if (search) {
-            conditions.push(`sp.name ILIKE $${idx++}`);
-            params.push(`%${search}%`);
+            const partes = String(search).trim().split(/\s+/).filter(Boolean).slice(0, 6);
+            const palabras = partes.filter(w => w.length >= 2);
+            const tokens = palabras.length ? palabras : partes;
+            const sinAcento = `'áéíóúàèìòùäëïöüñÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÑ', 'aeiouaeiouaeiounAEIOUAEIOUAEIOUN'`;
+            const plano = (expr) => `translate(COALESCE(${expr}, ''), ${sinAcento})`;
+            for (const w of tokens) {
+                const folded = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ñ/gi, 'n').replace(/[%_\\]/g, ch => '\\' + ch);
+                conditions.push(`(${plano('sp.name')} ILIKE $${idx} ESCAPE '\\' OR ${plano('sp.sku')} ILIKE $${idx} ESCAPE '\\' OR ${plano('opc.name')} ILIKE $${idx} ESCAPE '\\' OR ${plano('opc.internal_ref')} ILIKE $${idx} ESCAPE '\\' OR ${plano('pm.odoo_internal_ref')} ILIKE $${idx} ESCAPE '\\')`);
+                params.push(`%${folded}%`);
+                idx++;
+            }
         }
 
         const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -184,6 +213,9 @@ router.get('/', authenticate, async (req, res) => {
             `SELECT COUNT(*) AS total
              FROM product_mappings pm
              JOIN supplier_products sp ON pm.supplier_product_id = sp.id
+             LEFT JOIN odoo_products_cache opc
+                ON opc.odoo_id = pm.odoo_product_id
+               AND opc.company = pm.odoo_company
              ${where}`,
             params
         );
@@ -214,6 +246,7 @@ router.get('/comparison', authenticate, async (req, res) => {
         supplierId,
         search = '',
         filter = 'all',
+        source,
         limit: rawLimit = '100',
         offset: rawOffset = '0',
     } = req.query;
@@ -227,6 +260,12 @@ router.get('/comparison', authenticate, async (req, res) => {
         const conditions = ['sp.supplier_id = $1'];
         const params     = [parseInt(supplierId, 10)];
         let   idx        = 2;
+
+        if (source === 'web' || source === 'neggo') {
+            conditions.push(`sp.source = $${idx}`);
+            params.push(source);
+            idx++;
+        }
 
         if (search) {
             conditions.push(`(sp.name ILIKE $${idx} OR sp.sku ILIKE $${idx})`);

@@ -19,6 +19,8 @@ import ReposicionOrdenes from './ReposicionOrdenes';
 import ReposicionCotizaciones from './ReposicionCotizaciones';
 import ReposicionPrecios from './ReposicionPrecios';
 import ReposicionPropuestas from './ReposicionPropuestas';
+import VincularReposicionModal from './VincularReposicionModal';
+import ArmarPedido from './ArmarPedido';
 import { descargarPedidoPDF } from './pedidoPdf';
 
 // Cola de reposición de Neggo: archivados, recorrida y «queda poco».
@@ -494,7 +496,34 @@ function ThumbCola({ it, size, onVerFoto }) {
     );
 }
 
-function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, onVerFoto, t }) {
+function BotonVincular({ onClick, t }) {
+    return (
+        <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClick(); }}
+            title="Vincular una oferta web de un proveedor"
+            style={{
+                border: `1px solid ${t.color.border}`,
+                background: t.color.surface,
+                color: t.color.primary,
+                borderRadius: t.radius.sm,
+                padding: '3px 8px',
+                cursor: 'pointer',
+                fontSize: t.font.size.xs,
+                fontFamily: t.font.family,
+                fontWeight: t.font.weight.semibold,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+            }}
+        >
+            <Icon.Link size={12} />
+            Vincular
+        </button>
+    );
+}
+
+function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, onVerFoto, onVincular, t }) {
     const pendiente = tab === 'pendiente';
     const encargado = tab === 'encargado';
     const fecha = fmtFecha(pendiente ? it.created_at : encargado ? (it.encargado_at || it.created_at) : it.resolved_at);
@@ -526,6 +555,7 @@ function CardProductoCola({ it, tab, trabajando, onCambiar, etiquetaIngreso, onV
                         {encargado && ORIGEN[it.origen] && (
                             <Badge tone={ORIGEN[it.origen].tone}>{ORIGEN[it.origen].label}</Badge>
                         )}
+                        <BotonVincular t={t} onClick={() => onVincular(it)} />
                     </div>
                     {etiquetaIngreso(it)}
                     {it.nota && <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 4 }}>{it.nota}</div>}
@@ -562,25 +592,29 @@ export default function Reposicion() {
     const [trabajando, setTrabajando] = useState(null);
     const [proveedores, setProveedores] = useState([]);
     const [proveedorAbierto, setProveedorAbierto] = useState(null);
+    const [contraidos, setContraidos] = useState(() => new Set());
     const [proveedorDecidir, setProveedorDecidir] = useState(null);
     const [recargarVista, setRecargarVista] = useState(0);
     const [foto, setFoto] = useState(null);
     // Solo los productos donde otro proveedor es más barato que el del pedido
     const [soloConviene, setSoloConviene] = useState(false);
+    const [aVincular, setAVincular] = useState(null);
     const cerrarFoto = useCallback(() => setFoto(null), []);
     const ordenes = tab === 'ordenes';
     const cotizaciones = tab === 'cotizaciones';
     const propuestas = tab === 'propuestas';
 
-    const cargarCola = useCallback(async () => {
+    const cargarCola = useCallback(async (opts = {}) => {
         // Las pestañas Órdenes, Cotizaciones y Propuestas cargan lo suyo
         if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') { setLoading(false); return; }
-        setLoading(true);
-        setError(null);
+        if (!opts.silencioso) {
+            setLoading(true);
+            setError(null);
+        }
         const estado = tab === 'resueltos' || tab === 'encargado' ? tab : 'pendiente';
         const res = await api.get('/reposicion', { estado });
         if (res.success) setItems(res.data || []);
-        else setError(res.error || 'No se pudo cargar la cola');
+        else if (!opts.silencioso) setError(res.error || 'No se pudo cargar la cola');
         setLoading(false);
     }, [tab]);
 
@@ -745,7 +779,7 @@ export default function Reposicion() {
 
             {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={cargarCola} onError={mostrarError} />}
 
-            {(pendiente || encargado) && (nConviene > 0 || soloConviene) && (
+            {encargado && (nConviene > 0 || soloConviene) && (
                 <label style={{
                     display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', alignSelf: 'flex-start',
                     fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family,
@@ -811,13 +845,32 @@ export default function Reposicion() {
                         </div>
                     </div>
                 </Card>
+            ) : pendiente ? (
+                <ArmarPedido
+                    items={items}
+                    isMobile={isMobile}
+                    onVerFoto={setFoto}
+                    onVincular={setAVincular}
+                    onError={mostrarError}
+                    onAviso={(msg) => { setError(null); setAviso(msg); }}
+                    onChanged={cargar}
+                />
             ) : (
-                grupos.map(([proveedor, lista]) => (
+                grupos.map(([proveedor, lista]) => {
+                    const cerrado = contraidos.has(proveedor);
+                    const alternar = () => setContraidos(prev => {
+                        const next = new Set(prev);
+                        if (next.has(proveedor)) next.delete(proveedor);
+                        else next.add(proveedor);
+                        return next;
+                    });
+                    return (
                     <Card key={proveedor} padding={false} style={{ overflow: 'hidden' }}>
                         <button
                             type="button"
-                            onClick={() => setProveedorAbierto(proveedor)}
-                            title="Ver activos y archivados"
+                            onClick={alternar}
+                            title={cerrado ? 'Expandir el listado' : 'Contraer el listado'}
+                            aria-expanded={!cerrado}
                             style={{
                                 display: 'flex', alignItems: 'center', gap: t.space[3],
                                 padding: isMobile ? '12px' : '12px 16px',
@@ -868,10 +921,14 @@ export default function Reposicion() {
                                     {pdfProveedor === proveedor ? 'Generando…' : 'PDF'}
                                 </Button>
                             )}
-                            {!isMobile && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Ver catálogo</span>}
-                            <Icon.ChevronRight size={16} />
+                            <Button size="sm" variant="ghost"
+                                title="Ver activos y archivados"
+                                onClick={(e) => { e.stopPropagation(); setProveedorAbierto(proveedor); }}>
+                                {isMobile ? 'Catálogo' : 'Ver catálogo'}
+                            </Button>
+                            {cerrado ? <Icon.ChevronRight size={16} /> : <Icon.ChevronDown size={16} />}
                         </button>
-                        {isMobile ? (
+                        {cerrado ? null : isMobile ? (
                             lista.map(it => (
                                 <CardProductoCola
                                     key={it.id}
@@ -881,6 +938,7 @@ export default function Reposicion() {
                                     onCambiar={cambiarEstado}
                                     etiquetaIngreso={etiquetaIngreso}
                                     onVerFoto={setFoto}
+                                    onVincular={setAVincular}
                                     t={t}
                                 />
                             ))
@@ -912,6 +970,9 @@ export default function Reposicion() {
                                                                 {it.internal_ref || it.barcode || '—'}
                                                             </div>
                                                             <OfertasProducto ofertas={it.ofertas} t={t} />
+                                                            <div style={{ marginTop: 6 }}>
+                                                                <BotonVincular t={t} onClick={() => setAVincular(it)} />
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -948,7 +1009,8 @@ export default function Reposicion() {
                             </div>
                         )}
                     </Card>
-                ))
+                    );
+                })
             )}
 
             <FotoAmpliada
@@ -977,6 +1039,11 @@ export default function Reposicion() {
                     onChanged={cargar}
                 />
             )}
+            <VincularReposicionModal
+                producto={aVincular}
+                onClose={() => setAVincular(null)}
+                onCambio={() => cargarCola({ silencioso: true })}
+            />
         </div>
     );
 }

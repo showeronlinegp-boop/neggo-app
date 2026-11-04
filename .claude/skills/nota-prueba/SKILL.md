@@ -79,7 +79,7 @@ Rebuild para que el usuario vea los cambios (no hay Node en Windows; se compila 
 
 ```bash
 # Frontend → frontend/dist (nginx lo sirve al instante)
-docker run --rm -v "C:/Users/Mariano/neggo-app/frontend:/app" -v neggo_front_nm:/app/node_modules \
+docker run --rm -v "C:/Users/Mariano Menendez/neggo-app/frontend:/app" -v neggo_front_nm:/app/node_modules \
   -w /app node:20-alpine sh -c "npm ci --no-audit --no-fund --loglevel=error && npm run build"
 # Backend (el código va dentro de la imagen)
 docker compose up -d --build backend

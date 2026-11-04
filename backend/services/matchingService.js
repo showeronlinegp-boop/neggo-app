@@ -20,6 +20,24 @@ function normalize(str) {
         .trim();
 }
 
+// Cada palabra tiene que aparecer, en cualquier orden, sin exigir que vayan pegadas.
+const SIN_ACENTO = `'áéíóúàèìòùäëïöüñÁÉÍÓÚÀÈÌÒÙÄËÏÖÜÑ', 'aeiouaeiouaeiounAEIOUAEIOUAEIOUN'`;
+
+function plano(expr) {
+    return `translate(COALESCE(${expr}, ''), ${SIN_ACENTO})`;
+}
+
+function palabrasDe(search) {
+    const parts = String(search || '').trim().split(/\s+/).filter(Boolean).slice(0, 6);
+    const utiles = parts.filter(w => w.length >= 2);
+    return utiles.length ? utiles : parts;
+}
+
+function patron(word) {
+    const folded = word.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ñ/gi, 'n').replace(/[%_\\]/g, ch => '\\' + ch);
+    return `%${folded}%`;
+}
+
 /**
  * Distancia de Levenshtein — implementación iterativa con matriz DP.
  * No usa librerías externas.
@@ -113,7 +131,7 @@ async function autoMatchByRef(supplierId) {
     // Obtener todos los supplier_products del proveedor con SKU
     const { rows: supplierProducts } = await pool.query(
         `SELECT id, sku, name FROM supplier_products
-         WHERE supplier_id = $1 AND sku IS NOT NULL AND sku <> ''`,
+         WHERE supplier_id = $1 AND source = 'web' AND sku IS NOT NULL AND sku <> ''`,
         [supplierId]
     );
 
@@ -179,6 +197,7 @@ async function autoMatchByName(supplierId, threshold = 0.7) {
         `SELECT sp.id, sp.name, sp.sku
          FROM supplier_products sp
          WHERE sp.supplier_id = $1
+           AND sp.source = 'web'
            AND NOT EXISTS (
                SELECT 1 FROM product_mappings pm
                WHERE pm.supplier_product_id = sp.id
@@ -301,23 +320,52 @@ async function runAutoMatch(supplierId) {
  * @param {{ search?: string, limit?: number, offset?: number }} [opts]
  * @returns {Promise<Array>}
  */
-async function getUnmappedProducts(supplierId, { search = '', limit = 100, offset = 0 } = {}) {
+async function getUnmappedProducts(supplierId, { search = '', limit = 100, offset = 0, source = null } = {}) {
+    const supplier = Number.isInteger(supplierId) && supplierId > 0 ? supplierId : null;
+    const page = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500);
+    const params = [supplier];
+    const porPalabra = palabrasDe(search).map((w) => {
+        params.push(patron(w));
+        const n = params.length;
+        return `(${plano('sp.name')} ILIKE $${n} ESCAPE '\\' OR ${plano('sp.sku')} ILIKE $${n} ESCAPE '\\' OR ${plano('sp.codigo_proveedor')} ILIKE $${n} ESCAPE '\\' OR ${plano('sp.barcode')} ILIKE $${n} ESCAPE '\\' OR ${plano('s.name')} ILIKE $${n} ESCAPE '\\')`;
+    });
+    params.push(page + 1, offset, source);
+    const limitIdx = params.length - 2;
+    const offsetIdx = params.length - 1;
+    const sourceIdx = params.length;
     const { rows } = await pool.query(
         `SELECT sp.id, sp.sku, sp.name, sp.raw_price, sp.source_category,
-                sp.available, sp.last_scraped_at, sp.image_url
+                sp.available, sp.last_scraped_at, sp.image_url,
+                s.name AS supplier_name,
+                ROUND(
+                    NULLIF(sp.raw_price, 0)
+                    * (1 - COALESCE(r.discount_override, s.default_discount, 0) / 100.0)
+                    / NULLIF(COALESCE(sp.pack_cantidad, 1), 0)
+                , 2) AS precio_neto
          FROM supplier_products sp
-         WHERE sp.supplier_id = $1
+         JOIN suppliers s ON s.id = sp.supplier_id
+         LEFT JOIN LATERAL (
+             SELECT discount_override
+             FROM supplier_category_rules
+             WHERE supplier_id = sp.supplier_id
+               AND source_category = sp.source_category
+               AND active
+             LIMIT 1
+         ) r ON true
+         WHERE ($1::int IS NULL OR sp.supplier_id = $1)
            AND sp.available = true
-           AND ($2 = '' OR sp.name ILIKE '%' || $2 || '%' OR sp.sku ILIKE '%' || $2 || '%')
+           ${porPalabra.length ? `AND ${porPalabra.join(' AND ')}` : ''}
+           AND ($${sourceIdx}::text IS NULL OR sp.source = $${sourceIdx})
            AND NOT EXISTS (
                SELECT 1 FROM product_mappings pm
                WHERE pm.supplier_product_id = sp.id AND pm.estado = 'confirmado'
            )
-         ORDER BY sp.name ASC
-         LIMIT $3 OFFSET $4`,
-        [supplierId, search.trim(), limit, offset]
+         ORDER BY s.name ASC, sp.name ASC, sp.id
+         LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        params
     );
-    return rows;
+    const hasMore = rows.length > page;
+    return { rows: hasMore ? rows.slice(0, page) : rows, hasMore };
 }
 
 module.exports = {

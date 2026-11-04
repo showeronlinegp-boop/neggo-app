@@ -3,7 +3,7 @@
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
-const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
+const { motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
 // =============================================
 // getProductsToSync — lectura paginada (rápida)
@@ -11,9 +11,13 @@ const { motivoSinPrecio, motivoOmitir, motivoRevision, motivoOdoo, ESTADOS_ODOO 
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     matcheados: ['activar', 'sin_cambios', 'precio_sube', 'precio_baja'],
+    // Vinculados cuyo precio cambió (sube o baja): la vista "Cambiar precio" de la pantalla
+    precio:     ['precio_sube', 'precio_baja'],
     inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
     // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
     sin_fuente: ['sin_fuente'],
+    // Lo que no necesita ninguna acción: la vista "Al día" de la pantalla
+    al_dia:     ['sin_cambios', 'sin_fuente'],
 };
 
 // Estados que nunca generan una acción en Odoo
@@ -29,6 +33,32 @@ const VINCULO_CONFIRMADO_EXPR = `EXISTS (
       AND pm.odoo_product_id = pss.odoo_product_id
       AND pm.odoo_company = 'preventas' AND pm.estado = 'confirmado'
 )`;
+
+// Filtros de búsqueda y tipo de vínculo, compartidos por el listado y el "Aplicar" en bloque
+// (así el bloque aplica exactamente lo que se ve filtrado, nota 145).
+// Necesita sp (supplier_products) y opc (odoo_products_cache) en el FROM. Devuelve el próximo $n.
+function agregarBusquedaYVinculo(where, params, { matchType, search } = {}) {
+    if (matchType && matchType !== 'todos') {
+        if (matchType === 'sin_match') {
+            where.push(`pss.match_type IS NULL`);
+        } else {
+            params.push(matchType);
+            where.push(`pss.match_type = $${params.length}`);
+        }
+    }
+    if (search && String(search).trim()) {
+        params.push(`%${String(search).trim().toLowerCase()}%`);
+        const n = params.length;
+        where.push(`(
+            LOWER(sp.name)          LIKE $${n}   OR
+            LOWER(sp.sku)           LIKE $${n}   OR
+            LOWER(opc.name)         LIKE $${n}   OR
+            LOWER(opc.external_id)  LIKE $${n}   OR
+            LOWER(opc.internal_ref) LIKE $${n}
+        )`);
+    }
+    return params.length + 1;
+}
 
 async function getProductsToSync(pool, filters = {}) {
     const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
@@ -48,31 +78,12 @@ async function getProductsToSync(pool, filters = {}) {
         where.push(`pss.supplier_id = $${idx++}`);
         params.push(parseInt(supplierId, 10));
     }
-    if (matchType && matchType !== 'todos') {
-        if (matchType === 'sin_match') {
-            where.push(`pss.match_type IS NULL`);
-        } else {
-            where.push(`pss.match_type = $${idx++}`);
-            params.push(matchType);
-        }
-    }
     if (sinVendor) {
         where.push(`pss.match_type IS NOT NULL`);
         where.push(`pss.supplier_product_id IS NOT NULL`);
         where.push(`(opc.vendor_name IS NULL OR opc.vendor_name = '')`);
     }
-    if (search && search.trim()) {
-        const term = `%${search.trim().toLowerCase()}%`;
-        where.push(`(
-            LOWER(sp.name)          LIKE $${idx}   OR
-            LOWER(sp.sku)           LIKE $${idx}   OR
-            LOWER(opc.name)         LIKE $${idx}   OR
-            LOWER(opc.external_id)  LIKE $${idx}   OR
-            LOWER(opc.internal_ref) LIKE $${idx}
-        )`);
-        params.push(term);
-        idx++;
-    }
+    idx = agregarBusquedaYVinculo(where, params, { matchType, search });
 
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
@@ -140,13 +151,46 @@ async function getProductsToSync(pool, filters = {}) {
         LIMIT $${idx++} OFFSET $${idx++}
     `, params);
 
-    // bloqueo_motivo: nunca se aplica (ni confirmando) · revision_motivo: se confirma de a uno
+    // bloqueo_motivo: nunca se aplica (ni confirmando) · revision_motivo: hay que confirmarlo
+    // revision_tipo: 'vinculo' (de a uno) | 'costo' (se puede aceptar en bloque a propósito)
     for (const row of rows) {
         row.bloqueo_motivo = motivoSinPrecio(row);
         row.revision_motivo = row.bloqueo_motivo ? null : motivoRevision(row);
+        row.revision_tipo = row.bloqueo_motivo ? null : tipoRevision(row);
     }
 
-    return { rows, total: countRows[0]?.total || 0 };
+    // Qué haría el "Aplicar" en bloque con estos mismos filtros
+    const aplicables = sinVendor ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
+
+    return { rows, total: countRows[0]?.total || 0, aplicables };
+}
+
+// Cuenta, dentro de la vista filtrada, cuántos cambios aplicaría el bloque y cuántos piden revisión.
+// Mismas reglas que applyChanges: sin proveedor elegido no se archiva en bloque.
+async function contarAplicables(pool, whereClause, params, supplierId) {
+    const extra = [`pss.estado != ALL($${params.length + 1}::text[])`];
+    const p = [...params, supplierId ? ESTADOS_SIN_ACCION : [...ESTADOS_SIN_ACCION, ...ESTADOS_INACTIVACION]];
+    const where = whereClause ? `${whereClause} AND ${extra.join(' AND ')}` : `WHERE ${extra.join(' AND ')}`;
+    const { rows } = await pool.query(`
+        SELECT pss.estado, pss.match_type, pss.match_score, pss.costo, pss.precio_preventas,
+               sp.name AS scraper_name, opc.name AS odoo_nombre, opc.standard_price AS odoo_standard_price,
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+        FROM preventas_sync_state pss
+        LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
+        LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
+        LEFT JOIN odoo_products_cache opc
+            ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+        ${where}
+    `, p);
+    const r = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 };
+    for (const row of rows) {
+        if (motivoSinPrecio(row)) { r.sin_precio++; continue; }
+        const tipo = tipoRevision(row);
+        if (tipo === 'vinculo') r.revision_vinculo++;
+        else if (tipo === 'costo') r.revision_costo++;
+        else r.listos++;
+    }
+    return r;
 }
 
 // =============================================
@@ -209,8 +253,10 @@ async function getResumen(pool, supplierId = null) {
 
 // =============================================
 // applyChanges — aplica en Odoo y actualiza sync_state
-// filters:  { grupo, estado } para aplicar un grupo completo sin IDs específicos
+// filters:  { grupo, estado, supplierId, matchType, search } para aplicar la vista filtrada sin IDs
 // opciones: { confirmar } — aplica también lo que requiere revisión (solo para un producto)
+//           { aceptarCambioCosto } — acepta los cambios de costo grandes (en bloque o selección);
+//             los vínculos dudosos se siguen salteando
 //
 // Antes de escribir, cada producto pasa por las protecciones de preventasSyncGuards:
 // datos inválidos o viejos, revisión manual, cambios hechos en Odoo y duplicados.
@@ -300,6 +346,8 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
             conditions.push(`pss.supplier_id = $${idx++}`);
             params.push(parseInt(supplierId, 10));
         }
+        // Lo mismo que se ve filtrado en la pantalla (búsqueda y tipo de vínculo)
+        idx = agregarBusquedaYVinculo(conditions, params, { matchType: filters.matchType, search: filters.search });
 
         const { rows: allRows } = await pool.query(`
             ${SELECT_COLS}
@@ -323,7 +371,7 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
 
         try {
             const motivo = motivoOmitir(prod)
-                || (confirmar ? null : motivoRevision(prod))
+                || (confirmar ? null : motivoRevision(prod, { aceptarCambioCosto: opciones.aceptarCambioCosto === true }))
                 || (prod.odoo_product_id ? motivoOdoo(prod, odooActual.get(prod.odoo_product_id) || null) : null)
                 || (prod.estado === 'solo_scraper' ? await buscarDuplicadoEnOdoo(prod, ctx, pool) : null);
             if (motivo) {
