@@ -159,7 +159,7 @@ function FilaProducto({ p, company, busy, onReponer, onSeparar, onQuitar, onArch
                 {deNeggo && p.active === false && !p.llego && <Badge tone="muted">Archivado</Badge>}
                 {puedeReponer(p, company) && (
                     <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={busy}
-                        onClick={() => onReponer(p)} style={isMobile ? { flex: 1, height: 44 } : undefined}>
+                        onClick={() => onReponer(p)} style={isMobile ? { flex: 1, height: 40 } : undefined}>
                         Reponer
                     </Button>
                 )}
@@ -225,14 +225,21 @@ function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onSepa
                             </>
                         )}
                     </span>
+                    {/* En el celular el cliente va en su propia línea: es lo que se busca con la vista */}
+                    {isMobile && c.partner_name && (
+                        <span style={{ display: 'block', fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, marginTop: 4 }}>
+                            {c.partner_name}
+                        </span>
+                    )}
                     <span style={{ display: 'block', fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
                         {fmtFecha(c.date_order)}
-                        {c.partner_name ? ` · ${c.partner_name}` : ''}
+                        {!isMobile && c.partner_name ? ` · ${c.partner_name}` : ''}
                         {c.origen ? ` · de ${c.origen}` : ''}
+                        {isMobile ? ` · ${c.productos.length} prod. · ${fmtAR(c.amount_total)}` : ''}
                     </span>
                 </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0 }}>
-                    <Badge tone="muted">{c.productos.length} prod.</Badge>
+                    {!isMobile && <Badge tone="muted">{c.productos.length} prod.</Badge>}
                     {!isMobile && (
                         <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.primary, minWidth: 90, textAlign: 'right', ...t.numericStyle }}>
                             {fmtAR(c.amount_total)}
@@ -298,7 +305,9 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
         if (ok) setTildados(new Set());
     };
 
-    const btnMobile = isMobile ? { height: 36 } : undefined;
+    // En el celular los botones ocupan todo el ancho, debajo del nombre del proveedor
+    const btnMobile = isMobile ? { height: 40, flex: '1 1 auto' } : undefined;
+    const tilde = { width: isMobile ? 22 : 16, height: isMobile ? 22 : 16, margin: 0, flexShrink: 0 };
     return (
         <Card padding={false} style={{ overflow: 'hidden' }}>
             <div style={{
@@ -306,9 +315,9 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap',
                 fontFamily: t.font.family, ...t.numericStyle,
             }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], minWidth: 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], minWidth: 0, flexWrap: 'wrap', width: isMobile ? '100%' : undefined }}>
                     {reponibles.length > 0 && (
-                        <input type="checkbox" checked={todos} onChange={alternarTodos}
+                        <input type="checkbox" checked={todos} onChange={alternarTodos} style={tilde}
                             aria-label={`Tildar todo lo de ${vendor} sin pedir`} title="Tildar todo lo sin pedir" />
                     )}
                     <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm }}>{vendor}</span>
@@ -317,7 +326,7 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                         {reponibles.length > 0 ? ` · ${reponibles.length} sin pedir` : ''}
                     </span>
                 </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap', width: isMobile ? '100%' : undefined }}>
                     {reponibles.length > 0 && (
                         <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={trabajando}
                             title="Mete a la cola de reposición lo de Neggo sin pedir, con la cantidad que esperan los clientes"
@@ -346,20 +355,21 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                 const reponible = puedeReponer(p, p.company);
                 return (
                     <div key={`${p.company}|${p.odoo_id}`} style={{
-                        display: 'flex', alignItems: 'center', gap: t.space[3],
+                        display: 'flex', alignItems: 'center', gap: isMobile ? `${t.space[2]}px ${t.space[3]}px` : t.space[3],
+                        flexWrap: isMobile ? 'wrap' : 'nowrap',
                         padding: isMobile ? '10px 12px' : '8px 16px', borderTop: `1px solid ${t.color.border}`,
                         background: p.llego || p.separado ? t.color.successSoft : tildados.has(p.odoo_id) && reponible ? t.color.primarySoft : undefined,
                         fontFamily: t.font.family,
                     }}>
-                        <span style={{ width: 16, flexShrink: 0, display: 'inline-flex' }}>
+                        <span style={{ width: isMobile ? 22 : 16, flexShrink: 0, display: 'inline-flex' }}>
                             {reponible && (
                                 <input type="checkbox" checked={tildados.has(p.odoo_id)} onChange={() => alternar(p.odoo_id)}
-                                    aria-label={`Tildar ${p.name}`} />
+                                    style={tilde} aria-label={`Tildar ${p.name}`} />
                             )}
                         </span>
                         <Thumb p={p} onVerFoto={onVerFoto} isMobile={isMobile} />
                         <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text }}>
+                            <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, overflowWrap: 'anywhere' }}>
                                 {p.name || `Producto ${p.odoo_id}`}
                             </div>
                             <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', gap: '0 8px', ...t.numericStyle }}>
@@ -367,10 +377,18 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                                 <span>{p.cotizaciones.map(c => `${c.name}${c.partner_name ? ` (${c.partner_name})` : ''} × ${fmtInt(c.qty)}${c.separado ? ' (separado)' : ''}`).join(' · ')}</span>
                             </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {/* En el celular los estados y la cantidad bajan a otra línea para no apretar el nombre */}
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0, flexWrap: 'wrap',
+                            justifyContent: isMobile ? 'flex-start' : 'flex-end',
+                            ...(isMobile ? { flexBasis: '100%', paddingLeft: 22 + 44 + t.space[3] * 2 } : null),
+                        }}>
                             <Badge tone={empresa.tone}>{empresa.label}</Badge>
                             <EstadoCola p={p} company={p.company} conSeparado />
-                            <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm, minWidth: 48, textAlign: 'right', ...t.numericStyle }}
+                            <span style={{
+                                fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm, minWidth: 48, textAlign: 'right',
+                                marginLeft: isMobile ? 'auto' : undefined, ...t.numericStyle,
+                            }}
                                 title={qtyPedir(p) !== p.qty_total ? `Faltan ${fmtInt(qtyPedir(p))} de ${fmtInt(p.qty_total)}: el resto ya llegó o está separado` : undefined}>
                                 × {fmtInt(qtyPedir(p))}
                                 {qtyPedir(p) !== p.qty_total && (
@@ -548,18 +566,26 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
             borderRadius: t.radius.full, padding: '0 12px', height: isMobile ? 36 : 30,
             fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, fontFamily: t.font.family,
             cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, ...t.numericStyle,
+            flexShrink: 0, whiteSpace: 'nowrap',
         };
     };
 
     const vacia = vista === 'productos' ? productos.length === 0 : cotizaciones.length === 0;
 
+    // En el celular los filtros van en una sola fila que se desliza de costado
+    const filaChips = isMobile
+        ? { display: 'flex', gap: t.space[2], flexWrap: 'nowrap', flexShrink: 0 }
+        : { display: 'flex', gap: t.space[2], flexWrap: 'wrap' };
+
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? t.space[3] : t.space[4] }}>
             <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap',
-                padding: isMobile ? '0 12px' : undefined,
+                display: 'flex', justifyContent: isMobile ? 'flex-start' : 'space-between', alignItems: 'center', gap: t.space[3],
+                flexWrap: isMobile ? 'nowrap' : 'wrap',
+                padding: isMobile ? '0 12px 2px' : undefined,
+                ...(isMobile ? { overflowX: 'auto', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } : null),
             }}>
-                <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                <div style={filaChips}>
                     <button type="button" style={chip(vista === 'cotizaciones')} onClick={() => setVista('cotizaciones')}>
                         <Icon.Tag size={13} /> Por cotización · {cotizaciones.length}
                     </button>
@@ -573,7 +599,8 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
                         </button>
                     )}
                 </div>
-                <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                {isMobile && <span style={{ width: 1, alignSelf: 'stretch', background: t.color.border, flexShrink: 0 }} />}
+                <div style={filaChips}>
                     {[['todas', 'Todas'], ['neggo', 'Neggo'], ['preventas', 'Preventas']].map(([v, label]) => (
                         <button key={v} type="button" style={chip(empresa === v)} onClick={() => setEmpresa(v)}>
                             {label} {cuenta(v)}
@@ -582,10 +609,15 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
                 </div>
             </div>
 
-            <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, marginTop: -4, padding: isMobile ? '0 12px' : undefined }}>
+            <div style={{
+                fontSize: isMobile ? t.font.size.xs : t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family,
+                marginTop: -4, padding: isMobile ? '0 12px' : undefined,
+            }}>
                 {soloListas
                     ? 'Cotizaciones de Neggo con todo ya ingresado o separado: avisale al cliente y confirmá la cotización en Odoo.'
-                    : `Cotizaciones de Odoo en borrador o enviadas con la etiqueta «${data.etiqueta}»: encargues de clientes y mercadería que faltó en un pedido. Lo de Neggo se manda a reponer con la cantidad del cliente; Preventas solo se ve.`}
+                    : isMobile
+                        ? `Encargues de clientes con la etiqueta «${data.etiqueta}». Lo de Neggo se manda a reponer; Preventas solo se ve.`
+                        : `Cotizaciones de Odoo en borrador o enviadas con la etiqueta «${data.etiqueta}»: encargues de clientes y mercadería que faltó en un pedido. Lo de Neggo se manda a reponer con la cantidad del cliente; Preventas solo se ve.`}
             </div>
 
             {loading ? (
