@@ -851,6 +851,7 @@ export default function Reposicion() {
                     isMobile={isMobile}
                     onVerFoto={setFoto}
                     onVincular={setAVincular}
+                    onVerCatalogo={setProveedorAbierto}
                     onError={mostrarError}
                     onAviso={(msg) => { setError(null); setAviso(msg); }}
                     onChanged={cargar}

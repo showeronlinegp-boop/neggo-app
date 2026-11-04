@@ -45,7 +45,7 @@ function Thumb({ it, onVerFoto, size }) {
     );
 }
 
-export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, onError, onAviso, onChanged }) {
+export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, onVerCatalogo, onError, onAviso, onChanged }) {
     const { tokens: t } = useTheme();
     const [proveedor, setProveedor] = useState(null);
     const [lados, setLados] = useState({});
@@ -256,6 +256,10 @@ export default function ArmarPedido({ items, isMobile, onVerFoto, onVincular, on
                         {acceso.tipo === 'pdf' && 'Sin ficha web: lo tildado arma el PDF.'}
                         {acceso.tipo === 'abierta' && acceso.sitio}
                     </span>
+                    <Button size="sm" variant="ghost" title="Ver activos y archivados" disabled={!proveedor}
+                        onClick={() => onVerCatalogo(proveedor)}>
+                        {isMobile ? 'Catálogo' : 'Ver catálogo'}
+                    </Button>
                 </div>
 
                 <div style={{ padding: '8px 16px', borderBottom: borde, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
