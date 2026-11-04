@@ -226,13 +226,13 @@ Flujo diario, de lunes a viernes de 9 a 18:
 
 ## Posibles clientes (3.6.0)
 
-Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos de la agenda que todavía no están en Odoo. Código: `services/agenteLeads.js` (cadencia, zona y cola, lógica pura), `agenteLeadsService.js`, `agenteLeadsValidacion.js`. Migración `060_agente_leads.sql` (tablas `crm_bot_lead_seguimiento` y `crm_bot_lead_mensajes`, aparte de las de clientes).
+Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos que todavía no compraron (de la agenda o de visitas). Código: `services/agenteLeads.js` (cadencia, zona y cola, lógica pura), `agenteLeadsService.js`, `agenteLeadsValidacion.js`. Migración `060_agente_leads.sql` (tablas `crm_bot_lead_seguimiento` y `crm_bot_lead_mensajes`, aparte de las de clientes).
 
 **A quién se le escribe**
 - Solo a los celulares de la **zona**: `backend/config/leadsZona.json` (150 km de Pergamino). Va primero `prioridad_1` (Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y después `prioridad_2`. Para sumar una característica, se agrega ahí y se reinicia el backend.
 - **Nunca a los de Churn** (nos bloquearon o no quieren que los contactemos). El que le pide al bot que no le escriba **pasa a Churn**.
 - NRI = no les llegan las difusiones (no agendaron el número): entran.
-- Ni a los que ya están en Odoo (se chequea en vivo antes de cada envío), ni a los que el equipo movió de Frío en el CRM.
+- Ni a los que **ya compraron**: salen del listado y se siguen como clientes. Se cruza con la lista de Clientes en cada `GET /leads` y en vivo con Odoo (POS de Neggo) antes de cada envío. Un contacto de Odoo que nunca compró sigue como posible cliente. Tampoco a los que el equipo movió de Frío en el CRM.
 
 **Tope diario:** `AGENTE_LEADS_TOPE_DIARIO` en el `.env` (por defecto **15**; 0 apaga los envíos). Cuenta todos los mensajes de la cadencia del día, confirmados y reservas vigentes. Las respuestas de la charla no cuentan. Un pedido de más da 409 `tope_diario`.
 
@@ -244,7 +244,7 @@ Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos d
 - `no_contactar: true` → Descartado, **Churn** y no se le escribe más (el agente no lo puede desmarcar).
 - `nota` opcional: queda en la ficha.
 
-**Odoo:** la API no escribe en Odoo. Los posibles clientes se cargan en Odoo cuando compran o se les arma una cotización, como siempre. El sync de clientes los vincula solo por teléfono. `GET /leads` dispara ese sync si pasaron 24 h.
+**Odoo:** la API no escribe en Odoo. Los posibles clientes se cargan en Odoo cuando compran, como siempre, y ahí salen solos del listado (por teléfono). `GET /leads` dispara el sync de clientes si pasaron 24 h.
 
 **En la app:** Clientes → pestaña **Bot de leads** (cuántos van hoy contra el tope, respuestas sin atender, últimos mensajes y la zona).
 

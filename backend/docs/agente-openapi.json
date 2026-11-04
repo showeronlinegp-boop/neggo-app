@@ -3966,7 +3966,7 @@
         ],
         "operationId": "reservarEnvioLead",
         "summary": "Paso 1: reservar un mensaje de la cadencia",
-        "description": "Chequea con la hora del servidor: horario, **tope del día**, que el celular no esté ya en Odoo (en vivo), zona, Churn, no contactar, que el equipo no lo esté siguiendo, que no haya contestado y que la etapa sea la que toca. La reserva vale 10 minutos y ocupa un lugar del tope. 409: fuera_de_horario, tope_diario, ya_en_odoo, fuera_de_zona, churn, no_contactar, seguido_por_el_equipo, respondio, etapa_no_corresponde, ya_enviado, etapa_reservada, reserva_cancelada, reserva_vencida, id_externo_usado, id_externo_distinto. 502 odoo_caido: no mandes.",
+        "description": "Chequea con la hora del servidor: horario, **tope del día**, que no haya comprado ya (en vivo contra el POS de Neggo; un contacto de Odoo sin compras sigue como posible cliente), zona, Churn, no contactar, que el equipo no lo esté siguiendo, que no haya contestado y que la etapa sea la que toca. La reserva vale 10 minutos y ocupa un lugar del tope. 409: fuera_de_horario, tope_diario, ya_en_odoo, fuera_de_zona, churn, no_contactar, seguido_por_el_equipo, respondio, etapa_no_corresponde, ya_enviado, etapa_reservada, reserva_cancelada, reserva_vencida, id_externo_usado, id_externo_distinto. 502 odoo_caido: no mandes.",
         "parameters": [
           {
             "name": "id",

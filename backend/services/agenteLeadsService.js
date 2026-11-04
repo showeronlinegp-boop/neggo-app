@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const pool = require('../config/database');
-const { callOdoo } = require('../config/odoo');
+const { callOdoo, getCompanyIds } = require('../config/odoo');
 const health = require('./clientHealth');
 const { ensureSchema } = require('./crmSchema');
 const { buildPhoneIndex } = require('./crmContacts');
@@ -199,8 +199,8 @@ async function exigirLead(id, db = pool) {
 async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conRespuesta, respondio, etapa, resultado, no_contactar: noContactar, page, limit, offset }) {
     await ensureLeadsSchema();
     require('./clientMetricsService').refreshIfStale().catch((err) => console.error('❌ Agente leads: sync de clientes:', err.message));
-    // Una vez por día: los que ya están en Odoo salen del listado (la reserva igual lo chequea en vivo)
-    cruzarConOdoo().catch((err) => console.error('❌ Agente leads: cruce con Odoo:', err.message));
+    // Los que ya compraron salen del listado (la reserva igual lo chequea en vivo contra Odoo)
+    await cruzarConClientes();
     await vencerReservas(pool);
     const info = await meta();
     const { rows } = await pool.query(`${LEAD_SELECT} WHERE l.odoo_partner_id IS NULL AND l.phone_key IS NOT NULL`);
@@ -232,27 +232,65 @@ async function obtenerLead(id) {
 }
 
 // =============================================
-// Odoo: ¿ese celular ya es de un contacto?
+// ¿Ya es cliente? (compró en el POS de Neggo)
 // =============================================
+// Solo salen del listado los que COMPRARON. Un contacto de Odoo que nunca compró (lo cargaron en
+// una visita, por ejemplo) sigue como posible cliente: si no, no quedaría en ningún listado.
 
-/** Contacto de Odoo (cliente, proveedor o archivado) con el mismo celular, o null. */
-async function contactoOdooConTelefono(phoneKey) {
-    let rows;
+const POS_ESTADOS_COMPRA = ['paid', 'done', 'invoiced'];
+
+/**
+ * En vivo, antes de mandar: el cliente de Odoo con ese celular que ya compró en el POS de Neggo
+ * ({ id, name } del cliente principal), o null si no hay o nunca compró.
+ */
+async function clienteConTelefono(phoneKey) {
     try {
-        rows = await callOdoo('res.partner', 'search_read', [[['phone', 'ilike', phoneKey.slice(-4)]]], {
-            fields: ['id', 'name', 'phone'], limit: 500, context: { active_test: false },
+        const rows = await callOdoo('res.partner', 'search_read', [[['phone', 'ilike', phoneKey.slice(-4)]]], {
+            fields: ['id', 'name', 'phone', 'commercial_partner_id'], limit: 500, context: { active_test: false },
         });
+        const partner = buildPhoneIndex(rows).find(phoneKey);
+        if (!partner) return null;
+        const principal = Array.isArray(partner.commercial_partner_id)
+            ? { id: partner.commercial_partner_id[0], name: partner.commercial_partner_id[1] }
+            : { id: partner.id, name: partner.name };
+        const { neggo } = await getCompanyIds();
+        const compras = await callOdoo('pos.order', 'search_count', [[
+            ['partner_id', 'child_of', principal.id],
+            ['state', 'in', POS_ESTADOS_COMPRA],
+            ['company_id', '=', neggo],
+        ]], { context: { allowed_company_ids: [neggo], active_test: false } });
+        return compras > 0 ? principal : null;
     } catch (err) {
         console.error('❌ Agente leads: error leyendo Odoo:', err.message);
         throw new AgenteError(502, 'No pude leer Odoo', 'odoo_caido');
     }
-    return buildPhoneIndex(rows).find(phoneKey);
 }
 
 /**
- * Ya es cliente (está en Odoo con el mismo celular): sale del listado de posibles clientes.
- * Se vincula a ese contacto de Odoo con su historial (como el vínculo automático del CRM) y
- * la cadencia del bot termina.
+ * Saca del listado a los posibles clientes con el mismo celular que un cliente con compras
+ * (la lista de Clientes de la app, client_metrics_cache). Solo lee la base: corre en cada GET.
+ * @returns {Promise<number>} cuántos salieron
+ */
+async function cruzarConClientes() {
+    const { rows: leadsSinVincular } = await pool.query(
+        'SELECT id, phone_key FROM crm_leads WHERE odoo_partner_id IS NULL AND phone_key IS NOT NULL');
+    if (!leadsSinVincular.length) return 0;
+    const { rows: clientes } = await pool.query(
+        `SELECT odoo_partner_id AS id, partner_name AS name, phone FROM client_metrics_cache
+         WHERE company = 'neggo' AND is_generic = false AND purchase_count > 0 AND phone IS NOT NULL`);
+    const index = buildPhoneIndex(clientes);
+    let vinculados = 0;
+    for (const lead of leadsSinVincular) {
+        const cliente = index.find(lead.phone_key);
+        if (cliente && await marcarYaEnOdoo(lead.id, cliente)) vinculados++;
+    }
+    if (vinculados) console.log(`✅ Agente leads: ${vinculados} posible(s) cliente(s) ya compraron y salieron del listado`);
+    return vinculados;
+}
+
+/**
+ * Ya es cliente (compró): sale del listado de posibles clientes. Se vincula a ese cliente con
+ * su historial (como el vínculo automático del CRM) y la cadencia del bot termina.
  */
 async function marcarYaEnOdoo(leadId, partner, db = null) {
     const run = async (tx) => {
@@ -268,43 +306,13 @@ async function marcarYaEnOdoo(leadId, partner, db = null) {
              WHERE lead_id = $1 AND estado IN ('reservado', 'vencido')`, [leadId]);
         await followups.linkLead(leadId, partner.id, {
             db: tx,
-            note: `Estaba como posible cliente y ya está en Odoo como ${partner.name}: sale de posibles clientes`,
+            note: `Estaba como posible cliente y ya compró como ${partner.name}: sale de posibles clientes`,
         });
         return true;
     };
     const hecho = db ? await run(db) : await enTransaccion(run);
-    if (hecho) console.log(`⚠️ Agente leads: el posible cliente ${leadId} ya está en Odoo (#${partner.id}), sale del listado`);
+    if (hecho) console.log(`⚠️ Agente leads: el posible cliente ${leadId} ya es cliente (#${partner.id}), sale del listado`);
     return hecho;
-}
-
-// Cruce de todos los posibles clientes con todos los contactos de Odoo, una vez por día
-const CRUCE_CADA_MS = 24 * 60 * 60 * 1000;
-let ultimoCruce = 0;
-let cruceEnCurso = null;
-
-/**
- * Saca del listado a los posibles clientes cuyo celular ya está en Odoo (clientes, proveedores
- * o archivados, como al importar la agenda). Con forzar=false corre como mucho una vez por día.
- * @returns {Promise<{ vinculados: number }|null>} null si no le tocaba correr
- */
-function cruzarConOdoo({ forzar = false } = {}) {
-    if (cruceEnCurso) return cruceEnCurso;
-    if (!forzar && Date.now() - ultimoCruce < CRUCE_CADA_MS) return Promise.resolve(null);
-    cruceEnCurso = (async () => {
-        await ensureLeadsSchema();
-        const { readOdooPhones } = require('./crmLeadService');
-        const index = buildPhoneIndex(await readOdooPhones());
-        const { rows } = await pool.query('SELECT id, phone_key FROM crm_leads WHERE odoo_partner_id IS NULL AND phone_key IS NOT NULL');
-        let vinculados = 0;
-        for (const lead of rows) {
-            const partner = index.find(lead.phone_key);
-            if (partner && await marcarYaEnOdoo(lead.id, partner)) vinculados++;
-        }
-        ultimoCruce = Date.now();
-        console.log(`✅ Agente leads: cruce con Odoo, ${vinculados} posible(s) cliente(s) ya estaban en Odoo y salieron del listado`);
-        return { vinculados };
-    })().finally(() => { cruceEnCurso = null; });
-    return cruceEnCurso;
 }
 
 // =============================================
@@ -392,10 +400,10 @@ async function reservarEnvio(id, value) {
     if (leads.topeDiario() > 0 && (await enviadosHoy()) >= leads.topeDiario()) {
         throw new AgenteError(409, `Ya se llegó al tope de ${leads.topeDiario()} mensajes por hoy`, 'tope_diario');
     }
-    const partner = await contactoOdooConTelefono(lead.phone_key);
+    const partner = await clienteConTelefono(lead.phone_key);
     if (partner) {
         await marcarYaEnOdoo(id, partner);
-        throw new AgenteError(409, `Ese celular ya está en Odoo (${partner.name}, #${partner.id}): no se le escribe como posible cliente`, 'ya_en_odoo');
+        throw new AgenteError(409, `Ya es cliente (${partner.name}, #${partner.id}): se sigue como cliente, no como posible cliente`, 'ya_en_odoo');
     }
     try {
         const r = await enTransaccion(async (db) => {
@@ -698,5 +706,6 @@ module.exports = {
     marcarRevisado,
     actualizarLead,
     resumenBot,
-    cruzarConOdoo,
+    cruzarConClientes,
+    clienteConTelefono,
 };
