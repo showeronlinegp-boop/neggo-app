@@ -40,9 +40,10 @@ function Llego({ llego }) {
     );
 }
 
-function EstadoCola({ p, company }) {
+function EstadoCola({ p, company, conSeparado = false }) {
     if (company !== 'neggo') return null;
     if (p.llego) return <Llego llego={p.llego} />;
+    if (conSeparado && p.separado) return <Badge tone="success" dot>Separado</Badge>;
     if (p.en_cache === false) return <Badge tone="muted">No está en Neggo</Badge>;
     if (p.es_liquidar) return <Badge tone="muted">Liquidar</Badge>;
     if (p.estado_cola === 'encargado') return <Badge tone="accent" dot>Encargado</Badge>;
@@ -54,9 +55,44 @@ function puedeReponer(p, company) {
     return company === 'neggo' && !!p.puede_reponer;
 }
 
-/** Cotización de Neggo con todo lo que faltaba ya ingresado. */
+/** Lo que falta conseguir de un producto: sin lo que ya llegó o está separado (Preventas: todo). */
+function qtyPedir(p) {
+    return p.company === 'neggo' && p.qty_falta != null ? p.qty_falta : p.qty_total;
+}
+
+/** Se puede archivar en Odoo: de Neggo, conocido, activo y no Liquidar. */
+function puedeArchivar(p, company) {
+    return company === 'neggo' && p.en_cache !== false && p.active !== false && !p.es_liquidar;
+}
+
+/**
+ * Botón que pide confirmar en el mismo lugar: el primer toque lo arma y el segundo hace la
+ * acción. Si no se confirma en 4 segundos, vuelve solo.
+ */
+function BotonConfirmar({ texto, confirmar, icono, onConfirm, disabled, title, variant = 'ghost', style }) {
+    const [armado, setArmado] = useState(false);
+    useEffect(() => {
+        if (!armado) return undefined;
+        const id = setTimeout(() => setArmado(false), 4000);
+        return () => clearTimeout(id);
+    }, [armado]);
+    return (
+        <Button size="sm" variant={armado ? 'danger' : variant} leftIcon={icono} disabled={disabled} title={title}
+            onClick={(e) => {
+                e.stopPropagation();
+                if (!armado) { setArmado(true); return; }
+                setArmado(false);
+                onConfirm();
+            }}
+            style={style}>
+            {armado ? confirmar : texto}
+        </Button>
+    );
+}
+
+/** Cotización de Neggo con cada producto ya ingresado o separado para el cliente. */
 function estaLista(c) {
-    return c.company === 'neggo' && c.productos.length > 0 && c.n_llegados === c.productos.length;
+    return c.company === 'neggo' && c.productos.length > 0 && (c.n_listos ?? c.n_llegados) === c.productos.length;
 }
 
 function Thumb({ p, onVerFoto, isMobile }) {
@@ -69,17 +105,34 @@ function Thumb({ p, onVerFoto, isMobile }) {
     );
 }
 
-function FilaProducto({ p, company, busy, onReponer, onVerFoto, isMobile, t }) {
+function FilaProducto({ p, company, busy, onReponer, onSeparar, onQuitar, onArchivar, onVerFoto, isMobile, t }) {
+    const deNeggo = company === 'neggo';
+    const listo = p.llego || p.separado;
+    const btnMobile = isMobile ? { height: 40 } : undefined;
     return (
         <div style={{
             display: 'flex', alignItems: isMobile ? 'stretch' : 'center', gap: t.space[3],
             flexDirection: isMobile ? 'column' : 'row',
             padding: isMobile ? '10px 12px' : '8px 16px',
             borderTop: `1px solid ${t.color.border}`,
-            background: p.llego ? t.color.successSoft : undefined,
+            background: listo ? t.color.successSoft : undefined,
             fontFamily: t.font.family,
         }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flex: 1, minWidth: 0 }}>
+                {deNeggo && (
+                    <label title="Ya está separado para el cliente: no se vuelve a pedir"
+                        style={{
+                            display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 2, flexShrink: 0,
+                            cursor: busy ? 'default' : 'pointer', fontSize: 10, color: p.separado ? t.color.success : t.color.textMuted,
+                            fontWeight: t.font.weight.medium, minWidth: 52,
+                        }}>
+                        <input type="checkbox" checked={!!p.separado} disabled={busy}
+                            onChange={(e) => onSeparar(p, e.target.checked)}
+                            aria-label={`Marcar ${p.name} como separado`}
+                            style={{ width: isMobile ? 22 : 18, height: isMobile ? 22 : 18, margin: 0, cursor: 'inherit', accentColor: t.color.success }} />
+                        Separado
+                    </label>
+                )}
                 <Thumb p={p} onVerFoto={onVerFoto} isMobile={isMobile} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{
@@ -100,21 +153,32 @@ function FilaProducto({ p, company, busy, onReponer, onVerFoto, isMobile, t }) {
             </div>
             <div style={{
                 display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0,
-                justifyContent: 'flex-end', minWidth: isMobile ? undefined : 180,
+                justifyContent: 'flex-end', minWidth: isMobile ? undefined : 180, flexWrap: 'wrap',
             }}>
                 <EstadoCola p={p} company={company} />
+                {deNeggo && p.active === false && !p.llego && <Badge tone="muted">Archivado</Badge>}
                 {puedeReponer(p, company) && (
                     <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={busy}
                         onClick={() => onReponer(p)} style={isMobile ? { flex: 1, height: 44 } : undefined}>
                         Reponer
                     </Button>
                 )}
+                {deNeggo && puedeArchivar(p, company) && (
+                    <BotonConfirmar texto="Archivar" confirmar="¿Archivar en Odoo?" icono={<Icon.Archive size={13} />}
+                        disabled={busy} onConfirm={() => onArchivar(p)} style={btnMobile}
+                        title="Archiva el producto en Odoo (agotado) y lo mete en la cola de reposición" />
+                )}
+                {deNeggo && (
+                    <BotonConfirmar texto="Quitar" confirmar="¿Quitar de la cotización?" icono={<Icon.Trash2 size={13} />}
+                        disabled={busy} onConfirm={() => onQuitar(p)} style={btnMobile}
+                        title="Borra este producto de la cotización en Odoo" />
+                )}
             </div>
         </div>
     );
 }
 
-function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onVerFoto, isMobile, t }) {
+function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onSeparar, onQuitar, onArchivar, onCancelar, onVerFoto, isMobile, t }) {
     const empresa = EMPRESA[c.company] || EMPRESA.neggo;
     const estado = ESTADO_COT[c.estado] || ESTADO_COT.borrador;
     const lista = estaLista(c);
@@ -149,10 +213,17 @@ function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onVerF
                         <Badge tone={empresa.tone}>{empresa.label}</Badge>
                         <Badge tone={estado.tone}>{estado.label}</Badge>
                         {lista ? (
-                            <Badge tone="success" dot>Llegó todo · avisale al cliente</Badge>
-                        ) : c.n_llegados > 0 ? (
-                            <Badge tone="success">Llegaron {fmtInt(c.n_llegados)} de {fmtInt(c.productos.length)}</Badge>
-                        ) : null}
+                            <Badge tone="success" dot>Está todo · avisale al cliente</Badge>
+                        ) : (
+                            <>
+                                {c.n_llegados > 0 && (
+                                    <Badge tone="success">Llegaron {fmtInt(c.n_llegados)} de {fmtInt(c.productos.length)}</Badge>
+                                )}
+                                {c.n_separados > 0 && (
+                                    <Badge tone="success">Separados {fmtInt(c.n_separados)} de {fmtInt(c.productos.length)}</Badge>
+                                )}
+                            </>
+                        )}
                     </span>
                     <span style={{ display: 'block', fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2, ...t.numericStyle }}>
                         {fmtFecha(c.date_order)}
@@ -177,11 +248,29 @@ function TarjetaCotizacion({ c, abierta, onToggle, trabajando, onReponer, onVerF
                     company={c.company}
                     busy={trabajando}
                     onReponer={onReponer}
+                    onSeparar={(p, valor) => onSeparar(c, p, valor)}
+                    onQuitar={(p) => onQuitar(c, p)}
+                    onArchivar={onArchivar}
                     onVerFoto={onVerFoto}
                     isMobile={isMobile}
                     t={t}
                 />
             ))}
+            {abierta && c.company === 'neggo' && (
+                <div style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap',
+                    padding: isMobile ? '10px 12px' : '8px 16px', borderTop: `1px solid ${t.color.border}`,
+                    background: t.color.surface2, fontFamily: t.font.family,
+                }}>
+                    <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                        Tildá lo que ya separaste: deja de pedirse. «Quitar» y «Cancelar» cambian la cotización en Odoo.
+                    </span>
+                    <BotonConfirmar texto="Cancelar cotización" confirmar={`Sí, cancelar ${c.name} en Odoo`}
+                        icono={<Icon.X size={13} />} variant="danger" disabled={trabajando}
+                        onConfirm={() => onCancelar(c)} style={isMobile ? { height: 40, flex: 1 } : undefined}
+                        title="Pasa la cotización a «Cancelado» en Odoo" />
+                </div>
+            )}
         </Card>
     );
 }
@@ -259,7 +348,7 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                     <div key={`${p.company}|${p.odoo_id}`} style={{
                         display: 'flex', alignItems: 'center', gap: t.space[3],
                         padding: isMobile ? '10px 12px' : '8px 16px', borderTop: `1px solid ${t.color.border}`,
-                        background: p.llego ? t.color.successSoft : tildados.has(p.odoo_id) && reponible ? t.color.primarySoft : undefined,
+                        background: p.llego || p.separado ? t.color.successSoft : tildados.has(p.odoo_id) && reponible ? t.color.primarySoft : undefined,
                         fontFamily: t.font.family,
                     }}>
                         <span style={{ width: 16, flexShrink: 0, display: 'inline-flex' }}>
@@ -275,14 +364,18 @@ function GrupoProveedor({ vendor, items, generando, trabajando, onPdf, onReponer
                             </div>
                             <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', gap: '0 8px', ...t.numericStyle }}>
                                 <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
-                                <span>{p.cotizaciones.map(c => `${c.name}${c.partner_name ? ` (${c.partner_name})` : ''} × ${fmtInt(c.qty)}`).join(' · ')}</span>
+                                <span>{p.cotizaciones.map(c => `${c.name}${c.partner_name ? ` (${c.partner_name})` : ''} × ${fmtInt(c.qty)}${c.separado ? ' (separado)' : ''}`).join(' · ')}</span>
                             </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                             <Badge tone={empresa.tone}>{empresa.label}</Badge>
-                            <EstadoCola p={p} company={p.company} />
-                            <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm, minWidth: 48, textAlign: 'right', ...t.numericStyle }}>
-                                × {fmtInt(p.qty_total)}
+                            <EstadoCola p={p} company={p.company} conSeparado />
+                            <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, fontSize: t.font.size.sm, minWidth: 48, textAlign: 'right', ...t.numericStyle }}
+                                title={qtyPedir(p) !== p.qty_total ? `Faltan ${fmtInt(qtyPedir(p))} de ${fmtInt(p.qty_total)}: el resto ya llegó o está separado` : undefined}>
+                                × {fmtInt(qtyPedir(p))}
+                                {qtyPedir(p) !== p.qty_total && (
+                                    <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontWeight: t.font.weight.regular }}> de {fmtInt(p.qty_total)}</span>
+                                )}
                             </span>
                         </div>
                     </div>
@@ -363,6 +456,62 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
         return true;
     };
 
+    // Nota 150: separado (solo en la app), quitar producto / cancelar cotización / archivar (Odoo)
+    const accion = async (fn, mensajeError) => {
+        setTrabajando(true);
+        const res = await fn();
+        setTrabajando(false);
+        if (!res.success) { onError(res.error || mensajeError); return null; }
+        return res.data || {};
+    };
+
+    const separar = async (c, p, separado) => {
+        // Se ve tildado al instante; si falla, la recarga lo deja como estaba
+        setData(prev => ({
+            ...prev,
+            cotizaciones: prev.cotizaciones.map(x => x.odoo_order_id !== c.odoo_order_id ? x : {
+                ...x,
+                productos: x.productos.map(y => y.odoo_id === p.odoo_id ? { ...y, separado: separado ? { at: new Date().toISOString() } : null } : y),
+            }),
+        }));
+        const res = await api.post('/reposicion/cotizaciones/separado', {
+            odoo_order_id: c.odoo_order_id, odoo_id: p.odoo_id, separado,
+        });
+        if (!res.success) onError(res.error || 'No se pudo marcar como separado');
+        await cargar(false, true);
+    };
+
+    const quitar = async (c, p) => {
+        const ok = await accion(
+            () => api.post('/reposicion/cotizaciones/quitar', { odoo_order_id: c.odoo_order_id, odoo_id: p.odoo_id }),
+            'No se pudo quitar el producto de la cotización'
+        );
+        if (!ok) return;
+        onAviso(`«${p.name}» se quitó de ${c.name} en Odoo.`);
+        await cargar(false, true);
+    };
+
+    const cancelar = async (c) => {
+        const ok = await accion(
+            () => api.post('/reposicion/cotizaciones/cancelar', { odoo_order_id: c.odoo_order_id }),
+            'No se pudo cancelar la cotización'
+        );
+        if (!ok) return;
+        onAviso(`${c.name} quedó cancelada en Odoo.`);
+        await cargar(false, true);
+    };
+
+    const archivar = async (p) => {
+        const ok = await accion(
+            () => api.post('/reposicion/archivar', { odoo_id: p.odoo_id }),
+            'No se pudo archivar el producto'
+        );
+        if (!ok) return;
+        onAviso(`«${p.name}» quedó archivado en Odoo y entró a la cola de reposición.`);
+        onCambioCola();
+        await cargar(false, true);
+    };
+
     const armar = async (vendor, odooIds) => {
         const ok = await reponerLote(odooIds, vendor);
         if (ok && onArmarPedido) onArmarPedido(vendor);
@@ -373,7 +522,9 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
     const pdfProveedor = async (vendor, items) => {
         setGenerandoPdf(vendor);
         try {
-            await descargarPedidoPDF(vendor, items.map(p => ({ ...p, qty: p.qty_total })), { prefijo: 'cotizaciones' });
+            // Lo que ya llegó o está separado no se le pide al proveedor
+            const aPedir = items.map(p => ({ ...p, qty: qtyPedir(p) })).filter(p => p.qty > 0);
+            await descargarPedidoPDF(vendor, aPedir.length ? aPedir : items.map(p => ({ ...p, qty: p.qty_total })), { prefijo: 'cotizaciones' });
         } catch (err) {
             onError(err.message || 'No se pudo generar el PDF');
         } finally {
@@ -417,8 +568,8 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
                     </button>
                     {vista === 'cotizaciones' && nListas > 0 && (
                         <button type="button" style={chip(soloListas, 'success')} onClick={() => setSoloListas(v => !v)}
-                            title="Cotizaciones de Neggo con todo lo que faltaba ya ingresado">
-                            <Icon.PackageDown size={13} /> Llegó todo · {nListas}
+                            title="Cotizaciones de Neggo con todo ya ingresado o separado">
+                            <Icon.PackageDown size={13} /> Está todo · {nListas}
                         </button>
                     )}
                 </div>
@@ -433,7 +584,7 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
 
             <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family, marginTop: -4, padding: isMobile ? '0 12px' : undefined }}>
                 {soloListas
-                    ? 'Cotizaciones de Neggo con todo lo que faltaba ya ingresado: avisale al cliente y confirmá la cotización en Odoo.'
+                    ? 'Cotizaciones de Neggo con todo ya ingresado o separado: avisale al cliente y confirmá la cotización en Odoo.'
                     : `Cotizaciones de Odoo en borrador o enviadas con la etiqueta «${data.etiqueta}»: encargues de clientes y mercadería que faltó en un pedido. Lo de Neggo se manda a reponer con la cantidad del cliente; Preventas solo se ve.`}
             </div>
 
@@ -450,7 +601,7 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
                         </div>
                         <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
                             {soloListas
-                                ? 'Cuando entre en un ingreso todo lo que falta de una cotización, aparece acá.'
+                                ? 'Cuando todo lo de una cotización entre en un ingreso o esté separado, aparece acá.'
                                 : `Cuando una cotización lleve la etiqueta «${data.etiqueta}» en Odoo, aparece acá. Tocá «Actualizar» para volver a leer.`}
                         </div>
                     </div>
@@ -468,6 +619,10 @@ export default function ReposicionCotizaciones({ recargar, filtroInicial = null,
                         onToggle={() => toggle(c.odoo_order_id)}
                         trabajando={trabajando}
                         onReponer={(p) => reponerLote([p.odoo_id])}
+                        onSeparar={separar}
+                        onQuitar={quitar}
+                        onArchivar={archivar}
+                        onCancelar={cancelar}
                         onVerFoto={setFoto}
                         isMobile={isMobile}
                         t={t}

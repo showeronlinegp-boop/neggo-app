@@ -7,11 +7,36 @@
 // Nota 149: también marca lo de Neggo que ya llegó en un ingreso después de la cotización
 // (para avisarle al cliente) y manda a la cola en lote lo que falta pedir, con la cantidad
 // que espera el cliente.
+// Nota 150: lo de Neggo que ya está separado para el cliente se tilda (tabla propia, no va a
+// Odoo) y deja de pedirse. Desde acá también se quita un producto de la cotización (borra la
+// línea en Odoo) o se cancela la cotización entera (la pasa a cancelada en Odoo).
 
+const fs = require('fs');
+const path = require('path');
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { ETIQUETA_PENDIENTES } = require('./pedidoEnvioService');
 const reposicion = require('./reposicionService');
+const odooService = require('./odooService');
+
+const MIGRACION = fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', '061_cotizacion_separados.sql'), 'utf8');
+let schemaReady = null;
+
+function ensureSchema() {
+    if (!schemaReady) {
+        schemaReady = pool.query(MIGRACION).catch((err) => {
+            schemaReady = null;
+            throw err;
+        });
+    }
+    return schemaReady;
+}
+
+function httpError(message, status) {
+    const err = new Error(message);
+    err.statusCode = status;
+    return err;
+}
 
 const ESTADOS_VIVOS = ['draft', 'sent'];
 const LOTE_ORDENES = 200;
@@ -109,18 +134,26 @@ function resumirPorProducto(cotizaciones) {
                 standard_price: p.standard_price ?? null,
                 vendor_name: p.vendor_name || 'Sin proveedor',
                 estado_cola: p.estado_cola || null,
-                puede_reponer: !!p.puede_reponer,
+                puede_reponer: false,
                 qty_total: 0,
+                qty_falta: 0,
                 cotizaciones: [],
             };
             prev.qty_total += p.qty;
-            prev.cotizaciones.push({ name: c.name, partner_name: c.partner_name, qty: p.qty, llego: p.llego || null });
+            // Lo que falta conseguir: sin llegar y sin separar
+            if (!p.llego && !p.separado) prev.qty_falta += p.qty;
+            if (p.puede_reponer) prev.puede_reponer = true;
+            prev.cotizaciones.push({
+                name: c.name, partner_name: c.partner_name, qty: p.qty,
+                llego: p.llego || null, separado: p.separado || null,
+            });
             porProducto.set(key, prev);
         }
     }
     // Llegó solo si llegó para todas sus cotizaciones (un ingreso viejo no cubre una cotización nueva)
     for (const p of porProducto.values()) {
         p.llego = p.cotizaciones.every(c => c.llego) ? p.cotizaciones[0].llego : null;
+        p.separado = p.cotizaciones.every(c => c.separado) ? p.cotizaciones[0].separado : null;
     }
     return [...porProducto.values()].sort((a, b) =>
         a.vendor_name.localeCompare(b.vendor_name, 'es') || (b.qty_total - a.qty_total)
@@ -138,17 +171,26 @@ function llegadaDesde(ingresos, desde) {
     return ingresos.find(i => new Date(i.at).getTime() >= limite) || null;
 }
 
-/** Se puede mandar a la cola: de Neggo, conocido, no Liquidar, fuera de la cola y sin llegar. */
+/**
+ * Se puede mandar a la cola: de Neggo, conocido, no Liquidar, fuera de la cola, sin llegar
+ * y sin separar para el cliente.
+ */
 function puedeReponer(p, company) {
-    return company === 'neggo' && p.en_cache !== false && !p.es_liquidar && !p.estado_cola && !p.llego;
+    return company === 'neggo' && p.en_cache !== false && !p.es_liquidar && !p.estado_cola && !p.llego && !p.separado;
 }
 
 /**
- * Cuánto pedir por producto al mandarlo a la cola: lo que esperan los clientes, mínimo 1.
+ * Cuánto pedir por producto al mandarlo a la cola: lo que esperan los clientes sin contar lo
+ * que ya llegó o está separado, mínimo 1.
  */
 function qtyParaCola(p) {
-    const n = Math.round(Number(p.qty_total) || 0);
+    const n = Math.round(Number(p.qty_falta ?? p.qty_total) || 0);
     return n > 0 ? n : 1;
+}
+
+/** Cotización «lista»: cada producto llegó o está separado. */
+function contarListos(productos) {
+    return productos.filter(p => p.llego || p.separado).length;
 }
 
 async function leerOdoo({ refrescar = false } = {}) {
@@ -283,6 +325,13 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
         console.warn(`⚠️ Reposición/cotizaciones: no se pudieron leer los ingresos: ${err.message}`);
     }
 
+    let separados = new Map();
+    try {
+        separados = await separadosDe(deNeggo.map(c => c.odoo_order_id));
+    } catch (err) {
+        console.warn(`⚠️ Reposición/cotizaciones: no se pudo leer lo separado: ${err.message}`);
+    }
+
     const filtro = proveedor ? String(proveedor).trim().toLowerCase() : null;
     const completas = cotizaciones
         .map(c => {
@@ -290,11 +339,18 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
                 .map(p => {
                     const prod = completarProducto(p, info.get(claveProducto(c.company, p.odoo_id)));
                     prod.llego = c.company === 'neggo' ? llegadaDesde(ingresos.get(p.odoo_id), c.date_order) : null;
+                    prod.separado = c.company === 'neggo' ? separados.get(`${c.odoo_order_id}|${p.odoo_id}`) || null : null;
                     prod.puede_reponer = puedeReponer(prod, c.company);
                     return prod;
                 })
                 .filter(p => !filtro || p.vendor_name.toLowerCase() === filtro);
-            return { ...c, productos, n_llegados: productos.filter(p => p.llego).length };
+            return {
+                ...c,
+                productos,
+                n_llegados: productos.filter(p => p.llego).length,
+                n_separados: productos.filter(p => p.separado).length,
+                n_listos: contarListos(productos),
+            };
         })
         .filter(c => c.productos.length > 0);
 
@@ -303,6 +359,109 @@ async function listar({ refrescar = false, proveedor = null } = {}) {
         cotizaciones: completas,
         productos: resumirPorProducto(completas),
     };
+}
+
+/**
+ * Lo separado de estas cotizaciones de Neggo.
+ * @returns {Map<string, {at, por}>} clave `${odoo_order_id}|${odoo_id}`
+ */
+async function separadosDe(orderIds) {
+    if (!orderIds.length) return new Map();
+    await ensureSchema();
+    const { rows } = await pool.query(
+        `SELECT cs.odoo_order_id, cs.odoo_id, cs.created_at AS at,
+                COALESCE(u.display_name, u.username) AS por
+         FROM cotizacion_separados cs
+         LEFT JOIN users u ON u.id = cs.user_id
+         WHERE cs.company = 'neggo' AND cs.odoo_order_id = ANY($1::int[])`,
+        [orderIds]
+    );
+    return new Map(rows.map(r => [`${r.odoo_order_id}|${r.odoo_id}`, { at: r.at, por: r.por || null }]));
+}
+
+/**
+ * Cotización viva de Neggo con la etiqueta «Pendiente», leída de nuevo en Odoo antes de
+ * tocarla. Falla si ya no está (confirmada, cancelada, sin la etiqueta o de Preventas).
+ */
+async function cotizacionVivaNeggo(odooOrderId) {
+    const ids = await getCompanyIds();
+    if (!ids.neggo) throw new Error('No se encontró la empresa Neggo en Odoo');
+    const [order] = await callOdoo(
+        'sale.order',
+        'search_read',
+        [[
+            ['id', '=', odooOrderId],
+            ['tag_ids.name', '=ilike', ETIQUETA_PENDIENTES],
+            ['state', 'in', ESTADOS_VIVOS],
+            ['company_id', '=', ids.neggo],
+        ]],
+        { fields: ['id', 'name'], limit: 1, context: { allowed_company_ids: [ids.neggo] } }
+    ) || [];
+    if (!order) {
+        throw httpError('La cotización ya no está pendiente en Odoo (se confirmó, se canceló o es de Preventas). Tocá «Actualizar».', 409);
+    }
+    return { order, companyId: ids.neggo };
+}
+
+/** Tilda o destilda un producto de una cotización de Neggo como separado para el cliente. */
+async function marcarSeparado({ odooOrderId, odooId, separado }, userId) {
+    await ensureSchema();
+    if (!separado) {
+        await pool.query(
+            `DELETE FROM cotizacion_separados WHERE company = 'neggo' AND odoo_order_id = $1 AND odoo_id = $2`,
+            [odooOrderId, odooId]
+        );
+        return { separado: false };
+    }
+    const cotizaciones = await leerOdoo({ refrescar: false });
+    const c = cotizaciones.find(x => x.odoo_order_id === odooOrderId && x.company === 'neggo');
+    const p = c && c.productos.find(x => x.odoo_id === odooId);
+    if (!p) throw httpError('Ese producto no está en una cotización pendiente de Neggo. Tocá «Actualizar».', 404);
+    await pool.query(
+        `INSERT INTO cotizacion_separados (company, odoo_order_id, order_name, odoo_id, qty, user_id)
+         VALUES ('neggo', $1, $2, $3, $4, $5)
+         ON CONFLICT (company, odoo_order_id, odoo_id) DO NOTHING`,
+        [odooOrderId, c.name, odooId, p.qty, userId || null]
+    );
+    return { separado: true };
+}
+
+/**
+ * Quita un producto de una cotización de Neggo: borra en Odoo sus líneas (todas las del
+ * mismo producto) y la marca de separado.
+ */
+async function quitarProducto({ odooOrderId, odooId }, userId) {
+    const { order, companyId } = await cotizacionVivaNeggo(odooOrderId);
+    const lineas = await callOdoo(
+        'sale.order.line',
+        'search_read',
+        [[['order_id', '=', odooOrderId], ['product_id', '=', odooId], ['display_type', '=', false]]],
+        { fields: ['id'], limit: 100, context: { allowed_company_ids: [companyId] } }
+    ) || [];
+    if (!lineas.length) throw httpError(`El producto ya no está en ${order.name}. Tocá «Actualizar».`, 404);
+    await odooService.unlinkSaleOrderLines(lineas.map(l => l.id), 'neggo');
+    await ensureSchema();
+    await pool.query(
+        `DELETE FROM cotizacion_separados WHERE company = 'neggo' AND odoo_order_id = $1 AND odoo_id = $2`,
+        [odooOrderId, odooId]
+    );
+    cacheOdoo = { at: 0, data: null };
+    console.log(`✅ Reposición/cotizaciones: producto ${odooId} quitado de ${order.name} en Odoo por usuario ${userId}`);
+    return { order_name: order.name, lineas: lineas.length };
+}
+
+/** Cancela en Odoo una cotización pendiente de Neggo y borra lo separado de ella. */
+async function cancelarCotizacion({ odooOrderId }, userId) {
+    const { order } = await cotizacionVivaNeggo(odooOrderId);
+    await odooService.cancelSaleOrder(odooOrderId, 'neggo');
+    await ensureSchema();
+    await pool.query(
+        `DELETE FROM cotizacion_separados WHERE company = 'neggo' AND odoo_order_id = $1`,
+        [odooOrderId]
+    );
+    cacheOdoo = { at: 0, data: null };
+    console.log(`✅ Reposición/cotizaciones: ${order.name} cancelada en Odoo por usuario ${userId}`);
+    return { order_name: order.name };
 }
 
 /**
@@ -343,7 +502,11 @@ async function reponerLote({ odooIds = null, proveedor = null } = {}, userId) {
 module.exports = {
     listar,
     reponerLote,
+    marcarSeparado,
+    quitarProducto,
+    cancelarCotizacion,
     // Puros, para tests
+    contarListos,
     armarCotizaciones,
     resumirPorProducto,
     llegadaDesde,

@@ -3,7 +3,7 @@
 
 const assert = require('assert');
 const {
-    armarCotizaciones, resumirPorProducto, llegadaDesde, puedeReponer, qtyParaCola,
+    armarCotizaciones, resumirPorProducto, llegadaDesde, puedeReponer, qtyParaCola, contarListos,
 } = require('./reposicionCotizacionesService');
 
 const COMPANIES = { neggo: 1, preventas: 50 };
@@ -93,9 +93,26 @@ function testPuedeReponer() {
     assert.strictEqual(qtyParaCola({ qty_total: 0.4 }), 1, 'mínimo 1');
 }
 
+// Nota 150: lo separado no se vuelve a pedir y cuenta como listo
+function testSeparado() {
+    const base = { en_cache: true, es_liquidar: false, estado_cola: null, llego: null };
+    assert.strictEqual(puedeReponer({ ...base, separado: { at: 'x' } }, 'neggo'), false, 'separado no se pide');
+    const prods = resumirPorProducto([
+        { name: 'S1', company: 'neggo', empresa: 'Neggo', partner_name: 'A', productos: [{ odoo_id: 1, name: 'Pava', vendor_name: 'ZLE', qty: 2, separado: { at: 'x' }, puede_reponer: false }] },
+        { name: 'S2', company: 'neggo', empresa: 'Neggo', partner_name: 'B', productos: [{ odoo_id: 1, name: 'Pava', vendor_name: 'ZLE', qty: 3, puede_reponer: true }] },
+    ]);
+    assert.strictEqual(prods[0].qty_total, 5);
+    assert.strictEqual(prods[0].qty_falta, 3, 'lo separado se descuenta');
+    assert.strictEqual(prods[0].puede_reponer, true, 'S2 todavía espera');
+    assert.strictEqual(prods[0].separado, null, 'no está separado para todas');
+    assert.strictEqual(qtyParaCola(prods[0]), 3);
+    assert.strictEqual(contarListos([{ llego: { id: 1 } }, { separado: { at: 'x' } }, {}]), 2);
+}
+
 testArmar();
 testResumir();
 testLlegada();
 testLlegadaPorProducto();
 testPuedeReponer();
+testSeparado();
 console.log('✅ reposicionCotizaciones: ok');

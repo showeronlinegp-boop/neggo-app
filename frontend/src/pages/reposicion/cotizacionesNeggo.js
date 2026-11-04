@@ -17,8 +17,9 @@ export function cotizacionesNeggo(data) {
 export function esperasPorProducto(data) {
     const mapa = new Map();
     for (const p of productosNeggo(data)) {
-        if (p.llego) continue;
-        const esperan = (p.cotizaciones || []).filter(c => !c.llego);
+        if (p.llego || p.separado) continue;
+        // Lo separado para el cliente ya no se espera (nota 150)
+        const esperan = (p.cotizaciones || []).filter(c => !c.llego && !c.separado);
         if (esperan.length) mapa.set(p.odoo_id, esperan);
     }
     return mapa;
@@ -47,9 +48,9 @@ export function reponiblesDe(data, proveedor = null) {
     return productosNeggo(data).filter(p => p.puede_reponer && (key == null || claveNombre(p.vendor_name) === key));
 }
 
-/** Cotizaciones de Neggo con todo lo que faltaba ya ingresado: hay que avisarle al cliente. */
+/** Cotizaciones de Neggo con todo ya ingresado o separado: hay que avisarle al cliente. */
 export function cotizacionesCompletas(data) {
-    return cotizacionesNeggo(data).filter(c => c.productos.length > 0 && c.n_llegados === c.productos.length);
+    return cotizacionesNeggo(data).filter(c => c.productos.length > 0 && (c.n_listos ?? c.n_llegados) === c.productos.length);
 }
 
 /**
