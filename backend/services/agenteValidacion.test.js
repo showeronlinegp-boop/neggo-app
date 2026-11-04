@@ -58,6 +58,38 @@ function testQueryCotizacionesWeb() {
     assert.deepStrictEqual(campos(mal.errors), ['compro_despues', 'dias', 'no_contactar']);
 }
 
+function testQueryImportantes() {
+    const cfg = { dias: 60, monto_minimo: 1000000, monto_pedido_minimo: 500000, dias_pedido: 60 };
+    const def = v.validarQueryImportantes({}, cfg);
+    assert.deepStrictEqual(def.errors, []);
+    assert.strictEqual(def.value.dias, 60);
+    assert.strictEqual(def.value.monto_minimo, 1000000);
+    assert.strictEqual(def.value.top, null);
+    assert.strictEqual(def.value.no_contactar, null); // default todos
+    assert.strictEqual(def.value.limit, 50);
+    assert.strictEqual(def.value.orden, 'dias_sin_comprar_desc');
+    assert.strictEqual(v.validarQueryImportantes({ orden: 'ultima_compra_asc' }, cfg).value.orden, 'ultima_compra_asc');
+
+    const top = v.validarQueryImportantes({ top: '10', orden: 'nombre', motivo: 'pedido_grande' }, cfg);
+    assert.deepStrictEqual(top.errors, []);
+    assert.strictEqual(top.value.top, 10);
+    assert.strictEqual(top.value.motivo, 'pedido_grande');
+
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ monto_minimo: '1', top: '5' }, cfg).errors), ['monto_minimo', 'top']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ dias: '0' }, cfg).errors), ['dias']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ dias: '731' }, cfg).errors), ['dias']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ meses: '6' }, cfg).errors), ['meses']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ meses_pedido: '2' }, cfg).errors), ['meses_pedido']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ monto_minimo: '-1' }, cfg).errors), ['monto_minimo']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ orden: 'fecha' }, cfg).errors), ['orden']);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ motivo: 'otro' }, cfg).errors), ['motivo']);
+    assert.strictEqual(v.validarQueryImportantes({ no_contactar: 'false' }, cfg).value.no_contactar, false);
+    assert.strictEqual(v.validarQueryImportantes({ refresh: '1' }, cfg).value.refresh, true);
+    assert.strictEqual(def.value.incluir_pedido_activo, false);
+    assert.strictEqual(v.validarQueryImportantes({ incluir_pedido_activo: 'true' }, cfg).value.incluir_pedido_activo, true);
+    assert.deepStrictEqual(campos(v.validarQueryImportantes({ incluir_pedido_activo: 'si' }, cfg).errors), ['incluir_pedido_activo']);
+}
+
 function testFechasIso() {
     assert.strictEqual(v.parseIso('2026-10-17T10:00:00-03:00').toISOString(), '2026-10-17T13:00:00.000Z');
     assert.strictEqual(v.parseIso('2026-10-17T13:00:00Z').toISOString(), '2026-10-17T13:00:00.000Z');
@@ -235,6 +267,6 @@ function testTareas() {
     assert.strictEqual(t.ejecucion.lanzada_at, '2026-10-27T10:01:00-03:00');
 }
 
-const tests = [testDias, testQueryNuevos, testQueryCotizacionesWeb, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota, testTareas];
+const tests = [testDias, testQueryNuevos, testQueryImportantes, testQueryCotizacionesWeb, testFechasIso, testSeguimiento, testInteraccion, testEnvio, testClientePatch, testId, testTelefonos, testAuth, testFeedbackNota, testTareas];
 for (const t of tests) t();
 console.log(`✅ agenteValidacion: ${tests.length} tests OK`);
