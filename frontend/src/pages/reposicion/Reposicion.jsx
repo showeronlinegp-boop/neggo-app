@@ -655,8 +655,8 @@ export default function Reposicion() {
     // elegido, los tildes y el lugar de la pantalla (nota 152)
     const refrescarCola = useCallback(() => cargarCola({ silencioso: true }), [cargarCola]);
     const refrescarTodo = useCallback(
-        () => Promise.all([refrescarCola(), cargarProveedores()]),
-        [refrescarCola, cargarProveedores]
+        () => Promise.all([refrescarCola(), cargarProveedores(), cargarCotiz()]),
+        [refrescarCola, cargarProveedores, cargarCotiz]
     );
 
     useEffect(() => { cargarCola(); }, [cargarCola]);
