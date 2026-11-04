@@ -46,8 +46,19 @@ async function testEvolutionGuard() {
     // sendImage corta antes de llamar a la red.
     const prevFetch = global.fetch;
     let called = false;
-    global.fetch = async () => { called = true; throw new Error('no debería llamar'); };
+    let stateCalls = 0;
     process.env.EVOLUTION_API_KEY = 'x';
+    process.env.EVOLUTION_INSTANCE = 'neggo';
+    process.env.EVOLUTION_STATUS_INSTANCE = 'neggo-estados';
+    global.fetch = async (url) => {
+        const href = String(url);
+        if (href.includes('/instance/connectionState/')) {
+            stateCalls += 1;
+            return { ok: true, text: async () => JSON.stringify({ instance: { state: 'open' } }) };
+        }
+        called = true;
+        throw new Error('no debería llamar');
+    };
     try {
         await assert.rejects(evolution.sendImage({ number: '1@g.us', caption: ' ', base64: JPEG }), /sin texto/);
         await assert.rejects(evolution.sendImage({ number: '1@g.us', caption: 'Mate', base64: '' }), /sin foto/);
@@ -55,6 +66,10 @@ async function testEvolutionGuard() {
         assert.strictEqual(called, false);
         let body = null;
         global.fetch = async (url, init) => {
+            const href = String(url);
+            if (href.includes('/instance/connectionState/')) {
+                return { ok: true, text: async () => JSON.stringify({ instance: { state: 'open' } }) };
+            }
             body = JSON.parse(init.body);
             return { ok: true, text: async () => JSON.stringify({ key: { id: 'evo-9' } }) };
         };
@@ -62,6 +77,23 @@ async function testEvolutionGuard() {
         assert.strictEqual(id, 'evo-9');
         assert.strictEqual(body.mimetype, 'image/webp');
         assert.strictEqual(body.caption, 'Mate\n$1.500');
+
+        // Sin WhatsApp abierto no llama a sendMedia.
+        let mediaCalls = 0;
+        global.fetch = async (url) => {
+            const href = String(url);
+            if (href.includes('/instance/connectionState/')) {
+                return { ok: true, text: async () => JSON.stringify({ instance: { state: 'connecting' } }) };
+            }
+            mediaCalls += 1;
+            throw new Error('no debería mandar');
+        };
+        await assert.rejects(
+            evolution.sendImage({ number: '1@g.us', caption: 'Mate\n$1.500', base64: JPEG }),
+            (err) => evolution.isNotReadyError(err) && /conectando|connecting/i.test(err.message)
+        );
+        assert.strictEqual(mediaCalls, 0);
+        assert.ok(stateCalls >= 1);
     } finally {
         global.fetch = prevFetch;
     }
@@ -128,6 +160,9 @@ async function testSendStatusMatchesDocs() {
         if (href.includes('findContacts')) {
             throw new Error('sendStatus no debe consultar la agenda');
         }
+        if (href.includes('/instance/connectionState/')) {
+            return { ok: true, text: async () => JSON.stringify({ instance: { state: 'open' } }) };
+        }
         calls.push({ url: href, body: init.body ? JSON.parse(init.body) : null });
         return { ok: true, text: async () => JSON.stringify({ key: { id: 'st-1' } }) };
     };
@@ -144,6 +179,7 @@ async function testSendStatusMatchesDocs() {
         assert.ok(evolution.STATUS_SEND_TIMEOUT_MS >= 180000);
         assert.ok(evolution.isTimeoutError(new Error('Evolution API no responde (The operation was aborted due to timeout)')));
         assert.ok(!evolution.isTimeoutError(new Error('Evolution API 400: Bad Request')));
+        assert.ok(evolution.isNotReadyError(new evolution.EvolutionNotReadyError('x')));
     } finally {
         global.fetch = prevFetch;
     }

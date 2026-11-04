@@ -134,6 +134,7 @@ async function recreateDb() {
         CREATE TABLE supplier_products (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, name VARCHAR(500),
             raw_price NUMERIC, source_category VARCHAR(200),
+            source VARCHAR(40) DEFAULT 'proveedor',
             available BOOLEAN NOT NULL DEFAULT true
         );
         CREATE TABLE supplier_category_rules (
@@ -145,7 +146,8 @@ async function recreateDb() {
         );
         CREATE TABLE product_mappings (
             id SERIAL PRIMARY KEY, supplier_product_id INTEGER, odoo_product_id INTEGER,
-            odoo_company VARCHAR(20), active BOOLEAN DEFAULT true, match_confidence NUMERIC
+            odoo_company VARCHAR(20), active BOOLEAN DEFAULT true,
+            es_habitual BOOLEAN DEFAULT true, match_confidence NUMERIC
         );
         CREATE TABLE odoo_products_cache (
             id SERIAL PRIMARY KEY, odoo_id INTEGER, company VARCHAR(20), name VARCHAR(500),
@@ -473,6 +475,71 @@ async function testQueue(pool) {
     assert.strictEqual(stuckCalls, 0);
     const stuckRows = await stateOf(pool, stuckStatus.batch.id);
     assert.strictEqual(stuckRows[0].status, 'error');
+
+    // Mensaje vacío: error definitivo, no se manda ni se reintenta.
+    const { EmptyMessageError } = require('./whatsappMessage');
+    await pool.query('UPDATE whatsapp_settings SET evolution_busy_until = NULL WHERE id = 1');
+    const emptyBatch = await queue.createBatch(pool, {
+        company: 'preventas',
+        groupJid: '120363001@g.us',
+        products: [{ ...oneStatus, odoo_id: 21, name: 'Vacio', caption: 'Temp\n$1' }],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-10T00:00',
+        maxAttempts: 3,
+    });
+    // createBatch no acepta caption vacío: lo dejamos vacío recién en la fila.
+    await pool.query(`UPDATE whatsapp_messages SET caption = '...' WHERE batch_id = $1`, [emptyBatch.batch.id]);
+    let emptySends = 0;
+    const emptyAt = new Date('2020-01-10T03:00:00.000Z');
+    const emptyResult = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG }),
+        sendImage: async () => { emptySends += 1; return 'no'; },
+    }, emptyAt);
+    assert.strictEqual(emptyResult.action, 'error');
+    assert.match(emptyResult.error, /sin texto/);
+    assert.strictEqual(emptySends, 0);
+    const emptyRows = await stateOf(pool, emptyBatch.batch.id);
+    assert.strictEqual(emptyRows[0].status, 'error');
+    assert.strictEqual(emptyRows[0].attempts, 1);
+    const emptyAgain = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG }),
+        sendImage: async () => { emptySends += 1; return 'no'; },
+    }, new Date(emptyAt.getTime() + 90_000));
+    assert.strictEqual(emptyAgain.action, 'idle');
+    assert.strictEqual(emptySends, 0);
+    assert.ok(queue.isEmptyMessageError(new EmptyMessageError('x')));
+
+    // Evolution no listo: vuelve a pendiente sin gastar intento y la cola espera 30 s.
+    await pool.query('UPDATE whatsapp_settings SET evolution_busy_until = NULL WHERE id = 1');
+    const notReadyBatch = await queue.createBatch(pool, {
+        company: 'preventas',
+        groupJid: '120363001@g.us',
+        products: [{ ...oneStatus, odoo_id: 22, name: 'Espera', caption: 'Espera\n$1' }],
+        intervalSeconds: 90,
+        scheduledAt: '2020-01-11T00:00',
+        maxAttempts: 3,
+    });
+    const { EvolutionNotReadyError } = require('./evolutionClient');
+    let notReadySends = 0;
+    const notReadyAt = new Date('2020-01-11T03:00:00.000Z');
+    const notReadyTick = await queue.tick(pool, {
+        loadImage: async () => ({ base64: FAKE_JPEG }),
+        sendImage: async () => {
+            notReadySends += 1;
+            throw new EvolutionNotReadyError('Evolution no está conectado (grupo: connecting)');
+        },
+    }, notReadyAt);
+    assert.strictEqual(notReadyTick.action, 'idle');
+    assert.strictEqual(notReadyTick.reason, 'evolution_no_lista');
+    assert.strictEqual(notReadySends, 1);
+    const notReadyRows = await stateOf(pool, notReadyBatch.batch.id);
+    assert.strictEqual(notReadyRows[0].status, 'pendiente');
+    assert.strictEqual(notReadyRows[0].attempts, 0);
+    const notReadyBusy = await queue.getBusyUntil(pool, notReadyAt);
+    assert.ok(notReadyBusy);
+    assert.ok(Math.abs(notReadyBusy.getTime() - (notReadyAt.getTime() + queue.BUSY_WHEN_NOT_READY_SECONDS * 1000)) < 5_000);
+    const blockedNotReady = await queue.tick(pool, senderOk(), new Date(notReadyAt.getTime() + 10_000));
+    assert.strictEqual(blockedNotReady.action, 'idle');
 
     const logs = await pool.query('SELECT COUNT(*)::int AS n FROM whatsapp_logs');
     assert.ok(logs.rows[0].n > 0);

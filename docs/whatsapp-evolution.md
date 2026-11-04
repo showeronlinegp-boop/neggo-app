@@ -33,7 +33,9 @@ WHATSAPP_MAX_ATTEMPTS=3
 docker compose up -d --build
 ```
 
-Eso inicia Postgres, el backend, nginx, Chrome y Evolution API (`evoapicloud/evolution-api:v2.3.7`). En ese servidor hay dos instancias: `neggo` para los grupos y `neggo-estados` para los estados. Cada una es otro número de WhatsApp. Las sesiones se guardan en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
+Eso inicia Postgres, Evolution API (`evoapicloud/evolution-api:v2.3.7`), el backend, nginx y Chrome. El backend espera a que Evolution arranque. En ese servidor hay dos instancias: `neggo` para los grupos y `neggo-estados` para los estados. Cada una es otro número de WhatsApp. Las sesiones se guardan en el volumen `evolution_instances`. La cola de mensajes se guarda en Postgres.
+
+La cola no manda nada sin texto y foto válidos, ni si la instancia de Evolution no está en estado `open`. Al reiniciar espera unos 30 s y exige WhatsApp conectado antes del primer envío: así no salen mensajes vacíos en ráfaga cuando Baileys todavía está vinculando la sesión.
 
 La app queda en http://localhost . Evolution escucha solo en esta PC, en http://localhost:8080 . No hace falta abrir ese puerto: el QR se ve dentro de Neggo.
 

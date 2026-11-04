@@ -20,6 +20,19 @@ class EvolutionError extends Error {
     }
 }
 
+// La instancia todavía no tiene WhatsApp abierto: no hay que mandar nada
+// (al arrancar Evolution acepta el HTTP y después suelta basura o vacíos en ráfaga).
+class EvolutionNotReadyError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'EvolutionNotReadyError';
+    }
+}
+
+function isNotReadyError(err) {
+    return Boolean(err) && (err instanceof EvolutionNotReadyError || err.name === 'EvolutionNotReadyError');
+}
+
 function readInstance(envName, fallback) {
     const instance = process.env[envName] || fallback;
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(instance)) {
@@ -171,6 +184,24 @@ async function connectionState(which = 'grupo') {
     return connectionStateOf(payload);
 }
 
+// Solo 'open' manda. Cualquier otra cosa (close, connecting, null) frena el envío.
+async function assertReady(which = 'grupo') {
+    let state;
+    try {
+        state = await connectionState(which);
+    } catch (err) {
+        throw new EvolutionNotReadyError(
+            `Evolution no responde (${which}): ${err.message || 'sin respuesta'}`
+        );
+    }
+    if (state !== 'open') {
+        throw new EvolutionNotReadyError(
+            `Evolution no está conectado (${which}: ${state || 'sin estado'})`
+        );
+    }
+    return state;
+}
+
 async function ensureInstance(which = 'grupo') {
     const { instance } = config(which);
     try {
@@ -219,8 +250,12 @@ async function sendImage({ number, caption, base64, fileName }) {
     if (!number) {
         throw new EvolutionError('Falta el destino para enviar');
     }
+    await assertReady('grupo');
     // Último control antes de salir: texto con contenido y foto válida.
     const ready = assertSendable({ caption, base64 });
+    if (!ready.caption || !ready.base64) {
+        throw new EvolutionError('Mensaje vacío: no se manda');
+    }
     const payload = await request(`/message/sendMedia/${encodeURIComponent(instance)}`, {
         method: 'POST',
         timeoutMs: SEND_TIMEOUT_MS,
@@ -250,13 +285,18 @@ function statusDataUri(base64, mimetype) {
 // minItems: 1 — un array vacío da 400. Por eso omitimos la clave, no la rellenamos.
 async function sendStatus({ caption, base64, mimetype }) {
     const { instance } = config('estado');
+    await assertReady('estado');
     const ready = assertSendable({ caption, base64 });
+    const content = statusDataUri(ready.base64, ready.mimetype);
+    if (!ready.caption || !content.startsWith('data:') || content.endsWith('base64,')) {
+        throw new EvolutionError('Estado vacío: no se manda');
+    }
     const payload = await request(`/message/sendStatus/${encodeURIComponent(instance)}`, {
         method: 'POST',
         timeoutMs: STATUS_SEND_TIMEOUT_MS,
         body: {
             type: 'image',
-            content: statusDataUri(ready.base64, ready.mimetype),
+            content,
             caption: ready.caption,
             backgroundColor: '#1F3A68',
             font: 1,
@@ -268,12 +308,14 @@ async function sendStatus({ caption, base64, mimetype }) {
 
 module.exports = {
     EvolutionError,
+    EvolutionNotReadyError,
     config,
     instanceName: (which) => config(which).instance,
     extractQr,
     connectionStateOf,
     normalizeGroups,
     connectionState,
+    assertReady,
     ensureInstance,
     connectQr,
     fetchGroups,
@@ -283,5 +325,6 @@ module.exports = {
     contactJidsFrom,
     detailFromEvolution,
     isTimeoutError,
+    isNotReadyError,
     STATUS_SEND_TIMEOUT_MS,
 };

@@ -4,8 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const { findPublishable } = require('./whatsappProducts');
-const { assertSendable } = require('./whatsappMessage');
-const { isTimeoutError } = require('./evolutionClient');
+const { assertSendable, EmptyMessageError } = require('./whatsappMessage');
+const { isTimeoutError, isNotReadyError } = require('./evolutionClient');
 
 const ART = 'America/Argentina/Buenos_Aires';
 const LOCK_KEY = 842190;
@@ -14,7 +14,13 @@ const LOCK_KEY = 842190;
 // En los dos casos no sale nada más, de ninguna tanda, durante este tiempo.
 const BUSY_AFTER_TIMEOUT_SECONDS = 10 * 60;
 const BUSY_AFTER_RATE_LIMIT_SECONDS = 15 * 60;
+// Instancia todavía arrancando o sin WhatsApp abierto: reintenta en breve, sin gastar intento.
+const BUSY_WHEN_NOT_READY_SECONDS = 30;
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, '..', 'sql', 'whatsapp.sql'), 'utf8');
+
+function isEmptyMessageError(err) {
+    return Boolean(err) && (err instanceof EmptyMessageError || err.name === 'EmptyMessageError');
+}
 
 function clampInterval(value, fallback = 90) {
     const n = Number(value);
@@ -492,6 +498,23 @@ async function markFailed(pool, message, errorText, now, { retry = true } = {}) 
     return row;
 }
 
+// Evolution no estaba listo: el claim se deshace y no cuenta como intento.
+async function releaseClaim(pool, message, now, reason) {
+    await pool.query(`
+        UPDATE whatsapp_messages
+        SET status = 'pendiente',
+            attempts = GREATEST(attempts - 1, 0),
+            updated_at = $2
+        WHERE id = $1 AND status = 'enviando'
+    `, [message.id, now]);
+    await logEvent(pool, {
+        batchId: message.batch_id,
+        messageId: message.id,
+        level: 'warn',
+        message: reason || 'Evolution no está listo: el mensaje vuelve a la cola sin gastar reintento',
+    });
+}
+
 async function tick(pool, deps, now = new Date()) {
     const lock = await pool.connect();
     let locked = false;
@@ -526,6 +549,17 @@ async function tick(pool, deps, now = new Date()) {
             return { action: 'enviado', id: message.id };
         } catch (err) {
             const ended = finishedAt();
+            // Sin WhatsApp abierto: no mandamos, no gastamos intento, la cola espera un rato.
+            if (isNotReadyError(err)) {
+                await releaseClaim(pool, message, ended, err.message);
+                await markEvolutionBusy(pool, message, BUSY_WHEN_NOT_READY_SECONDS, ended);
+                return { action: 'idle', reason: 'evolution_no_lista', id: message.id };
+            }
+            // Sin texto o sin foto: error definitivo. Nunca se reintenta un vacío.
+            if (isEmptyMessageError(err)) {
+                await markFailed(pool, message, err.message, ended, { retry: false });
+                return { action: 'error', id: message.id, error: err.message };
+            }
             const retry = !(message.destino === 'estado' && isTimeoutError(err));
             const errorText = !retry
                 ? `Timeout de Evolution: el estado pudo haberse publicado. No se reintenta para no duplicarlo. (${err.message || 'timeout'})`
@@ -559,10 +593,13 @@ module.exports = {
     cancelBatch,
     recoverStuck,
     claimNext,
+    releaseClaim,
     tick,
     clampInterval,
     assertGroupJid,
     assertDestino,
     assertSchedule,
+    isEmptyMessageError,
+    BUSY_WHEN_NOT_READY_SECONDS,
     STATUS_JID,
 };

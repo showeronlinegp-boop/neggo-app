@@ -59,6 +59,10 @@ services:
         condition: service_healthy
       chrome:
         condition: service_started
+      # La cola de WhatsApp no debe mandar mientras Evolution todavía no levantó:
+      # si lo hace, WhatsApp puede soltar mensajes vacíos en ráfaga al conectar.
+      evolution:
+        condition: service_started
     restart: unless-stopped
     networks:
       - neggo-net
