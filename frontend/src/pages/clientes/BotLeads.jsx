@@ -110,6 +110,7 @@ function Zona({ r, t }) {
             <div style={{ padding: `${t.space[4]}px ${t.space[6]}px`, fontSize: t.font.size.xs, color: t.color.textMuted, borderBottom: `1px solid ${t.color.border}` }}>
                 Solo se les escribe a los celulares de estas localidades (las características están en backend/config/leadsZona.json).
                 Quedan afuera {fmtInt(r.excluidos.fuera_de_zona)} de otras zonas y {fmtInt(r.excluidos.churn)} en Churn.
+                Los que ya están en Odoo ({fmtInt(r.ya_en_odoo)}) salen del listado: se siguen como clientes.
             </div>
             {filas.map(([loc, n], i) => (
                 <Fila key={loc} t={t} last={i === filas.length - 1}>

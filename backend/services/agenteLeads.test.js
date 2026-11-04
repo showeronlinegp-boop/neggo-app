@@ -23,7 +23,7 @@ test('zona: Pergamino, Junín y San Nicolás son prioridad 1; Rosario prioridad 
 test('zona: fuera de los 150 km queda afuera', () => {
     assert.strictEqual(L.zonaDe('3815123456'), null); // Tucumán
     assert.strictEqual(L.zonaDe('1123456789'), null); // AMBA
-    assert.strictEqual(L.zonaDe('2324123456'), null); // Mercedes (en "afuera")
+    assert.strictEqual(L.zonaDe('2324123456').localidad, 'Mercedes'); // borde, sumado por Mariano
     assert.strictEqual(L.zonaDe(null), null);
 });
 

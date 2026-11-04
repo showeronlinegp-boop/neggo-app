@@ -1,5 +1,5 @@
 {
-  "_nota": "Zona del bot de posibles clientes (Grok). Solo se les escribe a los celulares con estas características. prioridad_1 va primero; después prioridad_2. Para sumar una, agregala acá (característica sin 0 ni 15) y reiniciá el backend. 'afuera' es solo referencia: quedan cerca del límite de 150 km y hoy no entran.",
+  "_nota": "Zona del bot de posibles clientes (Grok). Solo se les escribe a los celulares con estas características. prioridad_1 va primero; después prioridad_2. Para sumar una, agregala acá (característica sin 0 ni 15) y reiniciá el backend. 'afuera' es solo referencia: características que se miraron y no entran.",
   "prioridad_1": {
     "2477": "Pergamino",
     "2475": "Rojas",
@@ -24,13 +24,12 @@
     "3400": "Villa Constitución",
     "3402": "Arroyo Seco",
     "3407": "Ramallo",
-    "3464": "Casilda"
-  },
-  "afuera": {
+    "3464": "Casilda",
     "2324": "Mercedes",
     "2346": "Chivilcoy",
     "2342": "Bragado",
     "3489": "Campana",
     "3382": "Rufino"
-  }
+  },
+  "afuera": {}
 }

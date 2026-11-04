@@ -199,6 +199,8 @@ async function exigirLead(id, db = pool) {
 async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conRespuesta, respondio, etapa, resultado, no_contactar: noContactar, page, limit, offset }) {
     await ensureLeadsSchema();
     require('./clientMetricsService').refreshIfStale().catch((err) => console.error('❌ Agente leads: sync de clientes:', err.message));
+    // Una vez por día: los que ya están en Odoo salen del listado (la reserva igual lo chequea en vivo)
+    cruzarConOdoo().catch((err) => console.error('❌ Agente leads: cruce con Odoo:', err.message));
     await vencerReservas(pool);
     const info = await meta();
     const { rows } = await pool.query(`${LEAD_SELECT} WHERE l.odoo_partner_id IS NULL AND l.phone_key IS NOT NULL`);
@@ -247,24 +249,62 @@ async function contactoOdooConTelefono(phoneKey) {
     return buildPhoneIndex(rows).find(phoneKey);
 }
 
-/** Lo saca de la cadencia porque ya está en Odoo, y lo deja anotado en su ficha del CRM. */
-async function marcarYaEnOdoo(leadId, partner) {
-    await enTransaccion(async (db) => {
-        await lockSeguimiento(db, leadId);
-        await db.query(
+/**
+ * Ya es cliente (está en Odoo con el mismo celular): sale del listado de posibles clientes.
+ * Se vincula a ese contacto de Odoo con su historial (como el vínculo automático del CRM) y
+ * la cadencia del bot termina.
+ */
+async function marcarYaEnOdoo(leadId, partner, db = null) {
+    const run = async (tx) => {
+        const { rows: [lead] } = await tx.query('SELECT odoo_partner_id FROM crm_leads WHERE id = $1 FOR UPDATE', [leadId]);
+        if (!lead || lead.odoo_partner_id) return false;
+        await lockSeguimiento(tx, leadId);
+        await tx.query(
             `UPDATE crm_bot_lead_seguimiento
              SET resultado = 'ya_en_odoo', resultado_at = NOW(), etapa = 'finalizado', updated_at = NOW()
              WHERE lead_id = $1`, [leadId]);
-        await db.query(
+        await tx.query(
             `UPDATE crm_bot_lead_mensajes SET estado = 'cancelado', motivo_cancelacion = 'ya_en_odoo', reservado_hasta = NULL
              WHERE lead_id = $1 AND estado IN ('reservado', 'vencido')`, [leadId]);
-        await followups.insertEvent(db, { col: 'lead_id', id: leadId }, {
-            kind: 'nota',
-            text: `Ya está en Odoo como ${partner.name} (#${partner.id}): Grok Bot no le escribe como posible cliente`,
-            meta: { origen: 'agente', odoo_partner_id: partner.id },
+        await followups.linkLead(leadId, partner.id, {
+            db: tx,
+            note: `Estaba como posible cliente y ya está en Odoo como ${partner.name}: sale de posibles clientes`,
         });
-    });
-    console.log(`⚠️ Agente leads: el posible cliente ${leadId} ya está en Odoo (#${partner.id})`);
+        return true;
+    };
+    const hecho = db ? await run(db) : await enTransaccion(run);
+    if (hecho) console.log(`⚠️ Agente leads: el posible cliente ${leadId} ya está en Odoo (#${partner.id}), sale del listado`);
+    return hecho;
+}
+
+// Cruce de todos los posibles clientes con todos los contactos de Odoo, una vez por día
+const CRUCE_CADA_MS = 24 * 60 * 60 * 1000;
+let ultimoCruce = 0;
+let cruceEnCurso = null;
+
+/**
+ * Saca del listado a los posibles clientes cuyo celular ya está en Odoo (clientes, proveedores
+ * o archivados, como al importar la agenda). Con forzar=false corre como mucho una vez por día.
+ * @returns {Promise<{ vinculados: number }|null>} null si no le tocaba correr
+ */
+function cruzarConOdoo({ forzar = false } = {}) {
+    if (cruceEnCurso) return cruceEnCurso;
+    if (!forzar && Date.now() - ultimoCruce < CRUCE_CADA_MS) return Promise.resolve(null);
+    cruceEnCurso = (async () => {
+        await ensureLeadsSchema();
+        const { readOdooPhones } = require('./crmLeadService');
+        const index = buildPhoneIndex(await readOdooPhones());
+        const { rows } = await pool.query('SELECT id, phone_key FROM crm_leads WHERE odoo_partner_id IS NULL AND phone_key IS NOT NULL');
+        let vinculados = 0;
+        for (const lead of rows) {
+            const partner = index.find(lead.phone_key);
+            if (partner && await marcarYaEnOdoo(lead.id, partner)) vinculados++;
+        }
+        ultimoCruce = Date.now();
+        console.log(`✅ Agente leads: cruce con Odoo, ${vinculados} posible(s) cliente(s) ya estaban en Odoo y salieron del listado`);
+        return { vinculados };
+    })().finally(() => { cruceEnCurso = null; });
+    return cruceEnCurso;
 }
 
 // =============================================
@@ -626,6 +666,7 @@ async function resumenBot() {
         meta: info,
         cola_hoy: activos.filter((x) => x.toca_hoy).length,
         en_zona: activos.length,
+        ya_en_odoo: enOdoo.size,
         excluidos: {
             fuera_de_zona: todos.filter((x) => x.excluido === 'fuera_de_zona').length,
             churn: todos.filter((x) => x.excluido === 'churn').length,
@@ -657,4 +698,5 @@ module.exports = {
     marcarRevisado,
     actualizarLead,
     resumenBot,
+    cruzarConOdoo,
 };
