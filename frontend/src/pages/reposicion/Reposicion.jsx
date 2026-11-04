@@ -604,7 +604,11 @@ export default function Reposicion() {
     const cotizaciones = tab === 'cotizaciones';
     const propuestas = tab === 'propuestas';
 
+    // Solo vale la última lectura de la cola: sin «Cargando…» se puede reponer varios seguidos
+    const lecturaCola = useRef(0);
+
     const cargarCola = useCallback(async (opts = {}) => {
+        const lectura = ++lecturaCola.current;
         // Las pestañas Órdenes, Cotizaciones y Propuestas cargan lo suyo
         if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') { setLoading(false); return; }
         if (!opts.silencioso) {
@@ -613,6 +617,7 @@ export default function Reposicion() {
         }
         const estado = tab === 'resueltos' || tab === 'encargado' ? tab : 'pendiente';
         const res = await api.get('/reposicion', { estado });
+        if (lectura !== lecturaCola.current) return;
         if (res.success) setItems(res.data || []);
         else if (!opts.silencioso) setError(res.error || 'No se pudo cargar la cola');
         setLoading(false);
@@ -628,6 +633,14 @@ export default function Reposicion() {
         if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') setRecargarVista(n => n + 1);
         await Promise.all([cargarCola(), cargarProveedores()]);
     }, [tab, cargarCola, cargarProveedores]);
+
+    // Después de una acción: «Cargando…» desarmaría Armar pedido y se perderían el proveedor
+    // elegido, los tildes y el lugar de la pantalla (nota 152)
+    const refrescarCola = useCallback(() => cargarCola({ silencioso: true }), [cargarCola]);
+    const refrescarTodo = useCallback(
+        () => Promise.all([refrescarCola(), cargarProveedores()]),
+        [refrescarCola, cargarProveedores]
+    );
 
     useEffect(() => { cargarCola(); }, [cargarCola]);
     useEffect(() => { cargarProveedores(); }, [cargarProveedores]);
@@ -670,7 +683,7 @@ export default function Reposicion() {
             : item.origen === 'recorrida' ? 'recorrida'
             : 'queda poco';
         setAviso(`«${item.name}» entró a la cola como «${como}».`);
-        if (tab === 'pendiente' || tab === 'encargado') cargarCola();
+        if (tab === 'pendiente' || tab === 'encargado') refrescarCola();
         cargarProveedores();
     };
 
@@ -777,7 +790,7 @@ export default function Reposicion() {
 
             {pendiente && <BuscadorReponer onAgregado={alAgregar} onQuitado={alQuitar} onError={mostrarError} isMobile={isMobile} />}
 
-            {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={cargarCola} onError={mostrarError} />}
+            {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={refrescarCola} onError={mostrarError} />}
 
             {encargado && (nConviene > 0 || soloConviene) && (
                 <label style={{
@@ -853,7 +866,7 @@ export default function Reposicion() {
                     onVincular={setAVincular}
                     onError={mostrarError}
                     onAviso={(msg) => { setError(null); setAviso(msg); }}
-                    onChanged={cargar}
+                    onChanged={refrescarTodo}
                 />
             ) : (
                 grupos.map(([proveedor, lista]) => {
@@ -1027,7 +1040,7 @@ export default function Reposicion() {
                 onActivado={(prod) => {
                     const extra = prod?.cola_cerrada ? ' Salió de la lista de reposición.' : '';
                     setAviso(`«${prod.name}» volvió a estar activo en Odoo y en el Punto de Venta.${extra}`);
-                    if (tab === 'pendiente' || tab === 'encargado') cargarCola();
+                    if (tab === 'pendiente' || tab === 'encargado') refrescarCola();
                     cargarProveedores();
                 }}
                 onError={mostrarError}
