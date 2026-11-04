@@ -78,9 +78,9 @@ Estados: `abierta` → `en_curso` (la estás trabajando) → `consulta` (dejaste
 Rebuild para que el usuario vea los cambios (no hay Node en Windows; se compila en un contenedor):
 
 ```bash
-# Frontend → frontend/dist (nginx lo sirve al instante)
-docker run --rm -v "C:/Users/Mariano/neggo-app/frontend:/app" -v neggo_front_nm:/app/node_modules \
-  -w /app node:20-alpine sh -c "npm ci --no-audit --no-fund --loglevel=error && npm run build"
+# Frontend → frontend/dist (nginx lo sirve al instante).
+# El script resuelve la ruta de este checkout y el docker.exe, que no está en el PATH.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/rebuild-frontend.ps1
 # Backend (el código va dentro de la imagen)
 docker compose up -d --build backend
 ```
