@@ -17,6 +17,7 @@ import ClienteFicha from './ClienteFicha';
 import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
 import BotSeguimiento from './BotSeguimiento';
+import BotLeads from './BotLeads';
 import {
     HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
@@ -534,11 +535,14 @@ export default function Clientes() {
                     { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
                     { value: 'leads', label: 'Posibles clientes', icon: <Icon.Plus size={16} />, count: leadsTotal },
                     { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
+                    { value: 'bot_leads', label: 'Bot de leads', icon: <Icon.MessageCircle size={16} /> },
                 ]}
             />
 
             {tab === 'leads' ? (
                 <PosiblesClientes onResumen={(r) => setLeadsTotal(r.total)} />
+            ) : tab === 'bot_leads' ? (
+                <BotLeads />
             ) : tab === 'bot' ? (
                 <BotSeguimiento />
             ) : (

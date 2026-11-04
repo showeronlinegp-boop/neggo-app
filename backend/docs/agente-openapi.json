@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "API del agente de Neggo (Grok Bot)",
-    "version": "3.5.0",
-    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo."
+    "version": "3.6.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo.\n\n**Posibles clientes (v3.6, tag Leads):** contactos de la agenda que todavía no están en Odoo. Solo los celulares de la zona (150 km de Pergamino, prioridad 1: Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y nunca los de Churn. Cadencia: `presentacion` → `recordatorio` (7 días después) → `cierre` (14 días después). **Tope: 15 mensajes de la cadencia por día** entre todos (lo controla la API: 409 `tope_diario`). Mismo envío en dos pasos que con los clientes, en `/leads/{id}/envios` y `/leads/envios/{id_externo}`. Si contesta, la cadencia se frena: seguí la charla y marcá el resultado con PATCH (`interesado`, `no_interesado`, o `no_contactar: true`)."
   },
   "servers": [
     {
@@ -44,6 +44,10 @@
     {
       "name": "Documentación",
       "description": "Públicas, sin datos"
+    },
+    {
+      "name": "Leads",
+      "description": "Posibles clientes (todavía no están en Odoo): cola del día, envíos con tope diario, charla y resultado."
     }
   ],
   "paths": {
@@ -3015,6 +3019,835 @@
           }
         }
       }
+    },
+    "/leads": {
+      "get": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "listarLeads",
+        "summary": "Posibles clientes de la zona",
+        "description": "Solo los de la zona, con celular, que no están en Odoo y no son Churn. `para_hoy=true` es la **cola del día** ya ordenada: primero recordatorios y cierres, después presentaciones (zona 1 antes que 2, después estado de la agenda y con nombre primero). Mandá como mucho `meta.quedan_hoy`. `con_respuesta_pendiente=true` trae a los que contestaron y esperan respuesta.",
+        "parameters": [
+          {
+            "name": "para_hoy",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "con_respuesta_pendiente",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "respondio",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "etapa",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pendiente",
+                "presentacion",
+                "recordatorio",
+                "cierre",
+                "finalizado"
+              ]
+            }
+          },
+          {
+            "name": "resultado",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "interesado",
+                "no_interesado",
+                "no_contactar",
+                "sin_respuesta",
+                "ya_en_odoo",
+                "ninguno"
+              ]
+            }
+          },
+          {
+            "name": "no_contactar",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "false",
+                "true",
+                "todos"
+              ],
+              "default": "false"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Lead"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/LeadMeta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          }
+        }
+      }
+    },
+    "/leads/{id}": {
+      "get": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "obtenerLead",
+        "summary": "Ficha en vivo (pedila justo antes de mandar)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Lead"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ultimos_mensajes": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/LeadMensaje"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/LeadMeta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "actualizarLead",
+        "summary": "Resultado de la charla, no contactar o nombre del contacto",
+        "description": "Con `resultado` o `no_contactar: true` la cadencia termina. 409 no_contactar si se intenta desmarcar.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Lead"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/{id}/envios": {
+      "post": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "reservarEnvioLead",
+        "summary": "Paso 1: reservar un mensaje de la cadencia",
+        "description": "Chequea con la hora del servidor: horario, **tope del día**, que el celular no esté ya en Odoo (en vivo), zona, Churn, no contactar, que el equipo no lo esté siguiendo, que no haya contestado y que la etapa sea la que toca. La reserva vale 10 minutos y ocupa un lugar del tope. 409: fuera_de_horario, tope_diario, ya_en_odoo, fuera_de_zona, churn, no_contactar, seguido_por_el_equipo, respondio, etapa_no_corresponde, ya_enviado, etapa_reservada, reserva_cancelada, reserva_vencida, id_externo_usado, id_externo_distinto. 502 odoo_caido: no mandes.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadEnvioNuevo"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reintento con el mismo id_externo (repetido: true)"
+          },
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "envio": {
+                          "$ref": "#/components/schemas/LeadMensaje"
+                        },
+                        "lead": {
+                          "$ref": "#/components/schemas/Lead"
+                        }
+                      }
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "502": {
+            "$ref": "#/components/responses/OdooCaido"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/envios/{id_externo}": {
+      "get": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "estadoEnvioLead",
+        "summary": "Paso 2: ¿lo mando?",
+        "parameters": [
+          {
+            "name": "id_externo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+            },
+            "example": "grok-lead-183-presentacion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LeadMensaje"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/envios/{id_externo}/confirmar": {
+      "post": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "confirmarEnvioLead",
+        "summary": "Paso 3: el WhatsApp salió",
+        "description": "Avanza la etapa y lo anota en el CRM. Con el cierre, el resultado queda sin_respuesta.",
+        "parameters": [
+          {
+            "name": "id_externo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+            },
+            "example": "grok-lead-183-presentacion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "envio": {
+                          "$ref": "#/components/schemas/LeadMensaje"
+                        },
+                        "lead": {
+                          "$ref": "#/components/schemas/Lead"
+                        }
+                      }
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/envios/{id_externo}/cancelar": {
+      "post": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "cancelarEnvioLead",
+        "summary": "El WhatsApp no salió: libera la etapa y el lugar en el tope",
+        "parameters": [
+          {
+            "name": "id_externo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+            },
+            "example": "grok-lead-183-presentacion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "envio": {
+                          "$ref": "#/components/schemas/LeadMensaje"
+                        },
+                        "lead": {
+                          "$ref": "#/components/schemas/Lead"
+                        }
+                      }
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/{id}/mensajes": {
+      "get": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "listarMensajesLead",
+        "summary": "Mensajes con el posible cliente, del más nuevo al más viejo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LeadMensaje"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "registrarMensajeLead",
+        "summary": "La charla: lo que contestó (recibido) y lo que le respondiste (enviado)",
+        "description": "No cuenta para el tope. Lo recibido queda en la ficha del CRM. 409 no_contactar si mandás a quien pidió que no le escriban.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadMensajeNuevo"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LeadMensaje"
+                    },
+                    "repetido": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
+    },
+    "/leads/{id}/revisado": {
+      "post": {
+        "tags": [
+          "Leads"
+        ],
+        "operationId": "revisadoLead",
+        "summary": "Leíste la respuesta y no hace falta contestar",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "id del posible cliente",
+            "example": 183
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Lead"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "404": {
+            "$ref": "#/components/responses/NoEncontrado"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflicto"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/Deshabilitada"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5023,6 +5856,344 @@
               "$ref": "#/components/schemas/PedidoActivoItem"
             }
           }
+        }
+      },
+      "LeadMeta": {
+        "type": "object",
+        "properties": {
+          "hoy": {
+            "type": "string",
+            "format": "date"
+          },
+          "ahora": {
+            "type": "string"
+          },
+          "ventana_envio": {
+            "type": "string"
+          },
+          "ventana_abierta": {
+            "type": "boolean"
+          },
+          "abre_a": {
+            "type": "string",
+            "nullable": true
+          },
+          "tope_diario": {
+            "type": "integer",
+            "example": 15
+          },
+          "enviados_hoy": {
+            "type": "integer",
+            "description": "Confirmados y reservas vigentes de hoy"
+          },
+          "quedan_hoy": {
+            "type": "integer"
+          }
+        }
+      },
+      "Lead": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "nombre": {
+            "type": "string",
+            "nullable": true,
+            "description": "Como está en la agenda. null: saludá sin nombre"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true
+          },
+          "telefono": {
+            "type": "string",
+            "example": "+5492477519062"
+          },
+          "ciudad": {
+            "type": "string",
+            "nullable": true
+          },
+          "zona": {
+            "type": "object",
+            "properties": {
+              "prioridad": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2
+                ]
+              },
+              "localidad": {
+                "type": "string"
+              },
+              "caracteristica": {
+                "type": "string"
+              }
+            }
+          },
+          "estado_agenda": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "recuperar",
+              "cliente",
+              "lead",
+              "nri",
+              "churn",
+              null
+            ],
+            "description": "NRI = no le llegan las difusiones. churn = no se le escribe"
+          },
+          "lista_agenda": {
+            "type": "string",
+            "nullable": true
+          },
+          "etapa_crm": {
+            "type": "string",
+            "enum": [
+              "frio",
+              "templado",
+              "caliente",
+              "ganado",
+              "descartado"
+            ],
+            "description": "Fuera de frío lo sigue el equipo y el bot no le escribe"
+          },
+          "no_contactar": {
+            "type": "boolean"
+          },
+          "toca_hoy": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "presentacion",
+              "recordatorio",
+              "cierre",
+              null
+            ]
+          },
+          "desde": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "respondio": {
+            "type": "boolean",
+            "description": "Contestó alguna vez: la cadencia se frena"
+          },
+          "respuesta_pendiente": {
+            "type": "boolean"
+          },
+          "ultimo_recibido": {
+            "type": "string",
+            "nullable": true
+          },
+          "reserva_activa": {
+            "type": "object",
+            "nullable": true
+          },
+          "puede_enviar_ahora": {
+            "type": "boolean",
+            "description": "Le toca algo, horario abierto, sin reserva y queda lugar en el tope"
+          },
+          "seguimiento": {
+            "type": "object",
+            "properties": {
+              "etapa": {
+                "type": "string",
+                "enum": [
+                  "pendiente",
+                  "presentacion",
+                  "recordatorio",
+                  "cierre",
+                  "finalizado"
+                ]
+              },
+              "presentacion_manual": {
+                "type": "string",
+                "nullable": true,
+                "description": "Presentación que mandó el equipo a mano: cuenta como la presentación"
+              },
+              "resultado": {
+                "type": "string",
+                "nullable": true,
+                "enum": [
+                  "interesado",
+                  "no_interesado",
+                  "no_contactar",
+                  "sin_respuesta",
+                  "ya_en_odoo",
+                  null
+                ]
+              },
+              "resultado_at": {
+                "type": "string",
+                "nullable": true
+              },
+              "ultimo_contacto": {
+                "type": "string",
+                "nullable": true
+              },
+              "ultimo_envio": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "LeadMensaje": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "lead_id": {
+            "type": "integer"
+          },
+          "fecha": {
+            "type": "string"
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "enviado",
+              "recibido"
+            ]
+          },
+          "etapa": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "presentacion",
+              "recordatorio",
+              "cierre",
+              null
+            ]
+          },
+          "envio_de_etapa": {
+            "type": "boolean"
+          },
+          "estado": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "reservado",
+              "enviado",
+              "cancelado",
+              "vencido",
+              null
+            ]
+          },
+          "reservado_hasta": {
+            "type": "string",
+            "nullable": true
+          },
+          "motivo_cancelacion": {
+            "type": "string",
+            "nullable": true
+          },
+          "mensaje": {
+            "type": "string"
+          },
+          "id_externo": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "LeadEnvioNuevo": {
+        "type": "object",
+        "required": [
+          "etapa",
+          "mensaje",
+          "id_externo"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "etapa": {
+            "type": "string",
+            "enum": [
+              "presentacion",
+              "recordatorio",
+              "cierre"
+            ]
+          },
+          "mensaje": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "Sin mencionar IVA ni impuestos"
+          },
+          "id_externo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,100}$"
+          }
+        },
+        "example": {
+          "etapa": "presentacion",
+          "mensaje": "Buenas Bianca, ¿todo bien? Soy Mariano de Neggo Mayorista…",
+          "id_externo": "grok-lead-183-presentacion"
+        }
+      },
+      "LeadMensajeNuevo": {
+        "type": "object",
+        "required": [
+          "tipo",
+          "mensaje"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "enviado",
+              "recibido"
+            ]
+          },
+          "mensaje": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "fecha": {
+            "type": "string",
+            "description": "ISO 8601; por defecto ahora"
+          },
+          "id_externo": {
+            "type": "string"
+          }
+        }
+      },
+      "LeadPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "no_contactar": {
+            "type": "boolean",
+            "description": "true: no se le escribe más, pasa a Churn y a Descartado. El agente no lo puede desmarcar"
+          },
+          "contacto": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 200
+          },
+          "resultado": {
+            "type": "string",
+            "enum": [
+              "interesado",
+              "no_interesado"
+            ],
+            "description": "interesado: pasa a Templado y el equipo recibe una acción para hoy. no_interesado: Descartado"
+          },
+          "nota": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Qué dijo (queda en la ficha del CRM)"
+          }
+        },
+        "example": {
+          "resultado": "interesado",
+          "nota": "Tiene un bazar en Rojas, quiere la lista de bazar"
         }
       }
     },

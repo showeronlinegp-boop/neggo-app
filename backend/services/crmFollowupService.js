@@ -494,5 +494,7 @@ module.exports = {
     setResponse,
     myDay,
     afterSync,
+    linkLead,
+    insertEvent,
     assignLead,
 };
