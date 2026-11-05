@@ -6,12 +6,14 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
-import { descargarPedidoPDF } from './pedidoPdf';
+import { descargarListasPDF, descargarPedidoPDF } from './pedidoPdf';
 import {
     accesoDe,
     destinoDe,
     estaVinculado,
     filtrarSolapa,
+    listaDelProveedor,
+    listasParaPdf,
     ofertaElegida,
     ofertaMasBarata,
     proveedorPrincipal,
@@ -60,7 +62,8 @@ export default function ArmarPedido({
     const [ordenes, setOrdenes] = useState(null);
     const [ordenesError, setOrdenesError] = useState(null);
     const [trabajando, setTrabajando] = useState(false);
-    const [generandoPdf, setGenerandoPdf] = useState(false);
+    // Qué PDF se está generando: 'tildados' | 'lista' | { n, total } (todas las listas)
+    const [generandoPdf, setGenerandoPdf] = useState(null);
     const [reponiendo, setReponiendo] = useState(null);
 
     useEffect(() => {
@@ -168,16 +171,57 @@ export default function ArmarPedido({
             .map(it => ({ ...it, qty: Number(qtys[it.id]) }))
             .filter(it => it.qty > 0);
         if (!lista.length) { onError('Tildá al menos un producto con cantidad'); return; }
-        setGenerandoPdf(true);
+        setGenerandoPdf('tildados');
         onError(null);
         try {
             await descargarPedidoPDF(proveedor, lista);
         } catch (err) {
             onError(err.message || 'No se pudo generar el PDF');
         } finally {
-            setGenerandoPdf(false);
+            setGenerandoPdf(null);
         }
     };
+
+    // Las listas no dependen de lo tildado: van con la cantidad que se ve en pantalla (nota 161)
+    const listas = useMemo(() => listasParaPdf(items, lados, qtys), [items, lados, qtys]);
+    const listaAbierta = useMemo(() => listaDelProveedor(items, proveedor, lados, qtys), [items, proveedor, lados, qtys]);
+
+    const pdfLista = async () => {
+        setGenerandoPdf('lista');
+        onError(null);
+        try {
+            await descargarPedidoPDF(proveedor, listaAbierta);
+        } catch (err) {
+            onError(err.message || 'No se pudo generar el PDF');
+        } finally {
+            setGenerandoPdf(null);
+        }
+    };
+
+    const pdfTodas = async () => {
+        setGenerandoPdf({ n: 0, total: listas.length });
+        onError(null);
+        try {
+            const { descargadas, fallaron } = await descargarListasPDF(listas, {
+                onAvance: (n, total) => setGenerandoPdf({ n, total }),
+            });
+            const texto = `Descargaste ${descargadas} lista${descargadas === 1 ? '' : 's'} de proveedores en un .zip.`;
+            onAviso(fallaron.length ? `${texto} No salieron: ${fallaron.join(', ')}.` : texto);
+        } catch (err) {
+            onError(err.message || 'No se pudieron generar las listas');
+        } finally {
+            setGenerandoPdf(null);
+        }
+    };
+
+    const botonTodas = (
+        <Button size="sm" variant="secondary" leftIcon={<Icon.Download size={13} />}
+            disabled={!!generandoPdf || listas.length === 0}
+            title="Baja un .zip con un PDF por proveedor: todos sus pendientes, con la cantidad que se ve en pantalla"
+            onClick={pdfTodas}>
+            {generandoPdf?.total ? `Generando ${generandoPdf.n} de ${generandoPdf.total}…` : `Descargar todas (${listas.length})`}
+        </Button>
+    );
 
     const reponer = async (p) => {
         setReponiendo(p.odoo_id);
@@ -225,10 +269,15 @@ export default function ArmarPedido({
                 alignSelf: 'start',
                 maxHeight: isMobile ? undefined : 'calc(100vh - 120px)',
             }}>
-                {!isMobile && (
+                {isMobile ? (
+                    <div style={{ padding: '10px 12px', borderRight: borde, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                        {botonTodas}
+                    </div>
+                ) : (
                     <div style={{ padding: '12px 14px', borderBottom: borde }}>
                         <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>A quién se le pide</div>
-                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>Más barato, o el principal</div>
+                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 8 }}>Más barato, o el principal</div>
+                        {botonTodas}
                     </div>
                 )}
                 {grupos.map(g => {
@@ -283,6 +332,12 @@ export default function ArmarPedido({
                         {acceso.tipo === 'pdf' && 'Sin ficha web: lo tildado arma el PDF.'}
                         {acceso.tipo === 'abierta' && acceso.sitio}
                     </span>
+                    <Button size="sm" variant="secondary" leftIcon={<Icon.FileText size={13} />}
+                        disabled={!!generandoPdf || listaAbierta.length === 0}
+                        title="Baja en PDF todos los pendientes de este proveedor, con la cantidad que se ve en pantalla"
+                        onClick={pdfLista}>
+                        {generandoPdf === 'lista' ? 'Generando…' : 'PDF de la lista'}
+                    </Button>
                     <Button size="sm" variant="ghost" title="Ver activos y archivados" disabled={!proveedor}
                         onClick={() => onVerCatalogo(proveedor)}>
                         {isMobile ? 'Catálogo' : 'Ver catálogo'}
@@ -416,8 +471,9 @@ export default function ArmarPedido({
                                 : tildados.map(it => `${qtys[it.id] || 0} × ${it.name}`).join(' · ')}
                         </div>
                     </div>
-                    <Button size="sm" variant="secondary" leftIcon={<Icon.FileText size={13} />} disabled={generandoPdf} onClick={pdf}>
-                        {generandoPdf ? 'Generando…' : 'PDF'}
+                    <Button size="sm" variant="secondary" leftIcon={<Icon.FileText size={13} />} disabled={!!generandoPdf} onClick={pdf}
+                        title="Baja en PDF solo lo que tildaste">
+                        {generandoPdf === 'tildados' ? 'Generando…' : 'PDF'}
                     </Button>
                     <Button size="sm" variant="primary" leftIcon={<Icon.ShoppingCart size={13} />} disabled={trabajando} onClick={pasarAEncargados}>
                         {trabajando ? 'Pasando…' : 'Pasar a encargados'}

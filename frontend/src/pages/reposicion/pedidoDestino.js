@@ -54,6 +54,22 @@ export function proveedoresDelPedido(items, lados = {}) {
     return [...grupos.values()].sort((a, b) => b.n - a.n || a.nombre.localeCompare(b.nombre, 'es'));
 }
 
+/** Lo que sale en el PDF de la lista: todo lo del proveedor con la cantidad en pantalla, sin los que están en cero. */
+export function listaDelProveedor(items, proveedor, lados = {}, qtys = {}) {
+    return items
+        .filter(it => destinoDe(it, lados[it.id]) === proveedor)
+        .map(it => ({ ...it, qty: Number(qtys[it.id]) }))
+        .filter(it => it.qty > 0)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), 'es'));
+}
+
+/** Una lista por proveedor; los que se quedaron sin nada para pedir no generan PDF. */
+export function listasParaPdf(items, lados = {}, qtys = {}) {
+    return proveedoresDelPedido(items, lados)
+        .map(g => ({ proveedor: g.nombre, items: listaDelProveedor(items, g.nombre, lados, qtys) }))
+        .filter(l => l.items.length > 0);
+}
+
 export function filtrarSolapa(items, solapa) {
     if (solapa === 'sin') return items.filter(it => !estaVinculado(it));
     if (solapa === 'vinculados') return items.filter(it => estaVinculado(it));
