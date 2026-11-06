@@ -41,8 +41,20 @@ export const ingresoAPI = {
   confirmIngreso: (ingresoId, body = {}) =>
     api.post(`/ingreso/${ingresoId}/confirm`, body),
 
+  /** Vincula solos los renglones con oferta por código exacto. @returns { success, data: { creados } } */
+  vincularExactos: (ingresoId) => api.post(`/ingreso/${ingresoId}/vinculos/exactos`, {}),
+
+  /** Sugerencias (sin q) o búsqueda entre las ofertas del proveedor. @returns { success, data: { catalogo, ofertas } } */
+  getOfertasRenglon: (ingresoId, itemId, q = '') =>
+    api.get(`/ingreso/${ingresoId}/items/${itemId}/ofertas`, q ? { q } : {}),
+
+  vincularOferta: (ingresoId, itemId, supplierProductId) =>
+    api.post(`/ingreso/${ingresoId}/items/${itemId}/vinculo`, { supplier_product_id: supplierProductId }),
+
+  deshacerVinculo: (ingresoId, itemId) => api.del(`/ingreso/${ingresoId}/items/${itemId}/vinculo`),
+
   /**
-   * Renglones hechos a mano (con oferta + producto de Odoo) que hay que revisar antes de confirmar
+   * Renglones a mano o por nombre parecido (con oferta + producto de Odoo) que hay que revisar antes de confirmar
    * @returns { success, data: [{ item_id, codigo, descripcion, odoo_product_id, odoo_product_name, internal_ref, sku, oferta_nombre, oferta_precio }] }
    */
   getVinculosARevisar: (ingresoId) => api.get(`/ingreso/${ingresoId}/vinculos-a-revisar`),

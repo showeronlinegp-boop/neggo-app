@@ -12,6 +12,7 @@ const multer = require('multer');
 const pool = require('../config/database');
 const ingresoService = require('../services/ingresoService');
 const tablaMaestraService = require('../services/tablaMaestraService');
+const ingresoVinculos = require('../services/ingresoVinculosService');
 const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
@@ -300,9 +301,11 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
             [ingresoId]
         );
 
+        const vinculos = await ingresoVinculos.vinculosDelIngreso(ingresoId);
         const items = itemsFinal.rows.map(row => ({
             ...row,
             odoo_active: row.odoo_active_current ?? row.odoo_active,
+            vinculo: vinculos.get(row.id) || null,
         }));
 
         // Separar en 3 categorías para los tabs del frontend
@@ -2029,8 +2032,70 @@ router.post('/:ingresoId/sync-odoo-prices', authenticate, requireRole('admin'), 
 // =============================================
 
 // =============================================
+// Vínculo con la oferta del proveedor desde la tarjeta (nota 162)
+// POST   /api/ingreso/:ingresoId/vinculos/exactos       — vincula solos los de código exacto
+// GET    /api/ingreso/:ingresoId/items/:itemId/ofertas  — sugerencias o búsqueda (?q=)
+// POST   /api/ingreso/:ingresoId/items/:itemId/vinculo  — vincula la oferta elegida
+// DELETE /api/ingreso/:ingresoId/items/:itemId/vinculo  — deshace un vínculo generado desde el ingreso
+// =============================================
+
+// Responde el error del servicio con su estado; lo inesperado va como 500
+function failVinculo(res, err, accion) {
+    if (err.status) return fail(res, err.message, err.status);
+    console.error(`❌ Error al ${accion}:`, err);
+    return fail(res, `Error al ${accion}`, 500);
+}
+
+router.post('/:ingresoId/vinculos/exactos', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.vincularExactos(parseInt(req.params.ingresoId, 10), req.user.id));
+    } catch (err) {
+        return failVinculo(res, err, 'vincular por código exacto');
+    }
+});
+
+router.get('/:ingresoId/items/:itemId/ofertas', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.ofertasDeRenglon({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            q: String(req.query.q || ''),
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'buscar las ofertas del proveedor');
+    }
+});
+
+router.post('/:ingresoId/items/:itemId/vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplier_product_id, 10);
+    if (!supplierProductId) return fail(res, 'Falta supplier_product_id', 400);
+    try {
+        return ok(res, await ingresoVinculos.vincularOferta({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            supplierProductId,
+            userId: req.user.id,
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'vincular la oferta');
+    }
+});
+
+router.delete('/:ingresoId/items/:itemId/vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.deshacerVinculo({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            userId: req.user.id,
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'deshacer el vínculo');
+    }
+});
+
+// =============================================
 // GET /api/ingreso/:ingresoId/vinculos-a-revisar
-// Renglones hechos a mano (con oferta + producto de Odoo) que todavía no se revisaron nunca.
+// Renglones a mano o con oferta por nombre parecido que todavía no se revisaron y no tienen vínculo.
 // Se tildan en el paso previo a confirmar; solo los tildados entran a la tabla maestra.
 // =============================================
 

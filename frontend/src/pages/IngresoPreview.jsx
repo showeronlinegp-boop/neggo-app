@@ -476,6 +476,176 @@ function calcPrecioLista(costoUnitario, discountOverride, defaultDiscount, marku
 }
 
 // =============================================
+// Una oferta del proveedor: foto, nombre, SKU, precio y lo que conviene saber antes de elegirla
+function FilaOferta({ oferta, ocupado, onElegir }) {
+    const etiqueta = (texto, fondo, color) => (
+        <span style={{ fontSize: '10px', fontWeight: 'bold', padding: '1px 6px', borderRadius: '3px', backgroundColor: fondo, color, whiteSpace: 'nowrap' }}>{texto}</span>
+    );
+    return (
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 8px', border: `1px solid ${C.border}`, borderRadius: '8px', backgroundColor: C.white }}>
+            {oferta.image_url ? (
+                <img src={oferta.image_url} alt="" loading="lazy" onError={(e) => { e.target.style.visibility = 'hidden'; }}
+                    style={{ width: 36, height: 36, objectFit: 'contain', borderRadius: '4px', flexShrink: 0 }} />
+            ) : <div style={{ width: 36, height: 36, flexShrink: 0, borderRadius: '4px', backgroundColor: C.bg }} />}
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div title={oferta.name} style={{ fontSize: '12px', fontWeight: 'bold', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{oferta.name}</div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', fontSize: '11px', color: C.gray }}>
+                    <code style={{ fontFamily: _tk.font.mono }}>{oferta.sku}</code>
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{oferta.raw_price != null ? fmtARS(oferta.raw_price) : '—'}</span>
+                    {oferta.mismo_precio && etiqueta('Mismo precio', C.successBg, C.success)}
+                    {!oferta.available && etiqueta('Agotada', C.warningBg, C.warning)}
+                    {oferta.rechazada && etiqueta('Rechazada antes', C.errorBg, C.error)}
+                </div>
+                {oferta.vinculada_con && (
+                    <div style={{ fontSize: '11px', color: C.warning, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={oferta.vinculada_con}>
+                        Ya vinculada con {oferta.vinculada_con}
+                    </div>
+                )}
+            </div>
+            <button type="button" onClick={() => onElegir(oferta)} disabled={ocupado}
+                style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.secondary}`, backgroundColor: C.white, color: C.secondary, cursor: ocupado ? 'default' : 'pointer', flexShrink: 0 }}>
+                Vincular
+            </button>
+        </div>
+    );
+}
+
+// Buscador entre todos los artículos del proveedor del ingreso, agotados incluidos
+function BuscarOfertaModal({ item, ingreso, ocupado, onElegir, onCancel }) {
+    const isMobile = useIsMobile();
+    const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
+    const [q, setQ] = useState('');
+    const [ofertas, setOfertas] = useState([]);
+    const [cargando, setCargando] = useState(true);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        let vigente = true;
+        const t = setTimeout(async () => {
+            setCargando(true);
+            try {
+                const res = await ingresoAPI.getOfertasRenglon(ingreso.id, item.id, q.trim());
+                if (!vigente) return;
+                if (res.success) { setOfertas(res.data.ofertas || []); setError(null); }
+                else setError(res.error || 'No se pudieron traer las ofertas');
+            } catch (err) {
+                if (vigente) setError(err.message || 'No se pudieron traer las ofertas');
+            } finally {
+                if (vigente) setCargando(false);
+            }
+        }, q ? 300 : 0);
+        return () => { vigente = false; clearTimeout(t); };
+    }, [q, ingreso.id, item.id]);
+
+    return (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
+            <div style={{ backgroundColor: C.white, borderRadius: isMobile ? 0 : '8px', padding: isMobile ? '16px 14px' : '24px', width: isMobile ? '100%' : '560px', maxWidth: isMobile ? '100vw' : '92vw', height: isMobile ? '100%' : 'auto', maxHeight: isMobile ? '100%' : '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', ...(isMobile ? {} : containerStyle) }}>
+                <h3 onMouseDown={onDragStart} style={{ marginBottom: '4px', color: C.primary, fontSize: '16px', ...dragStyle }}>Vincular con un artículo de {ingreso.supplier_name}</h3>
+                <p style={{ fontSize: '12px', color: C.gray, marginBottom: '10px' }}>
+                    <strong style={{ color: C.text }}>{item.odoo_product_name}</strong> · Factura: {item.descripcion} ({fmtARS(item.precio_unitario)})
+                </p>
+                <input autoFocus type="text" value={q} onChange={(e) => setQ(e.target.value)}
+                    placeholder="Buscá por nombre o SKU…"
+                    style={{ padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '14px', marginBottom: '10px' }} />
+                <div style={{ flex: 1, minHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+                    {error ? <p style={{ fontSize: '13px', color: C.error }}>{error}</p>
+                        : cargando && ofertas.length === 0 ? <p style={{ fontSize: '13px', color: C.gray }}>Buscando…</p>
+                        : ofertas.length === 0 ? <p style={{ fontSize: '13px', color: C.gray }}>{q.trim() ? 'No hay artículos que coincidan.' : 'No hay sugerencias: escribí para buscar.'}</p>
+                        : ofertas.map(o => <FilaOferta key={o.id} oferta={o} ocupado={ocupado} onElegir={onElegir} />)}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button type="button" onClick={onCancel} style={{ padding: '8px 16px', backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>Cerrar</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Vínculo del producto con el proveedor del ingreso: lo muestra o deja generarlo (nota 162)
+function VinculoProveedor({ item, ingreso, onCambio }) {
+    const [sugerencia, setSugerencia] = useState(null);
+    const [catalogo, setCatalogo] = useState(null);
+    const [buscando, setBuscando] = useState(false);
+    const [ocupado, setOcupado] = useState(false);
+    const [error, setError] = useState(null);
+    const vinculo = item.vinculo;
+    const aplica = Boolean(ingreso?.supplier_id && item.odoo_product_id && (item.odoo_company || 'neggo') === 'neggo');
+    const sinVinculo = aplica && !vinculo;
+
+    useEffect(() => {
+        if (!sinVinculo) return undefined;
+        let vigente = true;
+        ingresoAPI.getOfertasRenglon(ingreso.id, item.id)
+            .then(res => {
+                if (!vigente || !res.success) return;
+                setCatalogo(res.data.catalogo);
+                setSugerencia(res.data.ofertas?.[0] || null);
+            })
+            .catch(() => {});
+        return () => { vigente = false; };
+    }, [sinVinculo, ingreso?.id, item.id, item.odoo_product_id]);
+
+    if (!aplica) return null;
+
+    const ejecutar = async (accion) => {
+        setOcupado(true);
+        setError(null);
+        try {
+            const res = await accion();
+            if (!res.success) { setError(res.error || 'No se pudo guardar'); return; }
+            setBuscando(false);
+            await onCambio?.();
+        } catch (err) {
+            setError(err.message || 'No se pudo guardar');
+        } finally {
+            setOcupado(false);
+        }
+    };
+    const elegir = (oferta) => ejecutar(() => ingresoAPI.vincularOferta(ingreso.id, item.id, oferta.id));
+
+    const caja = { border: `1px solid ${vinculo ? C.success : C.border}`, backgroundColor: vinculo ? C.successBg : C.white, borderRadius: '6px', padding: '8px 10px', marginBottom: '10px' };
+    const botonTexto = { padding: 0, border: 'none', background: 'none', fontSize: '11px', fontWeight: 'bold', cursor: ocupado ? 'default' : 'pointer' };
+
+    return (
+        <div style={caja}>
+            {vinculo ? (
+                <>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: C.success }}>
+                            🔗 {vinculo.metodo === 'ingreso_codigo' ? 'Vinculado solo por código exacto' : 'Vinculado'}
+                        </span>
+                        {vinculo.puede_deshacer && (
+                            <button type="button" disabled={ocupado} onClick={() => ejecutar(() => ingresoAPI.deshacerVinculo(ingreso.id, item.id))} style={{ ...botonTexto, color: C.error }}>
+                                {ocupado ? '⏳' : 'Deshacer'}
+                            </button>
+                        )}
+                    </div>
+                    <div title={vinculo.name} style={{ fontSize: '12px', color: C.text, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{vinculo.name}</div>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', fontSize: '11px', color: C.gray }}>
+                        <code style={{ fontFamily: _tk.font.mono }}>{vinculo.sku}</code>
+                        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{vinculo.raw_price != null ? fmtARS(vinculo.raw_price) : '—'}</span>
+                        {!vinculo.available && <span style={{ fontSize: '10px', fontWeight: 'bold', padding: '1px 6px', borderRadius: '3px', backgroundColor: C.warningBg, color: C.warning }}>Agotada en la web</span>}
+                    </div>
+                </>
+            ) : catalogo === 0 ? (
+                <span style={{ fontSize: '11px', color: C.gray }}>Sin vínculo: {ingreso.supplier_name} no tiene artículos cargados de su web.</span>
+            ) : (
+                <>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'space-between', marginBottom: sugerencia ? '6px' : 0 }}>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: C.warning }}>Sin vínculo con {ingreso.supplier_name}</span>
+                        <button type="button" disabled={ocupado} onClick={() => setBuscando(true)} style={{ ...botonTexto, color: C.primary }}>
+                            {sugerencia ? 'Buscar otro' : 'Buscar'}
+                        </button>
+                    </div>
+                    {sugerencia && <FilaOferta oferta={sugerencia} ocupado={ocupado} onElegir={elegir} />}
+                </>
+            )}
+            {error && <div style={{ fontSize: '11px', color: C.error, marginTop: '4px' }}>{error}</div>}
+            {buscando && <BuscarOfertaModal item={item} ingreso={ingreso} ocupado={ocupado} onElegir={elegir} onCancel={() => setBuscando(false)} />}
+        </div>
+    );
+}
+
 // Columna derecha de un ítem sin vincular: las primeras sugerencias del
 // modal de vinculación, para vincular con un clic. Si no hay, no se muestra.
 // =============================================
@@ -556,7 +726,7 @@ const esMismoProveedor = (a, b) => {
     return !!na && !!nb && (na.includes(nb) || nb.includes(na));
 };
 
-function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [] }) {
+function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [], onVinculoCambio }) {
     const isMobile = useIsMobile();
     const [linkingOpen, setLinkingOpen] = useState(false);
     const [precioVentaInput, setPrecioVentaInput] = useState('');
@@ -968,6 +1138,12 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                 )}
 
                 {isMatched && (
+                    <div style={{ padding: '12px 12px 0', borderTop: `1px solid ${C.border}` }}>
+                        <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} />
+                    </div>
+                )}
+
+                {isMatched && (
                     <div style={{ display: 'flex', gap: 8, padding: 12, borderTop: `1px solid ${C.border}` }}>
                         {isInactive && (
                             <button type="button" onClick={() => onReactivate(item.id, item.odoo_product_id)} disabled={reactivating === item.id} style={tapStyle('success')}>
@@ -1313,6 +1489,7 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
             {/* COLUMNA DERECHA: datos de Odoo */}
             {isMatched && (
                 <div style={{ flex: isMobile ? 'none' : 1, padding: '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
+                    <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} />
                     <div style={{ display: 'flex', gap: '10px' }}>
                         {/* Imagen + cargar o cambiar la foto en Odoo */}
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flexShrink: 0, width: '84px' }}>
@@ -1951,7 +2128,8 @@ function PartnerModal({ onConfirm, onCancel, titulo, subtitulo }) {
 // Destildar no frena el ingreso: ese vínculo no entra a la tabla maestra.
 // =============================================
 function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
-    const [tildados, setTildados] = useState(() => new Set(renglones.map(r => r.item_id)));
+    // Los de nombre parecido arrancan sin tildar: se vinculan solo si alguien los elige
+    const [tildados, setTildados] = useState(() => new Set(renglones.filter(r => r.supplier_match_level !== 'fuzzy').map(r => r.item_id)));
     const { onDragStart, dragStyle, containerStyle, overlayStyle } = useDraggable();
     const todos = tildados.size === renglones.length;
 
@@ -1964,7 +2142,7 @@ function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, ...overlayStyle }}>
             <div style={{ backgroundColor: C.white, borderRadius: '8px', padding: '24px', width: '720px', maxWidth: '95vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)', ...containerStyle }}>
-                <h3 onMouseDown={onDragStart} style={{ marginBottom: '8px', color: C.primary, ...dragStyle }}>Revisá los vínculos hechos a mano</h3>
+                <h3 onMouseDown={onDragStart} style={{ marginBottom: '8px', color: C.primary, ...dragStyle }}>Revisá los vínculos antes de confirmar</h3>
                 <p style={{ fontSize: '13px', color: C.gray, marginBottom: '12px' }}>
                     Los tildados quedan en la tabla maestra (este producto es esta oferta del proveedor) y no se vuelven a preguntar.
                     Si destildás uno, el ingreso se confirma igual, pero ese vínculo no se guarda.
@@ -1989,6 +2167,9 @@ function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
                             </div>
                             <div style={{ flex: '2 1 0', minWidth: 0, fontSize: '12px' }}>
                                 <div style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.oferta_nombre}</div>
+                                {r.supplier_match_level === 'fuzzy' && (
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: C.warning }}>Nombre parecido {Math.round(r.supplier_confidence * 100)}%</div>
+                                )}
                                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', color: C.gray }}>
                                     <span style={{ fontFamily: _tk.font.mono, fontSize: '11px' }}>{r.sku}</span>
                                     <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.oferta_precio != null ? fmtARS(r.oferta_precio) : '—'}</span>
@@ -2603,6 +2784,11 @@ export default function IngresoPreview() {
     const loadPreview = useCallback(async ({ silent = false } = {}) => {
         if (!silent) setLoading(true);
         try {
+            // El código exacto se vincula solo; si falla, igual se muestra el ingreso
+            const exactos = await ingresoAPI.vincularExactos(ingresoId).catch(() => null);
+            if (exactos?.data?.creados > 0) {
+                setSuccess(`🔗 ${exactos.data.creados} vinculado(s) por código exacto. Podés deshacerlo en cada producto.`);
+            }
             const result = await ingresoAPI.getPreview(ingresoId);
             if (result.success) {
                 setIngreso(result.data.ingreso);
@@ -3102,6 +3288,7 @@ export default function IngresoPreview() {
 
     const cardProps = {
         ingreso, onItemUpdate: handleItemUpdate,
+        onVinculoCambio: () => loadPreview({ silent: true }),
         onReject: handleReject, onReactivate: handleReactivate,
         reactivating, onReponer: handleReponer, reponiendo,
         onLinked: handleLinked, onCreated: handleCreateOdoo,
