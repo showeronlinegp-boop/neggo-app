@@ -316,6 +316,15 @@ async function deshacerVinculo({ ingresoId, itemId, userId }) {
     });
 }
 
+// Foto del artículo vinculado para copiarla al producto de Neggo. La URL sale siempre de la base.
+async function fotoDelVinculo({ ingresoId, itemId }) {
+    const item = await renglonVinculable(ingresoId, itemId);
+    const vinculo = (await vinculosDelIngreso(ingresoId)).get(item.id);
+    if (!vinculo) throw errorCon(404, 'El producto no tiene vínculo con este proveedor');
+    if (!vinculo.image_url) throw errorCon(400, 'El artículo vinculado no tiene foto');
+    return { odooProductId: item.odoo_product_id, imageUrl: vinculo.image_url };
+}
+
 module.exports = {
     puntuarOferta,
     elegirOfertas,
