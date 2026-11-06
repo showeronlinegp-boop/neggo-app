@@ -562,7 +562,8 @@ function BuscarOfertaModal({ item, ingreso, ocupado, onElegir, onCancel }) {
 }
 
 // Vínculo del producto con el proveedor del ingreso: lo muestra o deja generarlo (nota 162)
-function VinculoProveedor({ item, ingreso, onCambio }) {
+function VinculoProveedor({ item, ingreso, onCambio, foto }) {
+    const [confirmarFoto, setConfirmarFoto] = useState(false);
     const [sugerencia, setSugerencia] = useState(null);
     const [catalogo, setCatalogo] = useState(null);
     const [buscando, setBuscando] = useState(false);
@@ -626,6 +627,27 @@ function VinculoProveedor({ item, ingreso, onCambio }) {
                         <span style={{ fontVariantNumeric: 'tabular-nums' }}>{vinculo.raw_price != null ? fmtARS(vinculo.raw_price) : '—'}</span>
                         {!vinculo.available && <span style={{ fontSize: '10px', fontWeight: 'bold', padding: '1px 6px', borderRadius: '3px', backgroundColor: C.warningBg, color: C.warning }}>Agotada en la web</span>}
                     </div>
+                    {vinculo.image_url && foto && (
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '6px' }}>
+                            <img src={vinculo.image_url} alt={vinculo.name} loading="lazy" onError={(e) => { e.target.style.visibility = 'hidden'; }}
+                                style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: '4px', border: `1px solid ${C.border}`, backgroundColor: C.white, flexShrink: 0 }} />
+                            {foto.ok ? (
+                                <span style={{ fontSize: '11px', fontWeight: 'bold', color: C.success }}>✅ Foto guardada en Odoo</span>
+                            ) : confirmarFoto ? (
+                                <>
+                                    <span style={{ fontSize: '11px', color: C.text }}>¿Reemplazar la foto actual en Odoo?</span>
+                                    <button type="button" onClick={() => { setConfirmarFoto(false); foto.usar(); }} style={{ ...botonTexto, color: C.error }}>Sí, reemplazar</button>
+                                    <button type="button" onClick={() => setConfirmarFoto(false)} style={{ ...botonTexto, color: C.gray }}>No</button>
+                                </>
+                            ) : (
+                                <button type="button" disabled={foto.subiendo}
+                                    onClick={() => (foto.tiene ? setConfirmarFoto(true) : foto.usar())}
+                                    style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.blue}`, backgroundColor: C.white, color: C.blue, cursor: foto.subiendo ? 'default' : 'pointer' }}>
+                                    {foto.subiendo ? '⏳ Subiendo…' : 'Usar esta foto en Neggo'}
+                                </button>
+                            )}
+                        </div>
+                    )}
                 </>
             ) : catalogo === 0 ? (
                 <span style={{ fontSize: '11px', color: C.gray }}>Sin vínculo: {ingreso.supplier_name} no tiene artículos cargados de su web.</span>
@@ -726,7 +748,7 @@ const esMismoProveedor = (a, b) => {
     return !!na && !!nb && (na.includes(nb) || nb.includes(na));
 };
 
-function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [], onVinculoCambio }) {
+function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactivating, onReponer, reponiendo, onLinked, onCreated, creating, lastScannedId, preventaMatchMap = {}, onUpdateOdooProduct, onUploadSupplierPhoto, onUploadPhoto, onAssignSupplier, onAssignWebCateg, onPublishWhatsApp, costoEnvio = 0, totalFacturaMonto = 0, onPreventaBadgeClick, odooCategories = [], odooWebCategories = [], onVinculoCambio, onUsarFotoVinculo }) {
     const isMobile = useIsMobile();
     const [linkingOpen, setLinkingOpen] = useState(false);
     const [precioVentaInput, setPrecioVentaInput] = useState('');
@@ -779,6 +801,9 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
     };
 
     const tieneFoto = !!item.odoo_has_image;
+    const fotoVinculo = onUsarFotoVinculo
+        ? { usar: () => subirFoto(onUsarFotoVinculo), subiendo: uploadingPhoto, ok: photoOk, tiene: tieneFoto }
+        : null;
 
     // Edición inline de nombre, ref y barcode de Odoo
     const [nombreInput, setNombreInput]   = useState('');
@@ -1139,7 +1164,7 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
 
                 {isMatched && (
                     <div style={{ padding: '12px 12px 0', borderTop: `1px solid ${C.border}` }}>
-                        <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} />
+                        <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} foto={fotoVinculo} />
                     </div>
                 )}
 
@@ -1489,7 +1514,7 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
             {/* COLUMNA DERECHA: datos de Odoo */}
             {isMatched && (
                 <div style={{ flex: isMobile ? 'none' : 1, padding: '12px 14px', backgroundColor: '#FAFAFA', borderLeft: isMobile ? 'none' : `1px solid ${C.border}`, borderTop: isMobile ? `1px solid ${C.border}` : 'none', minWidth: 0 }}>
-                    <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} />
+                    <VinculoProveedor item={item} ingreso={ingreso} onCambio={onVinculoCambio} foto={fotoVinculo} />
                     <div style={{ display: 'flex', gap: '10px' }}>
                         {/* Imagen + cargar o cambiar la foto en Odoo */}
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flexShrink: 0, width: '84px' }}>
@@ -3774,6 +3799,11 @@ export default function IngresoPreview() {
                                     }}
                                     onUploadPhoto={async (file) => {
                                         const result = await ingresoAPI.uploadPhoto(ingresoId, item.id, file);
+                                        if (result.success) marcarConFoto(item.id);
+                                        return result;
+                                    }}
+                                    onUsarFotoVinculo={async () => {
+                                        const result = await ingresoAPI.usarFotoVinculo(ingresoId, item.id);
                                         if (result.success) marcarConFoto(item.id);
                                         return result;
                                     }}

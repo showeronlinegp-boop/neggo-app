@@ -21,6 +21,26 @@ const { writeOdooImage, pipeOdooImage } = require('../services/odooImageService'
 const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
 
+// Descarga una foto del proveedor y la guarda en el producto de Odoo
+async function copiarFotoAOdoo(odooProductId, imageUrl) {
+    const imgResponse = await fetch(imageUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
+        signal: AbortSignal.timeout(15000)
+    });
+    if (!imgResponse.ok) {
+        const err = new Error(`No se pudo descargar la imagen (${imgResponse.status})`);
+        err.status = 502;
+        throw err;
+    }
+    const buffer = Buffer.from(await imgResponse.arrayBuffer());
+    if (!detectMime(buffer)) {
+        const err = new Error('Lo que devolvió el proveedor no es una foto');
+        err.status = 502;
+        throw err;
+    }
+    return writeOdooImage(odooProductId, buffer.toString('base64'));
+}
+
 // Primera línea de las publicaciones de WhatsApp que salen desde un ingreso
 const WHATSAPP_INGRESO_HEADER = 'Ingreso...';
 
@@ -1133,27 +1153,32 @@ router.post('/:ingresoId/items/:itemId/upload-supplier-photo', authenticate, req
         if (!odoo_product_id) return fail(res, 'Item sin producto Odoo asignado', 400);
         if (!image_url)       return fail(res, 'No hay imagen del proveedor para este ítem', 400);
 
-        // Descargar imagen del proveedor
-        const imgResponse = await fetch(image_url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
-            signal: AbortSignal.timeout(15000)
-        });
-
-        if (!imgResponse.ok) {
-            return fail(res, `No se pudo descargar la imagen (${imgResponse.status})`, 502);
-        }
-
-        const buffer = Buffer.from(await imgResponse.arrayBuffer());
-        if (!detectMime(buffer)) {
-            return fail(res, 'Lo que devolvió el proveedor no es una foto', 502);
-        }
-
-        const result = await writeOdooImage(odoo_product_id, buffer.toString('base64'));
+        const result = await copiarFotoAOdoo(odoo_product_id, image_url);
         console.log(`✅ Foto del proveedor subida a Odoo para producto ${odoo_product_id}`);
         return ok(res, { message: 'Imagen subida correctamente a Odoo', ...result });
     } catch (err) {
         console.error('❌ Error subiendo foto a Odoo:', err);
-        return fail(res, err.message, err.statusCode || 500);
+        return fail(res, err.message, err.status || err.statusCode || 500);
+    }
+});
+
+// =============================================
+// POST /api/ingreso/:ingresoId/items/:itemId/vinculo/foto
+// Usa la foto del artículo vinculado como foto del producto de Neggo (nota 162)
+// =============================================
+
+router.post('/:ingresoId/items/:itemId/vinculo/foto', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { odooProductId, imageUrl } = await ingresoVinculos.fotoDelVinculo({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+        });
+        const result = await copiarFotoAOdoo(odooProductId, imageUrl);
+        console.log(`✅ Foto del vínculo subida a Odoo para producto ${odooProductId}`);
+        return ok(res, { message: 'Foto guardada en Odoo', ...result });
+    } catch (err) {
+        console.error('❌ Error usando la foto del vínculo:', err.message);
+        return fail(res, err.message, err.status || err.statusCode || 500);
     }
 });
 

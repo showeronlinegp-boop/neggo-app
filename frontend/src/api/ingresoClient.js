@@ -51,6 +51,8 @@ export const ingresoAPI = {
   vincularOferta: (ingresoId, itemId, supplierProductId) =>
     api.post(`/ingreso/${ingresoId}/items/${itemId}/vinculo`, { supplier_product_id: supplierProductId }),
 
+  usarFotoVinculo: (ingresoId, itemId) => api.post(`/ingreso/${ingresoId}/items/${itemId}/vinculo/foto`, {}),
+
   deshacerVinculo: (ingresoId, itemId) => api.del(`/ingreso/${ingresoId}/items/${itemId}/vinculo`),
 
   /**

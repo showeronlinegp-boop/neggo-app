@@ -324,4 +324,5 @@ module.exports = {
     ofertasDeRenglon,
     vincularOferta,
     deshacerVinculo,
+    fotoDelVinculo,
 };
