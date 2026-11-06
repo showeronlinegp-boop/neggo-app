@@ -23,7 +23,9 @@ const whatsappQueue = require('../services/whatsappQueue');
 
 // Descarga una foto del proveedor y la guarda en el producto de Odoo
 async function copiarFotoAOdoo(odooProductId, imageUrl) {
-    const imgResponse = await fetch(imageUrl, {
+    // Algunas webs guardan la URL sin protocolo ("//cdn..."): el navegador la abre, fetch no
+    const url = imageUrl.startsWith('//') ? `https:${imageUrl}` : imageUrl;
+    const imgResponse = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
         signal: AbortSignal.timeout(15000)
     });
