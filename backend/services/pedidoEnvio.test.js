@@ -39,6 +39,8 @@ const {
     ordenListado,
     ETIQUETA_PENDIENTES,
     asegurarBackorder,
+    ordenesBorradasEnOdoo,
+    syncDesdeOdoo,
 } = require('./pedidoEnvioService');
 
 function testClamp() {
@@ -227,6 +229,58 @@ async function testEtiquetaPendientes() {
     } finally {
         Object.assign(odooService, originales);
         pool.query = queryOriginal;
+    }
+}
+
+function testOrdenesBorradasEnOdoo() {
+    // 1 se leyó, 2 se pasó de empresa (existe), 3 ya no está
+    assert.deepStrictEqual(ordenesBorradasEnOdoo([1, 2, 3], [1], [2]), [3]);
+    assert.deepStrictEqual(ordenesBorradasEnOdoo([], [], []), []);
+}
+
+// Nota 164: una orden borrada en Odoo se cancela sólo en la app; una que está en otra
+// empresa se deja como está. Odoo y la base mockeados.
+async function testSyncCancelaOrdenBorrada() {
+    const odooService = require('./odooService');
+    const pool = require('../config/database');
+    const originales = { ...odooService };
+    const queryOriginal = pool.query;
+    const connectOriginal = pool.connect;
+    const logOriginal = console.log;
+    const enTx = [];
+
+    pool.query = async (sql) => (sql.includes('SELECT odoo_sale_order_id, estado')
+        ? { rows: [
+            { odoo_sale_order_id: 10, estado: 'pendiente' },
+            { odoo_sale_order_id: 20, estado: 'saldado' },
+        ] }
+        : { rows: [] });
+    pool.connect = async () => ({
+        release() {},
+        query: async (sql, params) => {
+            enTx.push({ sql, params });
+            return sql.includes('SELECT id, odoo_sale_order_id, odoo_order_name')
+                ? { rows: [{ id: 7, odoo_sale_order_id: 10, odoo_order_name: 'S0010', estado: 'pendiente' }] }
+                : { rows: [] };
+        },
+    });
+    odooService.getSaleOrdersWithLines = async () => [];
+    odooService.getSaleOrderHeaders = async () => [];
+    odooService.saleOrderIdsExistentes = async () => [20];
+    console.log = () => {};
+
+    try {
+        const r = await syncDesdeOdoo('neggo', 1);
+        assert.strictEqual(r.borradas, 1);
+        const busqueda = enTx.find((q) => q.sql.includes('SELECT id, odoo_sale_order_id, odoo_order_name'));
+        assert.deepStrictEqual(busqueda.params[1], [10]);
+        const cancelar = enTx.find((q) => q.sql.includes("SET estado = 'cancelado'"));
+        assert.deepStrictEqual(cancelar.params[0], [7]);
+    } finally {
+        Object.assign(odooService, originales);
+        pool.query = queryOriginal;
+        pool.connect = connectOriginal;
+        console.log = logOriginal;
     }
 }
 
@@ -878,6 +932,8 @@ testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
+testOrdenesBorradasEnOdoo();
 testEtiquetaPendientes()
+    .then(testSyncCancelaOrdenBorrada)
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });
