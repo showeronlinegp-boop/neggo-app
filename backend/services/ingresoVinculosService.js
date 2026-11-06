@@ -16,7 +16,7 @@ const METODOS_DESHACER = new Set([METODO_CODIGO, METODO_ELEGIDO]);
 
 const MAX_SUGERENCIAS = 5;
 const MAX_RESULTADOS = 30;
-const PARECIDO_MINIMO = 0.45;
+const PARECIDO_MINIMO = 0.55;
 const TOLERANCIA_PRECIO = 0.01;
 // Mismo precio que la factura: pesa, pero no alcanza solo para aparecer
 const BONUS_PRECIO = 0.2;
