@@ -40,6 +40,7 @@ function depsWith(overrides = {}) {
         verificadas: overrides.verificadas || verificadas,
         verificacionMs: overrides.verificacionMs ?? VERIFICACION_MS,
         ahora: overrides.ahora || Date.now,
+        fetch: overrides.fetch || fetch,
     };
 }
 
@@ -438,9 +439,58 @@ async function writeOdooImage(odooProductId, base64, overrides) {
     return { template_id: templateId, image_url: rows[0]?.image_url || null };
 }
 
+function errorDeFoto(mensaje, status) {
+    const err = new Error(mensaje);
+    err.status = status;
+    return err;
+}
+
+async function bytesDeOrigen(d, imageUrl) {
+    // Foto bajada a nuestro disco (ej. listas en PDF de Panlin y Renacer)
+    if (imageUrl.startsWith('/storage/')) {
+        const root = path.resolve(d.storageRoot);
+        const fullPath = path.resolve(root, imageUrl.slice('/storage/'.length));
+        if (!fullPath.startsWith(root + path.sep)) throw errorDeFoto('La ruta de la foto no es válida', 400);
+        try {
+            return await d.fsp.readFile(fullPath);
+        } catch {
+            throw errorDeFoto('La foto ya no está guardada en el servidor', 404);
+        }
+    }
+
+    // Foto que ya vive en Odoo (proveedores que salen del catálogo de Neggo)
+    const enOdoo = imageUrl.match(/^\/api\/products\/odoo-image\/(neggo|preventas)\/(\d+)$/);
+    if (enOdoo) {
+        const img = await getOdooImage({ company: enOdoo[1], kind: 'template', id: enOdoo[2], size: '1920' }, d);
+        if (!img) throw errorDeFoto('Ese producto ya no tiene foto en Odoo', 404);
+        return img.buffer;
+    }
+
+    // Algunas webs guardan la URL sin protocolo ("//cdn..."): el navegador la abre, fetch no
+    const url = imageUrl.startsWith('//') ? `https:${imageUrl}` : imageUrl;
+    if (!/^https?:\/\//i.test(url)) throw errorDeFoto('La dirección de la foto no es válida', 400);
+    const respuesta = await d.fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
+        signal: AbortSignal.timeout(15000),
+    });
+    if (!respuesta.ok) throw errorDeFoto(`No se pudo descargar la imagen (${respuesta.status})`, 502);
+    return Buffer.from(await respuesta.arrayBuffer());
+}
+
+/**
+ * Trae los bytes de una foto de proveedor (supplier_products.image_url), que puede ser una
+ * dirección web o una ruta de la propia app: esas el navegador las abre, pero fetch no (nota 165).
+ */
+async function leerFotoDeOrigen(imageUrl, overrides) {
+    const buffer = await bytesDeOrigen(depsWith(overrides), imageUrl);
+    if (!detectMime(buffer)) throw errorDeFoto('Lo que devolvió el proveedor no es una foto', 502);
+    return buffer;
+}
+
 module.exports = {
     writeOdooImage,
     getOdooImage,
+    leerFotoDeOrigen,
     pipeOdooImage,
     hashBuffer,
     detectContentType,

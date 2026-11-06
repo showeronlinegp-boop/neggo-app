@@ -17,29 +17,13 @@ const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { detectMime } = require('../services/whatsappMessage');
-const { writeOdooImage, pipeOdooImage } = require('../services/odooImageService');
+const { writeOdooImage, pipeOdooImage, leerFotoDeOrigen } = require('../services/odooImageService');
 const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
 
-// Descarga una foto del proveedor y la guarda en el producto de Odoo
+// Trae una foto del proveedor y la guarda en el producto de Odoo
 async function copiarFotoAOdoo(odooProductId, imageUrl) {
-    // Algunas webs guardan la URL sin protocolo ("//cdn..."): el navegador la abre, fetch no
-    const url = imageUrl.startsWith('//') ? `https:${imageUrl}` : imageUrl;
-    const imgResponse = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
-        signal: AbortSignal.timeout(15000)
-    });
-    if (!imgResponse.ok) {
-        const err = new Error(`No se pudo descargar la imagen (${imgResponse.status})`);
-        err.status = 502;
-        throw err;
-    }
-    const buffer = Buffer.from(await imgResponse.arrayBuffer());
-    if (!detectMime(buffer)) {
-        const err = new Error('Lo que devolvió el proveedor no es una foto');
-        err.status = 502;
-        throw err;
-    }
+    const buffer = await leerFotoDeOrigen(imageUrl);
     return writeOdooImage(odooProductId, buffer.toString('base64'));
 }
 
