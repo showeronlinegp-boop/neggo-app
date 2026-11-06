@@ -498,10 +498,12 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             );
         }
 
-        // Restaurar item rechazado: vuelve a matched si tenía producto, pending si no
+        // Restaurar item rechazado: vuelve a matched si tenía producto, pending si no.
+        // Un producto "parecido" nunca se confirmó: vuelve a pending para que lo decida una persona.
         if (estado_item === 'restore') {
             const currentItem = itemResult.rows[0];
-            const estadoRestaurado = currentItem.odoo_product_id ? 'matched' : 'pending';
+            const estadoRestaurado = currentItem.odoo_product_id && currentItem.match_level !== 'fuzzy_name'
+                ? 'matched' : 'pending';
             await pool.query(
                 `UPDATE ingreso_items SET estado_item = $1, motivo_rechazo = NULL WHERE id = $2`,
                 [estadoRestaurado, itemId]

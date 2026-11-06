@@ -953,6 +953,10 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                             <button type="button" onClick={() => onCreated(item.id)} disabled={creating === item.id} style={tapStyle('primary', { opacity: creating === item.id ? 0.6 : 1 })}>
                                 {creating === item.id ? '⏳' : '+ Crear'}
                             </button>
+                            {/* Con unidades en preventa no se ofrece: esa cantidad sigue contando para preventa */}
+                            {!(item.preventa_qty_confirmed > 0) && (
+                                <button type="button" onClick={() => onReject(item.id)} style={tapStyle('danger')}>Descartar</button>
+                            )}
                         </div>
                         {item.error_match && <span style={{ fontSize: 12, color: C.error }}>{item.error_match}</span>}
                     </div>
@@ -1286,6 +1290,15 @@ function ItemCard({ item, ingreso, onItemUpdate, onReject, onReactivate, reactiv
                         >
                             {creating === item.id ? '⏳ Creando...' : '+ Crear en Odoo'}
                         </button>
+                        {/* Con unidades en preventa no se ofrece: esa cantidad sigue contando para preventa */}
+                        {!(item.preventa_qty_confirmed > 0) && (
+                            <button
+                                onClick={() => onReject(item.id)}
+                                style={{ padding: '6px 14px', fontSize: '12px', fontWeight: 'bold', borderRadius: '4px', border: `1px solid ${C.error}`, backgroundColor: 'transparent', color: C.error, cursor: 'pointer' }}
+                            >
+                                Descartar
+                            </button>
+                        )}
                         {item.error_match && (
                             <span style={{ fontSize: '11px', color: C.error, alignSelf: 'center' }}>{item.error_match}</span>
                         )}
