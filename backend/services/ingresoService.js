@@ -4,6 +4,7 @@
 const pool = require('../config/database');
 const papa = require('papaparse');
 const odooService = require('./odooService');
+const { normClave, clavesPreventa } = require('./preventaClaves');
 
 // =============================================
 // 1. PARSEO CSV
@@ -855,14 +856,11 @@ async function findPreventasProductId(codigo, supplierPrefix, client) {
     const db = client || pool;
     if (!codigo) return null;
 
-    const norm = s => (s || '').replace(/[-\s]/g, '').toUpperCase();
-    const base = norm(codigo);
-    const pref = norm(supplierPrefix);
-
-    const candidates = [
-        `PRE${pref}${base}`,
-        `PRE${base}`,
-    ].filter((v, i, a) => v.length > 3 && a.indexOf(v) === i);
+    const pref = normClave(supplierPrefix);
+    const { conPrefijo, sinPrefijo } = clavesPreventa(codigo, supplierPrefix);
+    const candidates = [...conPrefijo, ...sinPrefijo]
+        .filter((v, i, a) => v.length > 3 && a.indexOf(v) === i);
+    if (candidates.length === 0) return null;
 
     // Busca en: internal_ref, ext_id_clean (ir.model.data), y código {braces} del nombre + prefijo.
     // El mismo matching multi-fuente que usa preventa-odoo-match.
