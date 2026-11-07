@@ -2014,7 +2014,7 @@ function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
 // =============================================
 // Modal para vincular manualmente un ítem a una cotización de Preventas
 // =============================================
-function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
+function PreventaLinkModal({ item, quotations, loading, incluyeOrdenes, onSave, onCancel }) {
     const [search, setSearch]     = useState('');
     const [selected, setSelected] = useState(null); // { quotation, line }
     const [qty, setQty]           = useState('');
@@ -2057,7 +2057,7 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, ...overlayStyle }}>
             <div style={{ backgroundColor: C.white, borderRadius: '10px', padding: '24px', width: '600px', maxWidth: '95vw', boxShadow: '0 10px 40px rgba(0,0,0,0.25)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', gap: '14px', ...containerStyle }}>
-                <h3 onMouseDown={onDragStart} style={{ color: '#7B1FA2', margin: 0, ...dragStyle }}>🔗 Vincular a cotización de Preventas</h3>
+                <h3 onMouseDown={onDragStart} style={{ color: '#7B1FA2', margin: 0, ...dragStyle }}>🔗 Vincular a {incluyeOrdenes ? 'cotización u orden' : 'cotización'} de Preventas</h3>
                 <p style={{ margin: 0, fontSize: '13px', color: C.gray }}>
                     Ítem: <strong>{item.descripcion}</strong> · En factura: <strong>{item.cantidad}</strong> uds
                     {linkedQty > 0 && <span style={{ color: '#7B1FA2', fontWeight: 'bold' }}> · Ya asignadas: {linkedQty} · Disponibles: {remainingQty}</span>}
@@ -2066,14 +2066,14 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                 <input
                     autoFocus
                     type="text"
-                    placeholder="Buscar por producto, cliente o cotización..."
+                    placeholder={`Buscar por producto, cliente o ${incluyeOrdenes ? 'número de cotización u orden' : 'cotización'}...`}
                     value={search}
                     onChange={e => setSearch(e.target.value)}
                     style={{ padding: '9px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '13px' }}
                 />
 
                 {loading ? (
-                    <p style={{ textAlign: 'center', color: C.gray }}>⏳ Cargando cotizaciones...</p>
+                    <p style={{ textAlign: 'center', color: C.gray }}>⏳ Cargando {incluyeOrdenes ? 'cotizaciones y órdenes' : 'cotizaciones'}...</p>
                 ) : (
                     <div style={{ overflowY: 'auto', flex: 1, maxHeight: '340px', border: `1px solid ${C.border}`, borderRadius: '6px' }}>
                         {filtradas.length === 0 ? (
@@ -2081,7 +2081,7 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                                 {search.length < 2 ? 'Escribí al menos 2 caracteres para buscar.' : 'Sin resultados.'}
                             </p>
                         ) : filtradas.map((l, i) => {
-                            const isSel = selected?.line_id === l.line_id ?? selected?.id === l.id;
+                            const isSel = selected?.id === l.id;
                             return (
                                 <div key={i} onClick={() => handleSelect(l)}
                                     style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '9px 12px', cursor: 'pointer', borderBottom: `1px solid ${C.border}`, backgroundColor: isSel ? '#EDE7F6' : 'transparent', transition: 'background 0.1s' }}>
@@ -2089,6 +2089,9 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                                         <div style={{ fontWeight: 'bold', fontSize: '13px', color: isSel ? '#6A1B9A' : C.text }}>{l.product_name}</div>
                                         <div style={{ fontSize: '11px', color: C.gray }}>
                                             {l.quotation.name} · 👤 {l.quotation.client || 'Sin cliente'} · {l.quotation.date ? new Date(l.quotation.date).toLocaleDateString('es-AR') : ''}
+                                            {l.quotation.state === 'sale' && (
+                                                <span style={{ marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: '8px', backgroundColor: C.warningBg, color: C.warning }}>Orden de venta</span>
+                                            )}
                                         </div>
                                     </div>
                                     <span style={{ fontSize: '12px', color: '#7B1FA2', fontWeight: 'bold', flexShrink: 0 }}>x{l.quantity}</span>
@@ -2098,6 +2101,12 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                             );
                         })}
                     </div>
+                )}
+
+                {!incluyeOrdenes && !loading && (
+                    <p style={{ margin: 0, fontSize: '12px', color: C.gray }}>
+                        Solo ves cotizaciones enviadas. Para ver también las órdenes de venta, cerrá esta ventana y prendé "Incluir órdenes de venta sin factura".
+                    </p>
                 )}
 
                 {selected && (
@@ -2901,9 +2910,10 @@ export default function IngresoPreview() {
         if (allQuotations.length === 0) {
             setLoadingQuotations(true);
             try {
-                const res = await api.get('/preventas/odoo-quotations');
+                const res = await api.get(`/preventas/odoo-quotations${incluirOrdenes ? '?incluir_ordenes=1' : ''}`);
                 if (res.success) setAllQuotations(res.data || []);
-            } catch (_) {}
+                else setError(res.error || 'No pude traer las cotizaciones de Odoo');
+            } catch (err) { setError(err.message); }
             finally { setLoadingQuotations(false); }
         }
     };
@@ -3150,6 +3160,7 @@ export default function IngresoPreview() {
                 <PreventaLinkModal
                     item={preventaLinkItem}
                     quotations={allQuotations}
+                    incluyeOrdenes={incluirOrdenes}
                     loading={loadingQuotations}
                     onSave={handleAddPreventaLink}
                     onCancel={() => setPreventaLinkItem(null)}
@@ -3386,7 +3397,7 @@ export default function IngresoPreview() {
                                 type="button"
                                 role="switch"
                                 aria-checked={incluirOrdenes}
-                                onClick={() => { setIncluirOrdenes(v => !v); setPreventaLoaded(false); }}
+                                onClick={() => { setIncluirOrdenes(v => !v); setPreventaLoaded(false); setAllQuotations([]); }}
                                 style={{ position: 'relative', width: 36, height: 20, padding: 0, border: 'none', borderRadius: 10, backgroundColor: incluirOrdenes ? C.success : C.border, cursor: 'pointer', flexShrink: 0, transition: 'background-color 0.15s' }}
                             >
                                 <span style={{ position: 'absolute', top: 2, left: incluirOrdenes ? 18 : 2, width: 16, height: 16, borderRadius: '50%', backgroundColor: C.white, transition: 'left 0.15s' }} />
@@ -3500,7 +3511,7 @@ export default function IngresoPreview() {
                                         return (
                                             <div style={{ marginTop: '12px', borderTop: `2px dashed #E1BEE7`, paddingTop: '12px' }}>
                                                 <p style={{ fontSize: '12px', color: '#7B1FA2', fontWeight: 'bold', marginBottom: '8px' }}>
-                                                    🔍 Sin match automático — podés vincularlos manualmente a una cotización
+                                                    🔍 Sin match automático — podés vincularlos manualmente a {incluirOrdenes ? 'una cotización u orden' : 'una cotización'}
                                                 </p>
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                                     {sinMatch.map(item => {
