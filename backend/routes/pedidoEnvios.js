@@ -10,6 +10,7 @@
 // PATCH  /api/pedido-envios/items/:itemId        { qty_armada? | qty_controlada? }
 // POST   /api/pedido-envios/:id/escanear         { code }
 // POST   /api/pedido-envios/items/:itemId/faltante  { motivo: archivado|reponer|faltante }
+// POST   /api/pedido-envios/items/:itemId/desarchivar  reactiva en Odoo (con PdV) y quita la marca
 // GET    /api/pedido-envios/:id/preview
 // POST   /api/pedido-envios/:id/saldar           escribe Odoo (qty + pedido de pendientes)
 
@@ -178,6 +179,16 @@ router.post('/items/:itemId/faltante', async (req, res) => {
         ));
     } catch (err) {
         return sendErr(res, err, 'Error marcando faltante');
+    }
+});
+
+router.post('/items/:itemId/desarchivar', async (req, res) => {
+    try {
+        const data = await servicio.desarchivar(parseInt(req.params.itemId, 10), req.user.id);
+        console.log(`✅ Ítem ${req.params.itemId} desarchivado desde el armado del pedido ${data.odoo_order_name}`);
+        return ok(res, data);
+    } catch (err) {
+        return sendErr(res, err, 'Error desarchivando producto');
     }
 });
 

@@ -1832,6 +1832,42 @@ async function marcarFaltante(itemId, motivo, userId, qty = null) {
     return obtener(item.envio_id);
 }
 
+/**
+ * Deshace "Archivar" desde el armado (nota 173): reactiva el producto en Odoo, lo vuelve a
+ * poner en el PdV, lo saca de la cola de reposición y le quita la marca a la línea.
+ * Las cantidades contadas no se tocan. Vale en cualquier etapa: es una acción sobre el producto.
+ */
+async function desarchivar(itemId, userId) {
+    const { rows: [item] } = await pool.query(
+        `SELECT i.id, i.envio_id, i.odoo_product_id, i.product_name, i.faltante_motivo, e.company_key
+           FROM pedido_envio_items i
+           JOIN pedido_envios e ON e.id = i.envio_id
+          WHERE i.id = $1`,
+        [itemId]
+    );
+    if (!item) throw httpError('Ítem no encontrado', 404);
+    if (item.company_key !== 'neggo') throw httpError('Sólo se desarchiva en Neggo', 400);
+    if (item.faltante_motivo !== 'archivado') throw httpError(`«${item.product_name}» no está marcado como archivado`, 409);
+    if (!item.odoo_product_id) throw httpError('Este renglón no tiene producto de Odoo', 400);
+
+    const reposicion = require('./reposicionService');
+    try {
+        await reposicion.activarYResolver(item.odoo_product_id);
+    } catch (err) {
+        // Ya activo (lo reactivaron en Odoo o desde Reposición): sólo falta limpiar la marca
+        if (err.statusCode !== 409) throw err;
+    }
+
+    await pool.query(
+        `UPDATE pedido_envio_items SET faltante_motivo = NULL WHERE id = $1`,
+        [itemId]
+    );
+    await logActividad(userId, 'DESARCHIVAR', item.envio_id, {
+        item_id: itemId, product: item.product_name, odoo_product_id: item.odoo_product_id,
+    });
+    return obtener(item.envio_id);
+}
+
 async function preview(id) {
     const envio = await obtener(id);
     return { ...previewSaldar(envio.items), envio_id: envio.id, odoo_order_name: envio.odoo_order_name };
@@ -2073,6 +2109,7 @@ module.exports = {
     setQty,
     escanear,
     marcarFaltante,
+    desarchivar,
     preview,
     saldar,
     ETIQUETA_PENDIENTES,
