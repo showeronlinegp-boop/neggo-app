@@ -193,6 +193,13 @@ function esLineaDownPayment(line) {
     return /down payment/i.test(String(line?.product_name || line?.name || ''));
 }
 
+// Envío o retiro (Standard delivery, Pick up in store): es un servicio sin stock, no se arma
+// ni pasa a pendientes. También por nombre: las copias en pedidos de pendientes pierden is_delivery.
+function esLineaEnvio(line) {
+    if (line?.is_delivery) return true;
+    return /standard delivery|pick up in store/i.test(String(line?.product_name || line?.name || ''));
+}
+
 function refPendientes(orderName) {
     return `Pendientes de ${orderName || ''}`.trim();
 }
@@ -958,7 +965,7 @@ async function validarSalidaAlSaldar(envio) {
 }
 
 function lineasProductoOdoo(odoo) {
-    return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l));
+    return (odoo?.lines || []).filter((l) => l.product_id && !esLineaDownPayment(l) && !esLineaEnvio(l));
 }
 
 function auditarFallo(error, statusCode = 409) {
@@ -1099,7 +1106,7 @@ async function upsertItems(client, envioId, companyKey, lines, { freezeQty = fal
         if (num(l.quantity) <= 0) return false;
         const nombre = String(l.product_name || '');
         if (/down payment/i.test(nombre)) return false;
-        return true;
+        return !esLineaEnvio(l);
     });
     const cache = await cachePorProductos(companyKey, utiles.map((l) => l.product_id));
     const lineIds = [];
@@ -1290,7 +1297,7 @@ async function listar({
 async function obtener(id, { syncOdoo = false } = {}) {
     const { rows: [envio] } = await pool.query(`${SELECT_ENVIO} WHERE e.id = $1`, [id]);
     if (!envio) throw httpError('Pedido no encontrado', 404);
-    const { rows: items } = await pool.query(
+    const { rows } = await pool.query(
         `SELECT i.*, opc.active AS product_active
            FROM pedido_envio_items i
            LEFT JOIN odoo_products_cache opc
@@ -1299,6 +1306,8 @@ async function obtener(id, { syncOdoo = false } = {}) {
           ORDER BY i.id`,
         [id, envio.company_key]
     );
+    // Los que se trajeron antes de excluir las líneas de envío siguen en la tabla hasta el próximo sync
+    const items = rows.filter((it) => !esLineaEnvio(it));
     const base = { ...envio, items, preview: previewSaldar(items) };
 
     const faltaEnvio1 = base.estado === 'armando'
@@ -1390,7 +1399,7 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
             const paraArmar = esCotizacionParaArmar(order);
             // Cancelada desde la app: no vuelve salvo que en Odoo la reactiven como cotización enviada
             if (existente?.estado === 'cancelado' && !paraArmar) continue;
-            if (!existente && (!paraArmar || !order.lines.length)) continue;
+            if (!existente && (!paraArmar || !lineasProductoOdoo(order).length)) continue;
 
             let envioId;
             const etapa = etapaDesdeOdoo(order);
@@ -2047,6 +2056,7 @@ module.exports = {
     qtyDesdeMoves,
     fuentesDeQty,
     planIgualar,
+    esLineaEnvio,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
