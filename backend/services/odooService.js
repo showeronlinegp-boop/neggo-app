@@ -1743,13 +1743,15 @@ async function findSaleOrdersByOriginRef(companyKey, {
     }));
 }
 
-async function writeSaleOrderLineQty(lineId, qty, companyKey) {
+// sinAbastecer: la cantidad refleja lo que ya salió, así que Odoo no tiene que abrir envíos.
+// Sin esto, al subir una línea confirmada Odoo compara contra el Recolectar y genera uno nuevo.
+async function writeSaleOrderLineQty(lineId, qty, companyKey, { sinAbastecer = false } = {}) {
     const companyId = await resolveCompanyId(companyKey);
     await callOdoo(
         'sale.order.line',
         'write',
         [[lineId], { product_uom_qty: qty }],
-        withCompany(companyId)
+        withCompany(companyId, sinAbastecer ? { context: { skip_procurement: true } } : {})
     );
 }
 

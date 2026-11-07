@@ -910,6 +910,19 @@ async function validarEnvio1AlTerminar(envio) {
     }
 }
 
+// La entrega abierta no tiene nada para escribir. Si lo suyo ya está controlado es porque
+// salió en una entrega anterior: esta está de más y controlar otra vez no lo resuelve.
+function mensajeNadaParaEntregar(items, moves, nombreSalida) {
+    const vivos = (moves || []).filter((m) => m && m.state !== 'cancel');
+    const yaControlado = (mv) => (items || []).some((it) => qtyEntera(it.qty_controlada) > 0
+        && ((mv.sale_line_id && it.odoo_line_id === mv.sale_line_id)
+            || (mv.product_id && it.odoo_product_id === mv.product_id)));
+    if (vivos.length && vivos.every(yaControlado)) {
+        return `Lo controlado ya salió en una entrega anterior de esta orden. ${nombreSalida || 'Esta entrega'} está de más: hay que cancelarla en Odoo.`;
+    }
+    return `No hay nada controlado para entregar en ${nombreSalida || 'la entrega de Odoo'}. Controlá los productos antes de cerrar.`;
+}
+
 // Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
 // el armado. Al cerrar el control se valida la entrega (outgoing) con lo
 // controlado, sin backorder: lo que falta va al pedido de pendientes. En 1 paso no hace nada.
@@ -935,10 +948,7 @@ async function validarSalidaAlSaldar(envio) {
     const items = itemsSinLoHecho(envio.items, await loHechoEnOdoo(envio), 'qty_controlada');
     const plan = planQtyMovesArmado(moves, items, 'qty_controlada');
     if (!plan.hayAlgo) {
-        throw httpError(
-            `No hay nada controlado para entregar en ${salida.name || 'la entrega de Odoo'}. Controlá los productos antes de cerrar.`,
-            409
-        );
+        throw httpError(mensajeNadaParaEntregar(envio.items, moves, salida.name), 409);
     }
 
     try {
@@ -1944,7 +1954,9 @@ async function igualarYPendientes(envio) {
     const backorder = plan.pendientes.length ? await asegurarBackorder(envio, plan) : null;
     try {
         for (const w of plan.writes) {
-            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key);
+            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key, {
+                sinAbastecer: true,
+            });
         }
     } catch (err) {
         throw errorDesdeOdoo(err, `Odoo no pudo igualar las cantidades de ${envio.odoo_order_name || 'la orden'}`);
@@ -2075,6 +2087,8 @@ module.exports = {
     marcarFaltante,
     preview,
     saldar,
+    igualarYPendientes,
+    mensajeNadaParaEntregar,
     ETIQUETA_PENDIENTES,
     asegurarBackorder,
 };
