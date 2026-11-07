@@ -331,14 +331,28 @@ function itemsSinLoHecho(items, hecho, campo) {
     }));
 }
 
+// «Seguir armando» con el envío 1 ya validado por la app: el estado queda en armando aunque
+// Odoo lo vea armado. Si lo validaron directo en Odoo, acá sigue abierto y Odoo empuja a armado.
+function seguirArmandoEnApp(localEstado, pickingStateLocal, etapa) {
+    return localEstado === 'armando' && pickingStateLocal === 'done' && etapa === 'armado';
+}
+
+// Lo armado después de validar el envío 1 vive sólo en la app: Odoo no lo baja, sólo lo sube.
+function conservarArmadoDeApp(items, qtys) {
+    const actual = new Map((items || []).map((it) => [it.id, qtyEntera(it.qty_armada)]));
+    return (qtys || []).map((q) => ({ id: q.id, qty: Math.max(q.qty, actual.get(q.id) || 0) }));
+}
+
 async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
     if (!envioId || !odoo) return;
     const { arm, ctrl } = fuentesDeQty(estado, odoo.pickings || []);
     if (!arm.length && !ctrl.length) return;
 
     const { rows: items } = await db.query(
-        `SELECT id, odoo_line_id, odoo_product_id, qty_pedida
-           FROM pedido_envio_items WHERE envio_id = $1`,
+        `SELECT i.id, i.odoo_line_id, i.odoo_product_id, i.qty_pedida, i.qty_armada, e.odoo_picking_state
+           FROM pedido_envio_items i
+           JOIN pedido_envios e ON e.id = i.envio_id
+          WHERE i.envio_id = $1`,
         [envioId]
     );
     if (!items.length) return;
@@ -346,7 +360,10 @@ async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
     // Un UPDATE por campo, sólo donde cambió
     for (const [campo, moves] of [['qty_armada', arm], ['qty_controlada', ctrl]]) {
         if (!moves.length) continue;
-        const qtys = qtyDesdeMoves(items, moves);
+        const desdeOdoo = qtyDesdeMoves(items, moves);
+        const qtys = campo === 'qty_armada' && items[0].odoo_picking_state === 'done'
+            ? conservarArmadoDeApp(items, desdeOdoo)
+            : desdeOdoo;
         await db.query(
             `UPDATE pedido_envio_items i
                 SET ${campo} = v.qty
@@ -358,7 +375,15 @@ async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
 }
 
 async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
-    const nuevo = estadoSegunOdoo(localEstado, etapaDesdeOdoo(odoo));
+    const etapa = etapaDesdeOdoo(odoo);
+    if (envioId && localEstado === 'armando' && etapa === 'armado') {
+        const { rows: [local] } = await db.query(
+            'SELECT odoo_picking_state FROM pedido_envios WHERE id = $1',
+            [envioId]
+        );
+        if (seguirArmandoEnApp(localEstado, local?.odoo_picking_state, etapa)) return localEstado;
+    }
+    const nuevo = estadoSegunOdoo(localEstado, etapa);
     if (!envioId || nuevo === localEstado) return nuevo;
     if (nuevo === 'pendiente') {
         // Odoo abrió un envío nuevo (agregaron productos): lo que ya salió queda hecho
@@ -458,14 +483,6 @@ function odooNecesitaConfirmar(state) {
 function odooYaConfirmada(state) {
     const s = String(state || '');
     return s === 'sale' || s === 'done';
-}
-
-// Con el envío 1 validado en Odoo no hay dónde escribir más armado: lo que se cargue
-// no llega a Odoo y el próximo sync lo pisa. Sí se puede seguir si quedó abierto
-// (terminar sin nada armado no lo valida). Sin envío atado, mandan los validados de Odoo.
-function envio1YaValidado(envio) {
-    if (envio?.odoo_picking_state === 'done') return true;
-    return !envio?.odoo_picking_id && num(envio?.odoo_picking_done_count) >= 1;
 }
 
 function armandoRequiereConfirmado(envio) {
@@ -1559,12 +1576,6 @@ async function cambiarEstado(id, estado, userId) {
         || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
         || (actual === 'controlando' && estado === 'armado');
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
-    if (actual === 'armado' && estado === 'armando' && envio1YaValidado(envio)) {
-        throw httpError(
-            'El envío 1 ya está validado en Odoo: no se puede seguir armando. Lo que no se armó pasa a pendientes al cerrar el control.',
-            409
-        );
-    }
 
     let odooPatch = null;
     if (estado === 'armando') {
@@ -2075,7 +2086,8 @@ module.exports = {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
-    envio1YaValidado,
+    seguirArmandoEnApp,
+    conservarArmadoDeApp,
     listar,
     obtener,
     syncDesdeOdoo,

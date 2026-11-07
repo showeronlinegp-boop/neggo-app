@@ -35,7 +35,8 @@ const {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
-    envio1YaValidado,
+    seguirArmandoEnApp,
+    conservarArmadoDeApp,
     condicionesListado,
     ordenListado,
     ETIQUETA_PENDIENTES,
@@ -497,16 +498,24 @@ function testQtyDesdeMoves() {
     assert.strictEqual(porProducto[0].qty, 3);
 }
 
-function testEnvio1YaValidado() {
-    // Terminó el armado y Odoo validó el envío 1: no se puede seguir armando (nota 172)
-    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6753, odoo_picking_state: 'done', odoo_picking_done_count: 1 }), true);
-    // Se validó en Odoo y la app todavía no ató el envío
-    assert.strictEqual(envio1YaValidado({ odoo_picking_id: null, odoo_picking_done_count: 1 }), true);
-    // Terminar sin nada armado deja el envío abierto: se puede seguir
-    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6753, odoo_picking_state: 'assigned', odoo_picking_done_count: 0 }), false);
-    // Se rearma: hay uno validado de antes y el nuevo está abierto
-    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6800, odoo_picking_state: 'assigned', odoo_picking_done_count: 1 }), false);
-    assert.strictEqual(envio1YaValidado({ odoo_picking_id: null, odoo_picking_done_count: 0 }), false);
+function testSeguirArmandoSobreviveAlSync() {
+    // «Seguir armando» con el envío validado por la app: el sync no lo saca (nota 172)
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'armado'), true);
+    // Lo validaron directo en Odoo con la app armando: Odoo empuja a armado
+    assert.strictEqual(seguirArmandoEnApp('armando', 'assigned', 'armado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armando', null, 'armado'), false);
+    // La entrega ya salió en Odoo: manda Odoo
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'saldado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armado', 'done', 'armado'), false);
+
+    // Lo cargado después de validar no baja; lo que Odoo tenga de más, sube
+    assert.deepStrictEqual(
+        conservarArmadoDeApp(
+            [{ id: 1, qty_armada: '10.00' }, { id: 2, qty_armada: '0.00' }, { id: 3, qty_armada: '12.00' }],
+            [{ id: 1, qty: 0 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+        ),
+        [{ id: 1, qty: 10 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+    );
 }
 
 function testAuditarCancelarOrden() {
@@ -891,7 +900,7 @@ testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
-testEnvio1YaValidado();
+testSeguirArmandoSobreviveAlSync();
 testEtiquetaPendientes()
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });
