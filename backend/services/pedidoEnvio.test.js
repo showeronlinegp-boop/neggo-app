@@ -35,6 +35,7 @@ const {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
+    envio1YaValidado,
     condicionesListado,
     ordenListado,
     ETIQUETA_PENDIENTES,
@@ -496,6 +497,18 @@ function testQtyDesdeMoves() {
     assert.strictEqual(porProducto[0].qty, 3);
 }
 
+function testEnvio1YaValidado() {
+    // Terminó el armado y Odoo validó el envío 1: no se puede seguir armando (nota 172)
+    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6753, odoo_picking_state: 'done', odoo_picking_done_count: 1 }), true);
+    // Se validó en Odoo y la app todavía no ató el envío
+    assert.strictEqual(envio1YaValidado({ odoo_picking_id: null, odoo_picking_done_count: 1 }), true);
+    // Terminar sin nada armado deja el envío abierto: se puede seguir
+    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6753, odoo_picking_state: 'assigned', odoo_picking_done_count: 0 }), false);
+    // Se rearma: hay uno validado de antes y el nuevo está abierto
+    assert.strictEqual(envio1YaValidado({ odoo_picking_id: 6800, odoo_picking_state: 'assigned', odoo_picking_done_count: 1 }), false);
+    assert.strictEqual(envio1YaValidado({ odoo_picking_id: null, odoo_picking_done_count: 0 }), false);
+}
+
 function testAuditarCancelarOrden() {
     const envio = (extra = {}) => ({ estado: 'pendiente', odoo_order_name: 'S00001', ...extra });
 
@@ -878,6 +891,7 @@ testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
+testEnvio1YaValidado();
 testEtiquetaPendientes()
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });

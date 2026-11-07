@@ -40,6 +40,12 @@ function topeDe(item, envio) {
     return controlEnvio1 ? Math.min(pedida, Number(item.qty_armada) || 0) : pedida;
 }
 
+// Igual que en el backend: con el envío 1 validado ya no hay dónde escribir más armado
+function envio1YaValidado(envio) {
+    if (envio.odoo_picking_state === 'done') return true;
+    return !envio.odoo_picking_id && (Number(envio.odoo_picking_done_count) || 0) >= 1;
+}
+
 export default function PedidoEnvioDetalle() {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -95,9 +101,25 @@ export default function PedidoEnvioDetalle() {
 
     useEffect(() => () => detenerCamara(), [detenerCamara]);
 
+    // Odoo pudo mover el pedido de etapa mientras la pantalla seguía abierta: si la acción
+    // falló, se relee para no dejar botones que ya no valen
+    const etapaEnPantalla = useRef(null);
+    etapaEnPantalla.current = envio?.estado;
+    const revisarEtapa = useCallback(async () => {
+        const antes = etapaEnPantalla.current;
+        const res = await api.get(`/pedido-envios/${id}`);
+        if (!res.success || !res.data) return;
+        setEnvio(res.data);
+        if (res.data.estado !== antes) {
+            const etapa = ESTADO[res.data.estado]?.label || res.data.estado;
+            setError(`Este pedido cambió de etapa y ahora está en «${etapa}». Lo último que cargaste no se guardó.`);
+        }
+    }, [id]);
+
     const aplicar = (res, okMsg) => {
         if (!res.success) {
             setError(res.error || 'No se pudo guardar');
+            revisarEtapa();
             return false;
         }
         setEnvio(res.data);
@@ -117,13 +139,14 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(false);
         if (!res.success) {
             setError(res.error || `No encontré ${c} en este pedido`);
+            revisarEtapa();
             return;
         }
         setEnvio(res.data);
         setError(null);
         setAviso(`Sumé 1 de «${c}»`);
         setManual('');
-    }, [id, trabajando]);
+    }, [id, trabajando, revisarEtapa]);
 
     useBarcodeScan(escanear, {
         enabled: envio?.estado === 'controlando'
@@ -285,6 +308,11 @@ export default function PedidoEnvioDetalle() {
     const campo = envio.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
     const preview = envio.preview || { queda: [], pendientes: [], iguales: [] };
     const pad = isMobile ? 12 : 20;
+    const envio1Validado = envio1YaValidado(envio);
+    const sinArmar = (envio.items || []).reduce(
+        (total, it) => total + Math.max(0, (Number(it.qty_pedida) || 0) - (Number(it.qty_armada) || 0)),
+        0,
+    );
 
     return (
         <div style={{ padding: pad, paddingBottom: 96, maxWidth: 720, margin: '0 auto', fontFamily: t.font.family }}>
@@ -364,9 +392,11 @@ export default function PedidoEnvioDetalle() {
                             style={{ height: 48, flex: 1, minWidth: 160 }}>
                             Empezar control
                         </Button>
-                        <Button variant="ghost" disabled={trabajando} onClick={() => setEstado('armando')} style={{ height: 48 }}>
-                            Seguir armando
-                        </Button>
+                        {!envio1Validado && (
+                            <Button variant="ghost" disabled={trabajando} onClick={() => setEstado('armando')} style={{ height: 48 }}>
+                                Seguir armando
+                            </Button>
+                        )}
                     </>
                 )}
                 {envio.estado === 'controlando' && (
@@ -442,6 +472,11 @@ export default function PedidoEnvioDetalle() {
             {aviso && (
                 <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.successSoft, color: t.color.success, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
                     {aviso}
+                </div>
+            )}
+            {envio.estado === 'armado' && envio1Validado && sinArmar > 0 && (
+                <div style={{ marginTop: 12, padding: '10px 12px', background: t.color.warnSoft, color: t.color.warn, borderRadius: t.radius.sm, fontSize: t.font.size.sm }}>
+                    El envío 1 ya está validado en Odoo, así que no se puede seguir armando. Lo que no se armó ({sinArmar} {sinArmar === 1 ? 'unidad' : 'unidades'}) pasa a un pedido de pendientes cuando cerrás el control.
                 </div>
             )}
             {envio.estado === 'armando' && !confirmadoEnOdoo && (

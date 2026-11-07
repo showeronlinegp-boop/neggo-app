@@ -460,6 +460,14 @@ function odooYaConfirmada(state) {
     return s === 'sale' || s === 'done';
 }
 
+// Con el envío 1 validado en Odoo no hay dónde escribir más armado: lo que se cargue
+// no llega a Odoo y el próximo sync lo pisa. Sí se puede seguir si quedó abierto
+// (terminar sin nada armado no lo valida). Sin envío atado, mandan los validados de Odoo.
+function envio1YaValidado(envio) {
+    if (envio?.odoo_picking_state === 'done') return true;
+    return !envio?.odoo_picking_id && num(envio?.odoo_picking_done_count) >= 1;
+}
+
 function armandoRequiereConfirmado(envio) {
     if (!envio || envio.estado !== 'armando') return { ok: true };
     if (odooYaConfirmada(envio.odoo_state)) return { ok: true };
@@ -1551,6 +1559,12 @@ async function cambiarEstado(id, estado, userId) {
         || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
         || (actual === 'controlando' && estado === 'armado');
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
+    if (actual === 'armado' && estado === 'armando' && envio1YaValidado(envio)) {
+        throw httpError(
+            'El envío 1 ya está validado en Odoo: no se puede seguir armando. Lo que no se armó pasa a pendientes al cerrar el control.',
+            409
+        );
+    }
 
     let odooPatch = null;
     if (estado === 'armando') {
@@ -2061,6 +2075,7 @@ module.exports = {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
+    envio1YaValidado,
     listar,
     obtener,
     syncDesdeOdoo,
