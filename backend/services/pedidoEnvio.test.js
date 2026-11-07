@@ -39,6 +39,7 @@ const {
     ordenListado,
     ETIQUETA_PENDIENTES,
     asegurarBackorder,
+    syncDesdeOdoo,
 } = require('./pedidoEnvioService');
 
 function testClamp() {
@@ -843,6 +844,40 @@ function testAuditarSinOdoo() {
     assert.strictEqual(r.statusCode, 404);
 }
 
+// Nota 166: una cotización enviada de la web conserva la fecha del carrito original,
+// así que las enviadas se buscan sin tope de fecha. Odoo y la base mockeados.
+async function testSyncEnviadasSinTopeDeFecha() {
+    const odooService = require('./odooService');
+    const pool = require('../config/database');
+    const originales = { ...odooService };
+    const queryOriginal = pool.query;
+    const connectOriginal = pool.connect;
+    const logOriginal = console.log;
+    const busquedas = [];
+
+    pool.query = async () => ({ rows: [] });
+    pool.connect = async () => ({ release() {}, query: async () => ({ rows: [] }) });
+    odooService.getSaleOrdersWithLines = async (company, opciones) => {
+        busquedas.push(opciones);
+        return [];
+    };
+    odooService.getSaleOrderHeaders = async () => [];
+    console.log = () => {};
+
+    try {
+        await syncDesdeOdoo('neggo', 1);
+        const enviadas = busquedas.find((b) => (b.states || []).includes('sent'));
+        const confirmadas = busquedas.find((b) => (b.states || []).includes('sale'));
+        assert.strictEqual(enviadas.days, null);
+        assert.strictEqual(confirmadas.days, 7);
+    } finally {
+        Object.assign(odooService, originales);
+        pool.query = queryOriginal;
+        pool.connect = connectOriginal;
+        console.log = logOriginal;
+    }
+}
+
 testClamp();
 testTabs();
 testListado();
@@ -879,5 +914,6 @@ testAuditarIgnoraDownPayment();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
 testEtiquetaPendientes()
+    .then(testSyncEnviadasSinTopeDeFecha)
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });

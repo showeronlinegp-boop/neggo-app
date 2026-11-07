@@ -1321,9 +1321,11 @@ async function obtener(id, { syncOdoo = false } = {}) {
 async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     const company = companyKeyOf(companyKey);
     const enviadas = [
+        // Sin tope de fecha: una cotización de la web conserva la fecha del carrito original,
+        // aunque el cliente la haya enviado hoy. Las enviadas son pocas.
         ...await odooService.getSaleOrdersWithLines(company, {
             states: ['sent'],
-            days: 30,
+            days: null,
             limit: 80,
         }),
         // Confirmadas directo en Odoo (sin pasar por enviada). Casi todas se cobran en el
