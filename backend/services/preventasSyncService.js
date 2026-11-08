@@ -134,6 +134,8 @@ async function getProductsToSync(pool, filters = {}) {
             opc.active      AS odoo_active,
             opc.categ_name  AS odoo_categoria,
             opc.vendor_name AS odoo_vendor_name,
+            opc.template_id AS odoo_template_id,
+            opc.has_image   AS odoo_has_image,
             ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id

@@ -41,6 +41,55 @@ const ACCION_LABEL = {
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
 
+// ─── Foto del proveedor al lado de la que tiene hoy Odoo Preventas (nota 180) ──
+// Al aplicar, la foto del proveedor solo se sube si el producto se crea o si Odoo no tiene foto.
+const URL_FOTO_ODOO = (templateId, size) => `/api/products/odoo-image/preventas/${templateId}?size=${size}`;
+
+function FotoCaja({ t, titulo, src, grande, vacio, nota }) {
+    const [error, setError] = useState(false);
+    useEffect(() => { setError(false); }, [src]);
+    const mostrar = src && !error;
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], width: 200 }}>
+            <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontWeight: t.font.weight.semibold, textTransform: 'uppercase', letterSpacing: '0.04em', fontFamily: t.font.family }}>{titulo}</span>
+            <a
+                href={mostrar ? (grande || src) : undefined}
+                target="_blank"
+                rel="noreferrer"
+                title={mostrar ? 'Abrir la foto en grande' : undefined}
+                style={{ width: 200, height: 200, borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`, background: t.color.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: mostrar ? 'zoom-in' : 'default' }}
+            >
+                {mostrar
+                    ? <img key={src} src={src} alt="" onError={() => setError(true)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    : <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family, padding: t.space[3], textAlign: 'center' }}>{error ? 'No se pudo cargar la foto' : vacio}</span>}
+            </a>
+            {nota && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>{nota}</span>}
+        </div>
+    );
+}
+
+function FotosComparadas({ t, detail }) {
+    const fotoProveedor = detail.image_url || null;
+    const enOdoo = !!detail.odoo_template_id;
+    // La ruta compara con Odoo antes de servir la copia en disco: siempre es la foto vigente
+    const fotoOdoo = enOdoo && detail.odoo_has_image !== false ? `${URL_FOTO_ODOO(detail.odoo_template_id, 512)}` : null;
+    const fotoOdooGrande = enOdoo ? `${URL_FOTO_ODOO(detail.odoo_template_id, 1920)}` : null;
+
+    let notaProveedor = null;
+    if (fotoProveedor && detail.supplier_product_id) {
+        if (!enOdoo) notaProveedor = 'Se usa al crear el producto en Odoo.';
+        else if (detail.odoo_has_image === false) notaProveedor = 'Odoo no tiene foto: se sube al aplicar.';
+        else notaProveedor = 'Odoo ya tiene foto: al aplicar no se cambia.';
+    }
+
+    return (
+        <div style={{ display: 'flex', gap: t.space[5], flexWrap: 'wrap' }}>
+            <FotoCaja t={t} titulo="Foto del proveedor" src={fotoProveedor} vacio="El proveedor no tiene foto" nota={notaProveedor} />
+            <FotoCaja t={t} titulo="Foto actual en Odoo" src={fotoOdoo} grande={fotoOdooGrande} vacio={enOdoo ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
+        </div>
+    );
+}
+
 // Mismos grupos que el backend (preventasSyncService GRUPO_ESTADOS)
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
@@ -772,8 +821,9 @@ export default function PreventasSyncPage() {
             <Modal isOpen={!!detail} onClose={() => setDetail(null)} title={detail?.scraper_name || detail?.odoo_nombre || 'Detalle'} subtitle={detail?.supplier_name} size="lg">
                 {detail && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[6] }}>
+                        <FotosComparadas t={t} detail={detail} />
+
                         <div style={{ display: 'flex', gap: t.space[5] }}>
-                            <ProductThumb imageUrl={detail.image_url} emoji={(detail.scraper_name || detail.odoo_nombre)?.[0]} size={80} />
                             <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: `${t.space[2]}px ${t.space[5]}px`, flex: 1, alignContent: 'start' }}>
                                 {[
                                     ['Proveedor',      detail.supplier_name || '—'],
