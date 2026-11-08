@@ -25,6 +25,14 @@ const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
 const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
+// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor sí tiene una
+// (no el cartel "sin foto" de su web). Fuera de Preventas o por archivar no cuentan (nota 182).
+// Necesita pss, sp y opc en el FROM.
+const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
+    AND opc.active = true AND opc.has_image = false
+    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
+    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo')`;
+
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
 const VINCULO_CONFIRMADO_EXPR = `EXISTS (
@@ -61,7 +69,7 @@ function agregarBusquedaYVinculo(where, params, { matchType, search } = {}) {
 }
 
 async function getProductsToSync(pool, filters = {}) {
-    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor, supplierProductId } = filters;
+    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor, sinFoto, supplierProductId } = filters;
     const where = [];
     const params = [];
     let idx = 1;
@@ -89,6 +97,7 @@ async function getProductsToSync(pool, filters = {}) {
         where.push(`pss.supplier_product_id IS NOT NULL`);
         where.push(`(opc.vendor_name IS NULL OR opc.vendor_name = '')`);
     }
+    if (sinFoto) where.push(SIN_FOTO_SQL);
     idx = agregarBusquedaYVinculo(where, params, { matchType, search });
 
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -168,7 +177,7 @@ async function getProductsToSync(pool, filters = {}) {
     }
 
     // Qué haría el "Aplicar" en bloque con estos mismos filtros
-    const aplicables = sinVendor ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
+    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
 
     return { rows, total: countRows[0]?.total || 0, aplicables };
 }
@@ -214,7 +223,7 @@ async function getResumen(pool, supplierId = null) {
         ? 'AND pss.supplier_id = $1'
         : '';
 
-    const [statsRes, totalRes, lastRes, matchRes, scraperTotalRes, scraperMatchRes, scraperDisponiblesRes, odooTotalRes, odooActiveRes, sinVendorRes] = await Promise.all([
+    const [statsRes, totalRes, lastRes, matchRes, scraperTotalRes, scraperMatchRes, scraperDisponiblesRes, odooTotalRes, odooActiveRes, sinVendorRes, sinFotoRes] = await Promise.all([
         pool.query(`SELECT estado, COUNT(*)::INTEGER AS count FROM preventas_sync_state ${where} GROUP BY estado`, p),
         pool.query(`SELECT COUNT(*)::INTEGER AS total FROM preventas_sync_state ${where}`, p),
         pool.query(`SELECT MAX(computed_at) AS last_computed FROM preventas_sync_state ${where}`, p),
@@ -233,6 +242,13 @@ async function getResumen(pool, supplierId = null) {
               AND pss.supplier_product_id IS NOT NULL
               AND (opc.vendor_name IS NULL OR opc.vendor_name = '')
               ${sinVendorWhere}
+        `, p),
+        pool.query(`
+            SELECT COUNT(*)::INTEGER AS total
+            FROM preventas_sync_state pss
+            JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+            JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+            WHERE ${SIN_FOTO_SQL} ${sinVendorWhere}
         `, p),
     ]);
 
@@ -254,6 +270,7 @@ async function getResumen(pool, supplierId = null) {
         odoo_matcheados:      scraperConMatch,
     };
     resumen.sin_vendor = sinVendorRes.rows[0]?.total || 0;
+    resumen.sin_foto = sinFotoRes.rows[0]?.total || 0;
     for (const r of statsRes.rows) resumen[r.estado] = r.count;
     for (const r of matchRes.rows)  resumen.match_types[r.match_type] = r.count;
     return resumen;
@@ -845,4 +862,4 @@ async function actualizarFotoOdoo(pool, { supplierProductId }) {
     return { template_id: fila.template_id };
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo };
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL };

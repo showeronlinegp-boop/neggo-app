@@ -333,9 +333,15 @@ export default function PreventasSyncPage() {
     const [assigningVendor, setAssigningVendor] = useState(false);
     const [vendorProgreso, setVendorProgreso] = useState(null);
     const wasAssigningRef = useRef(false);
+    // Subir fotos que faltan en Odoo (nota 182): corre en segundo plano en el backend
+    const [subiendoFotos, setSubiendoFotos] = useState(false);
+    const [fotosProgreso, setFotosProgreso] = useState(null);
+    const [frenandoFotos, setFrenandoFotos] = useState(false);
+    const [confirmarFotos, setConfirmarFotos] = useState(false);
+    const wasFotosRef = useRef(false);
     const wasRunningRef = useRef(false);
     const wasApplyingRef = useRef(false);
-    // vista: 'todos' | key de VISTAS | 'sin_vendor'; sub: 'todos' | estado puntual dentro de la vista
+    // vista: 'todos' | key de VISTAS | 'sin_vendor' | 'sin_foto'; sub: 'todos' | estado puntual dentro de la vista
     const [vista, setVista] = useState('todos');
     const [sub, setSub] = useState('todos');
     const [matchType, setMatchType] = useState('todos');
@@ -360,10 +366,11 @@ export default function PreventasSyncPage() {
     const [incluirCosto, setIncluirCosto] = useState(false);
 
     const sinVendor = vista === 'sin_vendor';
+    const sinFoto = vista === 'sin_foto';
     const vistaDef = VISTAS.find(v => v.key === vista);
 
     // Filtro que corresponde a la vista elegida (grupo o estado del backend)
-    const filtro = sinVendor ? {} : sub !== 'todos' ? { estado: sub } : (vistaDef?.filtro || {});
+    const filtro = sinVendor || sinFoto ? {} : sub !== 'todos' ? { estado: sub } : (vistaDef?.filtro || {});
 
     useEffect(() => {
         api.get('/suppliers').then(r => r.success && setSuppliers(r.data || []));
@@ -376,8 +383,9 @@ export default function PreventasSyncPage() {
                 supplierId: supplierId || undefined,
                 grupo:     filtro.grupo,
                 estado:    filtro.estado,
-                matchType: !sinVendor && matchType !== 'todos' ? matchType : undefined,
+                matchType: !sinVendor && !sinFoto && matchType !== 'todos' ? matchType : undefined,
                 sinVendor: sinVendor || undefined,
+                sinFoto:   sinFoto || undefined,
                 search:    search || undefined,
                 page: p, pageSize: PAGE_SIZE,
             }),
@@ -452,6 +460,35 @@ export default function PreventasSyncPage() {
             timer = setTimeout(checkVendorStatus, wasAssigningRef.current ? 3000 : 10000);
         }
         checkVendorStatus();
+        return () => clearTimeout(timer);
+    }, []);
+
+    // Subir fotos que faltan: seguimos el avance y avisamos al terminar (nota 182)
+    useEffect(() => {
+        let timer;
+        async function checkFotosStatus() {
+            const res = await api.get('/preventas-sync/fotos-faltantes/status');
+            if (res.success) {
+                const { running, progreso, result, error, frenando } = res.data;
+                setSubiendoFotos(running);
+                setFotosProgreso(running ? progreso : null);
+                setFrenandoFotos(!!frenando);
+                if (!running && wasFotosRef.current) {
+                    if (error) showToast(`No se pudieron subir las fotos: ${error}`, 'error');
+                    else if (result) {
+                        const fallidos = result.fallidos.slice(0, 3).map(f => f.sku).join(', ');
+                        const msg = `${result.frenado ? 'Frenado. ' : ''}Fotos subidas a Odoo: ${fmtN(result.subidas)}`
+                            + (result.ya_tenian > 0 ? `, ${fmtN(result.ya_tenian)} ya tenían` : '')
+                            + (result.errores > 0 ? `, ${fmtN(result.errores)} no se pudieron (${fallidos}${result.errores > 3 ? '…' : ''})` : '');
+                        showToast(msg, result.errores > 0 || result.frenado ? 'warning' : 'success');
+                    }
+                    fetchDataRef.current(1);
+                }
+                wasFotosRef.current = running;
+            }
+            timer = setTimeout(checkFotosStatus, wasFotosRef.current ? 3000 : 10000);
+        }
+        checkFotosStatus();
         return () => clearTimeout(timer);
     }, []);
 
@@ -551,6 +588,26 @@ export default function PreventasSyncPage() {
         }
     }
 
+    async function handleSubirFotos() {
+        setConfirmarFotos(false);
+        if (subiendoFotos) return;
+        setSubiendoFotos(true);
+        const res = await api.post('/preventas-sync/fotos-faltantes', supplierId ? { supplierId } : {});
+        if (res.success) {
+            wasFotosRef.current = true;
+            showToast('Subiendo fotos a Odoo en segundo plano — te avisamos cuando termine', 'success');
+        } else {
+            setSubiendoFotos(false);
+            showToast(res.error || 'Error al subir las fotos', 'error');
+        }
+    }
+
+    async function handleFrenarFotos() {
+        setFrenandoFotos(true);
+        const res = await api.post('/preventas-sync/fotos-faltantes/frenar', {});
+        if (!res.success) { setFrenandoFotos(false); showToast(res.error || 'No se pudo frenar', 'error'); }
+    }
+
     async function handleRecompute() {
         setRecomputing(true);
         const res = await api.post('/preventas-sync/recompute', {});
@@ -563,7 +620,7 @@ export default function PreventasSyncPage() {
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
     const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
-    const bloque = sinVendor || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
+    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
 
     // Lo mismo para la selección, con las filas tildadas
@@ -742,6 +799,14 @@ export default function PreventasSyncPage() {
             {assigningVendor && (
                 <TareaEnCurso t={t} texto="Asignando proveedor en Odoo…" hechos={vendorProgreso?.hechos || 0} total={vendorProgreso?.total || 0} detalle={vendorProgreso?.proveedor} />
             )}
+            {subiendoFotos && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2] }}>
+                    <TareaEnCurso t={t} texto={frenandoFotos ? 'Frenando la subida de fotos…' : 'Subiendo fotos a Odoo Preventas…'}
+                        hechos={fotosProgreso?.hechos || 0} total={fotosProgreso?.total || 0}
+                        detalle={fotosProgreso ? `${fmtN(fotosProgreso.subidas)} subidas${fotosProgreso.errores ? ` · ${fmtN(fotosProgreso.errores)} con error` : ''}` : null} />
+                    <div><Button size="sm" variant="ghost" disabled={frenandoFotos} onClick={handleFrenarFotos}>{frenandoFotos ? 'Frenando…' : 'Frenar'}</Button></div>
+                </div>
+            )}
             {bgApplying && <TareaEnCurso t={t} texto="Aplicando cambios en Odoo… te avisamos cuando termine" />}
 
             {resumen.total === 0 && !loading && (
@@ -777,6 +842,17 @@ export default function PreventasSyncPage() {
                                     </span>
                                 } />
                         )}
+                        {(resumen.sin_foto > 0 || subiendoFotos) && (
+                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: el proveedor tiene foto y Odoo no" tone="warn" icon={Icon.Image}
+                                count={resumen.sin_foto} activa={sinFoto} onClick={() => elegirVista('sin_foto')}
+                                extra={
+                                    <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} style={{ marginTop: t.space[1] }}>
+                                        <Button size="sm" variant="secondary" disabled={subiendoFotos} onClick={() => setConfirmarFotos(true)}>
+                                            {subiendoFotos ? 'Subiendo…' : 'Subir fotos que faltan'}
+                                        </Button>
+                                    </span>
+                                } />
+                        )}
                     </div>
                     <button type="button" onClick={() => setVerNumeros(v => !v)} style={{
                         width: '100%', background: 'transparent', border: 'none', borderTop: `1px solid ${t.color.border}`, cursor: 'pointer',
@@ -795,7 +871,7 @@ export default function PreventasSyncPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap', fontFamily: t.font.family }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
                         <span style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text }}>
-                            {sinVendor ? 'Sin proveedor en Odoo' : vistaDef ? vistaDef.titulo : 'Todos los productos'}
+                            {sinVendor ? 'Sin proveedor en Odoo' : sinFoto ? 'Sin foto en Odoo' : vistaDef ? vistaDef.titulo : 'Todos los productos'}
                         </span>
                         <span style={{ fontSize: t.font.size.sm, color: t.color.textMuted, ...t.numericStyle }}>{fmtN(total)}</span>
                         {vista !== 'todos' && (
@@ -859,7 +935,7 @@ export default function PreventasSyncPage() {
                         style={{ flex: 1, minWidth: 220 }}
                     />
                     <Select value={supplierId} onChange={v => { setSupplierId(v); setPage(1); }} options={supplierOptions} style={{ width: 220 }} />
-                    {!sinVendor && <Select value={matchType} onChange={v => { setMatchType(v); setPage(1); }} options={matchOptions} style={{ width: 220 }} />}
+                    {!sinVendor && !sinFoto && <Select value={matchType} onChange={v => { setMatchType(v); setPage(1); }} options={matchOptions} style={{ width: 220 }} />}
                 </div>
 
                 <DataTable columns={cols} data={productos} loading={loading} onRowClick={setDetail} pagination={{ page, pageSize: PAGE_SIZE, total }} onPageChange={p => setPage(p)} />
@@ -880,6 +956,27 @@ export default function PreventasSyncPage() {
                 onClose={() => setConfirmar(null)}
                 onConfirm={aplicarConfirmado}
             />
+
+            {/* Confirmar "Subir fotos que faltan" (nota 182) */}
+            <Modal
+                isOpen={confirmarFotos}
+                onClose={() => setConfirmarFotos(false)}
+                title="Subir fotos que faltan"
+                subtitle={supplierId ? (suppliers.find(s => String(s.id) === String(supplierId))?.name || 'Proveedor elegido') : 'Todos los proveedores'}
+                size="sm"
+                footer={
+                    <>
+                        <Button variant="ghost" onClick={() => setConfirmarFotos(false)}>Cancelar</Button>
+                        <Button variant="primary" onClick={handleSubirFotos}>Subir {fmtN(resumen.sin_foto || 0)} fotos</Button>
+                    </>
+                }
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[3], fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
+                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor.</span>
+                    <span style={{ color: t.color.textMuted }}>Nunca reemplaza una foto que ya está: antes de subir, se fija en Odoo. Va de a una foto, así que con muchos productos tarda (unos 2.500 llevan cerca de una hora). Lo podés frenar cuando quieras.</span>
+                    {!supplierId && <span style={{ color: t.color.textMuted }}>Para probar primero, elegí un proveedor arriba.</span>}
+                </div>
+            </Modal>
 
             {/* Confirmar "Foto a Odoo" desde la fila (nota 181) */}
             <Modal
