@@ -10,6 +10,7 @@
 //   name_key     (86)  — fuente Neggo: internal_ref = PRE+prefix+NEG+nombre sin acentos
 //   fuzzy_name   (var) — similitud trigrama ≥ 0.75 (requiere pg_trgm)
 //   bracket_code (87)  — código entre {} o () del nombre scraper vs nombre Odoo
+//   vinculo_neggo(89)  — oferta web vinculada a un producto de Neggo cuya oferta "neggo" ya está en Preventas
 
 const LOCK_KEY = 987654321; // pg advisory lock
 const PRICE_TOL = 0.0001;
@@ -160,6 +161,26 @@ WITH candidates AS (
               || REGEXP_REPLACE(TRANSLATE(UPPER(sp.name), 'ÁÀÄÂÉÈËÊÍÌÏÎÓÒÖÔÚÙÜÛÑ', 'AAAAEEEEIIIIOOOOUUUUN'), '[^A-Z0-9]', '', 'g')
         AND opc.company = 'preventas'
     WHERE sp.source = 'neggo'
+
+    UNION ALL
+
+    -- 9. Por vínculo con Neggo (89, nota 175): oferta web/lista → vínculo confirmado con un
+    --    producto de Neggo → oferta "neggo" del mismo proveedor → su producto de Preventas.
+    --    Cuando un proveedor pasa de Neggo a su lista, lo que ya estaba en Preventas (PRE..NEG..)
+    --    se reconoce en vez de crearse de nuevo.
+    SELECT sp.id, opc.odoo_id, 'vinculo_neggo', 89
+    FROM supplier_products sp
+    JOIN product_mappings pm
+        ON  pm.supplier_product_id = sp.id
+        AND pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
+    JOIN supplier_products sn
+        ON  sn.supplier_id = sp.supplier_id AND sn.source = 'neggo'
+        AND sn.neggo_odoo_id = pm.odoo_product_id
+    JOIN odoo_products_cache opc
+        ON  opc.company = 'preventas'
+        AND (opc.external_id = sn.sku
+             OR UPPER(REGEXP_REPLACE(COALESCE(opc.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) = UPPER(sn.sku))
+    WHERE sp.source = 'web'
 
 ),
 
@@ -315,7 +336,8 @@ ON CONFLICT DO NOTHING
 // ─── Step 3: solo en Odoo ──────────────────────────────────────────────────────
 // Cada producto de Preventas se atribuye a un proveedor por su código: PRE + prefijo + resto.
 // Solo se propone inactivar ('solo_odoo') si ese proveedor tiene el scraping habilitado,
-// una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días.
+// una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días
+// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien).
 // En cualquier otro caso queda 'sin_fuente' y nunca se aplica nada en Odoo.
 
 const SOLO_ODOO_SQL = `
@@ -329,7 +351,9 @@ SELECT
              AND sx.scrape_enabled = true
              AND sx.scraper_key IS NOT NULL
              AND lr.status = 'completed'
-             AND lr.finished_at >= NOW() - make_interval(days => $1::INTEGER)
+             -- Una lista Excel vale hasta la próxima: no vence a los $1 días (nota 175)
+             AND (lr.finished_at >= NOW() - make_interval(days => $1::INTEGER)
+                  OR sx.scraper_key = 'lista_excel')
         THEN 'solo_odoo'
         ELSE 'sin_fuente'
     END,

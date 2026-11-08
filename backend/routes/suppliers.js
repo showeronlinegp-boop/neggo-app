@@ -10,6 +10,15 @@ const NeggoScraper = require('../scrapers/neggoScraper');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 const { scheduleRecompute } = require('../services/preventasMatchService');
 const { normalizarCondiciones, guardarCondiciones } = require('../services/supplierCondiciones');
+const multer = require('multer');
+const { enqueueRun } = require('../services/scrapingService');
+const {
+    esLista,
+    previsualizar: previsualizarLista,
+    guardarPendiente: guardarListaPendiente,
+    leerPendiente: leerListaPendiente,
+    confirmarPendiente: confirmarListaPendiente,
+} = require('../services/listaService');
 
 // Columnas que devuelve la API de proveedores
 const SUPPLIER_COLS = `
@@ -49,11 +58,11 @@ function validarScraperKey(key) {
 
 // Agrega los campos calculados que usa el frontend:
 // - scraper_available: la fuente tiene un scraper registrado (se puede ejecutar)
-// - is_stale: scrapea pero hace más de 7 días que no corre
+// - is_stale: scrapea pero hace más de 7 días que no corre (una lista Excel vale hasta la próxima)
 function withComputed(row) {
     const scraperAvailable = !!row.scraper_key && getAvailableKeys().includes(row.scraper_key);
     const last = row.last_scraped_at ? new Date(row.last_scraped_at).getTime() : null;
-    const isStale = row.active && row.scrape_enabled && scraperAvailable
+    const isStale = row.active && row.scrape_enabled && scraperAvailable && !esLista(row)
         && (last === null || Date.now() - last > 7 * 24 * 60 * 60 * 1000);
     return { ...row, scraper_available: scraperAvailable, is_stale: isStale };
 }
@@ -537,6 +546,93 @@ router.post('/:id/preventas/fuente', authenticate, requireRole('admin'), async (
     } catch (error) {
         console.error('❌ Error al cambiar la fuente de Preventas:', error.message);
         return fail(res, 'Error al cambiar la fuente de Preventas', 500);
+    }
+});
+
+// =============================================
+// Lista Excel (nota 175): el proveedor no tiene web y manda cada tanto una lista.
+// 1. POST /:id/lista/previsualizar (multipart, campo "archivo") → la guarda como pendiente y
+//    devuelve qué pasaría: nuevos, cambios de precio, cuáles no vinieron. No toca productos.
+// 2. POST /:id/lista/confirmar { nombre } → la pendiente pasa a ser la lista vigente y se encola
+//    un run del scraper de listas (queda en Scraping como cualquier scrapeo).
+// =============================================
+const uploadLista = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 40 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const ok = /\.xlsx$/i.test(file.originalname || '');
+        cb(ok ? null : Object.assign(new Error('Subí la lista en Excel (.xlsx)'), { statusCode: 400 }), ok);
+    },
+});
+
+async function proveedorConLista(id) {
+    const { rows } = await pool.query(`SELECT ${SUPPLIER_COLS} FROM suppliers WHERE id = $1`, [id]);
+    if (rows.length === 0) return { error: 'Proveedor no encontrado', status: 404 };
+    if (!esLista(rows[0])) {
+        return { error: 'La fuente de este proveedor no es "Lista Excel": cambiala en la ficha antes de subir una lista', status: 400 };
+    }
+    return { supplier: rows[0] };
+}
+
+router.post('/:id/lista/previsualizar', authenticate, requireRole('admin'), (req, res, next) => {
+    uploadLista.single('archivo')(req, res, err => {
+        if (err) return fail(res, err.code === 'LIMIT_FILE_SIZE' ? 'El archivo pesa más de 40 MB' : err.message, err.statusCode || 400);
+        next();
+    });
+}, async (req, res) => {
+    try {
+        const { supplier, error, status } = await proveedorConLista(req.params.id);
+        if (error) return fail(res, error, status);
+        if (!req.file) return fail(res, 'Falta el archivo de la lista');
+
+        let resumen;
+        try {
+            resumen = await previsualizarLista(pool, supplier, req.file.buffer);
+        } catch (err) {
+            return fail(res, err.message, 400);
+        }
+        await guardarListaPendiente(supplier.id, req.file.buffer);
+        console.log(`📦 Lista de "${supplier.name}" para confirmar: ${resumen.filas} productos, ${resumen.nuevos} nuevos, ${resumen.se_archivan} no vinieron`);
+        return ok(res, { ...resumen, nombre: req.file.originalname });
+    } catch (error) {
+        console.error('❌ Error al previsualizar la lista:', error.message);
+        return fail(res, 'Error al leer la lista', 500);
+    }
+});
+
+router.post('/:id/lista/confirmar', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { supplier, error, status } = await proveedorConLista(req.params.id);
+        if (error) return fail(res, error, status);
+        if (!(await leerListaPendiente(supplier.id))) {
+            return fail(res, 'No hay una lista para confirmar: subila de nuevo', 400);
+        }
+        const { rows: activos } = await pool.query(
+            `SELECT id FROM scraping_runs WHERE supplier_id = $1 AND status IN ('queued', 'running') LIMIT 1`,
+            [supplier.id]
+        );
+        if (activos.length > 0) return fail(res, `Ya se está cargando una lista de "${supplier.name}" (run ${activos[0].id})`, 409);
+
+        const archivo = await confirmarListaPendiente(supplier.id);
+        const info = {
+            archivo,
+            nombre: String(req.body?.nombre || '').slice(0, 200) || null,
+            subida_at: new Date().toISOString(),
+            subida_por: req.user?.id || null,
+        };
+        await pool.query(
+            `UPDATE suppliers SET
+                scrape_config = jsonb_set(COALESCE(scrape_config, '{}'::jsonb), '{lista}', $2::jsonb),
+                scrape_enabled = true, updated_at = NOW()
+             WHERE id = $1`,
+            [supplier.id, JSON.stringify(info)]
+        );
+        const run = await enqueueRun(pool, supplier.id, req.user?.id || null);
+        console.log(`✅ Lista de "${supplier.name}" confirmada (${archivo}): run ${run.runId}`);
+        return ok(res, { ...run, lista: info });
+    } catch (error) {
+        console.error('❌ Error al confirmar la lista:', error.message);
+        return fail(res, error.message || 'Error al confirmar la lista', error.statusCode || 500);
     }
 });
 

@@ -784,7 +784,9 @@ function resumirOfertas(filas, { costo = null, ahora = new Date() } = {}) {
             precio: f.precio_comparable == null ? null : Number(f.precio_comparable),
             pack: f.pack_cantidad || 1,
             disponible: !!f.available,
-            precio_viejo: !f.last_scraped_at || new Date(f.last_scraped_at).getTime() < limite,
+            // Una lista Excel vale hasta que llegue la próxima: nunca es "precio viejo" (nota 175)
+            precio_viejo: !f.es_lista && (!f.last_scraped_at || new Date(f.last_scraped_at).getTime() < limite),
+            es_lista: !!f.es_lista,
             scrapeado_at: f.last_scraped_at || null,
             es_principal: !!f.es_principal,
             es_habitual: !!f.es_habitual,
@@ -831,10 +833,12 @@ async function ofertasPorProducto(productos, db = pool) {
     const { rows } = await db.query(
         `SELECT pm.odoo_product_id, v.supplier_product_id, v.supplier_id, v.proveedor, v.proveedor_odoo, v.name, v.sku, v.precio_comparable,
                 v.pack_cantidad, v.available, v.last_scraped_at, sp.product_url, pm.es_habitual,
-                (opc.vendor_name = v.proveedor_odoo) AS es_principal
+                (opc.vendor_name = v.proveedor_odoo) AS es_principal,
+                (sx.scraper_key = 'lista_excel') AS es_lista
          FROM product_mappings pm
          JOIN v_ofertas_comparables v ON v.supplier_product_id = pm.supplier_product_id
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+         LEFT JOIN suppliers sx ON sx.id = sp.supplier_id
          JOIN odoo_products_cache opc ON opc.odoo_id = pm.odoo_product_id AND opc.company = 'neggo'
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado' AND v.source <> 'neggo'
            AND pm.odoo_product_id = ANY($1::int[])`,

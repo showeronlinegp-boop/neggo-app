@@ -463,10 +463,13 @@ async function cobertura() {
              SELECT t.odoo_id,
                     COUNT(DISTINCT sp.supplier_id) FILTER (WHERE sp.available AND sp.raw_price > 0) AS con_precio,
                     COUNT(DISTINCT sp.supplier_id) FILTER (WHERE sp.available AND sp.raw_price > 0
-                                                           AND sp.last_scraped_at > NOW() - INTERVAL '7 days') AS frescos
+                                                           AND (sp.last_scraped_at > NOW() - INTERVAL '7 days'
+                                                                -- una lista Excel vale hasta la próxima (nota 175)
+                                                                OR sx.scraper_key = 'lista_excel')) AS frescos
              FROM top t
              LEFT JOIN product_mappings pm ON pm.odoo_product_id = t.odoo_id AND pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
              LEFT JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source = 'web'
+             LEFT JOIN suppliers sx ON sx.id = sp.supplier_id
              GROUP BY t.odoo_id
          )
          SELECT COUNT(*)::int AS top,

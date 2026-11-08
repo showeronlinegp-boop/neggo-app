@@ -21,17 +21,20 @@ function resumirFrescura(filas, ahora = new Date()) {
         const ultimo = f.last_scraped_at ? new Date(f.last_scraped_at) : null;
         const dias = ultimo ? Math.floor((ahora.getTime() - ultimo.getTime()) / DIA_MS) : null;
         const enCurso = RUN_EN_CURSO.includes(f.ultimo_run);
+        // Lista Excel (nota 175): vale hasta la próxima y no hay nada que volver a leer
+        const esLista = f.scraper_key === 'lista_excel';
         return {
             supplier_id: f.supplier_id,
             proveedor: f.proveedor,
             ultimo_scraping: ultimo ? ultimo.toISOString() : null,
             dias,
             // Mismo corte que resumirOfertas: "precio viejo" en las ofertas de cada producto
-            viejo: !ultimo || ultimo.getTime() < ahora.getTime() - DIAS_PRECIO_VIEJO * DIA_MS,
+            viejo: !esLista && (!ultimo || ultimo.getTime() < ahora.getTime() - DIAS_PRECIO_VIEJO * DIA_MS),
+            es_lista: esLista,
             productos: Number(f.productos) || 0,
             en_curso: enCurso,
             pausado: f.ultimo_run === 'paused',
-            se_puede_scrapear: !!f.scrape_enabled,
+            se_puede_scrapear: !!f.scrape_enabled && !esLista,
         };
     }).sort((a, b) => (b.viejo - a.viejo) || (b.productos - a.productos) || a.proveedor.localeCompare(b.proveedor, 'es'));
 
@@ -50,7 +53,7 @@ function resumirFrescura(filas, ahora = new Date()) {
  */
 async function frescuraCola(db = pool) {
     const { rows } = await db.query(
-        `SELECT s.id AS supplier_id, s.name AS proveedor, s.last_scraped_at, s.scrape_enabled,
+        `SELECT s.id AS supplier_id, s.name AS proveedor, s.last_scraped_at, s.scrape_enabled, s.scraper_key,
                 COUNT(DISTINCT ri.odoo_id) AS productos,
                 (SELECT r.status FROM scraping_runs r WHERE r.supplier_id = s.id
                  ORDER BY r.id DESC LIMIT 1) AS ultimo_run
@@ -60,7 +63,7 @@ async function frescuraCola(db = pool) {
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id AND sp.source <> 'neggo'
          JOIN suppliers s ON s.id = sp.supplier_id AND s.active
          WHERE ri.company = 'neggo' AND ri.estado IN ('pendiente', 'encargado')
-         GROUP BY s.id, s.name, s.last_scraped_at, s.scrape_enabled`
+         GROUP BY s.id, s.name, s.last_scraped_at, s.scrape_enabled, s.scraper_key`
     );
     return resumirFrescura(rows);
 }
