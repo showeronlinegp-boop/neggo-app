@@ -395,6 +395,19 @@ export default function PreventasSyncPage() {
         else showToast(res.error || 'Error al aplicar', 'error');
     }
 
+    // "No es este" (nota 179): el vínculo está mal. No toca Odoo: la oferta pasa a "Crear en Odoo"
+    // y se abre su detalle para crearla como artículo nuevo (o dejarla para después).
+    async function handleNoEsEste(row) {
+        setApplying(true);
+        const res = await api.post('/preventas-sync/rechazar-vinculo', { supplierProductId: row.supplier_product_id });
+        setApplying(false);
+        if (!res.success) { showToast(res.error || 'No se pudo guardar', 'error'); return; }
+        showToast('Listo: ese vínculo no se vuelve a proponer. Quedó en "Crear en Odoo"', 'success');
+        setSelected(prev => { const n = new Map(prev); n.delete(rowKey(row)); return n; });
+        setDetail(res.data || null);
+        fetchData(page);
+    }
+
     // El bloque aplica la vista tal cual se ve filtrada (vista, proveedor, búsqueda y tipo de vínculo)
     async function handleApplyBloque(aceptarCambioCosto) {
         setApplying(true);
@@ -538,6 +551,20 @@ export default function PreventasSyncPage() {
                 let accion = null;
                 if (label && row.bloqueo_motivo) {
                     accion = <span title={row.bloqueo_motivo} style={{ fontSize: t.font.size.xs, color: t.color.danger, fontFamily: t.font.family }}>Sin precio: no se sincroniza</span>;
+                } else if (label && row.revision_motivo && row.revision_tipo === 'vinculo' && row.supplier_product_id && row.odoo_product_id) {
+                    // Vínculo dudoso: se elige acá mismo si es el mismo producto o si va como artículo nuevo
+                    accion = (
+                        <div style={{ display: 'flex', gap: t.space[2] }}>
+                            <Button size="sm" variant="secondary" disabled={applying} title={`Es el mismo producto: ${label.toLowerCase()}`}
+                                onClick={e => { e.stopPropagation(); handleApply([rowKey(row)], true); }}>
+                                Es este
+                            </Button>
+                            <Button size="sm" variant="ghost" disabled={applying} title="No es el mismo producto: no se vuelve a proponer y pasa a Crear en Odoo"
+                                onClick={e => { e.stopPropagation(); handleNoEsEste(row); }}>
+                                No es este
+                            </Button>
+                        </div>
+                    );
                 } else if (label && row.revision_motivo) {
                     // Se confirma acá mismo, sin abrir el detalle: el motivo queda a la vista abajo
                     accion = (
@@ -688,7 +715,7 @@ export default function PreventasSyncPage() {
                 )}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, confirmalos de a uno con "Confirmar" en la fila.
+                        {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, elegí en cada fila "Es este" o "No es este" (va como artículo nuevo).
                     </div>
                 )}
 
@@ -806,10 +833,17 @@ export default function PreventasSyncPage() {
                             </div>
                         )}
 
+                        {detail.supplier_product_id && detail.odoo_product_id && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                                <span>¿No es el mismo producto? Se deja de vincular, no se vuelve a proponer y pasa a "Crear en Odoo" como artículo nuevo.</span>
+                                <Button variant="secondary" disabled={applying} onClick={() => handleNoEsEste(detail)}>No es este</Button>
+                            </div>
+                        )}
+
                         {ACCION_LABEL[detail.estado] && !detail.bloqueo_motivo && (
                             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                 <Button variant="primary" disabled={applying} onClick={() => { handleApply([rowKey(detail)], !!detail.revision_motivo); setDetail(null); }}>
-                                    {applying ? 'Aplicando…' : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}
+                                    {applying ? 'Aplicando…' : detail.revision_tipo === 'vinculo' ? `Es este: ${ACCION_LABEL[detail.estado].toLowerCase()}` : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}
                                 </Button>
                             </div>
                         )}

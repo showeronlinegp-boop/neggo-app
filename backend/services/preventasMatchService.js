@@ -67,6 +67,14 @@ const FUENTE_PREVENTAS = `
     sp.source = CASE WHEN s.scraper_key = 'neggo_scraper' OR s.preventas_fuente = 'neggo'
                      THEN 'neggo' ELSE 'web' END`;
 
+// Un par oferta ↔ producto de Preventas rechazado ("No es este", nota 179) no se vuelve a
+// proponer por ningún método: la oferta busca otro candidato o queda para crear.
+const sinRechazo = (spCol, odooCol) => `NOT EXISTS (
+          SELECT 1 FROM product_mappings pmr
+          WHERE pmr.supplier_product_id = ${spCol} AND pmr.odoo_product_id = ${odooCol}
+            AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
+      )`;
+
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
 const MATCH_SQL = `
@@ -170,6 +178,7 @@ best_by_sp AS (
     JOIN supplier_products sp ON sp.id = c.sp_id
     JOIN suppliers s ON s.id = sp.supplier_id
     WHERE ${FUENTE_PREVENTAS}
+      AND ${sinRechazo('c.sp_id', 'c.odoo_id')}
     ORDER BY c.sp_id, c.score DESC, c.match_type
 ),
 
@@ -236,11 +245,7 @@ LEFT JOIN LATERAL (
           SELECT 1 FROM preventas_sync_state pss2 WHERE pss2.odoo_product_id = opc2.odoo_id
       )
       -- Un vínculo rechazado en la tabla maestra no se vuelve a proponer (nota 143)
-      AND NOT EXISTS (
-          SELECT 1 FROM product_mappings pmr
-          WHERE pmr.supplier_product_id = sp.id AND pmr.odoo_product_id = opc2.odoo_id
-            AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
-      )
+      AND ${sinRechazo('sp.id', 'opc2.odoo_id')}
       AND similarity(LOWER(sp.name), LOWER(opc2.name)) >= 0.75
     ORDER BY sim DESC
     LIMIT 1
@@ -300,6 +305,7 @@ JOIN odoo_products_cache opc
     AND opc.vendor_name IS NOT NULL
     AND UPPER(REGEXP_REPLACE(opc.vendor_name, '[^A-Z0-9]', '', 'g'))
         LIKE '%' || UPPER(REGEXP_REPLACE(s.name, '[^A-Z0-9]', '', 'g')) || '%'
+    AND ${sinRechazo('sp.id', 'opc.odoo_id')}
     AND NOT EXISTS (
         SELECT 1 FROM preventas_sync_state pss2 WHERE pss2.odoo_product_id = opc.odoo_id
     )

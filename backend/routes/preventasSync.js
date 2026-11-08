@@ -3,7 +3,7 @@ const router  = express.Router();
 const pool    = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail }                  = require('../utils/response');
-const { getProductsToSync, applyChanges, getResumen } = require('../services/preventasSyncService');
+const { getProductsToSync, applyChanges, getResumen, rechazarVinculo } = require('../services/preventasSyncService');
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
 
@@ -89,6 +89,24 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
     } catch (err) {
         console.error('❌ apply preventas-sync:', err.message);
         return fail(res, err.message, 500);
+    }
+});
+
+// POST /api/preventas-sync/rechazar-vinculo — "No es este" (nota 179)
+// Body: { supplierProductId } — la oferta no es el producto de Odoo con el que se vinculó.
+// Queda rechazado (no se vuelve a proponer) y la oferta pasa a "Crear en Odoo". No toca Odoo.
+// Devuelve la fila como quedó, para mostrarla con su acción nueva.
+router.post('/rechazar-vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplierProductId, 10);
+    if (!supplierProductId) return fail(res, 'supplierProductId es requerido', 400);
+    try {
+        await rechazarVinculo(pool, { supplierProductId, userId: req.user.id });
+        const { rows } = await getProductsToSync(pool, { supplierProductId, limit: 1, offset: 0 });
+        return ok(res, rows[0] || null);
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ rechazar-vinculo preventas-sync:', err.message);
+        return fail(res, 'No se pudo guardar el "No es este"', 500);
     }
 });
 

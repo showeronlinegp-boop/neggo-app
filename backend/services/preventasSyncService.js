@@ -2,7 +2,7 @@
 // El recomputo está en preventasMatchService.js
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
-const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
+const { COSTO_EXPR, PRECIO_EXPR, isRecomputing } = require('./preventasMatchService');
 const { motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
 // =============================================
@@ -61,10 +61,16 @@ function agregarBusquedaYVinculo(where, params, { matchType, search } = {}) {
 }
 
 async function getProductsToSync(pool, filters = {}) {
-    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
+    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor, supplierProductId } = filters;
     const where = [];
     const params = [];
     let idx = 1;
+
+    // Una sola oferta (para devolver la fila cómo quedó después de una decisión)
+    if (supplierProductId) {
+        where.push(`pss.supplier_product_id = $${idx++}`);
+        params.push(parseInt(supplierProductId, 10));
+    }
 
     // estado tiene prioridad sobre grupo (más específico)
     if (estado && estado !== 'todos') {
@@ -249,6 +255,78 @@ async function getResumen(pool, supplierId = null) {
     for (const r of statsRes.rows) resumen[r.estado] = r.count;
     for (const r of matchRes.rows)  resumen.match_types[r.match_type] = r.count;
     return resumen;
+}
+
+// =============================================
+// rechazarVinculo — "No es este" (nota 179): la oferta del proveedor NO es ese producto de Odoo.
+// Queda rechazado en la tabla maestra (product_mappings de Preventas) para que el recálculo no lo
+// vuelva a proponer, y la fila se separa al momento, sin esperar un recálculo:
+//   · la oferta pasa a "Crear en Odoo" (o "Al día" si el proveedor no va a Preventas / no hay stock)
+//   · el producto de Odoo queda sin proveedor ('sin_fuente', nunca se aplica nada) hasta el próximo
+//     recálculo, que decide si otra oferta lo reclama o si va a archivar
+// No escribe en Odoo. Devuelve { supplier_product_id } o lanza un error con status.
+// =============================================
+async function rechazarVinculo(pool, { supplierProductId, userId }) {
+    if (isRecomputing()) {
+        throw Object.assign(new Error('Hay un recálculo en curso: probá de nuevo cuando termine'), { status: 409 });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows: [fila] } = await client.query(`
+            SELECT pss.id, pss.supplier_product_id, pss.odoo_product_id, pss.supplier_id,
+                   pss.match_type, pss.match_score,
+                   (s.va_a_preventas IS TRUE AND sp.available IS TRUE) AS puede_crear,
+                   opc.internal_ref
+            FROM preventas_sync_state pss
+            JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+            LEFT JOIN suppliers s ON s.id = sp.supplier_id
+            LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+            WHERE pss.supplier_product_id = $1
+            FOR UPDATE OF pss
+        `, [supplierProductId]);
+        if (!fila) throw Object.assign(new Error('Ese producto ya no está en la lista: recalculá'), { status: 404 });
+        if (!fila.odoo_product_id) throw Object.assign(new Error('Ese producto no está vinculado con ninguno de Odoo'), { status: 400 });
+
+        const puntaje = fila.match_score != null ? Number(fila.match_score) / 100 : null;
+
+        // Rechazado en la tabla maestra: ningún método lo vuelve a proponer (sinRechazo en el matching)
+        await client.query(`
+            INSERT INTO product_mappings
+                (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
+                 match_type, match_confidence, active, estado, metodo, es_habitual)
+            VALUES ($1, $2, 'preventas', $3, COALESCE($4, 'sync_preventas'), $5, false, 'rechazado', $4, false)
+            ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company) DO UPDATE
+                SET estado = 'rechazado', active = false, es_habitual = false
+        `, [fila.supplier_product_id, fila.odoo_product_id, fila.internal_ref, fila.match_type, puntaje]);
+        await client.query(`
+            INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+            VALUES ($1, $2, 'preventas', 'rechazado', $3, $4, $5)
+        `, [fila.supplier_product_id, fila.odoo_product_id, fila.match_type, puntaje, userId || null]);
+
+        // La oferta queda sola: para crear (el costo y el precio ya estaban calculados)
+        await client.query(`
+            UPDATE preventas_sync_state
+            SET odoo_product_id = NULL, match_type = NULL, match_score = NULL,
+                estado = $2, computed_at = NOW()
+            WHERE id = $1
+        `, [fila.id, fila.puede_crear ? 'solo_scraper' : 'sin_cambios']);
+        // El producto de Odoo queda sin oferta, sin acción hasta el próximo recálculo
+        await client.query(`
+            INSERT INTO preventas_sync_state (odoo_product_id, supplier_id, estado, computed_at)
+            VALUES ($1, $2, 'sin_fuente', NOW())
+            ON CONFLICT DO NOTHING
+        `, [fila.odoo_product_id, fila.supplier_id]);
+
+        await client.query('COMMIT');
+        console.log(`✅ Preventas Sync: "No es este" oferta ${fila.supplier_product_id} ≠ Odoo ${fila.odoo_product_id} (usuario ${userId})`);
+        return { supplier_product_id: fila.supplier_product_id, estado: fila.puede_crear ? 'solo_scraper' : 'sin_cambios' };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 // =============================================
@@ -697,4 +775,4 @@ async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     }
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen };
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo };
