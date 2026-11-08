@@ -45,6 +45,8 @@ export default function SupplierRules() {
     const [form, setForm] = useState(EMPTY_FORM);
     const [previewCost, setPreviewCost] = useState('');
     const [unmapped, setUnmapped] = useState([]);
+    // Categorías sin regla tildadas para crearles la regla de una sola vez
+    const [seleccion, setSeleccion] = useState([]);
     const [scrapingCategories, setScrapingCategories] = useState([]);
     const [odooCategsNeggo, setOdooCategsNeggo] = useState([]);
     const [odooCategsPreventas, setOdooCategsPreventas] = useState([]);
@@ -94,7 +96,20 @@ export default function SupplierRules() {
 
     async function fetchUnmapped() {
         const res = await api.get(`/suppliers/${id}/unmapped-categories`);
-        if (res.success) setUnmapped(res.data || []);
+        if (res.success) {
+            const lista = res.data || [];
+            setUnmapped(lista);
+            // Si alguna tildada ya tiene regla, se destilda sola
+            setSeleccion(prev => prev.filter(c => lista.some(u => u.source_category === c)));
+        }
+    }
+
+    function toggleSeleccion(cat) {
+        setSeleccion(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+    }
+    const todasTildadas = unmapped.length > 0 && seleccion.length === unmapped.length;
+    function toggleTodas() {
+        setSeleccion(todasTildadas ? [] : unmapped.map(u => u.source_category));
     }
 
     async function fetchRules() {
@@ -108,6 +123,7 @@ export default function SupplierRules() {
     function resetForm(partial = {}) { setForm({ ...EMPTY_FORM, ...partial }); setPreviewCost(''); }
     function openNew() { resetForm(); setModal('new'); }
     function openNewFromUnmapped(cat) { resetForm({ sourceCategory: cat }); setModal('new'); }
+    function openBulk() { resetForm(); setModal('bulk'); }
     function openEdit(rule) {
         resetForm({
             sourceCategory:          rule.source_category || '',
@@ -129,7 +145,9 @@ export default function SupplierRules() {
     }
 
     async function handleSave() {
-        if (!form.sourceCategory.trim()) return showToast('La categoría origen es obligatoria', 'warning');
+        const esLote = modal === 'bulk';
+        if (esLote && seleccion.length === 0) return showToast('No hay categorías tildadas', 'warning');
+        if (!esLote && !form.sourceCategory.trim()) return showToast('La categoría origen es obligatoria', 'warning');
         setSaving(true);
         const body = {
             source_category:           form.sourceCategory.trim(),
@@ -141,12 +159,33 @@ export default function SupplierRules() {
             markup_neggo_override:     form.markupNeggoOverride !== '' ? parseFloat(form.markupNeggoOverride) : null,
             markup_preventas_override: form.markupPreventasOverride !== '' ? parseFloat(form.markupPreventasOverride) : null,
         };
+        if (esLote) return guardarLote(body);
         const res = modal === 'new'
             ? await api.post(`/suppliers/${id}/rules`, body)
             : await api.put(`/suppliers/${id}/rules/${modal.id}`, body);
         setSaving(false);
         if (res.success) { showToast(modal === 'new' ? 'Regla creada' : 'Regla actualizada', 'success'); setModal(null); fetchRules(); fetchUnmapped(); }
         else showToast(res.error || 'Error al guardar', 'error');
+    }
+
+    // Crea una regla por cada categoría tildada, con los mismos destinos y overrides
+    async function guardarLote(body) {
+        const fallidas = [];
+        let creadas = 0;
+        for (const cat of seleccion) {
+            const res = await api.post(`/suppliers/${id}/rules`, { ...body, source_category: cat });
+            if (res.success) creadas++;
+            else fallidas.push(`${cat}: ${res.error || 'error'}`);
+        }
+        setSaving(false);
+        if (fallidas.length === 0) {
+            showToast(`${creadas} regla${creadas !== 1 ? 's' : ''} creada${creadas !== 1 ? 's' : ''}`, 'success');
+            setModal(null);
+        } else {
+            showToast(`Se crearon ${creadas}; fallaron ${fallidas.length} — ${fallidas.join(' · ')}`, 'error');
+            if (creadas > 0) setModal(null);
+        }
+        fetchRules(); fetchUnmapped();
     }
 
     async function handleSaveConfig() {
@@ -259,26 +298,42 @@ export default function SupplierRules() {
             {/* Categorías sin mapear */}
             {unmapped.length > 0 && (
                 <div style={{ background: t.color.warnSoft, border: `1px solid ${t.color.warn}44`, borderRadius: t.radius.md, padding: `14px ${t.space[6]}px` }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], marginBottom: t.space[4] }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], marginBottom: t.space[4], flexWrap: 'wrap' }}>
                         <Icon.Bell size={16} color={t.color.warn} />
                         <span style={{ fontWeight: t.font.weight.semibold, color: t.color.warn, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
                             {unmapped.length} categoría{unmapped.length > 1 ? 's' : ''} sin regla — los productos no aparecen en catálogos
                         </span>
+                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: t.space[3] }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: t.space[1], fontSize: t.font.size.sm, color: t.color.textMuted, cursor: 'pointer', fontFamily: t.font.family }}>
+                                <input type="checkbox" checked={todasTildadas} onChange={toggleTodas} style={{ accentColor: t.color.accent, cursor: 'pointer' }} />
+                                Tildar todas
+                            </label>
+                            <Button size="sm" variant="accent" disabled={seleccion.length === 0} onClick={openBulk}>
+                                {seleccion.length > 0 ? `Crear regla para ${seleccion.length}` : 'Tildá para crear varias'}
+                            </Button>
+                        </div>
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: t.space[2] }}>
-                        {unmapped.map(u => (
+                        {unmapped.map(u => {
+                            const tildada = seleccion.includes(u.source_category);
+                            return (
                             <div key={u.source_category} style={{
                                 display: 'flex', alignItems: 'center', gap: t.space[2],
-                                background: t.color.surface, border: `1px solid ${t.color.warn}66`,
+                                background: tildada ? t.color.accentSoft : t.color.surface,
+                                border: `1px solid ${tildada ? t.color.accent : t.color.warn + '66'}`,
                                 borderRadius: t.radius.sm, padding: `${t.space[1]}px ${t.space[3]}px`,
                             }}>
-                                <span style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>{u.source_category}</span>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: t.space[2], cursor: 'pointer' }}>
+                                    <input type="checkbox" checked={tildada} onChange={() => toggleSeleccion(u.source_category)} style={{ accentColor: t.color.accent, cursor: 'pointer' }} />
+                                    <span style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>{u.source_category}</span>
+                                </label>
                                 <Badge tone="warn">{u.product_count} prod.</Badge>
                                 <Button size="sm" variant="accent" onClick={() => openNewFromUnmapped(u.source_category)}>
                                     + Regla
                                 </Button>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             )}
@@ -339,7 +394,7 @@ export default function SupplierRules() {
             <Modal
                 isOpen={!!modal}
                 onClose={() => setModal(null)}
-                title={modal === 'new' ? 'Nueva regla' : 'Editar regla'}
+                title={modal === 'bulk' ? `Nueva regla para ${seleccion.length} categorías` : modal === 'new' ? 'Nueva regla' : 'Editar regla'}
                 size="lg"
                 footer={
                     <>
@@ -361,6 +416,17 @@ export default function SupplierRules() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: t.space[6] }}>
 
+                    {modal === 'bulk' ? (
+                    <div style={{ gridColumn: '1 / -1' }}>
+                        <label style={labelStyle}>Categorías origen ({seleccion.length})</label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: t.space[2], maxHeight: 140, overflowY: 'auto' }}>
+                            {seleccion.map(c => <Badge key={c} tone="muted">{c}</Badge>)}
+                        </div>
+                        <div style={{ marginTop: t.space[2], fontSize: t.font.size.xs, color: t.color.textFaint, fontFamily: t.font.family }}>
+                            Se crea una regla por cada una, con las categorías de Odoo y los porcentajes que elijas abajo.
+                        </div>
+                    </div>
+                    ) : (
                     <div style={{ gridColumn: '1 / -1' }}>
                         <label style={labelStyle}>
                             Categoría origen *
@@ -377,6 +443,7 @@ export default function SupplierRules() {
                             placeholder="Seleccioná o escribí una categoría"
                         />
                     </div>
+                    )}
 
                     <div>
                         <label style={labelStyle}>
