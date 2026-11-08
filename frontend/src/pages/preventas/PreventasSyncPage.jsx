@@ -471,15 +471,16 @@ export default function PreventasSyncPage() {
     }
 
     // "No es este" (nota 179): el vínculo está mal. No toca Odoo: la oferta pasa a "Crear en Odoo"
-    // y se abre su detalle para crearla como artículo nuevo (o dejarla para después).
-    async function handleNoEsEste(row) {
+    // y queda para crearla como artículo nuevo (o dejarla para después).
+    // Desde la fila no se abre nada (nota 180); desde el detalle, el detalle pasa a mostrar la oferta sola.
+    async function handleNoEsEste(row, { desdeDetalle = false } = {}) {
         setApplying(true);
         const res = await api.post('/preventas-sync/rechazar-vinculo', { supplierProductId: row.supplier_product_id });
         setApplying(false);
         if (!res.success) { showToast(res.error || 'No se pudo guardar', 'error'); return; }
         showToast('Listo: ese vínculo no se vuelve a proponer. Quedó en "Crear en Odoo"', 'success');
         setSelected(prev => { const n = new Map(prev); n.delete(rowKey(row)); return n; });
-        setDetail(res.data || null);
+        if (desdeDetalle) setDetail(res.data || null);
         fetchData(page);
     }
 
@@ -912,7 +913,7 @@ export default function PreventasSyncPage() {
                         {detail.supplier_product_id && detail.odoo_product_id && (
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
                                 <span>¿No es el mismo producto? Se deja de vincular, no se vuelve a proponer y pasa a "Crear en Odoo" como artículo nuevo.</span>
-                                <Button variant="secondary" disabled={applying} onClick={() => handleNoEsEste(detail)}>No es este</Button>
+                                <Button variant="secondary" disabled={applying} onClick={() => handleNoEsEste(detail, { desdeDetalle: true })}>No es este</Button>
                             </div>
                         )}
 
