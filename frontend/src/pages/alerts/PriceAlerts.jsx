@@ -127,7 +127,7 @@ export default function PriceAlerts() {
                 onClose={() => setConfirmApprove(null)}
                 onConfirm={handleApprove}
                 title="Aprobar cambio de precio"
-                message={`¿Aprobás el cambio de precio de "${confirmApprove?.supplier_product_name}"? Esto actualiza los precios en Odoo.`}
+                message={`¿Aprobás el cambio de precio de "${confirmApprove?.product_name}"? Esto actualiza los precios en Odoo.`}
                 confirmLabel={actionLoading ? 'Aprobando…' : 'Aprobar y actualizar Odoo'}
             />
 
@@ -136,7 +136,7 @@ export default function PriceAlerts() {
                 isOpen={!!dismissModal}
                 onClose={() => setDismissModal(null)}
                 title="Descartar alerta"
-                subtitle={dismissModal?.supplier_product_name}
+                subtitle={dismissModal?.product_name}
                 size="sm"
                 footer={
                     <>
@@ -199,7 +199,7 @@ function AlertCard({ alert, tab, tokens: t, onApprove, onDismiss }) {
             }}>
                 <ProductThumb
                     imageUrl={alert.image_url}
-                    emoji={alert.supplier_product_name?.[0]}
+                    emoji={alert.product_name?.[0]}
                     size={42}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -208,17 +208,17 @@ function AlertCard({ alert, tab, tokens: t, onApprove, onDismiss }) {
                         lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         color: t.color.text, fontFamily: t.font.family,
                     }}>
-                        {alert.supplier_product_name || '—'}
+                        {alert.product_name || '—'}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                             {alert.supplier_name}
                         </span>
-                        {alert.internal_sku && (
+                        {alert.supplier_sku && (
                             <>
                                 <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>·</span>
                                 <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint, fontFamily: t.font.mono }}>
-                                    {alert.internal_sku}
+                                    {alert.supplier_sku}
                                 </span>
                             </>
                         )}
