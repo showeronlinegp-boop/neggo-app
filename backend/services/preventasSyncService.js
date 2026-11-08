@@ -722,18 +722,23 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
         WHERE id = $2
     `, [variantId, prod.id]);
 
-    // Insertar en cache local
+    // Insertar en cache local (con el template, para la foto y "Actualizar foto en Odoo").
+    // $6 se castea a text en los dos usos: sin el cast Postgres lo deduce varchar en la
+    // columna y text en REGEXP_REPLACE, y falla todo el INSERT (nota 182)
     await pool.query(`
         INSERT INTO odoo_products_cache
-            (odoo_id, company, name, internal_ref, list_price, standard_price, active, external_id, ext_id_clean, synced_at)
-        VALUES ($1, 'preventas', $2, $3, $4, $5, true, $6, UPPER(REGEXP_REPLACE($6, '[^A-Z0-9]', '', 'g')), NOW())
+            (odoo_id, company, name, internal_ref, list_price, standard_price, active,
+             external_id, ext_id_clean, template_id, has_image, synced_at)
+        VALUES ($1, 'preventas', $2, $3, $4, $5, true,
+                $6::text, UPPER(REGEXP_REPLACE($6::text, '[^A-Z0-9]', '', 'g')), $7, false, NOW())
         ON CONFLICT (odoo_id, company) DO UPDATE SET
             name = EXCLUDED.name, internal_ref = EXCLUDED.internal_ref,
             list_price = EXCLUDED.list_price, standard_price = EXCLUDED.standard_price,
             external_id = EXCLUDED.external_id, ext_id_clean = EXCLUDED.ext_id_clean,
+            template_id = EXCLUDED.template_id,
             active = true, synced_at = NOW()
     `, [variantId, prod.scraper_name, internalRef,
-        Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku]);
+        Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku, templateId]);
 
     if (prod.image_url) await syncImage(templateId, prod.image_url, ctx, pool, variantId);
     console.log(`✅ Creado en Odoo Preventas: ${prod.scraper_sku} (variant: ${variantId})`);
@@ -786,9 +791,18 @@ async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
 const { olvidarFotoOdoo } = require('./odooImageService');
 const { detectMime } = require('./whatsappMessage');
 
+// Template de una variante de Preventas leído de Odoo (solo lectura). null si ya no existe.
+async function templateDeVariante(variantId) {
+    const { preventas: preventasId } = await getCompanyIds();
+    const rows = await callOdoo('product.product', 'read', [[variantId], ['product_tmpl_id']],
+        { context: { allowed_company_ids: [preventasId], active_test: false } });
+    const tmpl = rows?.[0]?.product_tmpl_id;
+    return Array.isArray(tmpl) ? tmpl[0] : (tmpl || null);
+}
+
 async function actualizarFotoOdoo(pool, { supplierProductId }) {
     const { rows: [fila] } = await pool.query(`
-        SELECT sp.image_url, opc.template_id
+        SELECT sp.image_url, opc.template_id, pss.odoo_product_id
         FROM preventas_sync_state pss
         JOIN supplier_products sp ON sp.id = pss.supplier_product_id
         LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
@@ -796,7 +810,10 @@ async function actualizarFotoOdoo(pool, { supplierProductId }) {
         LIMIT 1
     `, [supplierProductId]);
     if (!fila) throw Object.assign(new Error('Ese producto ya no está en la lista: recalculá'), { status: 404 });
-    if (!fila.template_id) throw Object.assign(new Error('Ese producto todavía no está en Odoo'), { status: 400 });
+    if (!fila.odoo_product_id) throw Object.assign(new Error('Ese producto todavía no está en Odoo'), { status: 400 });
+    // Recién creado y todavía no está en el cache de Odoo: el template se lee de Odoo (nota 182)
+    if (!fila.template_id) fila.template_id = await templateDeVariante(fila.odoo_product_id);
+    if (!fila.template_id) throw Object.assign(new Error('El producto ya no está en Odoo: sincronizá Odoo'), { status: 400 });
     if (!fila.image_url) throw Object.assign(new Error('El proveedor no tiene foto de este producto'), { status: 400 });
     // Placeholder de Tiendanube: pasa como foto pero no es la del producto
     if (/no-photo/i.test(fila.image_url)) {
