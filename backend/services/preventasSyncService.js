@@ -782,8 +782,10 @@ async function getImageBase64(imageUrl) {
 
 async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     try {
-        const base64 = await getImageBase64(imageUrl);
+        let base64 = await getImageBase64(imageUrl);
         if (!base64) return;
+        // AVIF → JPG (Odoo no lo toma); lo que no es foto no se sube (nota 183)
+        base64 = await fotoCompatibleBase64(base64);
         // Escribir en product.template con el template ID correcto
         await callOdoo('product.template', 'write', [[templateId], { image_1920: base64 }], { context: ctx });
         // Marcar has_image = true en cache para no re-subir en futuros applies
@@ -806,7 +808,7 @@ async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
 // Devuelve { template_id } o lanza un error con status.
 // =============================================
 const { olvidarFotoOdoo } = require('./odooImageService');
-const { detectMime } = require('./whatsappMessage');
+const { fotoCompatibleBase64 } = require('./fotoFormato');
 
 // Template de una variante de Preventas leído de Odoo (solo lectura). null si ya no existe.
 async function templateDeVariante(variantId) {
@@ -844,9 +846,8 @@ async function actualizarFotoOdoo(pool, { supplierProductId }) {
         console.warn(`⚠️ No se pudo leer la foto ${fila.image_url}:`, err.message);
     }
     if (!base64) throw Object.assign(new Error('No se pudo descargar la foto del proveedor'), { status: 502 });
-    if (!detectMime(Buffer.from(base64, 'base64'))) {
-        throw Object.assign(new Error('Lo que devolvió el proveedor no es una foto'), { status: 502 });
-    }
+    // AVIF (Alif, Nurcell) → JPG; si no es una foto, el error dice qué llegó (nota 183)
+    base64 = await fotoCompatibleBase64(base64);
 
     const { preventas: preventasId } = await getCompanyIds();
     if (!preventasId) throw Object.assign(new Error('No se encontró la empresa Preventas en Odoo'), { status: 503 });

@@ -8,7 +8,7 @@ const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { getImageBase64, SIN_FOTO_SQL } = require('./preventasSyncService');
 const { olvidarFotoOdoo } = require('./odooImageService');
-const { detectMime } = require('./whatsappMessage');
+const { fotoCompatibleBase64 } = require('./fotoFormato');
 
 const LOTE_LECTURA = 50;
 const PAUSA_MS = 300;
@@ -100,7 +100,8 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
                 let base64 = null;
                 try { base64 = await leerFoto(p.image_url); } catch (err) { /* se informa abajo */ }
                 if (!base64) { fallo(p, 'No se pudo descargar la foto del proveedor'); continue; }
-                if (!detectMime(Buffer.from(base64, 'base64'))) { fallo(p, 'Lo que devolvió el proveedor no es una foto'); continue; }
+                // AVIF → JPG; si no es una foto, el error dice qué llegó (nota 183)
+                try { base64 = await fotoCompatibleBase64(base64); } catch (err) { fallo(p, err.message); continue; }
 
                 await odoo('product.template', 'write', [[p.template_id], { image_1920: base64 }], { context: ctx });
                 await marcarConFoto(db, [p.template_id]);
