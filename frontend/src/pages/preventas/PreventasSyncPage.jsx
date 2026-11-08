@@ -8,7 +8,6 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
-import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
 
 // ─── Estados del sync: cómo se nombran y con qué tono se muestran ──────────────
@@ -64,6 +63,33 @@ function FotoCaja({ t, titulo, src, grande, vacio, nota }) {
                     : <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family, padding: t.space[3], textAlign: 'center' }}>{error ? 'No se pudo cargar la foto' : vacio}</span>}
             </a>
             {nota && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>{nota}</span>}
+        </div>
+    );
+}
+
+// Versión chica para cada fila de la tabla: proveedor | Odoo
+function FotoMini({ t, src, etiqueta, vacio }) {
+    const [error, setError] = useState(false);
+    useEffect(() => { setError(false); }, [src]);
+    const mostrar = src && !error;
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <div title={mostrar ? undefined : vacio} style={{ width: 44, height: 44, borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`, background: t.color.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                {mostrar
+                    ? <img key={src} src={src} alt="" loading="lazy" onError={() => setError(true)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    : <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint, fontFamily: t.font.family }}>—</span>}
+            </div>
+            <span style={{ fontSize: 10, color: t.color.textFaint, fontFamily: t.font.family, lineHeight: 1 }}>{etiqueta}</span>
+        </div>
+    );
+}
+
+function FotosFila({ t, row }) {
+    const fotoOdoo = row.odoo_template_id && row.odoo_has_image !== false ? URL_FOTO_ODOO(row.odoo_template_id, 128) : null;
+    return (
+        <div style={{ display: 'flex', gap: t.space[2], flexShrink: 0 }}>
+            <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
+            <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
         </div>
     );
 }
@@ -559,8 +585,8 @@ export default function PreventasSyncPage() {
                 const sku = row.scraper_sku || row.odoo_ref;
                 const otroNombreOdoo = row.scraper_name && row.odoo_nombre && row.odoo_nombre !== row.scraper_name;
                 return (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], minWidth: 220, maxWidth: 380 }}>
-                        <ProductThumb imageUrl={row.image_url} emoji={nombre?.[0]} size={36} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], minWidth: 320, maxWidth: 480 }}>
+                        <FotosFila t={t} row={row} />
                         <div style={{ minWidth: 0 }}>
                             <div title={nombre} style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombre || '—'}</div>
                             {otroNombreOdoo && <div title={row.odoo_nombre} style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>En Odoo: {row.odoo_nombre}</div>}
