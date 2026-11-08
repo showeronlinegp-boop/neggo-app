@@ -124,7 +124,9 @@ export default function CargarLista({ supplier, tokens: t, onCargada }) {
                     {filaResumen('Sin foto', resumen.sin_foto)}
                     {resumen.salteadas?.length > 0 && (
                         <div style={hint}>
-                            Filas salteadas: {resumen.salteadas.slice(0, 4).map(s => `${s.fila} (${s.motivo})`).join(' · ')}
+                            {resumen.salteadas.length === 1
+                                ? `Se salteó 1 fila del Excel: la ${resumen.salteadas[0].fila} (${resumen.salteadas[0].motivo})`
+                                : `Se saltearon ${resumen.salteadas.length} filas del Excel: ${resumen.salteadas.slice(0, 4).map(s => `la ${s.fila} (${s.motivo})`).join(' · ')}`}
                             {resumen.salteadas.length > 4 && ` y ${resumen.salteadas.length - 4} más`}
                         </div>
                     )}

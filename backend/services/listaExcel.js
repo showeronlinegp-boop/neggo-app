@@ -241,7 +241,7 @@ function leerLista(buffer, { conFotos = true } = {}) {
         const p = precio(r[c.precio]);
         if (!nombreCrudo && !p) continue; // fila vacía
         if (!nombreCrudo || typeof r[c.nombre] === 'number') {
-            salteadas.push({ fila: filaHoja + 1, motivo: 'sin nombre (¿fila de totales?)' });
+            salteadas.push({ fila: filaHoja + 1, motivo: 'sin nombre, parece la de totales' });
             continue;
         }
         if (!p) {
