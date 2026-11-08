@@ -3,7 +3,7 @@ const router  = express.Router();
 const pool    = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail }                  = require('../utils/response');
-const { getProductsToSync, applyChanges, getResumen, rechazarVinculo } = require('../services/preventasSyncService');
+const { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo } = require('../services/preventasSyncService');
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
 
@@ -107,6 +107,23 @@ router.post('/rechazar-vinculo', authenticate, requireRole('admin'), async (req,
         if (err.status) return fail(res, err.message, err.status);
         console.error('❌ rechazar-vinculo preventas-sync:', err.message);
         return fail(res, 'No se pudo guardar el "No es este"', 500);
+    }
+});
+
+// POST /api/preventas-sync/actualizar-foto — "Actualizar foto en Odoo" (nota 181)
+// Body: { supplierProductId } — sube la foto del proveedor al producto vinculado de Odoo Preventas,
+// aunque ya tenga una. Escribe en Odoo. Devuelve la fila como quedó.
+router.post('/actualizar-foto', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplierProductId, 10);
+    if (!supplierProductId) return fail(res, 'supplierProductId es requerido', 400);
+    try {
+        await actualizarFotoOdoo(pool, { supplierProductId });
+        const { rows } = await getProductsToSync(pool, { supplierProductId, limit: 1, offset: 0 });
+        return ok(res, rows[0] || null);
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ actualizar-foto preventas-sync:', err.message);
+        return fail(res, 'No se pudo actualizar la foto en Odoo', 500);
     }
 });
 

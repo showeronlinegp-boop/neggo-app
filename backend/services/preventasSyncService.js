@@ -777,4 +777,55 @@ async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     }
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo };
+// =============================================
+// actualizarFotoOdoo — "Actualizar foto en Odoo" (nota 181)
+// Pisa la foto del producto de Odoo Preventas con la del proveedor, aunque Odoo ya tenga una
+// (al aplicar, la foto solo se sube si Odoo no tiene). Escribe en Odoo: image_1920 del template.
+// Devuelve { template_id } o lanza un error con status.
+// =============================================
+const { olvidarFotoOdoo } = require('./odooImageService');
+const { detectMime } = require('./whatsappMessage');
+
+async function actualizarFotoOdoo(pool, { supplierProductId }) {
+    const { rows: [fila] } = await pool.query(`
+        SELECT sp.image_url, opc.template_id
+        FROM preventas_sync_state pss
+        JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+        LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+        WHERE pss.supplier_product_id = $1
+        LIMIT 1
+    `, [supplierProductId]);
+    if (!fila) throw Object.assign(new Error('Ese producto ya no está en la lista: recalculá'), { status: 404 });
+    if (!fila.template_id) throw Object.assign(new Error('Ese producto todavía no está en Odoo'), { status: 400 });
+    if (!fila.image_url) throw Object.assign(new Error('El proveedor no tiene foto de este producto'), { status: 400 });
+    // Placeholder de Tiendanube: pasa como foto pero no es la del producto
+    if (/no-photo/i.test(fila.image_url)) {
+        throw Object.assign(new Error('La foto del proveedor es el cartel "sin foto" de su web'), { status: 400 });
+    }
+
+    let base64 = null;
+    try {
+        base64 = await getImageBase64(fila.image_url);
+    } catch (err) {
+        console.warn(`⚠️ No se pudo leer la foto ${fila.image_url}:`, err.message);
+    }
+    if (!base64) throw Object.assign(new Error('No se pudo descargar la foto del proveedor'), { status: 502 });
+    if (!detectMime(Buffer.from(base64, 'base64'))) {
+        throw Object.assign(new Error('Lo que devolvió el proveedor no es una foto'), { status: 502 });
+    }
+
+    const { preventas: preventasId } = await getCompanyIds();
+    if (!preventasId) throw Object.assign(new Error('No se encontró la empresa Preventas en Odoo'), { status: 503 });
+    await callOdoo('product.template', 'write', [[fila.template_id], { image_1920: base64 }],
+        { context: { allowed_company_ids: [preventasId] } });
+    await pool.query(
+        `UPDATE odoo_products_cache SET has_image = true WHERE template_id = $1 AND company = 'preventas'`,
+        [fila.template_id]
+    );
+    // La copia en disco quedó vieja: el próximo pedido la compara con Odoo y la refresca
+    olvidarFotoOdoo('preventas', 'template', fila.template_id);
+    console.log(`🖼️ Foto actualizada en Odoo Preventas: template ${fila.template_id} (oferta ${supplierProductId})`);
+    return { template_id: fila.template_id };
+}
+
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo };

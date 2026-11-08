@@ -448,3 +448,7 @@ module.exports = {
     shouldUseLocal,
     TAMANIOS,
 };
+
+// Una foto se cambió en Odoo desde otro servicio (ej. Sync Preventas, nota 181):
+// el próximo pedido la vuelve a comparar con Odoo en vez de servir la copia vieja del disco
+module.exports.olvidarFotoOdoo = (company, kind, id) => olvidarVerificacion(depsWith(), company, kind, id);

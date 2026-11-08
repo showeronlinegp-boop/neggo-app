@@ -42,7 +42,15 @@ const ACCION_LABEL = {
 
 // ─── Foto del proveedor al lado de la que tiene hoy Odoo Preventas (nota 180) ──
 // Al aplicar, la foto del proveedor solo se sube si el producto se crea o si Odoo no tiene foto.
-const URL_FOTO_ODOO = (templateId, size) => `/api/products/odoo-image/preventas/${templateId}?size=${size}`;
+// "Actualizar foto en Odoo" (nota 181) la pisa a mano. Tras subirla, la URL lleva ?v= para que el
+// navegador no muestre la foto vieja que tiene guardada.
+const versionFotoOdoo = new Map(); // template_id → momento en que se actualizó desde acá
+const URL_FOTO_ODOO = (templateId, size) => {
+    const v = versionFotoOdoo.get(templateId);
+    return `/api/products/odoo-image/preventas/${templateId}?size=${size}${v ? `&v=${v}` : ''}`;
+};
+// Se puede pisar la foto de Odoo con la del proveedor: la oferta está vinculada y tiene foto
+const puedeActualizarFoto = (row) => !!(row.supplier_product_id && row.odoo_template_id && row.image_url);
 
 function FotoCaja({ t, titulo, src, grande, vacio, nota }) {
     const [error, setError] = useState(false);
@@ -84,17 +92,29 @@ function FotoMini({ t, src, etiqueta, vacio }) {
     );
 }
 
-function FotosFila({ t, row }) {
+function FotosFila({ t, row, onActualizar }) {
     const fotoOdoo = row.odoo_template_id && row.odoo_has_image !== false ? URL_FOTO_ODOO(row.odoo_template_id, 128) : null;
     return (
-        <div style={{ display: 'flex', gap: t.space[2], flexShrink: 0 }}>
-            <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
-            <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[1], flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: t.space[2] }}>
+                <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
+                <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
+            </div>
+            {onActualizar && puedeActualizarFoto(row) && (
+                <button
+                    type="button"
+                    title="Reemplazar la foto de Odoo por la del proveedor"
+                    onClick={e => { e.stopPropagation(); onActualizar(row); }}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', padding: '2px 4px', cursor: 'pointer', color: t.color.primary, fontSize: 11, fontFamily: t.font.family, fontWeight: t.font.weight.medium, whiteSpace: 'nowrap' }}
+                >
+                    <Icon.Refresh size={12} /> Foto a Odoo
+                </button>
+            )}
         </div>
     );
 }
 
-function FotosComparadas({ t, detail }) {
+function FotosComparadas({ t, detail, notaAlAplicar = true }) {
     const fotoProveedor = detail.image_url || null;
     const enOdoo = !!detail.odoo_template_id;
     // La ruta compara con Odoo antes de servir la copia en disco: siempre es la foto vigente
@@ -102,10 +122,10 @@ function FotosComparadas({ t, detail }) {
     const fotoOdooGrande = enOdoo ? `${URL_FOTO_ODOO(detail.odoo_template_id, 1920)}` : null;
 
     let notaProveedor = null;
-    if (fotoProveedor && detail.supplier_product_id) {
+    if (notaAlAplicar && fotoProveedor && detail.supplier_product_id) {
         if (!enOdoo) notaProveedor = 'Se usa al crear el producto en Odoo.';
         else if (detail.odoo_has_image === false) notaProveedor = 'Odoo no tiene foto: se sube al aplicar.';
-        else notaProveedor = 'Odoo ya tiene foto: al aplicar no se cambia.';
+        else notaProveedor = 'Odoo ya tiene foto: al aplicar no se cambia. Para cambiarla, usá "Actualizar foto en Odoo".';
     }
 
     return (
@@ -327,6 +347,9 @@ export default function PreventasSyncPage() {
     // Selección: key → fila (para saber qué revisión pide cada seleccionado)
     const [selected, setSelected] = useState(new Map());
     const [detail, setDetail] = useState(null);
+    // Fila cuya foto se va a pisar en Odoo (confirmación desde la tabla, nota 181)
+    const [fotoPisar, setFotoPisar] = useState(null);
+    const [subiendoFoto, setSubiendoFoto] = useState(false);
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
     const [verNumeros, setVerNumeros] = useState(false);
@@ -484,6 +507,20 @@ export default function PreventasSyncPage() {
         fetchData(page);
     }
 
+    // "Actualizar foto en Odoo" (nota 181): pisa la foto de Odoo Preventas con la del proveedor,
+    // aunque ya tenga una. Escribe en Odoo; el resto del producto no se toca.
+    async function handleActualizarFoto(row, { desdeDetalle = false } = {}) {
+        setSubiendoFoto(true);
+        const res = await api.post('/preventas-sync/actualizar-foto', { supplierProductId: row.supplier_product_id });
+        setSubiendoFoto(false);
+        if (!res.success) { showToast(res.error || 'No se pudo actualizar la foto', 'error'); return; }
+        versionFotoOdoo.set(row.odoo_template_id, Date.now());
+        showToast('Listo: la foto del proveedor ya está en Odoo', 'success');
+        setFotoPisar(null);
+        if (desdeDetalle) setDetail(res.data || { ...row, odoo_has_image: true });
+        fetchData(page);
+    }
+
     // El bloque aplica la vista tal cual se ve filtrada (vista, proveedor, búsqueda y tipo de vínculo)
     async function handleApplyBloque(aceptarCambioCosto) {
         setApplying(true);
@@ -587,7 +624,7 @@ export default function PreventasSyncPage() {
                 const otroNombreOdoo = row.scraper_name && row.odoo_nombre && row.odoo_nombre !== row.scraper_name;
                 return (
                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], minWidth: 320, maxWidth: 480 }}>
-                        <FotosFila t={t} row={row} />
+                        <FotosFila t={t} row={row} onActualizar={setFotoPisar} />
                         <div style={{ minWidth: 0 }}>
                             <div title={nombre} style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombre || '—'}</div>
                             {otroNombreOdoo && <div title={row.odoo_nombre} style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>En Odoo: {row.odoo_nombre}</div>}
@@ -844,11 +881,47 @@ export default function PreventasSyncPage() {
                 onConfirm={aplicarConfirmado}
             />
 
+            {/* Confirmar "Foto a Odoo" desde la fila (nota 181) */}
+            <Modal
+                isOpen={!!fotoPisar}
+                onClose={() => { if (!subiendoFoto) setFotoPisar(null); }}
+                title="Actualizar foto en Odoo"
+                subtitle={fotoPisar?.odoo_nombre || fotoPisar?.scraper_name}
+                size="md"
+                footer={
+                    <>
+                        <Button variant="ghost" disabled={subiendoFoto} onClick={() => setFotoPisar(null)}>Cancelar</Button>
+                        <Button variant="primary" disabled={subiendoFoto} onClick={() => handleActualizarFoto(fotoPisar)}>
+                            {subiendoFoto ? 'Subiendo…' : 'Usar la foto del proveedor'}
+                        </Button>
+                    </>
+                }
+            >
+                {fotoPisar && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4], fontFamily: t.font.family }}>
+                        <FotosComparadas t={t} detail={fotoPisar} notaAlAplicar={false} />
+                        <span style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>
+                            {fotoPisar.odoo_has_image === false
+                                ? 'El producto no tiene foto en Odoo: se sube la del proveedor.'
+                                : 'La foto que tiene hoy Odoo Preventas se reemplaza por la del proveedor. El resto del producto no cambia.'}
+                        </span>
+                    </div>
+                )}
+            </Modal>
+
             {/* Detalle */}
             <Modal isOpen={!!detail} onClose={() => setDetail(null)} title={detail?.scraper_name || detail?.odoo_nombre || 'Detalle'} subtitle={detail?.supplier_name} size="lg">
                 {detail && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[6] }}>
                         <FotosComparadas t={t} detail={detail} />
+                        {puedeActualizarFoto(detail) && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                                <span>{detail.odoo_has_image === false ? 'Odoo no tiene foto: podés subir la del proveedor ya.' : '¿La del proveedor está mejor? Reemplaza la foto que tiene Odoo.'}</span>
+                                <Button variant="secondary" size="sm" leftIcon={<Icon.Refresh size={13} />} disabled={subiendoFoto} onClick={() => handleActualizarFoto(detail, { desdeDetalle: true })}>
+                                    {subiendoFoto ? 'Subiendo…' : 'Actualizar foto en Odoo'}
+                                </Button>
+                            </div>
+                        )}
 
                         <div style={{ display: 'flex', gap: t.space[5] }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: `${t.space[2]}px ${t.space[5]}px`, flex: 1, alignContent: 'start' }}>
