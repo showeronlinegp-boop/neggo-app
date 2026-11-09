@@ -767,11 +767,18 @@ router.get('/ingreso-commitments', authenticate, async (req, res) => {
 });
 
 // GET /api/preventas/odoo-quotations — cotizaciones enviadas de Preventas en Odoo
-// (los borradores no se muestran en la pantalla de Cotizaciones)
+// (los borradores no se muestran en la pantalla de Cotizaciones).
+// Con ?incluir_ordenes=1 suma las órdenes de venta sin factura, con lo que falta entregar.
 router.get('/odoo-quotations', authenticate, async (req, res) => {
     try {
         const odooService = require('../services/odooService');
-        const quotations  = await odooService.getPreventasQuotations(['sent']);
+        const [cotizaciones, ordenesSinFactura] = await Promise.all([
+            odooService.getPreventasQuotations(['sent']),
+            req.query.incluir_ordenes === '1'
+                ? odooService.getPreventasQuotations(['sale'], { sinFactura: true })
+                : [],
+        ]);
+        const quotations = [...cotizaciones, ...ordenesSinFactura];
         console.log(`📋 ${quotations.length} cotizaciones traídas de Odoo Preventas`);
         ok(res, quotations);
     } catch (err) {

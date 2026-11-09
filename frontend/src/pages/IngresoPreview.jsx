@@ -2233,7 +2233,7 @@ function RevisionVinculosModal({ renglones, onContinue, onCancel }) {
 // =============================================
 // Modal para vincular manualmente un ítem a una cotización de Preventas
 // =============================================
-function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
+function PreventaLinkModal({ item, quotations, loading, incluyeOrdenes, onSave, onCancel }) {
     const [search, setSearch]     = useState('');
     const [selected, setSelected] = useState(null); // { quotation, line }
     const [qty, setQty]           = useState('');
@@ -2276,7 +2276,7 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
     return (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, ...overlayStyle }}>
             <div style={{ backgroundColor: C.white, borderRadius: '10px', padding: '24px', width: '600px', maxWidth: '95vw', boxShadow: '0 10px 40px rgba(0,0,0,0.25)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', gap: '14px', ...containerStyle }}>
-                <h3 onMouseDown={onDragStart} style={{ color: '#7B1FA2', margin: 0, ...dragStyle }}>🔗 Vincular a cotización de Preventas</h3>
+                <h3 onMouseDown={onDragStart} style={{ color: '#7B1FA2', margin: 0, ...dragStyle }}>🔗 Vincular a {incluyeOrdenes ? 'cotización u orden' : 'cotización'} de Preventas</h3>
                 <p style={{ margin: 0, fontSize: '13px', color: C.gray }}>
                     Ítem: <strong>{item.descripcion}</strong> · En factura: <strong>{item.cantidad}</strong> uds
                     {linkedQty > 0 && <span style={{ color: '#7B1FA2', fontWeight: 'bold' }}> · Ya asignadas: {linkedQty} · Disponibles: {remainingQty}</span>}
@@ -2285,14 +2285,14 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                 <input
                     autoFocus
                     type="text"
-                    placeholder="Buscar por producto, cliente o cotización..."
+                    placeholder={`Buscar por producto, cliente o ${incluyeOrdenes ? 'número de cotización u orden' : 'cotización'}...`}
                     value={search}
                     onChange={e => setSearch(e.target.value)}
                     style={{ padding: '9px 12px', border: `1px solid ${C.border}`, borderRadius: '4px', fontSize: '13px' }}
                 />
 
                 {loading ? (
-                    <p style={{ textAlign: 'center', color: C.gray }}>⏳ Cargando cotizaciones...</p>
+                    <p style={{ textAlign: 'center', color: C.gray }}>⏳ Cargando {incluyeOrdenes ? 'cotizaciones y órdenes' : 'cotizaciones'}...</p>
                 ) : (
                     <div style={{ overflowY: 'auto', flex: 1, maxHeight: '340px', border: `1px solid ${C.border}`, borderRadius: '6px' }}>
                         {filtradas.length === 0 ? (
@@ -2300,7 +2300,7 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                                 {search.length < 2 ? 'Escribí al menos 2 caracteres para buscar.' : 'Sin resultados.'}
                             </p>
                         ) : filtradas.map((l, i) => {
-                            const isSel = selected?.line_id === l.line_id ?? selected?.id === l.id;
+                            const isSel = selected?.id === l.id;
                             return (
                                 <div key={i} onClick={() => handleSelect(l)}
                                     style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '9px 12px', cursor: 'pointer', borderBottom: `1px solid ${C.border}`, backgroundColor: isSel ? '#EDE7F6' : 'transparent', transition: 'background 0.1s' }}>
@@ -2308,6 +2308,9 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                                         <div style={{ fontWeight: 'bold', fontSize: '13px', color: isSel ? '#6A1B9A' : C.text }}>{l.product_name}</div>
                                         <div style={{ fontSize: '11px', color: C.gray }}>
                                             {l.quotation.name} · 👤 {l.quotation.client || 'Sin cliente'} · {l.quotation.date ? new Date(l.quotation.date).toLocaleDateString('es-AR') : ''}
+                                            {l.quotation.state === 'sale' && (
+                                                <span style={{ marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: '8px', backgroundColor: C.warningBg, color: C.warning }}>Orden de venta</span>
+                                            )}
                                         </div>
                                     </div>
                                     <span style={{ fontSize: '12px', color: '#7B1FA2', fontWeight: 'bold', flexShrink: 0 }}>x{l.quantity}</span>
@@ -2317,6 +2320,12 @@ function PreventaLinkModal({ item, quotations, loading, onSave, onCancel }) {
                             );
                         })}
                     </div>
+                )}
+
+                {!incluyeOrdenes && !loading && (
+                    <p style={{ margin: 0, fontSize: '12px', color: C.gray }}>
+                        Solo ves cotizaciones enviadas. Para ver también las órdenes de venta, cerrá esta ventana y prendé "Incluir órdenes de venta sin factura".
+                    </p>
                 )}
 
                 {selected && (
@@ -2358,8 +2367,8 @@ function PreventaItemCard({ pi, confirmed, imagenId, insuficiente, discount = 0,
         const groups = new Map();
         for (const c of pi.cotizaciones) {
             const gKey = c.product_id
-                ? `${c.client || ''}|||${c.product_id}`
-                : `${c.client || ''}|||__line_${c.line_id}`;
+                ? `${c.client || ''}|||${c.state}|||${c.product_id}`
+                : `${c.client || ''}|||${c.state}|||__line_${c.line_id}`;
             if (groups.has(gKey)) {
                 const g = groups.get(gKey);
                 g.quantity += c.quantity;
@@ -2535,8 +2544,8 @@ function PreventaItemCard({ pi, confirmed, imagenId, insuficiente, discount = 0,
                                 {c.product_name && <span style={{ fontSize: '11px', color: '#7B1FA2', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.product_name}</span>}
                             </div>
                             <span style={{ color: C.gray, fontSize: '11px' }}>{c.date ? new Date(c.date).toLocaleDateString('es-AR') : '—'}</span>
-                            <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', backgroundColor: c.state === 'draft' ? C.warningBg : C.infoBg, color: c.state === 'draft' ? C.warning : C.blue }}>
-                                {c.state === 'draft' ? 'Borrador' : 'Enviada'}
+                            <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', backgroundColor: c.state === 'draft' || c.state === 'sale' ? C.warningBg : C.infoBg, color: c.state === 'draft' || c.state === 'sale' ? C.warning : C.blue }}>
+                                {c.state === 'sale' ? 'Orden de venta' : c.state === 'draft' ? 'Borrador' : 'Enviada'}
                             </span>
                             <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', backgroundColor: '#E8F5E9', color: '#2E7D32' }}>
                                 {c.match_type === 'pre_prefijo_codigo' || c.match_type === 'pre_codigo' ? '🎯 código' : `≈ nombre ${Math.round(c.match_score * 100)}%`}
@@ -2793,6 +2802,8 @@ export default function IngresoPreview() {
     const [preventaItems, setPreventaItems]         = useState([]);
     const [loadingPreventa, setLoadingPreventa]     = useState(false);
     const [preventaLoaded, setPreventaLoaded]       = useState(false);
+    const [incluirOrdenes, setIncluirOrdenes]       = useState(false);
+    const preventaPedido = useRef(0);
     const [preventaDetailItem, setPreventaDetailItem] = useState(null);
 
     // Scanner HID
@@ -3028,13 +3039,17 @@ export default function IngresoPreview() {
 
     const loadPreventaItems = useCallback(async () => {
         if (preventaLoaded) return;
+        // Si cambian el switch mientras carga, la respuesta vieja se descarta
+        const pedido = ++preventaPedido.current;
         setLoadingPreventa(true);
         try {
-            const res = await ingresoAPI.getPreventaOdooMatch(ingresoId);
-            if (res.success) setPreventaItems(res.data || []);
+            const res = await ingresoAPI.getPreventaOdooMatch(ingresoId, { incluirOrdenes });
+            if (pedido === preventaPedido.current && res.success) setPreventaItems(res.data || []);
         } catch (_) {}
-        finally { setLoadingPreventa(false); setPreventaLoaded(true); }
-    }, [ingresoId, preventaLoaded]);
+        finally {
+            if (pedido === preventaPedido.current) { setLoadingPreventa(false); setPreventaLoaded(true); }
+        }
+    }, [ingresoId, preventaLoaded, incluirOrdenes]);
 
     useEffect(() => {
         if (activeTab === 'preventa') loadPreventaItems();
@@ -3119,9 +3134,10 @@ export default function IngresoPreview() {
         if (allQuotations.length === 0) {
             setLoadingQuotations(true);
             try {
-                const res = await api.get('/preventas/odoo-quotations');
+                const res = await api.get(`/preventas/odoo-quotations${incluirOrdenes ? '?incluir_ordenes=1' : ''}`);
                 if (res.success) setAllQuotations(res.data || []);
-            } catch (_) {}
+                else setError(res.error || 'No pude traer las cotizaciones de Odoo');
+            } catch (err) { setError(err.message); }
             finally { setLoadingQuotations(false); }
         }
     };
@@ -3369,6 +3385,7 @@ export default function IngresoPreview() {
                 <PreventaLinkModal
                     item={preventaLinkItem}
                     quotations={allQuotations}
+                    incluyeOrdenes={incluirOrdenes}
                     loading={loadingQuotations}
                     onSave={handleAddPreventaLink}
                     onCancel={() => setPreventaLinkItem(null)}
@@ -3600,13 +3617,25 @@ export default function IngresoPreview() {
                 {/* Tab Preventa */}
                 {activeTab === 'preventa' && (
                     <div style={{ padding: '16px' }}>
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', minHeight: 44, marginBottom: '8px', fontSize: '13px', color: C.text, cursor: 'pointer', userSelect: 'none' }}>
+                            <button
+                                type="button"
+                                role="switch"
+                                aria-checked={incluirOrdenes}
+                                onClick={() => { setIncluirOrdenes(v => !v); setPreventaLoaded(false); setAllQuotations([]); }}
+                                style={{ position: 'relative', width: 36, height: 20, padding: 0, border: 'none', borderRadius: 10, backgroundColor: incluirOrdenes ? C.success : C.border, cursor: 'pointer', flexShrink: 0, transition: 'background-color 0.15s' }}
+                            >
+                                <span style={{ position: 'absolute', top: 2, left: incluirOrdenes ? 18 : 2, width: 16, height: 16, borderRadius: '50%', backgroundColor: C.white, transition: 'left 0.15s' }} />
+                            </button>
+                            Incluir órdenes de venta sin factura
+                        </label>
                         {loadingPreventa ? (
-                            <p style={{ textAlign: 'center', color: C.gray, padding: '32px' }}>⏳ Consultando cotizaciones en Odoo Preventas...</p>
+                            <p style={{ textAlign: 'center', color: C.gray, padding: '32px' }}>⏳ Consultando {incluirOrdenes ? 'cotizaciones y órdenes' : 'cotizaciones'} en Odoo Preventas...</p>
                         ) : preventaItems.length === 0 ? (
                             <div style={{ textAlign: 'center', padding: '48px', color: C.gray }}>
                                 <div style={{ fontSize: '40px', marginBottom: '12px' }}>🛒</div>
-                                <p style={{ fontWeight: 'bold' }}>Ningún artículo de esta factura aparece en cotizaciones abiertas de Odoo Preventas.</p>
-                                <p style={{ fontSize: '13px' }}>Se compara por código contra todas las cotizaciones. Un nombre parecido no alcanza para proponerla.</p>
+                                <p style={{ fontWeight: 'bold' }}>Ningún artículo de esta factura aparece en {incluirOrdenes ? 'cotizaciones abiertas ni en órdenes sin factura' : 'cotizaciones abiertas'} de Odoo Preventas.</p>
+                                <p style={{ fontSize: '13px' }}>Se compara por código. Un nombre parecido no alcanza para proponerla.</p>
                             </div>
                         ) : (() => {
                             const totalSeparado = items.reduce((s, i) => s + (parseInt(i.preventa_qty_confirmed, 10) || 0), 0);
@@ -3628,7 +3657,7 @@ export default function IngresoPreview() {
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                                     {/* Resumen global */}
                                     <div style={{ backgroundColor: '#EDE7F6', borderRadius: '8px', padding: '12px 16px', fontSize: '13px', color: '#4527A0', display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
-                                        <span><strong>{preventaItems.length}</strong> artículo{preventaItems.length !== 1 ? 's' : ''} en cotizaciones</span>
+                                        <span><strong>{preventaItems.length}</strong> artículo{preventaItems.length !== 1 ? 's' : ''} en {incluirOrdenes ? 'cotizaciones y órdenes' : 'cotizaciones'}</span>
                                         <span>Total cotizado: <strong>{preventaItems.reduce((s, pi) => s + pi.total_cotizado, 0)}</strong> uds</span>
                                         <span>Separados: <strong style={{ color: totalSeparado > 0 ? '#2E7D32' : '#4527A0' }}>{totalSeparado}</strong> uds</span>
                                         {pendienteCount > 0 && <span style={{ color: C.warning }}>⏳ {pendienteCount} sin separar</span>}
@@ -3707,7 +3736,7 @@ export default function IngresoPreview() {
                                         return (
                                             <div style={{ marginTop: '12px', borderTop: `2px dashed #E1BEE7`, paddingTop: '12px' }}>
                                                 <p style={{ fontSize: '12px', color: '#7B1FA2', fontWeight: 'bold', marginBottom: '8px' }}>
-                                                    🔍 Sin match automático — podés vincularlos manualmente a una cotización
+                                                    🔍 Sin match automático — podés vincularlos manualmente a {incluirOrdenes ? 'una cotización u orden' : 'una cotización'}
                                                 </p>
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                                     {sinMatch.map(item => {

@@ -1413,6 +1413,27 @@ function normalizeQuotationLine(line, defaultCodes) {
     };
 }
 
+// Orden que sigue viva: sin factura (ni parcial ni borrador) y sin comprobante del POS.
+function ordenSinFacturaNiPos(orden) {
+    return orden.invoice_status !== 'invoiced'
+        && contarFacturas(orden) === 0
+        && !(Number(orden.pos_order_count) > 0);
+}
+
+// Línea de orden de venta con lo que falta entregar; null si no queda nada.
+function lineaOrdenPendiente(line, defaultCodes) {
+    const normalized = normalizeQuotationLine(line, defaultCodes);
+    if (!normalized) return null;
+    const pedida = Number(line.product_uom_qty) || 0;
+    const pendiente = pedida - (Number(line.qty_delivered) || 0);
+    if (pendiente <= 0) return null;
+    return {
+        ...normalized,
+        quantity: pendiente,
+        subtotal: (Number(line.price_subtotal) || 0) * (pendiente / pedida),
+    };
+}
+
 const WEEKLY_SALES_TTL_MS = 10 * 60 * 1000;
 const WEEKLY_SALES_ERROR_TTL_MS = 2 * 60 * 1000;
 let weeklySoldCache = null;
@@ -1504,24 +1525,35 @@ async function getWeeklySoldQty(companyKey = 'neggo') {
  * con sus líneas de productos. Pagina de a 200 hasta agotarlas.
  *
  * @param {string[]} [states] - estados de sale.order a traer
+ * @param {{ sinFactura?: boolean }} [opts] - sinFactura: solo órdenes sin factura ni POS,
+ *   con la cantidad que falta entregar en cada línea
  * @returns {Promise<Array>}
  */
-async function getPreventasQuotations(states = ['draft', 'sent']) {
+async function getPreventasQuotations(states = ['draft', 'sent'], { sinFactura = false } = {}) {
     const companyId = await resolveCompanyId('preventas');
     const context = { allowed_company_ids: [companyId] };
 
-    const orders = await readAllPages((offset, limit) => callOdoo(
+    const domain = [['state', 'in', states], ['company_id', '=', companyId]];
+    const fields = ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'];
+    if (sinFactura) {
+        // invoice_count no está almacenado en Odoo: se filtra en Node, no en el dominio
+        domain.push(['invoice_status', '!=', 'invoiced']);
+        fields.push('invoice_status', 'invoice_count', 'invoice_ids', 'pos_order_count');
+    }
+
+    const leidas = await readAllPages((offset, limit) => callOdoo(
         'sale.order',
         'search_read',
-        [[['state', 'in', states], ['company_id', '=', companyId]]],
+        [domain],
         {
-            fields: ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'],
+            fields,
             order:  'id asc',
             limit,
             offset,
             context,
         }
     ));
+    const orders = sinFactura ? leidas.filter(ordenSinFacturaNiPos) : leidas;
 
     if (orders.length === 0) return [];
 
@@ -1530,7 +1562,7 @@ async function getPreventasQuotations(states = ['draft', 'sent']) {
         ? await readByIds(
             'sale.order.line',
             allLineIds,
-            ['id', 'order_id', 'product_id', 'product_uom_qty', 'price_unit', 'price_subtotal', 'name'],
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'price_unit', 'price_subtotal', 'name', ...(sinFactura ? ['qty_delivered'] : [])],
             context
         )
         : [];
@@ -1565,9 +1597,11 @@ async function getPreventasQuotations(states = ['draft', 'sent']) {
     let skipped = 0;
     for (const line of lines) {
         const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-        const normalized = normalizeQuotationLine(line, defaultCodes);
+        const normalized = sinFactura
+            ? lineaOrdenPendiente(line, defaultCodes)
+            : normalizeQuotationLine(line, defaultCodes);
         if (!normalized) {
-            skipped++;
+            if (!Array.isArray(line.product_id)) skipped++;
             continue;
         }
         if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
@@ -1832,6 +1866,8 @@ module.exports = {
     writeSaleOrderLineQty,
     unlinkSaleOrderLines,
     getPreventasQuotations,
+    ordenSinFacturaNiPos,
+    lineaOrdenPendiente,
     getWeeklySoldQty,
     readAllPages,
     normalizeQuotationLine,

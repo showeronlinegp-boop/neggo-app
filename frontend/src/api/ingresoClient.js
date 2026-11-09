@@ -79,9 +79,11 @@ export const ingresoAPI = {
   getPreventaItems: (ingresoId) => api.get(`/ingreso/${ingresoId}/preventa-items`),
 
   /**
-   * Compara ítems del ingreso con cotizaciones abiertas en Odoo Preventas (en vivo)
+   * Compara ítems del ingreso con cotizaciones abiertas en Odoo Preventas (en vivo).
+   * Con incluirOrdenes suma las órdenes de venta sin factura.
    */
-  getPreventaOdooMatch: (ingresoId) => api.get(`/ingreso/${ingresoId}/preventa-odoo-match`),
+  getPreventaOdooMatch: (ingresoId, { incluirOrdenes = false } = {}) =>
+    api.get(`/ingreso/${ingresoId}/preventa-odoo-match${incluirOrdenes ? '?incluir_ordenes=1' : ''}`),
 
   /**
    * Sincroniza precios actuales de Odoo → cache local + precio_odoo_anterior en ingreso_items

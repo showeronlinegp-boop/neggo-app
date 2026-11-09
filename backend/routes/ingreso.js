@@ -2251,10 +2251,9 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
 
 router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => {
     const { ingresoId } = req.params;
-    const { baseCode } = require('../utils/textMatch');
-
-    // Normaliza un internal_ref quitando guiones y espacios, en mayúsculas
-    const normRef = (s) => (s || '').replace(/[-\s]/g, '').toUpperCase();
+    const { normClave: normRef, clavesPreventa } = require('../services/preventaClaves');
+    // Switch de la pestaña Preventa: suma órdenes de venta sin factura a las cotizaciones
+    const incluirOrdenes = req.query.incluir_ordenes === '1';
 
     try {
         // Prefijo del proveedor del ingreso
@@ -2296,7 +2295,12 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
         }
 
         // Cotizaciones enviadas de Odoo Preventas (ya traen default_code por producto; los borradores no cuentan)
-        const quotations = await require('../services/odooService').getPreventasQuotations(['sent']);
+        const odooService = require('../services/odooService');
+        const [cotizaciones, ordenesSinFactura] = await Promise.all([
+            odooService.getPreventasQuotations(['sent']),
+            incluirOrdenes ? odooService.getPreventasQuotations(['sale'], { sinFactura: true }) : [],
+        ]);
+        const quotations = [...cotizaciones, ...ordenesSinFactura];
 
         // Enriquecer líneas con datos del cache local:
         // external_id en getPreventasQuotations viene del default_code de Odoo (internal_ref sin PRE).
@@ -2367,18 +2371,16 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
 
         // DEBUG: mostrar muestra de ítems y sus claves construidas
         const muestraItems = itemsUnicos.slice(0, 5).map(i => {
-            const cb = baseCode(i.codigo || '');
-            return `  desc="${i.descripcion}" codigo="${i.codigo}" baseCode="${cb}" claveConPref="PRE${supplierPrefix}${cb}"`;
+            const { conPrefijo } = clavesPreventa(i.codigo, supplierPrefix);
+            return `  desc="${i.descripcion}" codigo="${i.codigo}" claves="${conPrefijo.join(', ')}"`;
         });
         console.log('🔍 Muestra de ítems ingreso:\n' + muestraItems.join('\n'));
 
         const result = [];
 
         for (const item of itemsUnicos) {
-            // Clave PRE + PREFIJO + código_base (sin guiones)
-            const codigoBase    = baseCode(item.codigo || '');
-            const clavePrePref  = `PRE${supplierPrefix}${codigoBase}`; // ej: PREIMPINF1093
-            const claveBaseSola = `PRE${codigoBase}`;                  // fallback sin prefijo proveedor
+            // Claves PRE + PREFIJO + código_base; sinPrefijo es el respaldo sin prefijo de proveedor
+            const { conPrefijo, sinPrefijo } = clavesPreventa(item.codigo, supplierPrefix);
             const matcheados = [];
 
             for (const line of todasLasLineas) {
@@ -2388,11 +2390,11 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
                 // 1. Comparación por código contra TODAS las referencias del producto:
                 //    ext_id_clean (ir.model.data), internal_ref (cache) y default_code (live).
                 //    Esto cubre el caso donde default_code no tiene prefijo PRE pero ext_id sí.
-                if (codigoBase.length >= 2 && line.ref_candidates?.size > 0) {
-                    if (line.ref_candidates.has(clavePrePref)) {
+                if (line.ref_candidates?.size > 0) {
+                    if (conPrefijo.some(clave => line.ref_candidates.has(clave))) {
                         matchType  = 'pre_prefijo_codigo';
                         matchScore = 1.0;
-                    } else if (line.ref_candidates.has(claveBaseSola)) {
+                    } else if (sinPrefijo.some(clave => line.ref_candidates.has(clave))) {
                         matchType  = 'pre_codigo';
                         matchScore = 0.97;
                     }
