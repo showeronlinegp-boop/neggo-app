@@ -609,11 +609,13 @@ function metodoDesdeIngreso(item) {
  * mismo proveedor) y a mano desde scripts/tablaMaestra.js.
  * Reglas:
  *   - Solo Neggo y ofertas web (Precompras es base de costos, no se vincula).
- *   - Renglón manual: solo si se tildó en la revisión (vinculo_revisado_at).
+ *   - Renglón manual o por nombre parecido: solo si se tildó en la revisión (vinculo_revisado_at).
+ *     Sin preguntar entra únicamente el código exacto (nota 162).
  *   - Oferta borrada por el scraper (quedó NULL): si era por código, se busca de nuevo por SKU.
  *   - Sugerido → confirmado (se anota el acierto del método que lo propuso).
- *   - Rechazado antes de confirmar el ingreso → gana el ingreso. Rechazado después ("Borrar
- *     vinculación") → se respeta y no se vuelve a crear.
+ *   - Par rechazado: un renglón sin tildar nunca lo revive (así "Deshacer" no se pierde en el
+ *     próximo ingreso). Tildado en la revisión gana sobre un rechazo anterior a esa confirmación;
+ *     un rechazo posterior ("Borrar vinculación") se respeta.
  *   - No toca es_habitual.
  * @param {{ ingresoId?: number, supplierId?: number, userId?: number }} opts
  * @returns {Promise<{ renglones: number, creados: number, confirmados: number, sin_cambios: number, conflictos: number }>}
@@ -644,9 +646,10 @@ async function vincularDesdeIngresos({ ingresoId = null, supplierId = null, user
                  ) rec ON true
                  WHERE ii.estado_item = 'matched' AND ii.odoo_product_id IS NOT NULL
                    AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
-                   -- Renglón manual: solo si se tildó en la revisión
+                   -- Renglón manual o por nombre parecido: solo si se tildó en la revisión
                    AND (ii.vinculo_revisado_at IS NOT NULL
-                        OR (COALESCE(ii.match_level, '') <> 'manual' AND COALESCE(ii.supplier_match_level, '') <> 'manual'))
+                        OR (COALESCE(ii.match_level, '') <> 'manual'
+                            AND COALESCE(ii.supplier_match_level, '') NOT IN ('manual', 'fuzzy')))
                    AND ($1::int IS NULL OR im.id = $1)
                    AND ($2::int IS NULL OR im.supplier_id = $2)
              ) c
@@ -655,7 +658,7 @@ async function vincularDesdeIngresos({ ingresoId = null, supplierId = null, user
                  SELECT 1 FROM match_decisiones md
                  WHERE md.supplier_product_id = c.supplier_product_id AND md.odoo_product_id = c.odoo_product_id
                    AND md.odoo_company = 'neggo' AND md.decision = 'rechazado'
-                   AND md.created_at > COALESCE(c.confirmed_at, '-infinity'))
+                   AND (c.vinculo_revisado_at IS NULL OR md.created_at > COALESCE(c.confirmed_at, '-infinity')))
              ORDER BY c.supplier_product_id, c.odoo_product_id, c.confirmed_at DESC NULLS LAST, c.item_id DESC`,
             [ingresoId, supplierId, userId]
         );

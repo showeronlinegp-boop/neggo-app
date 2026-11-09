@@ -8,6 +8,7 @@ const path = require('path');
 const {
     getOdooImage,
     writeOdooImage,
+    leerFotoDeOrigen,
     hashBuffer,
     detectContentType,
     etagMatches,
@@ -240,6 +241,45 @@ async function testSubirFotoOlvidaVerificacion() {
     console.log('subir foto olvida la memoria ok');
 }
 
+// Las cuatro formas de image_url que hay en supplier_products (nota 165)
+async function testFotoDeOrigen() {
+    const base = tmpRoot();
+    const storageRoot = path.join(base, 'storage');
+    fs.mkdirSync(path.join(storageRoot, 'photos', 'panlin'), { recursive: true });
+    fs.writeFileSync(path.join(storageRoot, 'photos', 'panlin', 'a.jpg'), JPEG);
+    fs.writeFileSync(path.join(storageRoot, 'photos', 'panlin', 'b.txt'), 'no soy una foto');
+    fs.writeFileSync(path.join(base, 'afuera.jpg'), JPEG);
+
+    const pedidas = [];
+    const fetchMock = async (url) => {
+        pedidas.push(url);
+        return { ok: !url.includes('roto'), status: 404, arrayBuffer: async () => PNG };
+    };
+    const odoo = mockOdoo({ images: { 'product.template:9:image_1920': JPEG2.toString('base64') } });
+    const deps = { ...odoo, storageRoot, fetch: fetchMock };
+    const rechaza = (url, status) => assert.rejects(leerFotoDeOrigen(url, deps), (err) => err.status === status);
+
+    // Disco: es el caso que reportó la nota
+    assert.ok((await leerFotoDeOrigen('/storage/photos/panlin/a.jpg', deps)).equals(JPEG));
+    await rechaza('/storage/photos/panlin/no-esta.jpg', 404);
+    await rechaza('/storage/photos/panlin/b.txt', 502);
+    await rechaza('/storage/../afuera.jpg', 400);
+
+    // Web: con y sin protocolo
+    assert.ok((await leerFotoDeOrigen('https://cdn.test/x.png', deps)).equals(PNG));
+    assert.ok((await leerFotoDeOrigen('//cdn.test/y.png', deps)).equals(PNG));
+    assert.deepStrictEqual(pedidas, ['https://cdn.test/x.png', 'https://cdn.test/y.png']);
+    await rechaza('https://cdn.test/roto.png', 502);
+
+    // Odoo: el id de la ruta es el del template
+    assert.ok((await leerFotoDeOrigen('/api/products/odoo-image/neggo/9', deps)).equals(JPEG2));
+    await rechaza('/api/products/odoo-image/neggo/10', 404);
+
+    // Cualquier otra cosa no llega a fetch
+    await rechaza('/otra/ruta.jpg', 400);
+    assert.strictEqual(pedidas.length, 3);
+}
+
 async function run() {
     testHelpers();
     await testFetchAndPersist();
@@ -250,6 +290,7 @@ async function run() {
     await testVerificadaHacePocoNoLlamaOdoo();
     await testSinCopiaSiemprePreguntaOdoo();
     await testSubirFotoOlvidaVerificacion();
+    await testFotoDeOrigen();
     console.log('✅ odooImage: todos los tests pasaron');
 }
 

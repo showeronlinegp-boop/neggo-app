@@ -1222,19 +1222,27 @@ async function confirmIngreso(ingresoId, userId, odooPartnerId = null) {
 }
 
 // =============================================
-// Revisión de vínculos hechos a mano (nota 107)
-// Al confirmar, los renglones con producto de Odoo u oferta elegidos a mano se tildan una sola vez
-// antes de entrar a la tabla maestra. Lo revisado se guarda en ingreso_items (sentido único: acá
-// no se lee la tabla maestra) y no vuelve a marcarse: mismo proveedor + código + producto de Odoo.
+// Revisión de vínculos antes de confirmar (notas 107 y 162)
+// Los renglones con producto de Odoo u oferta elegidos a mano, o con oferta por nombre parecido, se
+// tildan una sola vez antes de entrar a la tabla maestra: solo el código exacto se vincula sin
+// preguntar. Lo revisado se guarda en ingreso_items y no vuelve a marcarse: mismo proveedor +
+// código + producto de Odoo. Este paso sí mira si ya hay vínculo, para no preguntar dos veces; el
+// cruce de facturas sigue sin leer la tabla maestra.
 // =============================================
 
-// Renglones manuales del ingreso con oferta web + producto de Neggo, y si el par ya se revisó antes
+// Renglones a revisar del ingreso con oferta web + producto de Neggo, y si ya se resolvieron antes
 async function renglonesManualesConOferta(ingresoId, db = pool) {
     const { rows } = await db.query(
         `SELECT ii.id AS item_id, ii.codigo, ii.descripcion, ii.precio_unitario,
                 ii.odoo_product_id, ii.odoo_product_name, opc.internal_ref, opc.has_image,
-                ii.match_level, ii.supplier_match_level,
+                ii.match_level, ii.supplier_match_level, ii.supplier_confidence,
                 sp.id AS supplier_product_id, sp.sku, sp.name AS oferta_nombre, sp.raw_price AS oferta_precio,
+                EXISTS (
+                    SELECT 1 FROM product_mappings pm
+                    JOIN supplier_products sp2 ON sp2.id = pm.supplier_product_id
+                    WHERE pm.odoo_product_id = ii.odoo_product_id AND pm.odoo_company = 'neggo'
+                      AND pm.estado = 'confirmado' AND sp2.supplier_id = im.supplier_id AND sp2.source = 'web'
+                ) AS ya_vinculado,
                 EXISTS (
                     SELECT 1 FROM ingreso_items prev
                     JOIN ingreso_mercaderia pim ON pim.id = prev.ingreso_id AND pim.estado = 'confirmado'
@@ -1250,16 +1258,16 @@ async function renglonesManualesConOferta(ingresoId, db = pool) {
          LEFT JOIN odoo_products_cache opc ON opc.odoo_id = ii.odoo_product_id AND opc.company = 'neggo'
          WHERE ii.ingreso_id = $1 AND ii.estado_item = 'matched' AND ii.odoo_product_id IS NOT NULL
            AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
-           AND (ii.match_level = 'manual' OR ii.supplier_match_level = 'manual')
+           AND (ii.match_level = 'manual' OR ii.supplier_match_level IN ('manual', 'fuzzy'))
          ORDER BY ii.id`,
         [ingresoId]
     );
     return rows;
 }
 
-// Lo que se muestra en el paso "Revisá los vínculos hechos a mano"
+// Lo que se muestra en el paso "Revisá los vínculos" antes de confirmar
 async function vinculosARevisar(ingresoId) {
-    return (await renglonesManualesConOferta(ingresoId)).filter(r => !r.ya_revisado);
+    return (await renglonesManualesConOferta(ingresoId)).filter(r => !r.ya_revisado && !r.ya_vinculado);
 }
 
 /**
@@ -1293,6 +1301,8 @@ async function marcarVinculosRevisados(ingresoId, tildados, userId) {
 // =============================================
 
 module.exports = {
+    normalize,
+    similarity,
     vinculosARevisar,
     marcarVinculosRevisados,
     parseCSV,
