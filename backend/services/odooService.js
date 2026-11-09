@@ -894,11 +894,19 @@ function moveDesdeMolde(molde, { pickingId, qty, companyId, picking = null }) {
     };
 }
 
+// Odoo 19 en 2 pasos: el move del Recolectar lleva el destino final (clientes) y la
+// entrega se crea al validarlo. Pasa cuando el destino final no es la salida del envío.
+function empujaAlValidar(molde, picking) {
+    const final = m2oId(molde?.location_final_id);
+    const salida = m2oId(picking?.location_dest_id) || m2oId(molde?.location_dest_id);
+    return !!final && !!salida && final !== salida;
+}
+
 /**
  * Agrega al envío abierto (Recolectar, o entrega en 1 paso) las unidades de
  * líneas que no tienen move ahí: lo incompleto de un envío anterior validado
  * sin backorder. En 2 pasos también suma esas unidades a la entrega abierta,
- * para que el control las pueda entregar. adds: [{ sale_line_id, qty, product_name }].
+ * para que el control las pueda entregar; si no hay, Odoo la arma al validar. adds: [{ sale_line_id, qty, product_name }].
  */
 async function addPickingMoves(pickingId, adds, companyKey) {
     const companyId = await resolveCompanyId(companyKey);
@@ -970,9 +978,11 @@ async function addPickingMoves(pickingId, adds, companyKey) {
                     pickingId: entrega.id, qty, companyId, picking: entrega,
                 })], kwargs);
                 entregasTocadas.add(entrega.id);
-            } else {
+            } else if (!empujaAlValidar(molde, picking)) {
                 throw new Error(`No encontré la entrega abierta para sumar «${nombre}»`);
             }
+            // Si no, el move va sin destino: Odoo crea (o completa) la entrega al validar
+            // el Recolectar, igual que con lo que él mismo reabre
         }
 
         const vals = moveDesdeMolde(molde, { pickingId, qty, companyId, picking });
@@ -1845,6 +1855,7 @@ module.exports = {
     getPickingMoves,
     writePickingMoveQuantities,
     addPickingMoves,
+    empujaAlValidar,
     validateSalePicking,
     getPickingBackorder,
     getSalidaDePicking,
