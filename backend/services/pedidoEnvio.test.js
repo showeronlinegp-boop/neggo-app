@@ -21,6 +21,7 @@ const {
     qtyDesdeMoves,
     fuentesDeQty,
     planIgualar,
+    esLineaEnvio,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -891,6 +892,47 @@ function testAuditarIgnoraDownPayment() {
     assert.strictEqual(r.ok, true);
 }
 
+// Nota 168: envío y retiro son servicios sin stock: no se arman ni pasan a pendientes
+function testLineasDeEnvio() {
+    assert.strictEqual(esLineaEnvio({ product_name: 'Pick up in store' }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: '[Delivery_007] Standard delivery' }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Otro transporte', is_delivery: true }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Descuento' }), false);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Cable USB' }), false);
+
+    const plan = planIgualar({
+        lines: [
+            { id: 1, product_id: 10, product_name: 'Taza', quantity: 2, qty_delivered: 1, unit_price: 100 },
+            { id: 2, product_id: 32300, product_name: 'Pick up in store', quantity: 1, qty_delivered: 0, is_delivery: true },
+        ],
+    });
+    assert.deepStrictEqual(plan.writes.map((w) => w.odoo_line_id), [1]);
+    assert.deepStrictEqual(plan.pendientes.map((p) => p.odoo_line_id), [1]);
+
+    // La orden trae la línea de retiro y acá ya no está: no es un renglón "editado en Odoo"
+    const r = auditar(
+        [item()],
+        odooOrder({
+            lines: [
+                odooLine(),
+                odooLine({ id: 50, product_id: 32300, product_name: 'Pick up in store', quantity: 1, is_delivery: true }),
+            ],
+        })
+    );
+    assert.strictEqual(r.ok, true);
+    // Con qty_delivered en la línea de retiro tampoco frena el cierre
+    const conEntregada = auditar(
+        [item()],
+        odooOrder({
+            lines: [
+                odooLine(),
+                odooLine({ id: 50, product_id: 32300, product_name: 'Pick up in store', quantity: 1, qty_delivered: 1, is_delivery: true }),
+            ],
+        })
+    );
+    assert.strictEqual(conEntregada.ok, true);
+}
+
 function testAuditarSinOdoo() {
     const r = auditar([item()], null);
     assert.strictEqual(r.ok, false);
@@ -964,6 +1006,7 @@ testAuditarEntregadaYLocked();
 testAuditarCancelada();
 testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
+testLineasDeEnvio();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
 testOrdenesBorradasEnOdoo();

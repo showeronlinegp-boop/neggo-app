@@ -948,6 +948,9 @@ async function addPickingMoves(pickingId, adds, companyKey) {
         if (qty <= 0) continue;
         const nombre = add.product_name || `la línea ${add.sale_line_id}`;
         const deLinea = moves.filter((m) => m2oId(m.sale_line_id) === add.sale_line_id);
+        if (!deLinea.length) {
+            throw new Error(`«${nombre}» no mueve stock en Odoo (suele ser un servicio, no mercadería). Dejalo en 0 para terminar el armado`);
+        }
         const molde = deLinea.find((m) => m2oId(m.picking_type_id) === tipoEnvio);
         if (!molde) throw new Error(`No encontré cómo sumar «${nombre}» al envío ${picking.name}`);
 
@@ -1642,7 +1645,7 @@ async function getSaleOrdersWithLines(companyKey, {
         ? await readByIds(
             'sale.order.line',
             allLineIds,
-            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'qty_invoiced', 'price_unit', 'price_subtotal', 'name'],
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'qty_invoiced', 'price_unit', 'price_subtotal', 'name', 'is_delivery'],
             context
         )
         : [];
@@ -1662,6 +1665,7 @@ async function getSaleOrdersWithLines(companyKey, {
             qty_invoiced:  Number(line.qty_invoiced) || 0,
             unit_price:    Number(line.price_unit) || 0,
             subtotal:      Number(line.price_subtotal) || 0,
+            is_delivery:   !!line.is_delivery,
         });
     }
 
