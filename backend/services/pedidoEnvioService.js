@@ -338,14 +338,28 @@ function itemsSinLoHecho(items, hecho, campo) {
     }));
 }
 
+// «Seguir armando» con el envío 1 ya validado por la app: el estado queda en armando aunque
+// Odoo lo vea armado. Si lo validaron directo en Odoo, acá sigue abierto y Odoo empuja a armado.
+function seguirArmandoEnApp(localEstado, pickingStateLocal, etapa) {
+    return localEstado === 'armando' && pickingStateLocal === 'done' && etapa === 'armado';
+}
+
+// Lo armado después de validar el envío 1 vive sólo en la app: Odoo no lo baja, sólo lo sube.
+function conservarArmadoDeApp(items, qtys) {
+    const actual = new Map((items || []).map((it) => [it.id, qtyEntera(it.qty_armada)]));
+    return (qtys || []).map((q) => ({ id: q.id, qty: Math.max(q.qty, actual.get(q.id) || 0) }));
+}
+
 async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
     if (!envioId || !odoo) return;
     const { arm, ctrl } = fuentesDeQty(estado, odoo.pickings || []);
     if (!arm.length && !ctrl.length) return;
 
     const { rows: items } = await db.query(
-        `SELECT id, odoo_line_id, odoo_product_id, qty_pedida
-           FROM pedido_envio_items WHERE envio_id = $1`,
+        `SELECT i.id, i.odoo_line_id, i.odoo_product_id, i.qty_pedida, i.qty_armada, e.odoo_picking_state
+           FROM pedido_envio_items i
+           JOIN pedido_envios e ON e.id = i.envio_id
+          WHERE i.envio_id = $1`,
         [envioId]
     );
     if (!items.length) return;
@@ -353,7 +367,10 @@ async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
     // Un UPDATE por campo, sólo donde cambió
     for (const [campo, moves] of [['qty_armada', arm], ['qty_controlada', ctrl]]) {
         if (!moves.length) continue;
-        const qtys = qtyDesdeMoves(items, moves);
+        const desdeOdoo = qtyDesdeMoves(items, moves);
+        const qtys = campo === 'qty_armada' && items[0].odoo_picking_state === 'done'
+            ? conservarArmadoDeApp(items, desdeOdoo)
+            : desdeOdoo;
         await db.query(
             `UPDATE pedido_envio_items i
                 SET ${campo} = v.qty
@@ -365,7 +382,15 @@ async function aplicarQtysDesdeEnvios(db, envioId, estado, odoo) {
 }
 
 async function persistirEstadoDesdeOdoo(db, envioId, localEstado, odoo) {
-    const nuevo = estadoSegunOdoo(localEstado, etapaDesdeOdoo(odoo));
+    const etapa = etapaDesdeOdoo(odoo);
+    if (envioId && localEstado === 'armando' && etapa === 'armado') {
+        const { rows: [local] } = await db.query(
+            'SELECT odoo_picking_state FROM pedido_envios WHERE id = $1',
+            [envioId]
+        );
+        if (seguirArmandoEnApp(localEstado, local?.odoo_picking_state, etapa)) return localEstado;
+    }
+    const nuevo = estadoSegunOdoo(localEstado, etapa);
     if (!envioId || nuevo === localEstado) return nuevo;
     if (nuevo === 'pendiente') {
         // Odoo abrió un envío nuevo (agregaron productos): lo que ya salió queda hecho
@@ -933,6 +958,13 @@ function mensajeNadaParaEntregar(items, moves, nombreSalida) {
 // Depósito 2 pasos: el envío 1 es el Recolectar (internal), validado al terminar
 // el armado. Al cerrar el control se valida la entrega (outgoing) con lo
 // controlado, sin backorder: lo que falta va al pedido de pendientes. En 1 paso no hace nada.
+function entregasAbiertas(pickings) {
+    return (pickings || []).filter((p) => p
+        && p.picking_type_code === 'outgoing'
+        && p.state !== 'done'
+        && p.state !== 'cancel');
+}
+
 async function validarSalidaAlSaldar(envio) {
     if (!envio.odoo_picking_id) return null;
     let salida = null;
@@ -945,6 +977,21 @@ async function validarSalidaAlSaldar(envio) {
     }
     if (!salida?.id) return null;
     if (salida.state === 'done') return { picking: salida, backorder: null, alreadyDone: true };
+
+    // Se valida una sola entrega: con dos abiertas, lo de la otra terminaría en pendientes
+    let abiertas = [];
+    try {
+        const header = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+        abiertas = entregasAbiertas(header?.pickings);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer las entregas en Odoo');
+    }
+    if (abiertas.length > 1) {
+        throw httpError(
+            `${envio.odoo_order_name || 'Esta orden'} tiene ${abiertas.length} entregas abiertas en Odoo (${abiertas.map((p) => p.name).join(', ')}). No cerré nada: hay que dejar una sola.`,
+            409
+        );
+    }
 
     let moves = [];
     try {
@@ -1605,6 +1652,59 @@ async function estadosPendientes(company) {
     return [...cabs, ...ids.filter((id) => !vistos.has(id)).map((id) => ({ id, state: 'cancel' }))];
 }
 
+// Líneas con unidades sin armar. Lo archivado no vuelve a armarse.
+function planReabrirArmado(lineas, items, hecho) {
+    const porLinea = new Map((items || []).map((it) => [it.odoo_line_id, it]));
+    return (lineas || []).flatMap((l) => {
+        const it = porLinea.get(l.id);
+        const pedida = num(l.quantity);
+        if (!it || it.faltante_motivo === 'archivado') return [];
+        if (num(hecho?.get(it.id)?.arm) >= pedida) return [];
+        return [{ odoo_line_id: l.id, qty: pedida, product_name: l.product_name }];
+    });
+}
+
+// Terminar valida el envío 1 sin backorder, así que lo no armado queda sin envío. Al reescribir
+// la línea, Odoo abre un Recolectar con lo que falta y al validarlo le pasa esas unidades a la
+// entrega. Devuelve null si no falta nada: en ese caso se sigue sólo en la app.
+async function reabrirEnvio1EnOdoo(envio) {
+    let lineas = [];
+    try {
+        const [orden] = await odooService.getSaleOrdersWithLines(envio.company_key, {
+            ids: [envio.odoo_sale_order_id],
+            days: null,
+            limit: 1,
+        });
+        lineas = lineasProductoOdoo(orden);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer la orden en Odoo');
+    }
+    const plan = planReabrirArmado(lineas, envio.items, await loHechoEnOdoo(envio));
+    if (!plan.length) return null;
+
+    try {
+        for (const w of plan) {
+            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key);
+        }
+    } catch (err) {
+        throw errorDesdeOdoo(err, `Odoo no pudo reabrir el armado de ${envio.odoo_order_name || 'la orden'}`);
+    }
+
+    let picking = await buscarEnvio1(envio);
+    if (picking?.state === 'done') {
+        await esperar(500);
+        picking = await buscarEnvio1(envio);
+    }
+    if (!picking?.id || picking.state === 'done') {
+        throw httpError(
+            `Odoo no abrió un envío nuevo con lo que falta de ${envio.odoo_order_name || 'este pedido'}. Revisalo ahí antes de seguir.`,
+            409
+        );
+    }
+    console.log(`📦 Armado: ${envio.odoo_order_name} sigue en ${picking.name}, con ${plan.length} línea(s) por armar`);
+    return picking;
+}
+
 async function cambiarEstado(id, estado, userId) {
     if (!ESTADOS.includes(estado)) throw httpError('Estado inválido', 400);
     const envio = await obtener(id);
@@ -1615,6 +1715,26 @@ async function cambiarEstado(id, estado, userId) {
         || (actual === 'armado' && (estado === 'controlando' || estado === 'armando'))
         || (actual === 'controlando' && estado === 'armado');
     if (!ok) throw httpError(`No se puede pasar de ${actual} a ${estado}`, 409);
+
+    if (estado === 'armando' && actual === 'armado' && envio.odoo_picking_state === 'done') {
+        const nuevo = await reabrirEnvio1EnOdoo(envio);
+        if (nuevo) {
+            envio.odoo_picking_id = nuevo.id;
+            envio.odoo_picking_name = nuevo.name || null;
+            envio.odoo_picking_state = nuevo.state || null;
+            await pool.query(
+                `UPDATE pedido_envios
+                    SET odoo_picking_id = $2,
+                        odoo_picking_name = $3,
+                        odoo_picking_state = $4,
+                        odoo_picking_backorder_id = NULL,
+                        odoo_picking_backorder_name = NULL,
+                        updated_at = NOW()
+                  WHERE id = $1`,
+                [id, envio.odoo_picking_id, envio.odoo_picking_name, envio.odoo_picking_state]
+            );
+        }
+    }
 
     let odooPatch = null;
     if (estado === 'armando') {
@@ -2128,6 +2248,10 @@ module.exports = {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
+    seguirArmandoEnApp,
+    conservarArmadoDeApp,
+    planReabrirArmado,
+    entregasAbiertas,
     listar,
     obtener,
     ordenesBorradasEnOdoo,

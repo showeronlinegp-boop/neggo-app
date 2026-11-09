@@ -36,6 +36,10 @@ const {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
+    seguirArmandoEnApp,
+    conservarArmadoDeApp,
+    planReabrirArmado,
+    entregasAbiertas,
     condicionesListado,
     ordenListado,
     ETIQUETA_PENDIENTES,
@@ -551,6 +555,59 @@ function testQtyDesdeMoves() {
     assert.strictEqual(porProducto[0].qty, 3);
 }
 
+function testReabrirArmado() {
+    const items = [
+        { id: 1, odoo_line_id: 10 },
+        { id: 2, odoo_line_id: 20 },
+        { id: 3, odoo_line_id: 30, faltante_motivo: 'archivado' },
+        { id: 4, odoo_line_id: 40, faltante_motivo: 'reponer' },
+    ];
+    const lineas = [
+        { id: 10, quantity: 12, product_name: 'Armado completo' },
+        { id: 20, quantity: 10, product_name: 'Sin armar' },
+        { id: 30, quantity: 5, product_name: 'Archivado' },
+        { id: 40, quantity: 3, product_name: 'Incompleto' },
+        { id: 50, quantity: 1, product_name: 'Sin ítem en la app' },
+    ];
+    const hecho = new Map([[1, { arm: 12, ctrl: 0 }], [4, { arm: 1, ctrl: 0 }]]);
+    // La cantidad no cambia: se reescribe la de Odoo para que abra el envío con lo que falta
+    assert.deepStrictEqual(planReabrirArmado(lineas, items, hecho), [
+        { odoo_line_id: 20, qty: 10, product_name: 'Sin armar' },
+        { odoo_line_id: 40, qty: 3, product_name: 'Incompleto' },
+    ]);
+    // Todo armado: no hay nada que reabrir
+    assert.deepStrictEqual(planReabrirArmado(lineas.slice(0, 1), items, hecho), []);
+
+    const abiertas = entregasAbiertas([
+        { name: 'PICK', picking_type_code: 'internal', state: 'assigned' },
+        { name: 'OUT1', picking_type_code: 'outgoing', state: 'assigned' },
+        { name: 'OUT2', picking_type_code: 'outgoing', state: 'done' },
+        { name: 'OUT3', picking_type_code: 'outgoing', state: 'cancel' },
+        { name: 'OUT4', picking_type_code: 'outgoing', state: 'confirmed' },
+    ]);
+    assert.deepStrictEqual(abiertas.map((p) => p.name), ['OUT1', 'OUT4']);
+}
+
+function testSeguirArmandoSobreviveAlSync() {
+    // «Seguir armando» con el envío validado por la app: el sync no lo saca (nota 172)
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'armado'), true);
+    // Lo validaron directo en Odoo con la app armando: Odoo empuja a armado
+    assert.strictEqual(seguirArmandoEnApp('armando', 'assigned', 'armado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armando', null, 'armado'), false);
+    // La entrega ya salió en Odoo: manda Odoo
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'saldado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armado', 'done', 'armado'), false);
+
+    // Lo cargado después de validar no baja; lo que Odoo tenga de más, sube
+    assert.deepStrictEqual(
+        conservarArmadoDeApp(
+            [{ id: 1, qty_armada: '10.00' }, { id: 2, qty_armada: '0.00' }, { id: 3, qty_armada: '12.00' }],
+            [{ id: 1, qty: 0 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+        ),
+        [{ id: 1, qty: 10 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+    );
+}
+
 function testAuditarCancelarOrden() {
     const envio = (extra = {}) => ({ estado: 'pendiente', odoo_order_name: 'S00001', ...extra });
 
@@ -1010,6 +1067,8 @@ testLineasDeEnvio();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
 testOrdenesBorradasEnOdoo();
+testSeguirArmandoSobreviveAlSync();
+testReabrirArmado();
 testEtiquetaPendientes()
     .then(testSyncCancelaOrdenBorrada)
     .then(testSyncEnviadasSinTopeDeFecha)

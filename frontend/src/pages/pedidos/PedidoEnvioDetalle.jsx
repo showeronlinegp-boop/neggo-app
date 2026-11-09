@@ -95,9 +95,25 @@ export default function PedidoEnvioDetalle() {
 
     useEffect(() => () => detenerCamara(), [detenerCamara]);
 
+    // Odoo pudo mover el pedido de etapa mientras la pantalla seguía abierta: si la acción
+    // falló, se relee para no dejar botones que ya no valen
+    const etapaEnPantalla = useRef(null);
+    etapaEnPantalla.current = envio?.estado;
+    const revisarEtapa = useCallback(async () => {
+        const antes = etapaEnPantalla.current;
+        const res = await api.get(`/pedido-envios/${id}`);
+        if (!res.success || !res.data) return;
+        setEnvio(res.data);
+        if (res.data.estado !== antes) {
+            const etapa = ESTADO[res.data.estado]?.label || res.data.estado;
+            setError(`Este pedido cambió de etapa y ahora está en «${etapa}». Lo último que cargaste no se guardó.`);
+        }
+    }, [id]);
+
     const aplicar = (res, okMsg) => {
         if (!res.success) {
             setError(res.error || 'No se pudo guardar');
+            revisarEtapa();
             return false;
         }
         setEnvio(res.data);
@@ -117,13 +133,14 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(false);
         if (!res.success) {
             setError(res.error || `No encontré ${c} en este pedido`);
+            revisarEtapa();
             return;
         }
         setEnvio(res.data);
         setError(null);
         setAviso(`Sumé 1 de «${c}»`);
         setManual('');
-    }, [id, trabajando]);
+    }, [id, trabajando, revisarEtapa]);
 
     useBarcodeScan(escanear, {
         enabled: envio?.estado === 'controlando'
