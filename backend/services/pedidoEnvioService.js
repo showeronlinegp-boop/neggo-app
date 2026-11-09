@@ -1314,6 +1314,14 @@ async function obtener(id, { syncOdoo = false } = {}) {
     }
 }
 
+// Órdenes que seguimos en la app y Odoo ya no devolvió, ni buscándolas en todas las empresas:
+// las borraron allá. Sin I/O.
+function ordenesBorradasEnOdoo(esperadas, leidas, existentes) {
+    const leidasSet = new Set(leidas);
+    const existentesSet = new Set(existentes);
+    return esperadas.filter((id) => !leidasSet.has(id) && !existentesSet.has(id));
+}
+
 // Trae de Odoo las cotizaciones enviadas y las órdenes de venta confirmadas en la última
 // semana, y actualiza las que ya están acá. Los activos (para armar / controlar) vienen
 // con líneas; los controlados sólo con sus envíos, que alcanza para ver si se facturaron
@@ -1374,10 +1382,19 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
         cabeceras = cabeceras.filter((c) => !porId.has(c.id));
     }
     const orders = [...porId.values()];
+    const esperadas = [...activos, ...controlados];
+    const leidasEnOdoo = [...porId.keys(), ...cabeceras.map((c) => c.id)];
+    const sinLeer = esperadas.filter((id) => !leidasEnOdoo.includes(id));
+    const borradas = ordenesBorradasEnOdoo(
+        esperadas,
+        leidasEnOdoo,
+        await odooService.saleOrderIdsExistentes(sinLeer)
+    );
     const pendientes = await estadosPendientes(company);
 
     let creados = 0;
     let actualizados = 0;
+    let filasBorradas = [];
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -1505,6 +1522,22 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
                 await aplicarQtysDesdeEnvios(client, row.id, nuevo, cab);
             }
         }
+        if (borradas.length) {
+            // Se cancelan acá para que salgan del listado; la fila queda como registro
+            const { rows } = await client.query(
+                `SELECT id, odoo_sale_order_id, odoo_order_name, estado FROM pedido_envios
+                  WHERE company_key = $1 AND odoo_sale_order_id = ANY($2::int[])
+                    AND estado <> 'cancelado'`,
+                [company, borradas]
+            );
+            filasBorradas = rows;
+            await client.query(
+                `UPDATE pedido_envios
+                    SET estado = 'cancelado', odoo_state = 'cancel', updated_at = NOW()
+                  WHERE id = ANY($1::int[])`,
+                [filasBorradas.map((f) => f.id)]
+            );
+        }
         for (const p of pendientes) {
             await client.query(
                 `UPDATE pedido_envios SET pendientes_odoo_state = $2
@@ -1520,9 +1553,19 @@ async function syncDesdeOdoo(companyKey = 'neggo', userId = null) {
     } finally {
         client.release();
     }
+    for (const f of filasBorradas) {
+        console.log(`⚠️ Pedido ${f.odoo_order_name} ya no existe en Odoo: sale del listado`);
+        await logActividad(userId, 'ORDEN_BORRADA_EN_ODOO', f.id, {
+            odoo_sale_order_id: f.odoo_sale_order_id,
+            odoo_order_name: f.odoo_order_name,
+            estado_previo: f.estado,
+        });
+    }
     const leidos = orders.length + cabeceras.length;
-    await logActividad(userId, 'SYNC', null, { company, creados, actualizados, leidos, reabiertos: reabiertos.length });
-    return { creados, actualizados, leidos };
+    await logActividad(userId, 'SYNC', null, {
+        company, creados, actualizados, leidos, reabiertos: reabiertos.length, borradas: filasBorradas.length,
+    });
+    return { creados, actualizados, leidos, borradas: filasBorradas.length };
 }
 
 // Estado en Odoo de los pedidos de pendientes que siguen vivos (para la solapa Pendientes)
@@ -2063,6 +2106,7 @@ module.exports = {
     auditarCancelarOrden,
     listar,
     obtener,
+    ordenesBorradasEnOdoo,
     syncDesdeOdoo,
     cambiarEstado,
     marcarCotizacionEnviada,

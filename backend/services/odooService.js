@@ -1712,6 +1712,19 @@ async function getSaleOrderHeaders(companyKey, ids, { withMoves = true } = {}) {
     return attachDonePickingCounts(companyKey, mapped, { withMoves });
 }
 
+// De estos ids, cuáles siguen existiendo en Odoo en cualquier empresa. Sirve para no
+// confundir una orden borrada con una que se pasó de empresa.
+async function saleOrderIdsExistentes(ids) {
+    if (!ids || ids.length === 0) return [];
+    const companies = Object.values(await getCompanyIds());
+    return await callOdoo(
+        'sale.order',
+        'search',
+        [[['id', 'in', ids]]],
+        { context: { allowed_company_ids: companies } }
+    ) || [];
+}
+
 async function findSaleOrdersByOriginRef(companyKey, {
     origin,
     clientOrderRef,
@@ -1808,6 +1821,7 @@ module.exports = {
     getSaleOrders,
     getSaleOrdersWithLines,
     getSaleOrderHeaders,
+    saleOrderIdsExistentes,
     findSaleOrdersByOriginRef,
     writeSaleOrderLineQty,
     unlinkSaleOrderLines,
