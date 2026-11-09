@@ -33,6 +33,12 @@ class BaseScraper {
         return 'web';
     }
 
+    // Si un SKU no existe, buscar el mismo producto por nombre antes de crearlo.
+    // El scraper de listas lo apaga: ya reconoce cada fila antes de guardar (nota 175).
+    get buscaPorNombre() {
+        return true;
+    }
+
     // =============================================
     // Métodos que cada scraper DEBE implementar
     // =============================================
@@ -184,7 +190,7 @@ class BaseScraper {
                     // Antes de insertar, verificar duplicado por name_key
                     // (mismo producto levantado desde otra sección del catálogo).
                     // No aplica a la fuente Neggo: las variantes comparten nombre y son productos distintos.
-                    const { rows: existingByName } = source === 'neggo' ? { rows: [] } : await this.pool.query(
+                    const { rows: existingByName } = (source === 'neggo' || !this.buscaPorNombre) ? { rows: [] } : await this.pool.query(
                         `SELECT id, raw_price,
                                 ($3::timestamp IS NOT NULL AND last_scraped_at >= $3) AS visto_en_run
                          FROM supplier_products

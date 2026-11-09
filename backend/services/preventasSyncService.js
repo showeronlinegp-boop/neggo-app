@@ -3,6 +3,7 @@
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
+const { esFotoStorage, leerFotoStorage, urlDescargable } = require('./fotoStorage');
 const { motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
 // =============================================
@@ -670,7 +671,13 @@ async function getImageBase64(imageUrl) {
             [[parseInt(m[1], 10)], ['image_1920']], { context: { allowed_company_ids: [neggoId] } });
         return data?.[0]?.image_1920 || null;
     }
-    const res = await fetch(imageUrl);
+    // Foto de una lista (PDF / Excel) guardada en la app: se lee del disco (nota 175)
+    if (esFotoStorage(imageUrl)) {
+        const buffer = await leerFotoStorage(imageUrl);
+        if (!buffer) console.warn(`⚠️ No está la foto en el disco: ${imageUrl}`);
+        return buffer ? buffer.toString('base64') : null;
+    }
+    const res = await fetch(urlDescargable(imageUrl));
     if (!res.ok) {
         console.warn(`⚠️ No se pudo descargar imagen: ${imageUrl} (${res.status})`);
         return null;
