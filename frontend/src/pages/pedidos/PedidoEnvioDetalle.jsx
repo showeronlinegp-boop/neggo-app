@@ -262,6 +262,14 @@ export default function PedidoEnvioDetalle() {
         setFaltanteOpen(null);
     };
 
+    // Deshace el Archivar: lo reactiva en Odoo y lo vuelve a publicar en el PdV
+    const desarchivar = async (item) => {
+        setTrabajando(true);
+        const res = await api.post(`/pedido-envios/items/${item.id}/desarchivar`);
+        setTrabajando(false);
+        aplicar(res, `«${item.product_name}» está activo de nuevo en Odoo y publicado en el PdV.`);
+    };
+
     const confirmarSaldar = async () => {
         if (saldarEnVuelo.current) return;
         saldarEnVuelo.current = true;
@@ -526,10 +534,18 @@ export default function PedidoEnvioDetalle() {
                                         {it.internal_ref || it.barcode || 'sin código'}
                                     </div>
                                     {it.faltante_motivo && (
-                                        <div style={{ marginTop: 4 }}>
+                                        <div style={{ marginTop: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                                             <Badge tone={it.faltante_motivo === 'archivado' ? 'danger' : 'warn'} dot>
                                                 {it.faltante_motivo === 'archivado' ? 'Archivado' : it.faltante_motivo === 'reponer' ? 'A reponer' : 'Faltante'}
                                             </Badge>
+                                            {it.faltante_motivo === 'archivado' && envio.company_key === 'neggo' && (
+                                                <Button size="sm" variant="secondary" disabled={trabajando}
+                                                    onClick={() => desarchivar(it)}
+                                                    title="Lo reactiva en Odoo y lo vuelve a publicar en el PdV"
+                                                    leftIcon={<Icon.Refresh size={14} />}>
+                                                    Desarchivar
+                                                </Button>
+                                            )}
                                         </div>
                                     )}
                                     {envio.estado === 'controlando' && (
