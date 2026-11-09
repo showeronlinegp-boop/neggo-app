@@ -21,6 +21,7 @@ const {
     qtyDesdeMoves,
     fuentesDeQty,
     planIgualar,
+    esLineaEnvio,
     esCotizacionParaArmar,
     odooNecesitaConfirmar,
     odooYaConfirmada,
@@ -35,10 +36,16 @@ const {
     auditarEmpezarArmar,
     auditarSaldar,
     auditarCancelarOrden,
+    seguirArmandoEnApp,
+    conservarArmadoDeApp,
+    planReabrirArmado,
+    entregasAbiertas,
     condicionesListado,
     ordenListado,
     ETIQUETA_PENDIENTES,
     asegurarBackorder,
+    ordenesBorradasEnOdoo,
+    syncDesdeOdoo,
 } = require('./pedidoEnvioService');
 
 function testClamp() {
@@ -227,6 +234,58 @@ async function testEtiquetaPendientes() {
     } finally {
         Object.assign(odooService, originales);
         pool.query = queryOriginal;
+    }
+}
+
+function testOrdenesBorradasEnOdoo() {
+    // 1 se leyó, 2 se pasó de empresa (existe), 3 ya no está
+    assert.deepStrictEqual(ordenesBorradasEnOdoo([1, 2, 3], [1], [2]), [3]);
+    assert.deepStrictEqual(ordenesBorradasEnOdoo([], [], []), []);
+}
+
+// Nota 164: una orden borrada en Odoo se cancela sólo en la app; una que está en otra
+// empresa se deja como está. Odoo y la base mockeados.
+async function testSyncCancelaOrdenBorrada() {
+    const odooService = require('./odooService');
+    const pool = require('../config/database');
+    const originales = { ...odooService };
+    const queryOriginal = pool.query;
+    const connectOriginal = pool.connect;
+    const logOriginal = console.log;
+    const enTx = [];
+
+    pool.query = async (sql) => (sql.includes('SELECT odoo_sale_order_id, estado')
+        ? { rows: [
+            { odoo_sale_order_id: 10, estado: 'pendiente' },
+            { odoo_sale_order_id: 20, estado: 'saldado' },
+        ] }
+        : { rows: [] });
+    pool.connect = async () => ({
+        release() {},
+        query: async (sql, params) => {
+            enTx.push({ sql, params });
+            return sql.includes('SELECT id, odoo_sale_order_id, odoo_order_name')
+                ? { rows: [{ id: 7, odoo_sale_order_id: 10, odoo_order_name: 'S0010', estado: 'pendiente' }] }
+                : { rows: [] };
+        },
+    });
+    odooService.getSaleOrdersWithLines = async () => [];
+    odooService.getSaleOrderHeaders = async () => [];
+    odooService.saleOrderIdsExistentes = async () => [20];
+    console.log = () => {};
+
+    try {
+        const r = await syncDesdeOdoo('neggo', 1);
+        assert.strictEqual(r.borradas, 1);
+        const busqueda = enTx.find((q) => q.sql.includes('SELECT id, odoo_sale_order_id, odoo_order_name'));
+        assert.deepStrictEqual(busqueda.params[1], [10]);
+        const cancelar = enTx.find((q) => q.sql.includes("SET estado = 'cancelado'"));
+        assert.deepStrictEqual(cancelar.params[0], [7]);
+    } finally {
+        Object.assign(odooService, originales);
+        pool.query = queryOriginal;
+        pool.connect = connectOriginal;
+        console.log = logOriginal;
     }
 }
 
@@ -494,6 +553,59 @@ function testQtyDesdeMoves() {
         [{ sale_line_id: null, product_id: 50, quantity: 3, state: 'done' }]
     );
     assert.strictEqual(porProducto[0].qty, 3);
+}
+
+function testReabrirArmado() {
+    const items = [
+        { id: 1, odoo_line_id: 10 },
+        { id: 2, odoo_line_id: 20 },
+        { id: 3, odoo_line_id: 30, faltante_motivo: 'archivado' },
+        { id: 4, odoo_line_id: 40, faltante_motivo: 'reponer' },
+    ];
+    const lineas = [
+        { id: 10, quantity: 12, product_name: 'Armado completo' },
+        { id: 20, quantity: 10, product_name: 'Sin armar' },
+        { id: 30, quantity: 5, product_name: 'Archivado' },
+        { id: 40, quantity: 3, product_name: 'Incompleto' },
+        { id: 50, quantity: 1, product_name: 'Sin ítem en la app' },
+    ];
+    const hecho = new Map([[1, { arm: 12, ctrl: 0 }], [4, { arm: 1, ctrl: 0 }]]);
+    // La cantidad no cambia: se reescribe la de Odoo para que abra el envío con lo que falta
+    assert.deepStrictEqual(planReabrirArmado(lineas, items, hecho), [
+        { odoo_line_id: 20, qty: 10, product_name: 'Sin armar' },
+        { odoo_line_id: 40, qty: 3, product_name: 'Incompleto' },
+    ]);
+    // Todo armado: no hay nada que reabrir
+    assert.deepStrictEqual(planReabrirArmado(lineas.slice(0, 1), items, hecho), []);
+
+    const abiertas = entregasAbiertas([
+        { name: 'PICK', picking_type_code: 'internal', state: 'assigned' },
+        { name: 'OUT1', picking_type_code: 'outgoing', state: 'assigned' },
+        { name: 'OUT2', picking_type_code: 'outgoing', state: 'done' },
+        { name: 'OUT3', picking_type_code: 'outgoing', state: 'cancel' },
+        { name: 'OUT4', picking_type_code: 'outgoing', state: 'confirmed' },
+    ]);
+    assert.deepStrictEqual(abiertas.map((p) => p.name), ['OUT1', 'OUT4']);
+}
+
+function testSeguirArmandoSobreviveAlSync() {
+    // «Seguir armando» con el envío validado por la app: el sync no lo saca (nota 172)
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'armado'), true);
+    // Lo validaron directo en Odoo con la app armando: Odoo empuja a armado
+    assert.strictEqual(seguirArmandoEnApp('armando', 'assigned', 'armado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armando', null, 'armado'), false);
+    // La entrega ya salió en Odoo: manda Odoo
+    assert.strictEqual(seguirArmandoEnApp('armando', 'done', 'saldado'), false);
+    assert.strictEqual(seguirArmandoEnApp('armado', 'done', 'armado'), false);
+
+    // Lo cargado después de validar no baja; lo que Odoo tenga de más, sube
+    assert.deepStrictEqual(
+        conservarArmadoDeApp(
+            [{ id: 1, qty_armada: '10.00' }, { id: 2, qty_armada: '0.00' }, { id: 3, qty_armada: '12.00' }],
+            [{ id: 1, qty: 0 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+        ),
+        [{ id: 1, qty: 10 }, { id: 2, qty: 4 }, { id: 3, qty: 12 }]
+    );
 }
 
 function testAuditarCancelarOrden() {
@@ -837,10 +949,85 @@ function testAuditarIgnoraDownPayment() {
     assert.strictEqual(r.ok, true);
 }
 
+// Nota 168: envío y retiro son servicios sin stock: no se arman ni pasan a pendientes
+function testLineasDeEnvio() {
+    assert.strictEqual(esLineaEnvio({ product_name: 'Pick up in store' }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: '[Delivery_007] Standard delivery' }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Otro transporte', is_delivery: true }), true);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Descuento' }), false);
+    assert.strictEqual(esLineaEnvio({ product_name: 'Cable USB' }), false);
+
+    const plan = planIgualar({
+        lines: [
+            { id: 1, product_id: 10, product_name: 'Taza', quantity: 2, qty_delivered: 1, unit_price: 100 },
+            { id: 2, product_id: 32300, product_name: 'Pick up in store', quantity: 1, qty_delivered: 0, is_delivery: true },
+        ],
+    });
+    assert.deepStrictEqual(plan.writes.map((w) => w.odoo_line_id), [1]);
+    assert.deepStrictEqual(plan.pendientes.map((p) => p.odoo_line_id), [1]);
+
+    // La orden trae la línea de retiro y acá ya no está: no es un renglón "editado en Odoo"
+    const r = auditar(
+        [item()],
+        odooOrder({
+            lines: [
+                odooLine(),
+                odooLine({ id: 50, product_id: 32300, product_name: 'Pick up in store', quantity: 1, is_delivery: true }),
+            ],
+        })
+    );
+    assert.strictEqual(r.ok, true);
+    // Con qty_delivered en la línea de retiro tampoco frena el cierre
+    const conEntregada = auditar(
+        [item()],
+        odooOrder({
+            lines: [
+                odooLine(),
+                odooLine({ id: 50, product_id: 32300, product_name: 'Pick up in store', quantity: 1, qty_delivered: 1, is_delivery: true }),
+            ],
+        })
+    );
+    assert.strictEqual(conEntregada.ok, true);
+}
+
 function testAuditarSinOdoo() {
     const r = auditar([item()], null);
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.statusCode, 404);
+}
+
+// Nota 166: una cotización enviada de la web conserva la fecha del carrito original,
+// así que las enviadas se buscan sin tope de fecha. Odoo y la base mockeados.
+async function testSyncEnviadasSinTopeDeFecha() {
+    const odooService = require('./odooService');
+    const pool = require('../config/database');
+    const originales = { ...odooService };
+    const queryOriginal = pool.query;
+    const connectOriginal = pool.connect;
+    const logOriginal = console.log;
+    const busquedas = [];
+
+    pool.query = async () => ({ rows: [] });
+    pool.connect = async () => ({ release() {}, query: async () => ({ rows: [] }) });
+    odooService.getSaleOrdersWithLines = async (company, opciones) => {
+        busquedas.push(opciones);
+        return [];
+    };
+    odooService.getSaleOrderHeaders = async () => [];
+    console.log = () => {};
+
+    try {
+        await syncDesdeOdoo('neggo', 1);
+        const enviadas = busquedas.find((b) => (b.states || []).includes('sent'));
+        const confirmadas = busquedas.find((b) => (b.states || []).includes('sale'));
+        assert.strictEqual(enviadas.days, null);
+        assert.strictEqual(confirmadas.days, 7);
+    } finally {
+        Object.assign(odooService, originales);
+        pool.query = queryOriginal;
+        pool.connect = connectOriginal;
+        console.log = logOriginal;
+    }
 }
 
 testClamp();
@@ -876,8 +1063,14 @@ testAuditarEntregadaYLocked();
 testAuditarCancelada();
 testAuditarLineasDeMasYDeMenos();
 testAuditarIgnoraDownPayment();
+testLineasDeEnvio();
 testAuditarSinOdoo();
 testAuditarCancelarOrden();
+testOrdenesBorradasEnOdoo();
+testSeguirArmandoSobreviveAlSync();
+testReabrirArmado();
 testEtiquetaPendientes()
+    .then(testSyncCancelaOrdenBorrada)
+    .then(testSyncEnviadasSinTopeDeFecha)
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });

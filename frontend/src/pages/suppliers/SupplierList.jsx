@@ -15,6 +15,7 @@ import Toggle from '../../components/common/Toggle';
 import Badge from '../../components/common/Badge';
 import * as Icon from '../../components/common/icons';
 import PendingCategoriesModal from './PendingCategoriesModal';
+import CargarLista from './CargarLista';
 
 const PRICE_FORMAT_OPTIONS = [
     { value: 'ar',  label: 'Argentino — 1.234,56' },
@@ -23,16 +24,21 @@ const PRICE_FORMAT_OPTIONS = [
 
 // Fuente interna: los productos salen de Neggo (Odoo), no de la web del proveedor
 const NEGGO_SOURCE_KEY = 'neggo_scraper';
+// Lista de precios en Excel que se sube acá (nota 175): vale hasta que llegue la próxima
+const LISTA_SOURCE_KEY = 'lista_excel';
 
 const SOURCE_TYPES = [
     { value: 'web',     label: 'Web del proveedor' },
     { value: 'interno', label: 'Interno (Neggo)' },
+    { value: 'lista',   label: 'Lista Excel' },
     { value: 'ninguna', label: 'Sin fuente' },
 ];
 
 function sourceType(key) {
     if (!key) return 'ninguna';
-    return key === NEGGO_SOURCE_KEY ? 'interno' : 'web';
+    if (key === NEGGO_SOURCE_KEY) return 'interno';
+    if (key === LISTA_SOURCE_KEY) return 'lista';
+    return 'web';
 }
 
 function formatDate(iso) {
@@ -189,6 +195,7 @@ export default function SupplierList() {
         if (!row.scraper_key) return <Badge tone="muted">Sin fuente</Badge>;
         if (!row.scraper_available) return <Badge tone="warn">Falta el scraper · {row.scraper_key}</Badge>;
         if (row.scraper_key === NEGGO_SOURCE_KEY) return <Badge tone="primary">Interno (Neggo)</Badge>;
+        if (row.scraper_key === LISTA_SOURCE_KEY) return <Badge tone="primary">Lista Excel</Badge>;
         return <Badge tone="accent">Web · {row.scraper_key}</Badge>;
     }
 
@@ -399,6 +406,7 @@ export default function SupplierList() {
                         supplier={editingSupplier}
                         tokens={t}
                         onSave={handleSave}
+                        onListaCargada={loadSuppliers}
                     />
                 )}
             </Drawer>
@@ -553,7 +561,7 @@ function DeleteSupplierForm({ supplier, suppliers, tokens: t, onClose, onDeleted
 }
 
 // ─── Formulario del panel ───────────────────────────────────────────────────────
-function SupplierForm({ supplier, tokens: t, onSave }) {
+function SupplierForm({ supplier, tokens: t, onSave, onListaCargada }) {
     const [form, setForm] = useState({
         name:             supplier?.name || '',
         prefix:           supplier?.prefix || '',
@@ -584,7 +592,7 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
 
     // Scrapers web registrados; se conserva la clave guardada aunque no tenga scraper
     const webKeys = [...new Set([
-        ...scraperKeys.filter(k => k !== NEGGO_SOURCE_KEY),
+        ...scraperKeys.filter(k => k !== NEGGO_SOURCE_KEY && k !== LISTA_SOURCE_KEY),
         ...(sourceType(supplier?.scraper_key) === 'web' ? [supplier.scraper_key] : []),
     ])].sort();
     const webOptions = webKeys.map(k => ({
@@ -599,6 +607,7 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
         setErrors(prev => ({ ...prev, scraper_key: undefined, odoo_partner_id: undefined }));
         setForm(p => {
             const key = next === 'interno' ? NEGGO_SOURCE_KEY
+                : next === 'lista' ? LISTA_SOURCE_KEY
                 : next === 'web' ? (sourceType(p.scraper_key) === 'web' ? p.scraper_key : '')
                 : '';
             return { ...p, scraper_key: key, scrape_enabled: next === 'ninguna' ? false : p.scrape_enabled };
@@ -747,7 +756,21 @@ function SupplierForm({ supplier, tokens: t, onSave }) {
                     <span style={hint}>Sin fuente no se scrapea: los productos se cargan solo por ingreso.</span>
                 )}
 
-                {type !== 'ninguna' && (
+                {type === 'lista' && (
+                    supplier?.scraper_key === LISTA_SOURCE_KEY ? (
+                        <FormField label="Lista de precios" tokens={t}>
+                            <CargarLista supplier={supplier} tokens={t} onCargada={onListaCargada} />
+                        </FormField>
+                    ) : (
+                        <span style={hint}>
+                            Para proveedores sin web que mandan una lista en Excel cada tanto.
+                            Guardá el cambio y después subí la lista desde acá: cada carga funciona como un scrapeo
+                            y vale hasta que subas la próxima.
+                        </span>
+                    )
+                )}
+
+                {type !== 'ninguna' && type !== 'lista' && (
                     <label style={{ display: 'flex', alignItems: 'center', gap: t.space[3], cursor: scraperAvailable ? 'pointer' : 'default' }}>
                         <Toggle
                             checked={form.scrape_enabled && scraperAvailable}

@@ -12,13 +12,20 @@ const multer = require('multer');
 const pool = require('../config/database');
 const ingresoService = require('../services/ingresoService');
 const tablaMaestraService = require('../services/tablaMaestraService');
+const ingresoVinculos = require('../services/ingresoVinculosService');
 const odooService = require('../services/odooService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { detectMime } = require('../services/whatsappMessage');
-const { writeOdooImage, pipeOdooImage } = require('../services/odooImageService');
+const { writeOdooImage, pipeOdooImage, leerFotoDeOrigen } = require('../services/odooImageService');
 const { findByIds } = require('../services/whatsappRandom');
 const whatsappQueue = require('../services/whatsappQueue');
+
+// Trae una foto del proveedor y la guarda en el producto de Odoo
+async function copiarFotoAOdoo(odooProductId, imageUrl) {
+    const buffer = await leerFotoDeOrigen(imageUrl);
+    return writeOdooImage(odooProductId, buffer.toString('base64'));
+}
 
 // Primera línea de las publicaciones de WhatsApp que salen desde un ingreso
 const WHATSAPP_INGRESO_HEADER = 'Ingreso...';
@@ -300,9 +307,11 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
             [ingresoId]
         );
 
+        const vinculos = await ingresoVinculos.vinculosDelIngreso(ingresoId);
         const items = itemsFinal.rows.map(row => ({
             ...row,
             odoo_active: row.odoo_active_current ?? row.odoo_active,
+            vinculo: vinculos.get(row.id) || null,
         }));
 
         // Separar en 3 categorías para los tabs del frontend
@@ -498,10 +507,12 @@ router.patch('/:ingresoId/items/:itemId', authenticate, async (req, res) => {
             );
         }
 
-        // Restaurar item rechazado: vuelve a matched si tenía producto, pending si no
+        // Restaurar item rechazado: vuelve a matched si tenía producto, pending si no.
+        // Un producto "parecido" nunca se confirmó: vuelve a pending para que lo decida una persona.
         if (estado_item === 'restore') {
             const currentItem = itemResult.rows[0];
-            const estadoRestaurado = currentItem.odoo_product_id ? 'matched' : 'pending';
+            const estadoRestaurado = currentItem.odoo_product_id && currentItem.match_level !== 'fuzzy_name'
+                ? 'matched' : 'pending';
             await pool.query(
                 `UPDATE ingreso_items SET estado_item = $1, motivo_rechazo = NULL WHERE id = $2`,
                 [estadoRestaurado, itemId]
@@ -1130,27 +1141,32 @@ router.post('/:ingresoId/items/:itemId/upload-supplier-photo', authenticate, req
         if (!odoo_product_id) return fail(res, 'Item sin producto Odoo asignado', 400);
         if (!image_url)       return fail(res, 'No hay imagen del proveedor para este ítem', 400);
 
-        // Descargar imagen del proveedor
-        const imgResponse = await fetch(image_url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NeggoApp/1.0)' },
-            signal: AbortSignal.timeout(15000)
-        });
-
-        if (!imgResponse.ok) {
-            return fail(res, `No se pudo descargar la imagen (${imgResponse.status})`, 502);
-        }
-
-        const buffer = Buffer.from(await imgResponse.arrayBuffer());
-        if (!detectMime(buffer)) {
-            return fail(res, 'Lo que devolvió el proveedor no es una foto', 502);
-        }
-
-        const result = await writeOdooImage(odoo_product_id, buffer.toString('base64'));
+        const result = await copiarFotoAOdoo(odoo_product_id, image_url);
         console.log(`✅ Foto del proveedor subida a Odoo para producto ${odoo_product_id}`);
         return ok(res, { message: 'Imagen subida correctamente a Odoo', ...result });
     } catch (err) {
         console.error('❌ Error subiendo foto a Odoo:', err);
-        return fail(res, err.message, err.statusCode || 500);
+        return fail(res, err.message, err.status || err.statusCode || 500);
+    }
+});
+
+// =============================================
+// POST /api/ingreso/:ingresoId/items/:itemId/vinculo/foto
+// Usa la foto del artículo vinculado como foto del producto de Neggo (nota 162)
+// =============================================
+
+router.post('/:ingresoId/items/:itemId/vinculo/foto', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { odooProductId, imageUrl } = await ingresoVinculos.fotoDelVinculo({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+        });
+        const result = await copiarFotoAOdoo(odooProductId, imageUrl);
+        console.log(`✅ Foto del vínculo subida a Odoo para producto ${odooProductId}`);
+        return ok(res, { message: 'Foto guardada en Odoo', ...result });
+    } catch (err) {
+        console.error('❌ Error usando la foto del vínculo:', err.message);
+        return fail(res, err.message, err.status || err.statusCode || 500);
     }
 });
 
@@ -2029,8 +2045,70 @@ router.post('/:ingresoId/sync-odoo-prices', authenticate, requireRole('admin'), 
 // =============================================
 
 // =============================================
+// Vínculo con la oferta del proveedor desde la tarjeta (nota 162)
+// POST   /api/ingreso/:ingresoId/vinculos/exactos       — vincula solos los de código exacto
+// GET    /api/ingreso/:ingresoId/items/:itemId/ofertas  — sugerencias o búsqueda (?q=)
+// POST   /api/ingreso/:ingresoId/items/:itemId/vinculo  — vincula la oferta elegida
+// DELETE /api/ingreso/:ingresoId/items/:itemId/vinculo  — deshace un vínculo generado desde el ingreso
+// =============================================
+
+// Responde el error del servicio con su estado; lo inesperado va como 500
+function failVinculo(res, err, accion) {
+    if (err.status) return fail(res, err.message, err.status);
+    console.error(`❌ Error al ${accion}:`, err);
+    return fail(res, `Error al ${accion}`, 500);
+}
+
+router.post('/:ingresoId/vinculos/exactos', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.vincularExactos(parseInt(req.params.ingresoId, 10), req.user.id));
+    } catch (err) {
+        return failVinculo(res, err, 'vincular por código exacto');
+    }
+});
+
+router.get('/:ingresoId/items/:itemId/ofertas', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.ofertasDeRenglon({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            q: String(req.query.q || ''),
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'buscar las ofertas del proveedor');
+    }
+});
+
+router.post('/:ingresoId/items/:itemId/vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplier_product_id, 10);
+    if (!supplierProductId) return fail(res, 'Falta supplier_product_id', 400);
+    try {
+        return ok(res, await ingresoVinculos.vincularOferta({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            supplierProductId,
+            userId: req.user.id,
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'vincular la oferta');
+    }
+});
+
+router.delete('/:ingresoId/items/:itemId/vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        return ok(res, await ingresoVinculos.deshacerVinculo({
+            ingresoId: parseInt(req.params.ingresoId, 10),
+            itemId: parseInt(req.params.itemId, 10),
+            userId: req.user.id,
+        }));
+    } catch (err) {
+        return failVinculo(res, err, 'deshacer el vínculo');
+    }
+});
+
+// =============================================
 // GET /api/ingreso/:ingresoId/vinculos-a-revisar
-// Renglones hechos a mano (con oferta + producto de Odoo) que todavía no se revisaron nunca.
+// Renglones a mano o con oferta por nombre parecido que todavía no se revisaron y no tienen vínculo.
 // Se tildan en el paso previo a confirmar; solo los tildados entran a la tabla maestra.
 // =============================================
 
@@ -2173,10 +2251,9 @@ router.delete('/:ingresoId/items/:itemId/mapping', authenticate, requireRole('ad
 
 router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => {
     const { ingresoId } = req.params;
-    const { baseCode } = require('../utils/textMatch');
-
-    // Normaliza un internal_ref quitando guiones y espacios, en mayúsculas
-    const normRef = (s) => (s || '').replace(/[-\s]/g, '').toUpperCase();
+    const { normClave: normRef, clavesPreventa } = require('../services/preventaClaves');
+    // Switch de la pestaña Preventa: suma órdenes de venta sin factura a las cotizaciones
+    const incluirOrdenes = req.query.incluir_ordenes === '1';
 
     try {
         // Prefijo del proveedor del ingreso
@@ -2218,7 +2295,12 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
         }
 
         // Cotizaciones enviadas de Odoo Preventas (ya traen default_code por producto; los borradores no cuentan)
-        const quotations = await require('../services/odooService').getPreventasQuotations(['sent']);
+        const odooService = require('../services/odooService');
+        const [cotizaciones, ordenesSinFactura] = await Promise.all([
+            odooService.getPreventasQuotations(['sent']),
+            incluirOrdenes ? odooService.getPreventasQuotations(['sale'], { sinFactura: true }) : [],
+        ]);
+        const quotations = [...cotizaciones, ...ordenesSinFactura];
 
         // Enriquecer líneas con datos del cache local:
         // external_id en getPreventasQuotations viene del default_code de Odoo (internal_ref sin PRE).
@@ -2289,18 +2371,16 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
 
         // DEBUG: mostrar muestra de ítems y sus claves construidas
         const muestraItems = itemsUnicos.slice(0, 5).map(i => {
-            const cb = baseCode(i.codigo || '');
-            return `  desc="${i.descripcion}" codigo="${i.codigo}" baseCode="${cb}" claveConPref="PRE${supplierPrefix}${cb}"`;
+            const { conPrefijo } = clavesPreventa(i.codigo, supplierPrefix);
+            return `  desc="${i.descripcion}" codigo="${i.codigo}" claves="${conPrefijo.join(', ')}"`;
         });
         console.log('🔍 Muestra de ítems ingreso:\n' + muestraItems.join('\n'));
 
         const result = [];
 
         for (const item of itemsUnicos) {
-            // Clave PRE + PREFIJO + código_base (sin guiones)
-            const codigoBase    = baseCode(item.codigo || '');
-            const clavePrePref  = `PRE${supplierPrefix}${codigoBase}`; // ej: PREIMPINF1093
-            const claveBaseSola = `PRE${codigoBase}`;                  // fallback sin prefijo proveedor
+            // Claves PRE + PREFIJO + código_base; sinPrefijo es el respaldo sin prefijo de proveedor
+            const { conPrefijo, sinPrefijo } = clavesPreventa(item.codigo, supplierPrefix);
             const matcheados = [];
 
             for (const line of todasLasLineas) {
@@ -2310,11 +2390,11 @@ router.get('/:ingresoId/preventa-odoo-match', authenticate, async (req, res) => 
                 // 1. Comparación por código contra TODAS las referencias del producto:
                 //    ext_id_clean (ir.model.data), internal_ref (cache) y default_code (live).
                 //    Esto cubre el caso donde default_code no tiene prefijo PRE pero ext_id sí.
-                if (codigoBase.length >= 2 && line.ref_candidates?.size > 0) {
-                    if (line.ref_candidates.has(clavePrePref)) {
+                if (line.ref_candidates?.size > 0) {
+                    if (conPrefijo.some(clave => line.ref_candidates.has(clave))) {
                         matchType  = 'pre_prefijo_codigo';
                         matchScore = 1.0;
-                    } else if (line.ref_candidates.has(claveBaseSola)) {
+                    } else if (sinPrefijo.some(clave => line.ref_candidates.has(clave))) {
                         matchType  = 'pre_codigo';
                         matchScore = 0.97;
                     }

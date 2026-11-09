@@ -95,9 +95,25 @@ export default function PedidoEnvioDetalle() {
 
     useEffect(() => () => detenerCamara(), [detenerCamara]);
 
+    // Odoo pudo mover el pedido de etapa mientras la pantalla seguía abierta: si la acción
+    // falló, se relee para no dejar botones que ya no valen
+    const etapaEnPantalla = useRef(null);
+    etapaEnPantalla.current = envio?.estado;
+    const revisarEtapa = useCallback(async () => {
+        const antes = etapaEnPantalla.current;
+        const res = await api.get(`/pedido-envios/${id}`);
+        if (!res.success || !res.data) return;
+        setEnvio(res.data);
+        if (res.data.estado !== antes) {
+            const etapa = ESTADO[res.data.estado]?.label || res.data.estado;
+            setError(`Este pedido cambió de etapa y ahora está en «${etapa}». Lo último que cargaste no se guardó.`);
+        }
+    }, [id]);
+
     const aplicar = (res, okMsg) => {
         if (!res.success) {
             setError(res.error || 'No se pudo guardar');
+            revisarEtapa();
             return false;
         }
         setEnvio(res.data);
@@ -117,13 +133,14 @@ export default function PedidoEnvioDetalle() {
         setTrabajando(false);
         if (!res.success) {
             setError(res.error || `No encontré ${c} en este pedido`);
+            revisarEtapa();
             return;
         }
         setEnvio(res.data);
         setError(null);
         setAviso(`Sumé 1 de «${c}»`);
         setManual('');
-    }, [id, trabajando]);
+    }, [id, trabajando, revisarEtapa]);
 
     useBarcodeScan(escanear, {
         enabled: envio?.estado === 'controlando'
@@ -243,6 +260,14 @@ export default function PedidoEnvioDetalle() {
         };
         if (!aplicar(res, `«${item.product_name}» ${labels[motivo]}.`)) return;
         setFaltanteOpen(null);
+    };
+
+    // Deshace el Archivar: lo reactiva en Odoo y lo vuelve a publicar en el PdV
+    const desarchivar = async (item) => {
+        setTrabajando(true);
+        const res = await api.post(`/pedido-envios/items/${item.id}/desarchivar`);
+        setTrabajando(false);
+        aplicar(res, `«${item.product_name}» está activo de nuevo en Odoo y publicado en el PdV.`);
     };
 
     const confirmarSaldar = async () => {
@@ -509,10 +534,18 @@ export default function PedidoEnvioDetalle() {
                                         {it.internal_ref || it.barcode || 'sin código'}
                                     </div>
                                     {it.faltante_motivo && (
-                                        <div style={{ marginTop: 4 }}>
+                                        <div style={{ marginTop: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                                             <Badge tone={it.faltante_motivo === 'archivado' ? 'danger' : 'warn'} dot>
                                                 {it.faltante_motivo === 'archivado' ? 'Archivado' : it.faltante_motivo === 'reponer' ? 'A reponer' : 'Faltante'}
                                             </Badge>
+                                            {it.faltante_motivo === 'archivado' && envio.company_key === 'neggo' && (
+                                                <Button size="sm" variant="secondary" disabled={trabajando}
+                                                    onClick={() => desarchivar(it)}
+                                                    title="Lo reactiva en Odoo y lo vuelve a publicar en el PdV"
+                                                    leftIcon={<Icon.Refresh size={14} />}>
+                                                    Desarchivar
+                                                </Button>
+                                            )}
                                         </div>
                                     )}
                                     {envio.estado === 'controlando' && (

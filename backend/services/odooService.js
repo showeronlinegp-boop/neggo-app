@@ -894,11 +894,19 @@ function moveDesdeMolde(molde, { pickingId, qty, companyId, picking = null }) {
     };
 }
 
+// Odoo 19 en 2 pasos: el move del Recolectar lleva el destino final (clientes) y la
+// entrega se crea al validarlo. Pasa cuando el destino final no es la salida del envío.
+function empujaAlValidar(molde, picking) {
+    const final = m2oId(molde?.location_final_id);
+    const salida = m2oId(picking?.location_dest_id) || m2oId(molde?.location_dest_id);
+    return !!final && !!salida && final !== salida;
+}
+
 /**
  * Agrega al envío abierto (Recolectar, o entrega en 1 paso) las unidades de
  * líneas que no tienen move ahí: lo incompleto de un envío anterior validado
  * sin backorder. En 2 pasos también suma esas unidades a la entrega abierta,
- * para que el control las pueda entregar. adds: [{ sale_line_id, qty, product_name }].
+ * para que el control las pueda entregar; si no hay, Odoo la arma al validar. adds: [{ sale_line_id, qty, product_name }].
  */
 async function addPickingMoves(pickingId, adds, companyKey) {
     const companyId = await resolveCompanyId(companyKey);
@@ -948,6 +956,9 @@ async function addPickingMoves(pickingId, adds, companyKey) {
         if (qty <= 0) continue;
         const nombre = add.product_name || `la línea ${add.sale_line_id}`;
         const deLinea = moves.filter((m) => m2oId(m.sale_line_id) === add.sale_line_id);
+        if (!deLinea.length) {
+            throw new Error(`«${nombre}» no mueve stock en Odoo (suele ser un servicio, no mercadería). Dejalo en 0 para terminar el armado`);
+        }
         const molde = deLinea.find((m) => m2oId(m.picking_type_id) === tipoEnvio);
         if (!molde) throw new Error(`No encontré cómo sumar «${nombre}» al envío ${picking.name}`);
 
@@ -967,9 +978,11 @@ async function addPickingMoves(pickingId, adds, companyKey) {
                     pickingId: entrega.id, qty, companyId, picking: entrega,
                 })], kwargs);
                 entregasTocadas.add(entrega.id);
-            } else {
+            } else if (!empujaAlValidar(molde, picking)) {
                 throw new Error(`No encontré la entrega abierta para sumar «${nombre}»`);
             }
+            // Si no, el move va sin destino: Odoo crea (o completa) la entrega al validar
+            // el Recolectar, igual que con lo que él mismo reabre
         }
 
         const vals = moveDesdeMolde(molde, { pickingId, qty, companyId, picking });
@@ -1410,6 +1423,27 @@ function normalizeQuotationLine(line, defaultCodes) {
     };
 }
 
+// Orden que sigue viva: sin factura (ni parcial ni borrador) y sin comprobante del POS.
+function ordenSinFacturaNiPos(orden) {
+    return orden.invoice_status !== 'invoiced'
+        && contarFacturas(orden) === 0
+        && !(Number(orden.pos_order_count) > 0);
+}
+
+// Línea de orden de venta con lo que falta entregar; null si no queda nada.
+function lineaOrdenPendiente(line, defaultCodes) {
+    const normalized = normalizeQuotationLine(line, defaultCodes);
+    if (!normalized) return null;
+    const pedida = Number(line.product_uom_qty) || 0;
+    const pendiente = pedida - (Number(line.qty_delivered) || 0);
+    if (pendiente <= 0) return null;
+    return {
+        ...normalized,
+        quantity: pendiente,
+        subtotal: (Number(line.price_subtotal) || 0) * (pendiente / pedida),
+    };
+}
+
 const WEEKLY_SALES_TTL_MS = 10 * 60 * 1000;
 const WEEKLY_SALES_ERROR_TTL_MS = 2 * 60 * 1000;
 let weeklySoldCache = null;
@@ -1501,24 +1535,35 @@ async function getWeeklySoldQty(companyKey = 'neggo') {
  * con sus líneas de productos. Pagina de a 200 hasta agotarlas.
  *
  * @param {string[]} [states] - estados de sale.order a traer
+ * @param {{ sinFactura?: boolean }} [opts] - sinFactura: solo órdenes sin factura ni POS,
+ *   con la cantidad que falta entregar en cada línea
  * @returns {Promise<Array>}
  */
-async function getPreventasQuotations(states = ['draft', 'sent']) {
+async function getPreventasQuotations(states = ['draft', 'sent'], { sinFactura = false } = {}) {
     const companyId = await resolveCompanyId('preventas');
     const context = { allowed_company_ids: [companyId] };
 
-    const orders = await readAllPages((offset, limit) => callOdoo(
+    const domain = [['state', 'in', states], ['company_id', '=', companyId]];
+    const fields = ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'];
+    if (sinFactura) {
+        // invoice_count no está almacenado en Odoo: se filtra en Node, no en el dominio
+        domain.push(['invoice_status', '!=', 'invoiced']);
+        fields.push('invoice_status', 'invoice_count', 'invoice_ids', 'pos_order_count');
+    }
+
+    const leidas = await readAllPages((offset, limit) => callOdoo(
         'sale.order',
         'search_read',
-        [[['state', 'in', states], ['company_id', '=', companyId]]],
+        [domain],
         {
-            fields: ['id', 'name', 'partner_id', 'date_order', 'amount_total', 'amount_untaxed', 'state', 'order_line'],
+            fields,
             order:  'id asc',
             limit,
             offset,
             context,
         }
     ));
+    const orders = sinFactura ? leidas.filter(ordenSinFacturaNiPos) : leidas;
 
     if (orders.length === 0) return [];
 
@@ -1527,7 +1572,7 @@ async function getPreventasQuotations(states = ['draft', 'sent']) {
         ? await readByIds(
             'sale.order.line',
             allLineIds,
-            ['id', 'order_id', 'product_id', 'product_uom_qty', 'price_unit', 'price_subtotal', 'name'],
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'price_unit', 'price_subtotal', 'name', ...(sinFactura ? ['qty_delivered'] : [])],
             context
         )
         : [];
@@ -1562,9 +1607,11 @@ async function getPreventasQuotations(states = ['draft', 'sent']) {
     let skipped = 0;
     for (const line of lines) {
         const orderId = Array.isArray(line.order_id) ? line.order_id[0] : line.order_id;
-        const normalized = normalizeQuotationLine(line, defaultCodes);
+        const normalized = sinFactura
+            ? lineaOrdenPendiente(line, defaultCodes)
+            : normalizeQuotationLine(line, defaultCodes);
         if (!normalized) {
-            skipped++;
+            if (!Array.isArray(line.product_id)) skipped++;
             continue;
         }
         if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
@@ -1642,7 +1689,7 @@ async function getSaleOrdersWithLines(companyKey, {
         ? await readByIds(
             'sale.order.line',
             allLineIds,
-            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'qty_invoiced', 'price_unit', 'price_subtotal', 'name'],
+            ['id', 'order_id', 'product_id', 'product_uom_qty', 'qty_delivered', 'qty_invoiced', 'price_unit', 'price_subtotal', 'name', 'is_delivery'],
             context
         )
         : [];
@@ -1662,6 +1709,7 @@ async function getSaleOrdersWithLines(companyKey, {
             qty_invoiced:  Number(line.qty_invoiced) || 0,
             unit_price:    Number(line.price_unit) || 0,
             subtotal:      Number(line.price_subtotal) || 0,
+            is_delivery:   !!line.is_delivery,
         });
     }
 
@@ -1712,6 +1760,19 @@ async function getSaleOrderHeaders(companyKey, ids, { withMoves = true } = {}) {
     return attachDonePickingCounts(companyKey, mapped, { withMoves });
 }
 
+// De estos ids, cuáles siguen existiendo en Odoo en cualquier empresa. Sirve para no
+// confundir una orden borrada con una que se pasó de empresa.
+async function saleOrderIdsExistentes(ids) {
+    if (!ids || ids.length === 0) return [];
+    const companies = Object.values(await getCompanyIds());
+    return await callOdoo(
+        'sale.order',
+        'search',
+        [[['id', 'in', ids]]],
+        { context: { allowed_company_ids: companies } }
+    ) || [];
+}
+
 async function findSaleOrdersByOriginRef(companyKey, {
     origin,
     clientOrderRef,
@@ -1743,13 +1804,15 @@ async function findSaleOrdersByOriginRef(companyKey, {
     }));
 }
 
-async function writeSaleOrderLineQty(lineId, qty, companyKey) {
+// sinAbastecer: la cantidad refleja lo que ya salió, así que Odoo no tiene que abrir envíos.
+// Sin esto, al subir una línea confirmada Odoo compara contra el Recolectar y genera uno nuevo.
+async function writeSaleOrderLineQty(lineId, qty, companyKey, { sinAbastecer = false } = {}) {
     const companyId = await resolveCompanyId(companyKey);
     await callOdoo(
         'sale.order.line',
         'write',
         [[lineId], { product_uom_qty: qty }],
-        withCompany(companyId)
+        withCompany(companyId, sinAbastecer ? { context: { skip_procurement: true } } : {})
     );
 }
 
@@ -1792,6 +1855,7 @@ module.exports = {
     getPickingMoves,
     writePickingMoveQuantities,
     addPickingMoves,
+    empujaAlValidar,
     validateSalePicking,
     getPickingBackorder,
     getSalidaDePicking,
@@ -1808,10 +1872,13 @@ module.exports = {
     getSaleOrders,
     getSaleOrdersWithLines,
     getSaleOrderHeaders,
+    saleOrderIdsExistentes,
     findSaleOrdersByOriginRef,
     writeSaleOrderLineQty,
     unlinkSaleOrderLines,
     getPreventasQuotations,
+    ordenSinFacturaNiPos,
+    lineaOrdenPendiente,
     getWeeklySoldQty,
     readAllPages,
     normalizeQuotationLine,

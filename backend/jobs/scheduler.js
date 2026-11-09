@@ -39,6 +39,8 @@ async function initScheduler(pool) {
                 FROM suppliers
                 WHERE active = true
                   AND scrape_enabled = true
+                  -- Una lista Excel vale hasta que llegue la próxima (nota 175)
+                  AND scraper_key IS DISTINCT FROM 'lista_excel'
                   AND (last_scraped_at IS NULL OR last_scraped_at < NOW() - INTERVAL '7 days')
                 ORDER BY last_scraped_at ASC NULLS FIRST
             `);

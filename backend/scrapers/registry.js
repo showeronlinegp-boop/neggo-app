@@ -14,6 +14,7 @@ const ToysPalaceScraper = require('./toyspalace');
 const OdooShopScraper = require('./odooshop');
 const BlumenScraper = require('./blumen');
 const NeggoScraper = require('./neggoScraper');
+const ListaScraper = require('./listaScraper');
 
 /**
  * Mapa de scraper_key → clase scraper.
@@ -37,6 +38,8 @@ const SCRAPER_REGISTRY = {
     'blumen': BlumenScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
+    // Lista de precios en Excel que se sube en Proveedores (nota 175)
+    'lista_excel': ListaScraper,
 };
 
 /**

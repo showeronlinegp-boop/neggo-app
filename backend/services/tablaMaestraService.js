@@ -609,11 +609,13 @@ function metodoDesdeIngreso(item) {
  * mismo proveedor) y a mano desde scripts/tablaMaestra.js.
  * Reglas:
  *   - Solo Neggo y ofertas web (Precompras es base de costos, no se vincula).
- *   - Renglón manual: solo si se tildó en la revisión (vinculo_revisado_at).
+ *   - Renglón manual o por nombre parecido: solo si se tildó en la revisión (vinculo_revisado_at).
+ *     Sin preguntar entra únicamente el código exacto (nota 162).
  *   - Oferta borrada por el scraper (quedó NULL): si era por código, se busca de nuevo por SKU.
  *   - Sugerido → confirmado (se anota el acierto del método que lo propuso).
- *   - Rechazado antes de confirmar el ingreso → gana el ingreso. Rechazado después ("Borrar
- *     vinculación") → se respeta y no se vuelve a crear.
+ *   - Par rechazado: un renglón sin tildar nunca lo revive (así "Deshacer" no se pierde en el
+ *     próximo ingreso). Tildado en la revisión gana sobre un rechazo anterior a esa confirmación;
+ *     un rechazo posterior ("Borrar vinculación") se respeta.
  *   - No toca es_habitual.
  * @param {{ ingresoId?: number, supplierId?: number, userId?: number }} opts
  * @returns {Promise<{ renglones: number, creados: number, confirmados: number, sin_cambios: number, conflictos: number }>}
@@ -644,9 +646,10 @@ async function vincularDesdeIngresos({ ingresoId = null, supplierId = null, user
                  ) rec ON true
                  WHERE ii.estado_item = 'matched' AND ii.odoo_product_id IS NOT NULL
                    AND COALESCE(ii.odoo_company, 'neggo') = 'neggo'
-                   -- Renglón manual: solo si se tildó en la revisión
+                   -- Renglón manual o por nombre parecido: solo si se tildó en la revisión
                    AND (ii.vinculo_revisado_at IS NOT NULL
-                        OR (COALESCE(ii.match_level, '') <> 'manual' AND COALESCE(ii.supplier_match_level, '') <> 'manual'))
+                        OR (COALESCE(ii.match_level, '') <> 'manual'
+                            AND COALESCE(ii.supplier_match_level, '') NOT IN ('manual', 'fuzzy')))
                    AND ($1::int IS NULL OR im.id = $1)
                    AND ($2::int IS NULL OR im.supplier_id = $2)
              ) c
@@ -655,7 +658,7 @@ async function vincularDesdeIngresos({ ingresoId = null, supplierId = null, user
                  SELECT 1 FROM match_decisiones md
                  WHERE md.supplier_product_id = c.supplier_product_id AND md.odoo_product_id = c.odoo_product_id
                    AND md.odoo_company = 'neggo' AND md.decision = 'rechazado'
-                   AND md.created_at > COALESCE(c.confirmed_at, '-infinity'))
+                   AND (c.vinculo_revisado_at IS NULL OR md.created_at > COALESCE(c.confirmed_at, '-infinity')))
              ORDER BY c.supplier_product_id, c.odoo_product_id, c.confirmed_at DESC NULLS LAST, c.item_id DESC`,
             [ingresoId, supplierId, userId]
         );
@@ -784,7 +787,9 @@ function resumirOfertas(filas, { costo = null, ahora = new Date() } = {}) {
             precio: f.precio_comparable == null ? null : Number(f.precio_comparable),
             pack: f.pack_cantidad || 1,
             disponible: !!f.available,
-            precio_viejo: !f.last_scraped_at || new Date(f.last_scraped_at).getTime() < limite,
+            // Una lista Excel vale hasta que llegue la próxima: nunca es "precio viejo" (nota 175)
+            precio_viejo: !f.es_lista && (!f.last_scraped_at || new Date(f.last_scraped_at).getTime() < limite),
+            es_lista: !!f.es_lista,
             scrapeado_at: f.last_scraped_at || null,
             es_principal: !!f.es_principal,
             es_habitual: !!f.es_habitual,
@@ -831,10 +836,12 @@ async function ofertasPorProducto(productos, db = pool) {
     const { rows } = await db.query(
         `SELECT pm.odoo_product_id, v.supplier_product_id, v.supplier_id, v.proveedor, v.proveedor_odoo, v.name, v.sku, v.precio_comparable,
                 v.pack_cantidad, v.available, v.last_scraped_at, sp.product_url, pm.es_habitual,
-                (opc.vendor_name = v.proveedor_odoo) AS es_principal
+                (opc.vendor_name = v.proveedor_odoo) AS es_principal,
+                (sx.scraper_key = 'lista_excel') AS es_lista
          FROM product_mappings pm
          JOIN v_ofertas_comparables v ON v.supplier_product_id = pm.supplier_product_id
          JOIN supplier_products sp ON sp.id = pm.supplier_product_id
+         LEFT JOIN suppliers sx ON sx.id = sp.supplier_id
          JOIN odoo_products_cache opc ON opc.odoo_id = pm.odoo_product_id AND opc.company = 'neggo'
          WHERE pm.odoo_company = 'neggo' AND pm.estado = 'confirmado' AND v.source <> 'neggo'
            AND pm.odoo_product_id = ANY($1::int[])`,

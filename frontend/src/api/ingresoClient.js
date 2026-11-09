@@ -41,8 +41,22 @@ export const ingresoAPI = {
   confirmIngreso: (ingresoId, body = {}) =>
     api.post(`/ingreso/${ingresoId}/confirm`, body),
 
+  /** Vincula solos los renglones con oferta por código exacto. @returns { success, data: { creados } } */
+  vincularExactos: (ingresoId) => api.post(`/ingreso/${ingresoId}/vinculos/exactos`, {}),
+
+  /** Sugerencias (sin q) o búsqueda entre las ofertas del proveedor. @returns { success, data: { catalogo, ofertas } } */
+  getOfertasRenglon: (ingresoId, itemId, q = '') =>
+    api.get(`/ingreso/${ingresoId}/items/${itemId}/ofertas`, q ? { q } : {}),
+
+  vincularOferta: (ingresoId, itemId, supplierProductId) =>
+    api.post(`/ingreso/${ingresoId}/items/${itemId}/vinculo`, { supplier_product_id: supplierProductId }),
+
+  usarFotoVinculo: (ingresoId, itemId) => api.post(`/ingreso/${ingresoId}/items/${itemId}/vinculo/foto`, {}),
+
+  deshacerVinculo: (ingresoId, itemId) => api.del(`/ingreso/${ingresoId}/items/${itemId}/vinculo`),
+
   /**
-   * Renglones hechos a mano (con oferta + producto de Odoo) que hay que revisar antes de confirmar
+   * Renglones a mano o por nombre parecido (con oferta + producto de Odoo) que hay que revisar antes de confirmar
    * @returns { success, data: [{ item_id, codigo, descripcion, odoo_product_id, odoo_product_name, internal_ref, sku, oferta_nombre, oferta_precio }] }
    */
   getVinculosARevisar: (ingresoId) => api.get(`/ingreso/${ingresoId}/vinculos-a-revisar`),
@@ -65,9 +79,11 @@ export const ingresoAPI = {
   getPreventaItems: (ingresoId) => api.get(`/ingreso/${ingresoId}/preventa-items`),
 
   /**
-   * Compara ítems del ingreso con cotizaciones abiertas en Odoo Preventas (en vivo)
+   * Compara ítems del ingreso con cotizaciones abiertas en Odoo Preventas (en vivo).
+   * Con incluirOrdenes suma las órdenes de venta sin factura.
    */
-  getPreventaOdooMatch: (ingresoId) => api.get(`/ingreso/${ingresoId}/preventa-odoo-match`),
+  getPreventaOdooMatch: (ingresoId, { incluirOrdenes = false } = {}) =>
+    api.get(`/ingreso/${ingresoId}/preventa-odoo-match${incluirOrdenes ? '?incluir_ordenes=1' : ''}`),
 
   /**
    * Sincroniza precios actuales de Odoo → cache local + precio_odoo_anterior en ingreso_items
