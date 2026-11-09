@@ -2,7 +2,7 @@
 // El recomputo está en preventasMatchService.js
 
 const { callOdoo, getCompanyIds } = require('../config/odoo');
-const { COSTO_EXPR, PRECIO_EXPR } = require('./preventasMatchService');
+const { COSTO_EXPR, PRECIO_EXPR, isRecomputing } = require('./preventasMatchService');
 const { esFotoStorage, leerFotoStorage, urlDescargable } = require('./fotoStorage');
 const { motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
 
@@ -25,6 +25,14 @@ const GRUPO_ESTADOS = {
 const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
 const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
+
+// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor sí tiene una
+// (no el cartel "sin foto" de su web). Fuera de Preventas o por archivar no cuentan (nota 182).
+// Necesita pss, sp y opc en el FROM.
+const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
+    AND opc.active = true AND opc.has_image = false
+    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
+    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo')`;
 
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
@@ -62,10 +70,16 @@ function agregarBusquedaYVinculo(where, params, { matchType, search } = {}) {
 }
 
 async function getProductsToSync(pool, filters = {}) {
-    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor } = filters;
+    const { limit = 100, offset = 0, supplierId, grupo, estado, matchType, search, sinVendor, sinFoto, supplierProductId } = filters;
     const where = [];
     const params = [];
     let idx = 1;
+
+    // Una sola oferta (para devolver la fila cómo quedó después de una decisión)
+    if (supplierProductId) {
+        where.push(`pss.supplier_product_id = $${idx++}`);
+        params.push(parseInt(supplierProductId, 10));
+    }
 
     // estado tiene prioridad sobre grupo (más específico)
     if (estado && estado !== 'todos') {
@@ -84,6 +98,7 @@ async function getProductsToSync(pool, filters = {}) {
         where.push(`pss.supplier_product_id IS NOT NULL`);
         where.push(`(opc.vendor_name IS NULL OR opc.vendor_name = '')`);
     }
+    if (sinFoto) where.push(SIN_FOTO_SQL);
     idx = agregarBusquedaYVinculo(where, params, { matchType, search });
 
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -129,6 +144,8 @@ async function getProductsToSync(pool, filters = {}) {
             opc.active      AS odoo_active,
             opc.categ_name  AS odoo_categoria,
             opc.vendor_name AS odoo_vendor_name,
+            opc.template_id AS odoo_template_id,
+            opc.has_image   AS odoo_has_image,
             ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
@@ -161,7 +178,7 @@ async function getProductsToSync(pool, filters = {}) {
     }
 
     // Qué haría el "Aplicar" en bloque con estos mismos filtros
-    const aplicables = sinVendor ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
+    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
 
     return { rows, total: countRows[0]?.total || 0, aplicables };
 }
@@ -207,7 +224,7 @@ async function getResumen(pool, supplierId = null) {
         ? 'AND pss.supplier_id = $1'
         : '';
 
-    const [statsRes, totalRes, lastRes, matchRes, scraperTotalRes, scraperMatchRes, scraperDisponiblesRes, odooTotalRes, odooActiveRes, sinVendorRes] = await Promise.all([
+    const [statsRes, totalRes, lastRes, matchRes, scraperTotalRes, scraperMatchRes, scraperDisponiblesRes, odooTotalRes, odooActiveRes, sinVendorRes, sinFotoRes] = await Promise.all([
         pool.query(`SELECT estado, COUNT(*)::INTEGER AS count FROM preventas_sync_state ${where} GROUP BY estado`, p),
         pool.query(`SELECT COUNT(*)::INTEGER AS total FROM preventas_sync_state ${where}`, p),
         pool.query(`SELECT MAX(computed_at) AS last_computed FROM preventas_sync_state ${where}`, p),
@@ -226,6 +243,13 @@ async function getResumen(pool, supplierId = null) {
               AND pss.supplier_product_id IS NOT NULL
               AND (opc.vendor_name IS NULL OR opc.vendor_name = '')
               ${sinVendorWhere}
+        `, p),
+        pool.query(`
+            SELECT COUNT(*)::INTEGER AS total
+            FROM preventas_sync_state pss
+            JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+            JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+            WHERE ${SIN_FOTO_SQL} ${sinVendorWhere}
         `, p),
     ]);
 
@@ -247,9 +271,82 @@ async function getResumen(pool, supplierId = null) {
         odoo_matcheados:      scraperConMatch,
     };
     resumen.sin_vendor = sinVendorRes.rows[0]?.total || 0;
+    resumen.sin_foto = sinFotoRes.rows[0]?.total || 0;
     for (const r of statsRes.rows) resumen[r.estado] = r.count;
     for (const r of matchRes.rows)  resumen.match_types[r.match_type] = r.count;
     return resumen;
+}
+
+// =============================================
+// rechazarVinculo — "No es este" (nota 179): la oferta del proveedor NO es ese producto de Odoo.
+// Queda rechazado en la tabla maestra (product_mappings de Preventas) para que el recálculo no lo
+// vuelva a proponer, y la fila se separa al momento, sin esperar un recálculo:
+//   · la oferta pasa a "Crear en Odoo" (o "Al día" si el proveedor no va a Preventas / no hay stock)
+//   · el producto de Odoo queda sin proveedor ('sin_fuente', nunca se aplica nada) hasta el próximo
+//     recálculo, que decide si otra oferta lo reclama o si va a archivar
+// No escribe en Odoo. Devuelve { supplier_product_id } o lanza un error con status.
+// =============================================
+async function rechazarVinculo(pool, { supplierProductId, userId }) {
+    if (isRecomputing()) {
+        throw Object.assign(new Error('Hay un recálculo en curso: probá de nuevo cuando termine'), { status: 409 });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows: [fila] } = await client.query(`
+            SELECT pss.id, pss.supplier_product_id, pss.odoo_product_id, pss.supplier_id,
+                   pss.match_type, pss.match_score,
+                   (s.va_a_preventas IS TRUE AND sp.available IS TRUE) AS puede_crear,
+                   opc.internal_ref
+            FROM preventas_sync_state pss
+            JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+            LEFT JOIN suppliers s ON s.id = sp.supplier_id
+            LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+            WHERE pss.supplier_product_id = $1
+            FOR UPDATE OF pss
+        `, [supplierProductId]);
+        if (!fila) throw Object.assign(new Error('Ese producto ya no está en la lista: recalculá'), { status: 404 });
+        if (!fila.odoo_product_id) throw Object.assign(new Error('Ese producto no está vinculado con ninguno de Odoo'), { status: 400 });
+
+        const puntaje = fila.match_score != null ? Number(fila.match_score) / 100 : null;
+
+        // Rechazado en la tabla maestra: ningún método lo vuelve a proponer (sinRechazo en el matching)
+        await client.query(`
+            INSERT INTO product_mappings
+                (supplier_product_id, odoo_product_id, odoo_company, odoo_internal_ref,
+                 match_type, match_confidence, active, estado, metodo, es_habitual)
+            VALUES ($1, $2, 'preventas', $3, COALESCE($4, 'sync_preventas'), $5, false, 'rechazado', $4, false)
+            ON CONFLICT (supplier_product_id, odoo_product_id, odoo_company) DO UPDATE
+                SET estado = 'rechazado', active = false, es_habitual = false
+        `, [fila.supplier_product_id, fila.odoo_product_id, fila.internal_ref, fila.match_type, puntaje]);
+        await client.query(`
+            INSERT INTO match_decisiones (supplier_product_id, odoo_product_id, odoo_company, decision, metodo, puntaje, user_id)
+            VALUES ($1, $2, 'preventas', 'rechazado', $3, $4, $5)
+        `, [fila.supplier_product_id, fila.odoo_product_id, fila.match_type, puntaje, userId || null]);
+
+        // La oferta queda sola: para crear (el costo y el precio ya estaban calculados)
+        await client.query(`
+            UPDATE preventas_sync_state
+            SET odoo_product_id = NULL, match_type = NULL, match_score = NULL,
+                estado = $2, computed_at = NOW()
+            WHERE id = $1
+        `, [fila.id, fila.puede_crear ? 'solo_scraper' : 'sin_cambios']);
+        // El producto de Odoo queda sin oferta, sin acción hasta el próximo recálculo
+        await client.query(`
+            INSERT INTO preventas_sync_state (odoo_product_id, supplier_id, estado, computed_at)
+            VALUES ($1, $2, 'sin_fuente', NOW())
+            ON CONFLICT DO NOTHING
+        `, [fila.odoo_product_id, fila.supplier_id]);
+
+        await client.query('COMMIT');
+        console.log(`✅ Preventas Sync: "No es este" oferta ${fila.supplier_product_id} ≠ Odoo ${fila.odoo_product_id} (usuario ${userId})`);
+        return { supplier_product_id: fila.supplier_product_id, estado: fila.puede_crear ? 'solo_scraper' : 'sin_cambios' };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 // =============================================
@@ -643,18 +740,23 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
         WHERE id = $2
     `, [variantId, prod.id]);
 
-    // Insertar en cache local
+    // Insertar en cache local (con el template, para la foto y "Actualizar foto en Odoo").
+    // $6 se castea a text en los dos usos: sin el cast Postgres lo deduce varchar en la
+    // columna y text en REGEXP_REPLACE, y falla todo el INSERT (nota 182)
     await pool.query(`
         INSERT INTO odoo_products_cache
-            (odoo_id, company, name, internal_ref, list_price, standard_price, active, external_id, ext_id_clean, synced_at)
-        VALUES ($1, 'preventas', $2, $3, $4, $5, true, $6, UPPER(REGEXP_REPLACE($6, '[^A-Z0-9]', '', 'g')), NOW())
+            (odoo_id, company, name, internal_ref, list_price, standard_price, active,
+             external_id, ext_id_clean, template_id, has_image, synced_at)
+        VALUES ($1, 'preventas', $2, $3, $4, $5, true,
+                $6::text, UPPER(REGEXP_REPLACE($6::text, '[^A-Z0-9]', '', 'g')), $7, false, NOW())
         ON CONFLICT (odoo_id, company) DO UPDATE SET
             name = EXCLUDED.name, internal_ref = EXCLUDED.internal_ref,
             list_price = EXCLUDED.list_price, standard_price = EXCLUDED.standard_price,
             external_id = EXCLUDED.external_id, ext_id_clean = EXCLUDED.ext_id_clean,
+            template_id = EXCLUDED.template_id,
             active = true, synced_at = NOW()
     `, [variantId, prod.scraper_name, internalRef,
-        Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku]);
+        Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku, templateId]);
 
     if (prod.image_url) await syncImage(templateId, prod.image_url, ctx, pool, variantId);
     console.log(`✅ Creado en Odoo Preventas: ${prod.scraper_sku} (variant: ${variantId})`);
@@ -687,8 +789,10 @@ async function getImageBase64(imageUrl) {
 
 async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     try {
-        const base64 = await getImageBase64(imageUrl);
+        let base64 = await getImageBase64(imageUrl);
         if (!base64) return;
+        // AVIF → JPG (Odoo no lo toma); lo que no es foto no se sube (nota 183)
+        base64 = await fotoCompatibleBase64(base64);
         // Escribir en product.template con el template ID correcto
         await callOdoo('product.template', 'write', [[templateId], { image_1920: base64 }], { context: ctx });
         // Marcar has_image = true en cache para no re-subir en futuros applies
@@ -704,4 +808,66 @@ async function syncImage(templateId, imageUrl, ctx, pool, variantId) {
     }
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen };
+// =============================================
+// actualizarFotoOdoo — "Actualizar foto en Odoo" (nota 181)
+// Pisa la foto del producto de Odoo Preventas con la del proveedor, aunque Odoo ya tenga una
+// (al aplicar, la foto solo se sube si Odoo no tiene). Escribe en Odoo: image_1920 del template.
+// Devuelve { template_id } o lanza un error con status.
+// =============================================
+const { olvidarFotoOdoo } = require('./odooImageService');
+const { fotoCompatibleBase64 } = require('./fotoFormato');
+
+// Template de una variante de Preventas leído de Odoo (solo lectura). null si ya no existe.
+async function templateDeVariante(variantId) {
+    const { preventas: preventasId } = await getCompanyIds();
+    const rows = await callOdoo('product.product', 'read', [[variantId], ['product_tmpl_id']],
+        { context: { allowed_company_ids: [preventasId], active_test: false } });
+    const tmpl = rows?.[0]?.product_tmpl_id;
+    return Array.isArray(tmpl) ? tmpl[0] : (tmpl || null);
+}
+
+async function actualizarFotoOdoo(pool, { supplierProductId }) {
+    const { rows: [fila] } = await pool.query(`
+        SELECT sp.image_url, opc.template_id, pss.odoo_product_id
+        FROM preventas_sync_state pss
+        JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+        LEFT JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+        WHERE pss.supplier_product_id = $1
+        LIMIT 1
+    `, [supplierProductId]);
+    if (!fila) throw Object.assign(new Error('Ese producto ya no está en la lista: recalculá'), { status: 404 });
+    if (!fila.odoo_product_id) throw Object.assign(new Error('Ese producto todavía no está en Odoo'), { status: 400 });
+    // Recién creado y todavía no está en el cache de Odoo: el template se lee de Odoo (nota 182)
+    if (!fila.template_id) fila.template_id = await templateDeVariante(fila.odoo_product_id);
+    if (!fila.template_id) throw Object.assign(new Error('El producto ya no está en Odoo: sincronizá Odoo'), { status: 400 });
+    if (!fila.image_url) throw Object.assign(new Error('El proveedor no tiene foto de este producto'), { status: 400 });
+    // Placeholder de Tiendanube: pasa como foto pero no es la del producto
+    if (/no-photo/i.test(fila.image_url)) {
+        throw Object.assign(new Error('La foto del proveedor es el cartel "sin foto" de su web'), { status: 400 });
+    }
+
+    let base64 = null;
+    try {
+        base64 = await getImageBase64(fila.image_url);
+    } catch (err) {
+        console.warn(`⚠️ No se pudo leer la foto ${fila.image_url}:`, err.message);
+    }
+    if (!base64) throw Object.assign(new Error('No se pudo descargar la foto del proveedor'), { status: 502 });
+    // AVIF (Alif, Nurcell) → JPG; si no es una foto, el error dice qué llegó (nota 183)
+    base64 = await fotoCompatibleBase64(base64);
+
+    const { preventas: preventasId } = await getCompanyIds();
+    if (!preventasId) throw Object.assign(new Error('No se encontró la empresa Preventas en Odoo'), { status: 503 });
+    await callOdoo('product.template', 'write', [[fila.template_id], { image_1920: base64 }],
+        { context: { allowed_company_ids: [preventasId] } });
+    await pool.query(
+        `UPDATE odoo_products_cache SET has_image = true WHERE template_id = $1 AND company = 'preventas'`,
+        [fila.template_id]
+    );
+    // La copia en disco quedó vieja: el próximo pedido la compara con Odoo y la refresca
+    olvidarFotoOdoo('preventas', 'template', fila.template_id);
+    console.log(`🖼️ Foto actualizada en Odoo Preventas: template ${fila.template_id} (oferta ${supplierProductId})`);
+    return { template_id: fila.template_id };
+}
+
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL };

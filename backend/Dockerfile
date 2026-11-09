@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir selenium==4.18.1 beautifulsoup4
 COPY package.json ./
 RUN npm install --omit=dev
 
+# avifdec: pasa a JPG las fotos AVIF de 10 bits que sharp no lee (nota 183)
+RUN apk add --no-cache libavif-apps
+
 # CACHEBUST cambia el layer de código sin rehacer npm install
 ARG CACHEBUST=202610201715
 RUN echo "cachebust=$CACHEBUST"

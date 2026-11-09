@@ -3,9 +3,10 @@ const router  = express.Router();
 const pool    = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail }                  = require('../utils/response');
-const { getProductsToSync, applyChanges, getResumen } = require('../services/preventasSyncService');
+const { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo } = require('../services/preventasSyncService');
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
+const { iniciarFotos, frenarFotos, getEstadoFotos } = require('../services/preventasFotosService');
 
 // Estado del apply masivo en background
 let bulkApplyJob = { running: false, result: null, error: null, startedAt: null, finishedAt: null };
@@ -24,11 +25,11 @@ router.get('/resumen', authenticate, async (req, res) => {
 // GET /api/preventas-sync/products?supplierId=&estado=&page=1&pageSize=100
 router.get('/products', authenticate, async (req, res) => {
     try {
-        const { supplierId, grupo, estado, matchType, search, sinVendor, page = 1, pageSize = 100 } = req.query;
+        const { supplierId, grupo, estado, matchType, search, sinVendor, sinFoto, page = 1, pageSize = 100 } = req.query;
         const limit  = Math.min(parseInt(pageSize, 10) || 100, 500);
         const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
 
-        const { rows, total, aplicables } = await getProductsToSync(pool, { supplierId, grupo, estado, matchType, search, sinVendor: sinVendor === 'true', limit, offset });
+        const { rows, total, aplicables } = await getProductsToSync(pool, { supplierId, grupo, estado, matchType, search, sinVendor: sinVendor === 'true', sinFoto: sinFoto === 'true', limit, offset });
         // aplicables: qué haría el "Aplicar" en bloque con estos filtros (listos / a revisar / sin precio)
         return res.json({
             success: true,
@@ -92,6 +93,41 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
     }
 });
 
+// POST /api/preventas-sync/rechazar-vinculo — "No es este" (nota 179)
+// Body: { supplierProductId } — la oferta no es el producto de Odoo con el que se vinculó.
+// Queda rechazado (no se vuelve a proponer) y la oferta pasa a "Crear en Odoo". No toca Odoo.
+// Devuelve la fila como quedó, para mostrarla con su acción nueva.
+router.post('/rechazar-vinculo', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplierProductId, 10);
+    if (!supplierProductId) return fail(res, 'supplierProductId es requerido', 400);
+    try {
+        await rechazarVinculo(pool, { supplierProductId, userId: req.user.id });
+        const { rows } = await getProductsToSync(pool, { supplierProductId, limit: 1, offset: 0 });
+        return ok(res, rows[0] || null);
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ rechazar-vinculo preventas-sync:', err.message);
+        return fail(res, 'No se pudo guardar el "No es este"', 500);
+    }
+});
+
+// POST /api/preventas-sync/actualizar-foto — "Actualizar foto en Odoo" (nota 181)
+// Body: { supplierProductId } — sube la foto del proveedor al producto vinculado de Odoo Preventas,
+// aunque ya tenga una. Escribe en Odoo. Devuelve la fila como quedó.
+router.post('/actualizar-foto', authenticate, requireRole('admin'), async (req, res) => {
+    const supplierProductId = parseInt(req.body.supplierProductId, 10);
+    if (!supplierProductId) return fail(res, 'supplierProductId es requerido', 400);
+    try {
+        await actualizarFotoOdoo(pool, { supplierProductId });
+        const { rows } = await getProductsToSync(pool, { supplierProductId, limit: 1, offset: 0 });
+        return ok(res, rows[0] || null);
+    } catch (err) {
+        if (err.status) return fail(res, err.message, err.status);
+        console.error('❌ actualizar-foto preventas-sync:', err.message);
+        return fail(res, 'No se pudo actualizar la foto en Odoo', 500);
+    }
+});
+
 // GET /api/preventas-sync/apply/status — estado del apply masivo en background
 router.get('/apply/status', authenticate, (req, res) => {
     return ok(res, bulkApplyJob);
@@ -116,6 +152,25 @@ router.post('/assign-vendor', authenticate, requireRole('admin'), async (req, re
 // GET /api/preventas-sync/assign-vendor/status — avance de la asignación en segundo plano
 router.get('/assign-vendor/status', authenticate, (req, res) => {
     return ok(res, getEstadoAsignacion());
+});
+
+// POST /api/preventas-sync/fotos-faltantes  Body: { supplierId? } — "Subir fotos que faltan" (nota 182)
+// Sube la foto del proveedor a los productos de Odoo Preventas que no tienen ninguna.
+// Escribe en Odoo. Corre en segundo plano; el avance se consulta en /fotos-faltantes/status.
+router.post('/fotos-faltantes', authenticate, requireRole('admin'), (req, res) => {
+    const { supplierId } = req.body || {};
+    if (!iniciarFotos({ supplierId })) return fail(res, 'Ya se están subiendo fotos. Esperá a que termine.', 409);
+    return ok(res, { running: true });
+});
+
+// POST /api/preventas-sync/fotos-faltantes/frenar — corta después de la foto en curso
+router.post('/fotos-faltantes/frenar', authenticate, requireRole('admin'), (req, res) => {
+    return ok(res, { frenando: frenarFotos() });
+});
+
+// GET /api/preventas-sync/fotos-faltantes/status
+router.get('/fotos-faltantes/status', authenticate, (req, res) => {
+    return ok(res, getEstadoFotos());
 });
 
 // POST /api/preventas-sync/fix-refs

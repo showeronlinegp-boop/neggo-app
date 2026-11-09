@@ -8,7 +8,6 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
-import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
 
 // ─── Estados del sync: cómo se nombran y con qué tono se muestran ──────────────
@@ -41,6 +40,102 @@ const ACCION_LABEL = {
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
+
+// ─── Foto del proveedor al lado de la que tiene hoy Odoo Preventas (nota 180) ──
+// Al aplicar, la foto del proveedor solo se sube si el producto se crea o si Odoo no tiene foto.
+// "Actualizar foto en Odoo" (nota 181) la pisa a mano. Tras subirla, la URL lleva ?v= para que el
+// navegador no muestre la foto vieja que tiene guardada.
+const versionFotoOdoo = new Map(); // template_id → momento en que se actualizó desde acá
+const URL_FOTO_ODOO = (templateId, size) => {
+    const v = versionFotoOdoo.get(templateId);
+    return `/api/products/odoo-image/preventas/${templateId}?size=${size}${v ? `&v=${v}` : ''}`;
+};
+// Se puede pisar la foto de Odoo con la del proveedor: la oferta está vinculada y tiene foto
+const puedeActualizarFoto = (row) => !!(row.supplier_product_id && row.odoo_template_id && row.image_url);
+
+function FotoCaja({ t, titulo, src, grande, vacio, nota }) {
+    const [error, setError] = useState(false);
+    useEffect(() => { setError(false); }, [src]);
+    const mostrar = src && !error;
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2], width: 200 }}>
+            <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontWeight: t.font.weight.semibold, textTransform: 'uppercase', letterSpacing: '0.04em', fontFamily: t.font.family }}>{titulo}</span>
+            <a
+                href={mostrar ? (grande || src) : undefined}
+                target="_blank"
+                rel="noreferrer"
+                title={mostrar ? 'Abrir la foto en grande' : undefined}
+                style={{ width: 200, height: 200, borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`, background: t.color.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: mostrar ? 'zoom-in' : 'default' }}
+            >
+                {mostrar
+                    ? <img key={src} src={src} alt="" onError={() => setError(true)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    : <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family, padding: t.space[3], textAlign: 'center' }}>{error ? 'No se pudo cargar la foto' : vacio}</span>}
+            </a>
+            {nota && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>{nota}</span>}
+        </div>
+    );
+}
+
+// Versión chica para cada fila de la tabla: proveedor | Odoo
+function FotoMini({ t, src, etiqueta, vacio }) {
+    const [error, setError] = useState(false);
+    useEffect(() => { setError(false); }, [src]);
+    const mostrar = src && !error;
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <div title={mostrar ? undefined : vacio} style={{ width: 44, height: 44, borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`, background: t.color.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                {mostrar
+                    ? <img key={src} src={src} alt="" loading="lazy" onError={() => setError(true)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    : <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint, fontFamily: t.font.family }}>—</span>}
+            </div>
+            <span style={{ fontSize: 10, color: t.color.textFaint, fontFamily: t.font.family, lineHeight: 1 }}>{etiqueta}</span>
+        </div>
+    );
+}
+
+function FotosFila({ t, row, onActualizar }) {
+    const fotoOdoo = row.odoo_template_id && row.odoo_has_image !== false ? URL_FOTO_ODOO(row.odoo_template_id, 128) : null;
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[1], flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: t.space[2] }}>
+                <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
+                <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
+            </div>
+            {onActualizar && puedeActualizarFoto(row) && (
+                <button
+                    type="button"
+                    title="Reemplazar la foto de Odoo por la del proveedor"
+                    onClick={e => { e.stopPropagation(); onActualizar(row); }}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', padding: '2px 4px', cursor: 'pointer', color: t.color.primary, fontSize: 11, fontFamily: t.font.family, fontWeight: t.font.weight.medium, whiteSpace: 'nowrap' }}
+                >
+                    <Icon.Refresh size={12} /> Foto a Odoo
+                </button>
+            )}
+        </div>
+    );
+}
+
+function FotosComparadas({ t, detail, notaAlAplicar = true }) {
+    const fotoProveedor = detail.image_url || null;
+    const enOdoo = !!detail.odoo_template_id;
+    // La ruta compara con Odoo antes de servir la copia en disco: siempre es la foto vigente
+    const fotoOdoo = enOdoo && detail.odoo_has_image !== false ? `${URL_FOTO_ODOO(detail.odoo_template_id, 512)}` : null;
+    const fotoOdooGrande = enOdoo ? `${URL_FOTO_ODOO(detail.odoo_template_id, 1920)}` : null;
+
+    let notaProveedor = null;
+    if (notaAlAplicar && fotoProveedor && detail.supplier_product_id) {
+        if (!enOdoo) notaProveedor = 'Se usa al crear el producto en Odoo.';
+        else if (detail.odoo_has_image === false) notaProveedor = 'Odoo no tiene foto: se sube al aplicar.';
+        else notaProveedor = 'Odoo ya tiene foto: al aplicar no se cambia. Para cambiarla, usá "Actualizar foto en Odoo".';
+    }
+
+    return (
+        <div style={{ display: 'flex', gap: t.space[5], flexWrap: 'wrap' }}>
+            <FotoCaja t={t} titulo="Foto del proveedor" src={fotoProveedor} vacio="El proveedor no tiene foto" nota={notaProveedor} />
+            <FotoCaja t={t} titulo="Foto actual en Odoo" src={fotoOdoo} grande={fotoOdooGrande} vacio={enOdoo ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
+        </div>
+    );
+}
 
 // Mismos grupos que el backend (preventasSyncService GRUPO_ESTADOS)
 const GRUPO_ESTADOS = {
@@ -239,9 +334,15 @@ export default function PreventasSyncPage() {
     const [assigningVendor, setAssigningVendor] = useState(false);
     const [vendorProgreso, setVendorProgreso] = useState(null);
     const wasAssigningRef = useRef(false);
+    // Subir fotos que faltan en Odoo (nota 182): corre en segundo plano en el backend
+    const [subiendoFotos, setSubiendoFotos] = useState(false);
+    const [fotosProgreso, setFotosProgreso] = useState(null);
+    const [frenandoFotos, setFrenandoFotos] = useState(false);
+    const [confirmarFotos, setConfirmarFotos] = useState(false);
+    const wasFotosRef = useRef(false);
     const wasRunningRef = useRef(false);
     const wasApplyingRef = useRef(false);
-    // vista: 'todos' | key de VISTAS | 'sin_vendor'; sub: 'todos' | estado puntual dentro de la vista
+    // vista: 'todos' | key de VISTAS | 'sin_vendor' | 'sin_foto'; sub: 'todos' | estado puntual dentro de la vista
     const [vista, setVista] = useState('todos');
     const [sub, setSub] = useState('todos');
     const [matchType, setMatchType] = useState('todos');
@@ -253,6 +354,9 @@ export default function PreventasSyncPage() {
     // Selección: key → fila (para saber qué revisión pide cada seleccionado)
     const [selected, setSelected] = useState(new Map());
     const [detail, setDetail] = useState(null);
+    // Fila cuya foto se va a pisar en Odoo (confirmación desde la tabla, nota 181)
+    const [fotoPisar, setFotoPisar] = useState(null);
+    const [subiendoFoto, setSubiendoFoto] = useState(false);
     const [page, setPage] = useState(1);
     const [total, setTotal] = useState(0);
     const [verNumeros, setVerNumeros] = useState(false);
@@ -263,10 +367,11 @@ export default function PreventasSyncPage() {
     const [incluirCosto, setIncluirCosto] = useState(false);
 
     const sinVendor = vista === 'sin_vendor';
+    const sinFoto = vista === 'sin_foto';
     const vistaDef = VISTAS.find(v => v.key === vista);
 
     // Filtro que corresponde a la vista elegida (grupo o estado del backend)
-    const filtro = sinVendor ? {} : sub !== 'todos' ? { estado: sub } : (vistaDef?.filtro || {});
+    const filtro = sinVendor || sinFoto ? {} : sub !== 'todos' ? { estado: sub } : (vistaDef?.filtro || {});
 
     useEffect(() => {
         api.get('/suppliers').then(r => r.success && setSuppliers(r.data || []));
@@ -279,8 +384,9 @@ export default function PreventasSyncPage() {
                 supplierId: supplierId || undefined,
                 grupo:     filtro.grupo,
                 estado:    filtro.estado,
-                matchType: !sinVendor && matchType !== 'todos' ? matchType : undefined,
+                matchType: !sinVendor && !sinFoto && matchType !== 'todos' ? matchType : undefined,
                 sinVendor: sinVendor || undefined,
+                sinFoto:   sinFoto || undefined,
                 search:    search || undefined,
                 page: p, pageSize: PAGE_SIZE,
             }),
@@ -358,6 +464,35 @@ export default function PreventasSyncPage() {
         return () => clearTimeout(timer);
     }, []);
 
+    // Subir fotos que faltan: seguimos el avance y avisamos al terminar (nota 182)
+    useEffect(() => {
+        let timer;
+        async function checkFotosStatus() {
+            const res = await api.get('/preventas-sync/fotos-faltantes/status');
+            if (res.success) {
+                const { running, progreso, result, error, frenando } = res.data;
+                setSubiendoFotos(running);
+                setFotosProgreso(running ? progreso : null);
+                setFrenandoFotos(!!frenando);
+                if (!running && wasFotosRef.current) {
+                    if (error) showToast(`No se pudieron subir las fotos: ${error}`, 'error');
+                    else if (result) {
+                        const fallidos = result.fallidos.slice(0, 3).map(f => f.sku).join(', ');
+                        const msg = `${result.frenado ? 'Frenado. ' : ''}Fotos subidas a Odoo: ${fmtN(result.subidas)}`
+                            + (result.ya_tenian > 0 ? `, ${fmtN(result.ya_tenian)} ya tenían` : '')
+                            + (result.errores > 0 ? `, ${fmtN(result.errores)} no se pudieron (${fallidos}${result.errores > 3 ? '…' : ''})` : '');
+                        showToast(msg, result.errores > 0 || result.frenado ? 'warning' : 'success');
+                    }
+                    fetchDataRef.current(1);
+                }
+                wasFotosRef.current = running;
+            }
+            timer = setTimeout(checkFotosStatus, wasFotosRef.current ? 3000 : 10000);
+        }
+        checkFotosStatus();
+        return () => clearTimeout(timer);
+    }, []);
+
     const rowKey = row => row.supplier_product_id ? `sp:${row.supplier_product_id}` : `odoo:${row.odoo_product_id}`;
 
     function toggleSelect(row) { const key = rowKey(row); setSelected(prev => { const n = new Map(prev); n.has(key) ? n.delete(key) : n.set(key, row); return n; }); }
@@ -396,6 +531,34 @@ export default function PreventasSyncPage() {
         else showToast(res.error || 'Error al aplicar', 'error');
     }
 
+    // "No es este" (nota 179): el vínculo está mal. No toca Odoo: la oferta pasa a "Crear en Odoo"
+    // y queda para crearla como artículo nuevo (o dejarla para después).
+    // Desde la fila no se abre nada (nota 180); desde el detalle, el detalle pasa a mostrar la oferta sola.
+    async function handleNoEsEste(row, { desdeDetalle = false } = {}) {
+        setApplying(true);
+        const res = await api.post('/preventas-sync/rechazar-vinculo', { supplierProductId: row.supplier_product_id });
+        setApplying(false);
+        if (!res.success) { showToast(res.error || 'No se pudo guardar', 'error'); return; }
+        showToast('Listo: ese vínculo no se vuelve a proponer. Quedó en "Crear en Odoo"', 'success');
+        setSelected(prev => { const n = new Map(prev); n.delete(rowKey(row)); return n; });
+        if (desdeDetalle) setDetail(res.data || null);
+        fetchData(page);
+    }
+
+    // "Actualizar foto en Odoo" (nota 181): pisa la foto de Odoo Preventas con la del proveedor,
+    // aunque ya tenga una. Escribe en Odoo; el resto del producto no se toca.
+    async function handleActualizarFoto(row, { desdeDetalle = false } = {}) {
+        setSubiendoFoto(true);
+        const res = await api.post('/preventas-sync/actualizar-foto', { supplierProductId: row.supplier_product_id });
+        setSubiendoFoto(false);
+        if (!res.success) { showToast(res.error || 'No se pudo actualizar la foto', 'error'); return; }
+        versionFotoOdoo.set(row.odoo_template_id, Date.now());
+        showToast('Listo: la foto del proveedor ya está en Odoo', 'success');
+        setFotoPisar(null);
+        if (desdeDetalle) setDetail(res.data || { ...row, odoo_has_image: true });
+        fetchData(page);
+    }
+
     // El bloque aplica la vista tal cual se ve filtrada (vista, proveedor, búsqueda y tipo de vínculo)
     async function handleApplyBloque(aceptarCambioCosto) {
         setApplying(true);
@@ -426,6 +589,26 @@ export default function PreventasSyncPage() {
         }
     }
 
+    async function handleSubirFotos() {
+        setConfirmarFotos(false);
+        if (subiendoFotos) return;
+        setSubiendoFotos(true);
+        const res = await api.post('/preventas-sync/fotos-faltantes', supplierId ? { supplierId } : {});
+        if (res.success) {
+            wasFotosRef.current = true;
+            showToast('Subiendo fotos a Odoo en segundo plano — te avisamos cuando termine', 'success');
+        } else {
+            setSubiendoFotos(false);
+            showToast(res.error || 'Error al subir las fotos', 'error');
+        }
+    }
+
+    async function handleFrenarFotos() {
+        setFrenandoFotos(true);
+        const res = await api.post('/preventas-sync/fotos-faltantes/frenar', {});
+        if (!res.success) { setFrenandoFotos(false); showToast(res.error || 'No se pudo frenar', 'error'); }
+    }
+
     async function handleRecompute() {
         setRecomputing(true);
         const res = await api.post('/preventas-sync/recompute', {});
@@ -438,7 +621,7 @@ export default function PreventasSyncPage() {
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
     const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
-    const bloque = sinVendor || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
+    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
 
     // Lo mismo para la selección, con las filas tildadas
@@ -498,8 +681,8 @@ export default function PreventasSyncPage() {
                 const sku = row.scraper_sku || row.odoo_ref;
                 const otroNombreOdoo = row.scraper_name && row.odoo_nombre && row.odoo_nombre !== row.scraper_name;
                 return (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], minWidth: 220, maxWidth: 380 }}>
-                        <ProductThumb imageUrl={row.image_url} emoji={nombre?.[0]} size={36} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], minWidth: 320, maxWidth: 480 }}>
+                        <FotosFila t={t} row={row} onActualizar={setFotoPisar} />
                         <div style={{ minWidth: 0 }}>
                             <div title={nombre} style={{ fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombre || '—'}</div>
                             {otroNombreOdoo && <div title={row.odoo_nombre} style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>En Odoo: {row.odoo_nombre}</div>}
@@ -539,6 +722,20 @@ export default function PreventasSyncPage() {
                 let accion = null;
                 if (label && row.bloqueo_motivo) {
                     accion = <span title={row.bloqueo_motivo} style={{ fontSize: t.font.size.xs, color: t.color.danger, fontFamily: t.font.family }}>Sin precio: no se sincroniza</span>;
+                } else if (label && row.revision_motivo && row.revision_tipo === 'vinculo' && row.supplier_product_id && row.odoo_product_id) {
+                    // Vínculo dudoso: se elige acá mismo si es el mismo producto o si va como artículo nuevo
+                    accion = (
+                        <div style={{ display: 'flex', gap: t.space[2] }}>
+                            <Button size="sm" variant="secondary" disabled={applying} title={`Es el mismo producto: ${label.toLowerCase()}`}
+                                onClick={e => { e.stopPropagation(); handleApply([rowKey(row)], true); }}>
+                                Es este
+                            </Button>
+                            <Button size="sm" variant="ghost" disabled={applying} title="No es el mismo producto: no se vuelve a proponer y pasa a Crear en Odoo"
+                                onClick={e => { e.stopPropagation(); handleNoEsEste(row); }}>
+                                No es este
+                            </Button>
+                        </div>
+                    );
                 } else if (label && row.revision_motivo) {
                     // Se confirma acá mismo, sin abrir el detalle: el motivo queda a la vista abajo
                     accion = (
@@ -603,6 +800,14 @@ export default function PreventasSyncPage() {
             {assigningVendor && (
                 <TareaEnCurso t={t} texto="Asignando proveedor en Odoo…" hechos={vendorProgreso?.hechos || 0} total={vendorProgreso?.total || 0} detalle={vendorProgreso?.proveedor} />
             )}
+            {subiendoFotos && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[2] }}>
+                    <TareaEnCurso t={t} texto={frenandoFotos ? 'Frenando la subida de fotos…' : 'Subiendo fotos a Odoo Preventas…'}
+                        hechos={fotosProgreso?.hechos || 0} total={fotosProgreso?.total || 0}
+                        detalle={fotosProgreso ? `${fmtN(fotosProgreso.subidas)} subidas${fotosProgreso.errores ? ` · ${fmtN(fotosProgreso.errores)} con error` : ''}` : null} />
+                    <div><Button size="sm" variant="ghost" disabled={frenandoFotos} onClick={handleFrenarFotos}>{frenandoFotos ? 'Frenando…' : 'Frenar'}</Button></div>
+                </div>
+            )}
             {bgApplying && <TareaEnCurso t={t} texto="Aplicando cambios en Odoo… te avisamos cuando termine" />}
 
             {resumen.total === 0 && !loading && (
@@ -638,6 +843,17 @@ export default function PreventasSyncPage() {
                                     </span>
                                 } />
                         )}
+                        {(resumen.sin_foto > 0 || subiendoFotos) && (
+                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: el proveedor tiene foto y Odoo no" tone="warn" icon={Icon.Image}
+                                count={resumen.sin_foto} activa={sinFoto} onClick={() => elegirVista('sin_foto')}
+                                extra={
+                                    <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} style={{ marginTop: t.space[1] }}>
+                                        <Button size="sm" variant="secondary" disabled={subiendoFotos} onClick={() => setConfirmarFotos(true)}>
+                                            {subiendoFotos ? 'Subiendo…' : 'Subir fotos que faltan'}
+                                        </Button>
+                                    </span>
+                                } />
+                        )}
                     </div>
                     <button type="button" onClick={() => setVerNumeros(v => !v)} style={{
                         width: '100%', background: 'transparent', border: 'none', borderTop: `1px solid ${t.color.border}`, cursor: 'pointer',
@@ -656,7 +872,7 @@ export default function PreventasSyncPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap', fontFamily: t.font.family }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
                         <span style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text }}>
-                            {sinVendor ? 'Sin proveedor en Odoo' : vistaDef ? vistaDef.titulo : 'Todos los productos'}
+                            {sinVendor ? 'Sin proveedor en Odoo' : sinFoto ? 'Sin foto en Odoo' : vistaDef ? vistaDef.titulo : 'Todos los productos'}
                         </span>
                         <span style={{ fontSize: t.font.size.sm, color: t.color.textMuted, ...t.numericStyle }}>{fmtN(total)}</span>
                         {vista !== 'todos' && (
@@ -689,7 +905,7 @@ export default function PreventasSyncPage() {
                 )}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, confirmalos de a uno con "Confirmar" en la fila.
+                        {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, elegí en cada fila "Es este" o "No es este" (va como artículo nuevo).
                     </div>
                 )}
 
@@ -720,7 +936,7 @@ export default function PreventasSyncPage() {
                         style={{ flex: 1, minWidth: 220 }}
                     />
                     <Select value={supplierId} onChange={v => { setSupplierId(v); setPage(1); }} options={supplierOptions} style={{ width: 220 }} />
-                    {!sinVendor && <Select value={matchType} onChange={v => { setMatchType(v); setPage(1); }} options={matchOptions} style={{ width: 220 }} />}
+                    {!sinVendor && !sinFoto && <Select value={matchType} onChange={v => { setMatchType(v); setPage(1); }} options={matchOptions} style={{ width: 220 }} />}
                 </div>
 
                 <DataTable columns={cols} data={productos} loading={loading} onRowClick={setDetail} pagination={{ page, pageSize: PAGE_SIZE, total }} onPageChange={p => setPage(p)} />
@@ -742,12 +958,70 @@ export default function PreventasSyncPage() {
                 onConfirm={aplicarConfirmado}
             />
 
+            {/* Confirmar "Subir fotos que faltan" (nota 182) */}
+            <Modal
+                isOpen={confirmarFotos}
+                onClose={() => setConfirmarFotos(false)}
+                title="Subir fotos que faltan"
+                subtitle={supplierId ? (suppliers.find(s => String(s.id) === String(supplierId))?.name || 'Proveedor elegido') : 'Todos los proveedores'}
+                size="sm"
+                footer={
+                    <>
+                        <Button variant="ghost" onClick={() => setConfirmarFotos(false)}>Cancelar</Button>
+                        <Button variant="primary" onClick={handleSubirFotos}>Subir {fmtN(resumen.sin_foto || 0)} fotos</Button>
+                    </>
+                }
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[3], fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
+                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor.</span>
+                    <span style={{ color: t.color.textMuted }}>Nunca reemplaza una foto que ya está: antes de subir, se fija en Odoo. Va de a una foto, así que con muchos productos tarda (unos 2.500 llevan cerca de una hora). Lo podés frenar cuando quieras.</span>
+                    {!supplierId && <span style={{ color: t.color.textMuted }}>Para probar primero, elegí un proveedor arriba.</span>}
+                </div>
+            </Modal>
+
+            {/* Confirmar "Foto a Odoo" desde la fila (nota 181) */}
+            <Modal
+                isOpen={!!fotoPisar}
+                onClose={() => { if (!subiendoFoto) setFotoPisar(null); }}
+                title="Actualizar foto en Odoo"
+                subtitle={fotoPisar?.odoo_nombre || fotoPisar?.scraper_name}
+                size="md"
+                footer={
+                    <>
+                        <Button variant="ghost" disabled={subiendoFoto} onClick={() => setFotoPisar(null)}>Cancelar</Button>
+                        <Button variant="primary" disabled={subiendoFoto} onClick={() => handleActualizarFoto(fotoPisar)}>
+                            {subiendoFoto ? 'Subiendo…' : 'Usar la foto del proveedor'}
+                        </Button>
+                    </>
+                }
+            >
+                {fotoPisar && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4], fontFamily: t.font.family }}>
+                        <FotosComparadas t={t} detail={fotoPisar} notaAlAplicar={false} />
+                        <span style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>
+                            {fotoPisar.odoo_has_image === false
+                                ? 'El producto no tiene foto en Odoo: se sube la del proveedor.'
+                                : 'La foto que tiene hoy Odoo Preventas se reemplaza por la del proveedor. El resto del producto no cambia.'}
+                        </span>
+                    </div>
+                )}
+            </Modal>
+
             {/* Detalle */}
             <Modal isOpen={!!detail} onClose={() => setDetail(null)} title={detail?.scraper_name || detail?.odoo_nombre || 'Detalle'} subtitle={detail?.supplier_name} size="lg">
                 {detail && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[6] }}>
+                        <FotosComparadas t={t} detail={detail} />
+                        {puedeActualizarFoto(detail) && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                                <span>{detail.odoo_has_image === false ? 'Odoo no tiene foto: podés subir la del proveedor ya.' : '¿La del proveedor está mejor? Reemplaza la foto que tiene Odoo.'}</span>
+                                <Button variant="secondary" size="sm" leftIcon={<Icon.Refresh size={13} />} disabled={subiendoFoto} onClick={() => handleActualizarFoto(detail, { desdeDetalle: true })}>
+                                    {subiendoFoto ? 'Subiendo…' : 'Actualizar foto en Odoo'}
+                                </Button>
+                            </div>
+                        )}
+
                         <div style={{ display: 'flex', gap: t.space[5] }}>
-                            <ProductThumb imageUrl={detail.image_url} emoji={(detail.scraper_name || detail.odoo_nombre)?.[0]} size={80} />
                             <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: `${t.space[2]}px ${t.space[5]}px`, flex: 1, alignContent: 'start' }}>
                                 {[
                                     ['Proveedor',      detail.supplier_name || '—'],
@@ -807,10 +1081,17 @@ export default function PreventasSyncPage() {
                             </div>
                         )}
 
+                        {detail.supplier_product_id && detail.odoo_product_id && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                                <span>¿No es el mismo producto? Se deja de vincular, no se vuelve a proponer y pasa a "Crear en Odoo" como artículo nuevo.</span>
+                                <Button variant="secondary" disabled={applying} onClick={() => handleNoEsEste(detail, { desdeDetalle: true })}>No es este</Button>
+                            </div>
+                        )}
+
                         {ACCION_LABEL[detail.estado] && !detail.bloqueo_motivo && (
                             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                 <Button variant="primary" disabled={applying} onClick={() => { handleApply([rowKey(detail)], !!detail.revision_motivo); setDetail(null); }}>
-                                    {applying ? 'Aplicando…' : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}
+                                    {applying ? 'Aplicando…' : detail.revision_tipo === 'vinculo' ? `Es este: ${ACCION_LABEL[detail.estado].toLowerCase()}` : detail.revision_motivo ? `Confirmar: ${ACCION_LABEL[detail.estado]}` : ACCION_LABEL[detail.estado]}
                                 </Button>
                             </div>
                         )}
