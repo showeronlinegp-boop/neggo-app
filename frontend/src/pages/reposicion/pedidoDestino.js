@@ -86,6 +86,7 @@ export function accesoDe(nombre, accesos) {
 /**
  * Productos de órdenes sin revisar, de este proveedor, que todavía no están en la cola.
  * Suma la cantidad vendida si el mismo producto está en más de un pedido.
+ * Cada pedido lleva el cliente de la orden: { name, cliente } (nota 186).
  */
 export function recomendarDePedidos(ordenes, proveedor, odooIdsEnCola) {
     const enCola = new Set(odooIdsEnCola || []);
@@ -106,11 +107,13 @@ export function recomendarDePedidos(ordenes, proveedor, odooIdsEnCola) {
                     image_url: p.image_url || null,
                     vendor_name: p.vendor_name,
                     qty,
-                    pedidos: orden.name ? [orden.name] : [],
+                    pedidos: orden.name ? [{ name: orden.name, cliente: orden.partner_name || null }] : [],
                 });
             } else {
                 prev.qty += qty;
-                if (orden.name && !prev.pedidos.includes(orden.name)) prev.pedidos.push(orden.name);
+                if (orden.name && !prev.pedidos.some(o => o.name === orden.name)) {
+                    prev.pedidos.push({ name: orden.name, cliente: orden.partner_name || null });
+                }
             }
         }
     }

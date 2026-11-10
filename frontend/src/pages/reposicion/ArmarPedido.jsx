@@ -546,7 +546,7 @@ export default function ArmarPedido({
                                 <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>{p.name}</div>
                                 <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                                     <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
-                                    {' · '}{fmtInt(p.qty)} en {p.pedidos.join(', ')}
+                                    {' · '}{fmtInt(p.qty)} en {p.pedidos.map(o => (o.cliente ? `${o.name} (${o.cliente})` : o.name)).join(', ')}
                                 </div>
                             </div>
                             <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={reponiendo === p.odoo_id} onClick={() => reponer(p)}>
