@@ -11,11 +11,13 @@ import {
     accesoDe,
     armarReparto,
     candidatosDe,
+    claveNombre,
     coincideBusqueda,
     coincidenciasPorProveedor,
     estaRepartido,
     estaVinculado,
     filtrarSolapa,
+    linkDelProducto,
     listaDelProveedor,
     listasParaPdf,
     ofertaMasBarata,
@@ -287,7 +289,7 @@ export default function ArmarPedido({
     );
 
     // La oferta del proveedor que se está mirando
-    const candidatoAca = (it) => candidatosDe(it).find(c => c.nombre === proveedor) || null;
+    const candidatoAca = (it) => candidatosDe(it).find(c => claveNombre(c.nombre) === claveNombre(proveedor)) || null;
 
     const buscador = (
         <div style={{ position: 'relative', marginTop: isMobile ? 0 : 10, width: isMobile ? 200 : undefined }}>
@@ -318,7 +320,8 @@ export default function ArmarPedido({
     );
 
 
-    const linkDe = (it) => candidatoAca(it)?.url || acceso.sitio || null;
+    // Al producto si hay oferta de este proveedor; si no, la web general avisando (nota 192)
+    const linkDe = (it) => linkDelProducto(candidatoAca(it), acceso, proveedor);
 
     const borde = `1px solid ${t.color.border}`;
     const solapas = [
@@ -592,8 +595,9 @@ export default function ArmarPedido({
                                     )}
                                 </div>
                                 {asignado && href && (
-                                    <a href={href} target="_blank" rel="noreferrer" style={{ fontSize: t.font.size.xs, color: t.color.primary, fontFamily: t.font.family, whiteSpace: 'nowrap' }}>
-                                        {acceso.tipo === 'clave' ? 'Abrir (pide clave)' : acceso.tipo === 'pdf' ? 'Abrir ficha' : 'Ver en el catálogo'}
+                                    <a href={href.href} target="_blank" rel="noreferrer" title={href.ayuda}
+                                        style={{ fontSize: t.font.size.xs, color: href.alProducto ? t.color.primary : t.color.textMuted, fontFamily: t.font.family, whiteSpace: 'nowrap' }}>
+                                        {href.texto}
                                     </a>
                                 )}
                                 {asignado && !href && acceso.tipo === 'pdf' && (
