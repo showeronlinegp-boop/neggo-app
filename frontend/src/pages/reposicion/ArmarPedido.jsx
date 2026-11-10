@@ -229,6 +229,28 @@ export default function ArmarPedido({
         onChanged();
     };
 
+    // Quitar de la cola (nota 189): queda «descartado» y se puede volver a pendientes desde Resueltos
+    const [quitando, setQuitando] = useState(null);
+    const quitar = async (lista) => {
+        if (!lista.length) { onError('Tildá al menos un producto'); return; }
+        setQuitando(lista.length === 1 ? lista[0].id : 'tildados');
+        onError(null);
+        const res = await api.post('/reposicion/resolver', {
+            estado: 'descartado',
+            items: lista.map(it => ({ id: it.id })),
+        });
+        setQuitando(null);
+        if (!res.success) { onError(res.error || 'No se pudo quitar'); return; }
+        const ids = new Set(lista.map(it => it.id));
+        const sinIds = (prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !ids.has(Number(id))));
+        setElegidos(sinIds);
+        setAsignaciones(sinIds);
+        if (repartiendo && ids.has(repartiendo.id)) setRepartiendo(null);
+        const texto = lista.length === 1 ? `«${lista[0].name}» salió` : `${lista.length} productos salieron`;
+        onAviso(`${texto} de reposición. Si te equivocaste, lo volvés a pendientes desde Resueltos.`);
+        onChanged();
+    };
+
     const pdf = async () => {
         const lista = tildados
             .map(it => ({ ...it, qty: qtyAca(it) }))
@@ -620,6 +642,20 @@ export default function ArmarPedido({
                                         background: t.color.surface, color: t.color.text,
                                     }}
                                 />
+                                <button
+                                    type="button"
+                                    onClick={() => quitar([it])}
+                                    disabled={quitando != null}
+                                    aria-label={`Quitar ${it.name} de reposición`}
+                                    title="Quitar de reposición (queda en Resueltos como descartado)"
+                                    style={{
+                                        border: 'none', background: 'none', padding: 4, lineHeight: 0, flexShrink: 0,
+                                        color: t.color.textMuted, cursor: quitando != null ? 'default' : 'pointer',
+                                        borderRadius: t.radius.sm, opacity: quitando === it.id ? 0.4 : 1,
+                                    }}
+                                >
+                                    <Icon.X size={16} />
+                                </button>
                             </div>
                         );
                     })}
@@ -637,6 +673,13 @@ export default function ArmarPedido({
                                 : tildados.map(it => `${qtyAca(it) || 0} × ${it.name}`).join(' · ')}
                         </div>
                     </div>
+                    {tildados.length > 0 && (
+                        <Button size="sm" variant="ghost" leftIcon={<Icon.X size={13} />} disabled={quitando != null || trabajando}
+                            title="Saca de reposición lo tildado (queda en Resueltos como descartado)"
+                            onClick={() => quitar(tildados)}>
+                            {quitando === 'tildados' ? 'Quitando…' : `Quitar tildados (${tildados.length})`}
+                        </Button>
+                    )}
                     <Button size="sm" variant="secondary" leftIcon={<Icon.FileText size={13} />} disabled={!!generandoPdf} onClick={pdf}
                         title="Baja en PDF solo lo que tildaste">
                         {generandoPdf === 'tildados' ? 'Generando…' : 'PDF'}
