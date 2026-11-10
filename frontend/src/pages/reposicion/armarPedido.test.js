@@ -7,6 +7,8 @@ import {
     accesoDe,
     listaDelProveedor,
     listasParaPdf,
+    coincideBusqueda,
+    coincidenciasPorProveedor,
 } from './pedidoDestino.js';
 import { nombreEnZip } from './pedidoPdf.js';
 
@@ -83,6 +85,24 @@ const usados = new Set();
 assert.equal(nombreEnZip('Alif', usados), 'Alif.pdf');
 assert.equal(nombreEnZip('ALIF', usados), 'ALIF (2).pdf');
 assert.equal(nombreEnZip('A/B: Ñandú', usados), 'A-B- Ñandú.pdf');
+
+// Buscador (nota 188): sin acentos, por palabras, en nombre, código o código de barras
+const mate = { id: 9, name: 'Mate Camionero Algarrobo', internal_ref: 'MT-120', barcode: '7790001' };
+assert.equal(coincideBusqueda(mate, ''), true);
+assert.equal(coincideBusqueda(mate, 'CAMIONERO mate'), true);
+assert.equal(coincideBusqueda(mate, 'mt-120'), true);
+assert.equal(coincideBusqueda(mate, '7790001'), true);
+assert.equal(coincideBusqueda(mate, 'mate termo'), false);
+assert.equal(coincideBusqueda({ name: 'Cámara Wifi' }, 'camara'), true);
+assert.equal(coincideBusqueda({ name: 'Camara Wifi' }, 'cámara'), true);
+assert.deepEqual([...coincidenciasPorProveedor(paraPdf, 'zapatilla')], [['Babu', 1]]);
+assert.deepEqual([...coincidenciasPorProveedor(paraPdf, 'zapatilla', { 1: [{ destino: 'Alif', qty: null }] })], [['Alif', 1]]);
+// Repartido: cuenta en cada proveedor al que va
+assert.deepEqual(
+    [...coincidenciasPorProveedor(paraPdf, 'zapatilla', { 1: [{ destino: 'Alif', qty: 1 }, { destino: 'Babu', qty: 2 }] })],
+    [['Alif', 1], ['Babu', 1]]
+);
+assert.deepEqual([...coincidenciasPorProveedor(paraPdf, 'no existe')], []);
 
 console.log('armarPedido ok');
 

@@ -171,3 +171,27 @@ export function accesoDe(nombre, accesos) {
     if (!hit?.website_url) return { tipo: 'pdf', sitio: null };
     return { tipo: hit.pide_clave ? 'clave' : 'abierta', sitio: hit.website_url };
 }
+
+function sinAcentos(texto) {
+    return String(texto || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('es');
+}
+
+/** Buscador de Armar pedido (nota 188): todas las palabras tienen que aparecer en el nombre, el código o el código de barras. */
+export function coincideBusqueda(it, texto) {
+    const palabras = sinAcentos(texto).split(/\s+/).filter(Boolean);
+    if (!palabras.length) return true;
+    const donde = sinAcentos([it.name, it.internal_ref, it.barcode].filter(Boolean).join(' '));
+    return palabras.every(p => donde.includes(p));
+}
+
+/** Cuántos productos que coinciden con la búsqueda van a cada proveedor (uno repartido cuenta en cada uno). */
+export function coincidenciasPorProveedor(items, texto, asignaciones = {}) {
+    const cuenta = new Map();
+    for (const it of items) {
+        if (!coincideBusqueda(it, texto)) continue;
+        for (const destino of destinosDe(it, asignaciones[it.id])) {
+            cuenta.set(destino, (cuenta.get(destino) || 0) + 1);
+        }
+    }
+    return cuenta;
+}
