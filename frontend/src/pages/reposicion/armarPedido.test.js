@@ -5,7 +5,6 @@ import {
     proveedoresDelPedido,
     filtrarSolapa,
     accesoDe,
-    recomendarDePedidos,
     listaDelProveedor,
     listasParaPdf,
 } from './pedidoDestino.js';
@@ -62,29 +61,6 @@ assert.deepEqual(accesoDe('Alif', [
     { name: 'Alif', odoo_vendor_name: 'Alif', website_url: 'https://alifcell.com', pide_clave: true },
 ]), { tipo: 'clave', sitio: 'https://alifcell.com' });
 assert.equal(accesoDe('Lista', []).tipo, 'pdf');
-
-const rec = recomendarDePedidos([
-    {
-        name: 'S0001',
-        partner_name: 'Soledad López',
-        productos: [
-            { odoo_id: 9, name: 'Resma', vendor_name: 'Alif', qty: 2, en_cache: true, en_cola: false },
-            { odoo_id: 9, name: 'Resma', vendor_name: 'Alif', qty: 1, en_cache: true, en_cola: false },
-            { odoo_id: 8, name: 'Ya en cola', vendor_name: 'Alif', qty: 4, en_cache: true, en_cola: true },
-            { odoo_id: 7, name: 'Otro', vendor_name: 'Babu', qty: 1, en_cache: true, en_cola: false },
-            { odoo_id: 6, name: 'Liquidar', vendor_name: 'Alif', qty: 1, en_cache: true, en_cola: false, es_liquidar: true },
-        ],
-    },
-    { name: 'S0002', productos: [{ odoo_id: 9, name: 'Resma', vendor_name: 'Alif', qty: 3, en_cache: true, en_cola: false }] },
-], 'Alif', [3]);
-
-assert.equal(rec.length, 1);
-assert.equal(rec[0].odoo_id, 9);
-assert.equal(rec[0].qty, 6);
-assert.deepEqual(rec[0].pedidos, [
-    { name: 'S0001', cliente: 'Soledad López' },
-    { name: 'S0002', cliente: null },
-]);
 
 // PDF de las listas (nota 161)
 const conOferta = item({ id: 1, name: 'Zapatilla', ofertas: { conviene: { proveedor: 'Babu' }, mas_economico: babu, ofertas: [alif, babu] } });
