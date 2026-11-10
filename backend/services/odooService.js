@@ -1148,6 +1148,18 @@ async function validateSalePicking(pickingId, companyKey, { createBackorder = tr
     return { alreadyDone: false, picking, backorder, wizardHandled: true, result };
 }
 
+// Cancela un envío abierto que quedó sin nada para hacer (el Recolectar que abre «Seguir
+// armando» cuando al final no se arma nada más). Un envío validado no se toca.
+async function cancelPicking(pickingId, companyKey) {
+    const companyId = await resolveCompanyId(companyKey);
+    const picking = await getPicking(pickingId, companyKey);
+    if (!picking) throw new Error(`No encontré el envío ${pickingId} en Odoo`);
+    if (picking.state === 'cancel') return picking;
+    if (picking.state === 'done') throw new Error(`El envío ${picking.name || pickingId} ya está validado en Odoo`);
+    await callOdoo('stock.picking', 'action_cancel', [[pickingId]], withCompany(companyId));
+    return await getPicking(pickingId, companyKey) || picking;
+}
+
 /**
  * Cancela una orden de venta en Odoo.
  * Si la orden está confirmada ('sale'), intenta cancelarla con action_cancel.
@@ -1857,6 +1869,7 @@ module.exports = {
     addPickingMoves,
     empujaAlValidar,
     validateSalePicking,
+    cancelPicking,
     getPickingBackorder,
     getSalidaDePicking,
     esAccionWizard,

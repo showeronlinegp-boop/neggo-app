@@ -127,12 +127,18 @@ function qtyCampoDeFase(estado) {
 // Cuánto se espera en la fase (completo). Con el envío 1 validado, en el control
 // sólo se cuenta lo armado: lo demás quedó en el backorder del envío 1 (pendiente de armar).
 // Se puede cargar de más: las extra salen en el envío y al cerrar la orden se iguala a lo entregado.
-function topeDeFase(item, estado, pickingState) {
+function topeDeFase(item, estado, validado) {
     const pedida = num(item.qty_pedida);
-    if (estado === 'controlando' && pickingState === 'done') {
+    if (estado === 'controlando' && validado) {
         return Math.min(pedida, Math.max(0, num(item.qty_armada)));
     }
     return pedida;
+}
+
+// ¿Hay un envío 1 validado? El envío atado puede ser el que abrió «Seguir armando»
+// (abierto), con el primero ya validado: eso lo dice el conteo de envíos hechos (nota 191).
+function envio1Validado(envio) {
+    return !!envio && (envio.odoo_picking_state === 'done' || num(envio.odoo_picking_done_count) >= 1);
 }
 
 function previewSaldar(items) {
@@ -244,6 +250,8 @@ function clasificarEnvios(pickings) {
         para_armar: abierto(env1),
         reabierto: abierto(env1) && hecho(env1),
         envio1_done: hecho(env1) && !abierto(env1),
+        // Algún envío 1 validado, aunque haya otro abierto («Seguir armando»)
+        envio1_hecho: hecho(env1),
         envio2_done: rec.length > 0 && out.length > 0 && !abierto(out),
     };
 }
@@ -465,7 +473,7 @@ function planIgualar(odoo) {
         const entregada = Math.max(0, num(l.qty_delivered));
         if (entregada > pedida + 0.0001) {
             // Salieron unidades extra: la orden sube a lo entregado
-            writes.push({ odoo_line_id: l.id, qty: entregada, product_name: l.product_name });
+            writes.push({ odoo_line_id: l.id, qty: entregada, product_name: l.product_name, sube: true });
             continue;
         }
         if (entregada + 0.0001 >= pedida) continue;
@@ -856,6 +864,27 @@ async function loHechoEnOdoo(envio) {
     return yaHechoPorItem(envio.items || [], header?.pickings || []);
 }
 
+// El último envío 1 ya validado de la orden, sin contar el abierto. Sin I/O.
+function envio1HechoAnterior(pickings, abiertoId) {
+    const vivos = (pickings || []).filter((p) => p && p.state !== 'cancel');
+    const dosPasos = vivos.some((p) => p.picking_type_code === 'internal');
+    const code = dosPasos ? 'internal' : 'outgoing';
+    return vivos
+        .filter((p) => p.picking_type_code === code && p.state === 'done' && Number(p.id) !== Number(abiertoId))
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .pop() || null;
+}
+
+async function envio1Anterior(envio, abiertoId) {
+    let header = null;
+    try {
+        header = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer los envíos en Odoo');
+    }
+    return envio1HechoAnterior(header?.pickings, abiertoId);
+}
+
 async function validarEnvio1AlTerminar(envio) {
     let pickingRef = envio.odoo_picking_id
         ? { id: envio.odoo_picking_id, name: envio.odoo_picking_name || null, state: envio.odoo_picking_state || null }
@@ -908,6 +937,25 @@ async function validarEnvio1AlTerminar(envio) {
     const items = itemsSinLoHecho(envio.items, await loHechoEnOdoo(envio), 'qty_armada');
     let plan = planQtyMovesArmado(moves, items);
     if (!plan.hayAlgo) {
+        // «Seguir armando» abrió este envío y no se armó nada más: se cancela y el pedido
+        // vuelve al envío ya validado. Abierto, Odoo lo mostraría para rearmar y la entrega
+        // no se encontraría al cerrar (nota 191).
+        const anterior = await envio1Anterior(envio, pickingRef.id);
+        if (anterior) {
+            try {
+                await odooService.cancelPicking(pickingRef.id, envio.company_key);
+            } catch (err) {
+                throw errorDesdeOdoo(err, `Odoo no pudo cancelar ${pickingRef.name || 'el envío abierto'}`);
+            }
+            console.log(`📦 Armado: ${envio.odoo_order_name} sin nada nuevo, cancelé ${pickingRef.name} y vuelve a ${anterior.name}`);
+            return {
+                picking: anterior,
+                backorder: null,
+                odoo_state: odooState,
+                invoice_status: invoiceStatus,
+                cancelado: pickingRef.name || String(pickingRef.id),
+            };
+        }
         return {
             picking: picking || pickingRef,
             backorder: null,
@@ -965,33 +1013,41 @@ function entregasAbiertas(pickings) {
         && p.state !== 'cancel');
 }
 
-async function validarSalidaAlSaldar(envio) {
-    if (!envio.odoo_picking_id) return null;
-    let salida = null;
-    try {
-        const pick = await odooService.getPicking(envio.odoo_picking_id, envio.company_key);
-        if (!pick || pick.picking_type_code !== 'internal') return null;
-        salida = await odooService.getSalidaDePicking(envio.odoo_picking_id, envio.company_key);
-    } catch (err) {
-        throw errorDesdeOdoo(err, 'No pude leer la entrega en Odoo');
-    }
-    if (!salida?.id) return null;
-    if (salida.state === 'done') return { picking: salida, backorder: null, alreadyDone: true };
+// Qué entrega se valida al cerrar el control, mirando los envíos de la orden y no el envío
+// atado en la app: «Seguir armando» lo cambia por el Recolectar nuevo, que no tiene entrega
+// (nota 191). Sin I/O.
+//    1 paso (sin Recolectar)          → un_paso   (la entrega fue el envío 1)
+//    una entrega abierta               → abierta
+//    varias abiertas                   → varias    (no se cierra: lo de la otra iría a pendientes)
+//    ninguna abierta y alguna hecha    → hecha     (reintento o la validaron en Odoo)
+//    ninguna                           → ninguna   (no se cierra a ciegas)
+function entregaParaCerrar(pickings) {
+    const vivos = (pickings || []).filter((p) => p && p.state !== 'cancel');
+    if (!vivos.some((p) => p.picking_type_code === 'internal')) return { tipo: 'un_paso' };
+    const abiertas = entregasAbiertas(vivos);
+    if (abiertas.length > 1) return { tipo: 'varias', abiertas };
+    if (abiertas.length === 1) return { tipo: 'abierta', picking: abiertas[0] };
+    const hecha = vivos.filter((p) => p.picking_type_code === 'outgoing' && p.state === 'done').pop();
+    return hecha ? { tipo: 'hecha', picking: hecha } : { tipo: 'ninguna' };
+}
 
-    // Se valida una sola entrega: con dos abiertas, lo de la otra terminaría en pendientes
-    let abiertas = [];
-    try {
-        const header = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
-        abiertas = entregasAbiertas(header?.pickings);
-    } catch (err) {
-        throw errorDesdeOdoo(err, 'No pude leer las entregas en Odoo');
-    }
-    if (abiertas.length > 1) {
+async function validarSalidaAlSaldar(envio, header) {
+    const cierre = entregaParaCerrar(header?.pickings);
+    if (cierre.tipo === 'un_paso') return null;
+    if (cierre.tipo === 'hecha') return { picking: cierre.picking, backorder: null, alreadyDone: true };
+    if (cierre.tipo === 'varias') {
         throw httpError(
-            `${envio.odoo_order_name || 'Esta orden'} tiene ${abiertas.length} entregas abiertas en Odoo (${abiertas.map((p) => p.name).join(', ')}). No cerré nada: hay que dejar una sola.`,
+            `${envio.odoo_order_name || 'Esta orden'} tiene ${cierre.abiertas.length} entregas abiertas en Odoo (${cierre.abiertas.map((p) => p.name).join(', ')}). No cerré nada: hay que dejar una sola.`,
             409
         );
     }
+    if (cierre.tipo === 'ninguna') {
+        throw httpError(
+            `No encontré la entrega de ${envio.odoo_order_name || 'esta orden'} en Odoo. No cerré nada: revisá los envíos ahí.`,
+            409
+        );
+    }
+    const salida = cierre.picking;
 
     let moves = [];
     try {
@@ -1729,6 +1785,8 @@ async function cambiarEstado(id, estado, userId) {
                         odoo_picking_state = $4,
                         odoo_picking_backorder_id = NULL,
                         odoo_picking_backorder_name = NULL,
+                        -- el envío atado pasa a ser el abierto; el validado sigue contando (nota 191)
+                        odoo_picking_done_count = GREATEST(COALESCE(odoo_picking_done_count, 0), 1),
                         updated_at = NOW()
                   WHERE id = $1`,
                 [id, envio.odoo_picking_id, envio.odoo_picking_name, envio.odoo_picking_state]
@@ -1768,7 +1826,13 @@ async function cambiarEstado(id, estado, userId) {
         sets.push('checked_by = $3', 'checked_at = NOW()');
         params.push(userId);
     }
-    if (odooPatch?.picking?.id) {
+    if (odooPatch?.picking?.id && odooPatch.cancelado) {
+        // Se canceló el envío que abrió «Seguir armando»: vuelve al ya validado
+        params.push(odooPatch.picking.id);
+        sets.push(`odoo_picking_id = $${params.length}`);
+        params.push(odooPatch.picking.name || null);
+        sets.push(`odoo_picking_name = $${params.length}`);
+    } else if (odooPatch?.picking?.id) {
         params.push(odooPatch.picking.id);
         sets.push(`odoo_picking_id = COALESCE(odoo_picking_id, $${params.length})`);
         params.push(odooPatch.picking.name || null);
@@ -1814,8 +1878,10 @@ async function cambiarEstado(id, estado, userId) {
         odoo_picking: odooPatch?.picking?.name || envio.odoo_picking_name || null,
         odoo_picking_state: odooPatch?.picking?.state || null,
         picking_backorder: odooPatch?.backorder?.name || null,
+        picking_cancelado: odooPatch?.cancelado || null,
     });
-    return obtener(id);
+    const data = await obtener(id);
+    return odooPatch?.cancelado ? { ...data, envio_cancelado: odooPatch.cancelado } : data;
 }
 
 async function marcasCotizacionPago(id) {
@@ -1919,7 +1985,7 @@ async function setQty(itemId, campo, qty, userId) {
         throw httpError('Campo de cantidad inválido', 400);
     }
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name, e.odoo_picking_state
+        `SELECT i.*, e.estado, e.id AS envio_id, e.odoo_state, e.odoo_order_name, e.odoo_picking_state, e.odoo_picking_done_count
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
@@ -1934,7 +2000,7 @@ async function setQty(itemId, campo, qty, userId) {
         throw httpError('Sólo se controla en la etapa de control', 409);
     }
     const nueva = qtyEntera(qty);
-    if (nueva > 0 && campo === 'qty_controlada' && topeDeFase(item, item.estado, item.odoo_picking_state) <= 0) {
+    if (nueva > 0 && campo === 'qty_controlada' && topeDeFase(item, item.estado, envio1Validado(item)) <= 0) {
         throw httpError(`«${item.product_name}» no se armó: está pendiente de armar`, 409);
     }
     await pool.query(
@@ -1958,7 +2024,7 @@ async function escanear(envioId, code, userId) {
     const item = itemPorCodigo(envio.items, code);
     if (!item) throw httpError(`El código ${String(code || '').trim()} no está en este pedido`, 404);
     const actual = num(item[campo]);
-    const tope = topeDeFase(item, envio.estado, envio.odoo_picking_state);
+    const tope = topeDeFase(item, envio.estado, envio1Validado(envio));
     if (tope <= 0) {
         throw httpError(`«${item.product_name}» no se armó: está pendiente de armar`, 409);
     }
@@ -1968,7 +2034,7 @@ async function escanear(envioId, code, userId) {
 async function marcarFaltante(itemId, motivo, userId, qty = null) {
     if (!MOTIVOS.has(motivo)) throw httpError('Motivo inválido', 400);
     const { rows: [item] } = await pool.query(
-        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name, e.odoo_picking_state
+        `SELECT i.*, e.estado, e.id AS envio_id, e.company_key, e.odoo_state, e.odoo_order_name, e.odoo_picking_state, e.odoo_picking_done_count
            FROM pedido_envio_items i
            JOIN pedido_envios e ON e.id = i.envio_id
           WHERE i.id = $1`,
@@ -1984,7 +2050,7 @@ async function marcarFaltante(itemId, motivo, userId, qty = null) {
     const campo = item.estado === 'controlando' ? 'qty_controlada' : 'qty_armada';
     const qtyFinal = qty == null
         ? num(item[campo])
-        : clampQty(qty, topeDeFase(item, item.estado, item.odoo_picking_state));
+        : clampQty(qty, topeDeFase(item, item.estado, envio1Validado(item)));
 
     if (item.company_key === 'neggo') {
         const reposicion = require('./reposicionService');
@@ -2163,10 +2229,11 @@ async function igualarYPendientes(envio) {
     // Primero el pedido de pendientes: si algo falla después, al reintentar se reusa
     const backorder = plan.pendientes.length ? await asegurarBackorder(envio, plan) : null;
     try {
+        // Sólo al subir (unidades extra) se pide no abastecer: si no, Odoo abre otro Recolectar
+        // (nota 169). Al bajar, Odoo saca lo que sobra de un Recolectar que quedó abierto (nota 191).
         for (const w of plan.writes) {
-            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key, {
-                sinAbastecer: true,
-            });
+            await odooService.writeSaleOrderLineQty(w.odoo_line_id, w.qty, envio.company_key,
+                w.sube ? { sinAbastecer: true } : {});
         }
     } catch (err) {
         throw errorDesdeOdoo(err, `Odoo no pudo igualar las cantidades de ${envio.odoo_order_name || 'la orden'}`);
@@ -2189,13 +2256,21 @@ async function saldarLocked(id, userId) {
     if (!envio.odoo_sale_order_id) throw httpError('Este pedido no tiene orden de Odoo', 400);
 
     const plan = previewSaldar(envio.items);
-    const pickingYaValidado = envio.odoo_picking_state === 'done';
+    // Se decide con los envíos de Odoo, no con el envío atado en la app (nota 191)
+    let header = null;
+    try {
+        header = await odooService.getSaleOrderHeader(envio.odoo_sale_order_id, envio.company_key);
+    } catch (err) {
+        throw errorDesdeOdoo(err, 'No pude leer los envíos en Odoo');
+    }
+    const pickingYaValidado = clasificarEnvios(header?.pickings).envio1_hecho
+        || envio.odoo_picking_state === 'done';
 
     let backorder = null;
     let salida = null;
     let igualadas = [];
     if (pickingYaValidado) {
-        salida = await validarSalidaAlSaldar(envio);
+        salida = await validarSalidaAlSaldar(envio, header);
         const cierre = await igualarYPendientes(envio);
         backorder = cierre.backorder;
         igualadas = cierre.writes;
@@ -2258,12 +2333,17 @@ module.exports = {
     previewSaldar,
     qtyCampoDeFase,
     topeDeFase,
+    envio1Validado,
     refPendientes,
     ordenFacturada,
     ordenCobradaAparte,
     sqlFueraPorFacturaOPos,
     ordenEnviosYaHechos,
     clasificarEnvios,
+    entregaParaCerrar,
+    envio1HechoAnterior,
+    validarSalidaAlSaldar,
+    validarEnvio1AlTerminar,
     etapaDesdeOdoo,
     estadoSegunOdoo,
     qtyDesdeMoves,
