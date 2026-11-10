@@ -503,7 +503,14 @@ export default function ArmarPedido({
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>{p.name}</div>
                                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, ...t.numericStyle }}>
-                                            <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
+                                            {/* Referencia y costo actual de Odoo, como en las filas del pedido (nota 193) */}
+                                            {p.internal_ref || p.barcode
+                                                ? <span style={{ fontFamily: t.font.mono }} title="Referencia interna en Odoo">{p.internal_ref || p.barcode}</span>
+                                                : <span>Sin código en Odoo</span>}
+                                            {' · '}
+                                            <span title="Costo que tiene cargado hoy el producto en Odoo">
+                                                {Number(p.standard_price) > 0 ? `Costo Odoo ${fmtAR(Number(p.standard_price))}` : 'Sin costo en Odoo'}
+                                            </span>
                                             {' · '}
                                             {p.cotizaciones.filter(c => !c.llego && !c.separado).map(c => `${c.name}${c.partner_name ? ` (${clienteCorto(c.partner_name)})` : ''} × ${fmtInt(c.qty - (c.qty_llegada || 0))}`).join(' · ')}
                                         </div>
