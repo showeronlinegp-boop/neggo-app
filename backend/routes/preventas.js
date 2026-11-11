@@ -923,6 +923,11 @@ router.get('/odoo-quotations/by-supplier', authenticate, async (req, res) => {
     }
 });
 
+// Escapa texto para incrustarlo en el HTML del PDF
+function escHtml(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 // POST /api/preventas/odoo-quotations/pdf
 // Genera PDF del pedido a un proveedor vía HTML → Puppeteer → Chrome.
 // Las imágenes se incrustan como base64 para que Chrome las renderice aunque el browser corra en otro container.
@@ -1007,14 +1012,17 @@ router.post('/odoo-quotations/pdf', authenticate, async (req, res) => {
                 ? `<img src="${dataSrc}" style="width:38px;height:38px;object-fit:cover;border-radius:4px;display:block;">`
                 : `<div style="width:38px;height:38px;border-radius:4px;background:#f5f3ee;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#6b6a64;">${letter}</div>`;
 
-            const quotations = (p.quotations || []).map(q => `${q.quotation_name}×${q.qty}`).join('&nbsp;&nbsp;');
+            // Por cotización: cliente, cantidad y número (los nombres vienen de Odoo: escaparlos)
+            const quotations = (p.quotations || []).map(q =>
+                `<span style="white-space:nowrap;"><b style="color:#1c1c1a;">${escHtml(q.client || 'Sin cliente')}</b>: ${formatEntero(q.qty)} u. <span style="font-family:monospace;">(${escHtml(q.quotation_name)})</span></span>`
+            ).join(' &nbsp;·&nbsp; ');
 
             return `<tr style="background:${bg};">
   <td style="padding:7px 6px 7px 8px;width:50px;text-align:center;vertical-align:middle;">${imgCell}</td>
   <td style="padding:7px 6px;vertical-align:middle;max-width:0;">
     <div style="font-weight:600;font-size:8.5pt;color:#1c1c1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.product_name || '—'}</div>
     <div style="font-size:7pt;color:#6b6a64;margin-top:3px;font-family:monospace;">${p.external_id || '—'}</div>
-    ${quotations ? `<div style="font-size:6.5pt;color:#9a988f;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${quotations}</div>` : ''}
+    ${quotations ? `<div style="font-size:7pt;color:#6b6a64;margin-top:3px;line-height:1.4;">${quotations}</div>` : ''}
   </td>
   <td style="padding:7px 8px;width:60px;text-align:right;vertical-align:middle;font-weight:700;font-size:9pt;color:#1c1c1a;font-variant-numeric:tabular-nums;white-space:nowrap;">${formatEntero(p.total_qty)}</td>
   <td style="padding:7px 8px;width:105px;text-align:right;vertical-align:middle;font-size:8pt;color:#6b6a64;font-variant-numeric:tabular-nums;white-space:nowrap;">${formatMoneyAR(p.unit_cost)}</td>
