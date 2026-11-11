@@ -338,6 +338,15 @@ export default function ArmarPedido({
                         onClick={pdfLista}>
                         {generandoPdf === 'lista' ? 'Generando…' : 'PDF de la lista'}
                     </Button>
+                    {/* Atajo arriba al PDF de lo tildado: el de la barra de abajo queda fuera de la vista (nota 197) */}
+                    {tildados.length > 0 && (
+                        <Button size="sm" variant="primary" leftIcon={<Icon.FileText size={13} />}
+                            disabled={!!generandoPdf}
+                            title="Baja en PDF solo lo que tildaste"
+                            onClick={pdf}>
+                            {generandoPdf === 'tildados' ? 'Generando…' : `PDF de lo tildado (${tildados.length})`}
+                        </Button>
+                    )}
                     <Button size="sm" variant="ghost" title="Ver activos y archivados" disabled={!proveedor}
                         onClick={() => onVerCatalogo(proveedor)}>
                         {isMobile ? 'Catálogo' : 'Ver catálogo'}
