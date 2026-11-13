@@ -92,3 +92,25 @@ END $$;
 -- Después de un timeout o de un rate-overlimit, Evolution puede seguir procesando el envío
 -- anterior (cortamos la espera, no su trabajo): hasta esta hora no sale nada más.
 ALTER TABLE whatsapp_settings ADD COLUMN IF NOT EXISTS evolution_busy_until TIMESTAMPTZ;
+
+-- Reparto en el día (lunes a sábado de 9 a 18): cada mensaje del grupo tiene una hora límite
+-- (las 18 de su día). Lo que no entra queda 'omitido' y no se publica.
+-- Dentro de un DO que mira antes: este archivo corre en cada getSettings y un ALTER suelto
+-- toma lock de la tabla en cada pedido.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'whatsapp_messages' AND column_name = 'deadline_at'
+    ) THEN
+        ALTER TABLE whatsapp_messages ADD COLUMN deadline_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'whatsapp_messages_status_check'
+          AND pg_get_constraintdef(oid) LIKE '%omitido%'
+    ) THEN
+        ALTER TABLE whatsapp_messages DROP CONSTRAINT IF EXISTS whatsapp_messages_status_check;
+        ALTER TABLE whatsapp_messages ADD CONSTRAINT whatsapp_messages_status_check
+            CHECK (status IN ('pendiente', 'enviando', 'enviado', 'error', 'omitido'));
+    END IF;
+END $$;

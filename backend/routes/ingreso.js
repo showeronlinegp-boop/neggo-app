@@ -1239,7 +1239,7 @@ router.post('/:ingresoId/whatsapp', authenticate, requireRole('admin'), async (r
         }
 
         const settings = await whatsappQueue.getSettings(pool);
-        const { batch, total } = await whatsappQueue.createBatch(pool, {
+        const { batch, total, plan } = await whatsappQueue.createBatch(pool, {
             company:         'neggo',
             category:        `Ingreso #${ingresoId}`,
             products:        products.map(p => ({ ...p, caption: `${WHATSAPP_INGRESO_HEADER}\n${p.caption}` })),
@@ -1259,7 +1259,7 @@ router.post('/:ingresoId/whatsapp', authenticate, requireRole('admin'), async (r
         });
 
         console.log(`✅ Tanda de WhatsApp ${batch.id} programada desde ingreso ${ingresoId}: ${total} productos`);
-        return ok(res, { id: batch.id, total, scheduled_at: batch.scheduled_at, omitidos }, 201);
+        return ok(res, { id: batch.id, total, scheduled_at: batch.scheduled_at, omitidos, plan }, 201);
     } catch (err) {
         console.error('❌ Error programando WhatsApp desde ingreso:', err.message);
         return fail(res, err.message, 400);

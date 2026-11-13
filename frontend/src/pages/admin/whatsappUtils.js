@@ -36,6 +36,31 @@ export function fmtCountdown(ms) {
     return d ? `${d} d ${clock}` : clock;
 }
 
+function fmtDiaHora(iso) {
+    return new Date(iso).toLocaleString('es-AR', {
+        timeZone: ART, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+}
+
+// Resumen del reparto del día (lunes a sábado de 9 a 18) de una o varias tandas del grupo.
+// plans: [{ desde, hasta, programados, omitidos }] como los devuelve el backend.
+export function textoReparto(plans) {
+    const lista = (plans || []).filter(Boolean);
+    if (!lista.length) return '';
+    const programados = lista.reduce((acc, p) => acc + (p.programados || 0), 0);
+    const omitidos = lista.reduce((acc, p) => acc + (p.omitidos || 0), 0);
+    const noEntran = omitidos ? ` ${omitidos} no entra${omitidos === 1 ? '' : 'n'} hasta las 18 y no se publica${omitidos === 1 ? '' : 'n'}.` : '';
+    if (!programados) return `No entra ninguna en el horario de publicación (lunes a sábado de 9 a 18): no se publica${omitidos === 1 ? '' : 'n'}.`;
+    const desdes = lista.map((p) => p.desde).filter(Boolean).sort();
+    const hastas = lista.map((p) => p.hasta).filter(Boolean).sort();
+    const desde = desdes[0];
+    const hasta = hastas[hastas.length - 1];
+    const cuando = programados === 1 || desde === hasta
+        ? `Sale ${fmtDiaHora(desde)} aprox.`
+        : `Se reparten de ${fmtDiaHora(desde)} a ${fmtDiaHora(hasta)}, intercaladas con lo que ya estaba en la cola.`;
+    return `${cuando}${noEntran}`;
+}
+
 export function odooImageUrl(company, templateId) {
     return templateId ? `/api/products/odoo-image/${company}/${templateId}` : null;
 }

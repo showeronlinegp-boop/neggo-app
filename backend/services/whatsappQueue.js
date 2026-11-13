@@ -6,9 +6,13 @@ const path = require('path');
 const { findPublishable } = require('./whatsappProducts');
 const { assertSendable } = require('./whatsappMessage');
 const { isTimeoutError } = require('./evolutionClient');
+const reparto = require('./whatsappReparto');
 
 const ART = 'America/Argentina/Buenos_Aires';
 const LOCK_KEY = 842190;
+// Reacomodo del reparto del día: uno por vez (crear tanda, reanudar, Evolution ocupado)
+const LOCK_PLAN = 842191;
+const OMITIDO_TEXTO = `No entró en el horario de publicación (${reparto.VENTANA_TEXTO}): no se publica`;
 // Cuando cortamos por timeout, Evolution sigue con ese envío por detrás (un estado se cifra
 // para toda la agenda). Con rate-overlimit es WhatsApp pidiendo bajar el ritmo.
 // En los dos casos no sale nada más, de ninguna tanda, durante este tiempo.
@@ -123,7 +127,8 @@ async function createBatch(pool, input) {
     const groupSubject = destino === 'estado' ? 'Estados' : (input.groupSubject || null);
     const interval = clampInterval(input.intervalSeconds, 90);
     const schedule = input.sendNow ? null : assertSchedule(input.scheduledAt);
-    const offset = Math.max(0, Math.floor(Number(input.offsetSeconds) || 0));
+    // En el grupo las tandas no se encadenan: el reparto del día las intercala
+    const offset = destino === 'grupo' ? 0 : Math.max(0, Math.floor(Number(input.offsetSeconds) || 0));
     const maxAttempts = clampAttempts(input.maxAttempts);
     const client = await pool.connect();
     try {
@@ -175,14 +180,20 @@ async function createBatch(pool, input) {
             ]);
         }
         const durationSeconds = offsetSeconds + gaps[products.length];
-        await logEvent(client, {
-            batchId: batch.id,
-            message: destino === 'estado'
-                ? `Tanda de estados creada con ${products.length} productos. Uno cada ${interval} s en promedio, con variación.`
-                : `Tanda creada con ${products.length} productos. Un mensaje cada ${interval} s en promedio, con variación.`,
-        });
+        let plan = null;
+        if (destino === 'estado') {
+            await logEvent(client, {
+                batchId: batch.id,
+                message: `Tanda de estados creada con ${products.length} productos. Uno cada ${interval} s en promedio, con variación.`,
+            });
+        } else {
+            // Se reparte hasta las 18 de su día, intercalada con lo que ya estaba en la cola
+            await planificarEn(client, input.now || new Date());
+            plan = await resumenPlan(client, batch.id);
+            await logEvent(client, { batchId: batch.id, message: textoPlan(products.length, plan) });
+        }
         await client.query('COMMIT');
-        return { batch, total: products.length, durationSeconds, sample: products.slice(0, 8) };
+        return { batch, total: products.length, durationSeconds, plan, sample: products.slice(0, 8) };
     } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -191,11 +202,142 @@ async function createBatch(pool, input) {
     }
 }
 
+function fmtHora(d) {
+    return d ? new Date(d).toLocaleString('es-AR', { timeZone: ART, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : null;
+}
+
+function textoPlan(total, plan) {
+    if (!plan.programados) return `Tanda creada con ${total} productos: no entró ninguno en el horario (${reparto.VENTANA_TEXTO}), no se publica.`;
+    const base = `Tanda creada con ${total} productos: se reparten de ${fmtHora(plan.desde)} a ${fmtHora(plan.hasta)}, intercalados con lo que ya estaba (${reparto.VENTANA_TEXTO}, mínimo ${plan.min_gap} s entre publicaciones).`;
+    return plan.omitidos ? `${base} ${plan.omitidos} no entraron hasta las 18 y no se publican.` : base;
+}
+
+/** Cómo quedó repartida una tanda: primera y última hora, cuántos entraron y cuántos no. */
+async function resumenPlan(db, batchId) {
+    const { rows: [r] } = await db.query(`
+        SELECT MIN(scheduled_at) FILTER (WHERE status = 'pendiente') AS desde,
+               MAX(scheduled_at) FILTER (WHERE status = 'pendiente') AS hasta,
+               COUNT(*) FILTER (WHERE status = 'pendiente')::int AS programados,
+               COUNT(*) FILTER (WHERE status = 'omitido')::int AS omitidos,
+               MAX(gap_seconds) AS min_gap
+        FROM whatsapp_messages WHERE batch_id = $1
+    `, [batchId]);
+    return r;
+}
+
+async function minGapDe(db) {
+    const { rows } = await db.query('SELECT interval_seconds FROM whatsapp_settings WHERE id = 1');
+    return Math.max(reparto.MIN_GAP_DEFAULT, Number(rows[0] && rows[0].interval_seconds) || 0);
+}
+
+/** Tandas sin nada pendiente (todo enviado, con error u omitido) pasan a completada. */
+async function cerrarTandasTerminadas(db, batchIds, now) {
+    if (!batchIds.length) return;
+    await db.query(`
+        UPDATE whatsapp_batches b
+        SET status = 'completada', updated_at = $2
+        WHERE b.id = ANY($1::int[])
+          AND b.status IN ('programada', 'en_curso')
+          AND NOT EXISTS (
+              SELECT 1 FROM whatsapp_messages m
+              WHERE m.batch_id = b.id AND m.status IN ('pendiente', 'enviando')
+          )
+    `, [batchIds, now]);
+}
+
+async function marcarOmitidos(db, ids, now) {
+    if (!ids.length) return;
+    const { rows } = await db.query(`
+        UPDATE whatsapp_messages
+        SET status = 'omitido', last_error = $2, updated_at = $3
+        WHERE id = ANY($1::int[]) AND status = 'pendiente'
+        RETURNING batch_id
+    `, [ids, OMITIDO_TEXTO, now]);
+    const porTanda = new Map();
+    for (const r of rows) porTanda.set(r.batch_id, (porTanda.get(r.batch_id) || 0) + 1);
+    for (const [batchId, n] of porTanda) {
+        await logEvent(db, { batchId, level: 'warn', message: `${n} mensaje(s) no entraron hasta las 18 y no se publican.` });
+    }
+    await cerrarTandasTerminadas(db, [...porTanda.keys()], now);
+}
+
+/**
+ * Reacomoda todo lo pendiente del grupo en el día (ver whatsappReparto.js). Corre dentro de la
+ * transacción de `db`. No toca lo ya enviado, lo que se está enviando, los reintentos ni las
+ * tandas pausadas. Lo que no entra hasta las 18 queda omitido.
+ */
+async function planificarEn(db, now = new Date()) {
+    await db.query('SELECT pg_advisory_xact_lock($1)', [LOCK_PLAN]);
+    const { rows: tandas } = await db.query(`
+        SELECT b.id, b.scheduled_at, COUNT(m.id)::int AS total
+        FROM whatsapp_batches b
+        JOIN whatsapp_messages m ON m.batch_id = b.id
+        WHERE b.destino = 'grupo' AND b.status IN ('programada', 'en_curso')
+        GROUP BY b.id
+        HAVING COUNT(*) FILTER (WHERE m.status = 'pendiente' AND m.attempts = 0) > 0
+    `);
+    if (!tandas.length) return [];
+    const { rows: mensajes } = await db.query(`
+        SELECT id, batch_id, position FROM whatsapp_messages
+        WHERE batch_id = ANY($1::int[]) AND status = 'pendiente' AND attempts = 0
+        FOR UPDATE SKIP LOCKED
+    `, [tandas.map((t) => t.id)]);
+    const { rows: [last] } = await db.query('SELECT MAX(updated_at) AS at FROM whatsapp_messages WHERE attempts > 0');
+    // Si Evolution está ocupado, nada sale antes de que se libere
+    const busy = await getBusyUntil(db, now);
+    const minGap = await minGapDe(db);
+    const plan = reparto.planificar({
+        tandas: tandas.map((t) => ({ batchId: t.id, inicio: new Date(t.scheduled_at) })),
+        mensajes: mensajes.map((m) => ({ id: m.id, batchId: m.batch_id, position: m.position })),
+        ultimoEnvio: last.at ? new Date(last.at) : null,
+        ahora: busy || now,
+        minGap,
+    });
+    const ok = plan.filter((p) => !p.omitido);
+    if (ok.length) {
+        await db.query(`
+            UPDATE whatsapp_messages m
+            SET scheduled_at = u.at, deadline_at = u.fin, gap_seconds = $4
+            FROM unnest($1::int[], $2::timestamptz[], $3::timestamptz[]) AS u(id, at, fin)
+            WHERE m.id = u.id
+        `, [ok.map((p) => p.id), ok.map((p) => p.scheduledAt), ok.map((p) => p.deadline), minGap]);
+    }
+    await marcarOmitidos(db, plan.filter((p) => p.omitido).map((p) => p.id), now);
+    return plan;
+}
+
+/** planificarEn en su propia transacción. */
+async function replanificar(pool, now = new Date()) {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const plan = await planificarEn(client, now);
+        await client.query('COMMIT');
+        return plan;
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+/** Lo del grupo que pasó su hora límite (las 18 de su día) sin salir: no se publica. */
+async function omitirVencidos(pool, now) {
+    const { rows } = await pool.query(`
+        SELECT id FROM whatsapp_messages
+        WHERE status = 'pendiente' AND deadline_at IS NOT NULL AND deadline_at < $1
+    `, [now]);
+    await marcarOmitidos(pool, rows.map((r) => r.id), now);
+    return rows.length;
+}
+
 const BATCH_COUNTS = `
     b.*,
     COUNT(m.id)::int AS total,
     COUNT(m.id) FILTER (WHERE m.status = 'enviado')::int AS enviados,
     COUNT(m.id) FILTER (WHERE m.status = 'error')::int AS errores,
+    COUNT(m.id) FILTER (WHERE m.status = 'omitido')::int AS omitidos,
     COUNT(m.id) FILTER (WHERE m.status = 'pendiente')::int AS pendientes,
     COUNT(m.id) FILTER (WHERE m.status = 'enviando')::int AS enviando
 `;
@@ -222,7 +364,7 @@ async function getBatch(pool, id) {
     `, [id]);
     if (!rows.length) return null;
     const messages = await pool.query(`
-        SELECT id, position, product_name, price_label, status, attempts, last_error, sent_at
+        SELECT id, position, product_name, price_label, status, attempts, last_error, sent_at, scheduled_at
         FROM whatsapp_messages
         WHERE batch_id = $1
         ORDER BY position
@@ -322,14 +464,17 @@ function pauseBatch(pool, id) {
     return setBatchStatus(pool, id, ['programada', 'en_curso'], 'pausada', 'Tanda pausada');
 }
 
-async function resumeBatch(pool, id) {
+async function resumeBatch(pool, id, now = new Date()) {
     const { rows } = await pool.query('SELECT * FROM whatsapp_batches WHERE id = $1', [id]);
     if (!rows.length || rows[0].status !== 'pausada') {
         throw new Error('La tanda no está en un estado que permita esa acción');
     }
     // Si todavía no llegó la hora, vuelve a programada.
-    const status = new Date(rows[0].scheduled_at).getTime() > Date.now() ? 'programada' : 'en_curso';
-    return setBatchStatus(pool, id, ['pausada'], status, 'Tanda reanudada');
+    const status = new Date(rows[0].scheduled_at).getTime() > now.getTime() ? 'programada' : 'en_curso';
+    const batch = await setBatchStatus(pool, id, ['pausada'], status, 'Tanda reanudada');
+    // Vuelve al reparto del día con lo que queda pendiente
+    if (batch.destino === 'grupo') await replanificar(pool, now);
+    return batch;
 }
 
 function cancelBatch(pool, id) {
@@ -391,6 +536,7 @@ async function claimNext(pool, now) {
             WHERE m.status = 'pendiente'
               AND m.attempts < m.max_attempts
               AND m.scheduled_at <= $1
+              AND (m.deadline_at IS NULL OR m.deadline_at >= $1)
               AND b.status = 'en_curso'
               AND NOT EXISTS (
                   SELECT 1 FROM whatsapp_messages inflight
@@ -500,6 +646,7 @@ async function tick(pool, deps, now = new Date()) {
         locked = rows[0].ok === true;
         if (!locked) return { action: 'ocupado' };
         await recoverStuck(pool, now);
+        await omitirVencidos(pool, now);
         const message = await claimNext(pool, now);
         if (!message) return { action: 'idle' };
         // La espera hasta el próximo cuenta desde que Evolution respondió, no desde que arrancó.
@@ -532,7 +679,11 @@ async function tick(pool, deps, now = new Date()) {
                 : (err.message || 'Error al enviar');
             await markFailed(pool, message, errorText, ended, { retry });
             const busySeconds = busySecondsFor(err);
-            if (busySeconds > 0) await markEvolutionBusy(pool, message, busySeconds, ended);
+            if (busySeconds > 0) {
+                await markEvolutionBusy(pool, message, busySeconds, ended);
+                // Lo que iba a salir mientras está ocupado se reparte de nuevo (no sale todo junto después)
+                await replanificar(pool, ended).catch((e) => console.error('❌ WhatsApp: reacomodo del reparto:', e.message));
+            }
             return { action: 'error', id: message.id, error: err.message };
         }
     } finally {
@@ -548,6 +699,8 @@ module.exports = {
     getSettings,
     saveSettings,
     createBatch,
+    replanificar,
+    omitirVencidos,
     listBatches,
     listQueue,
     getBusyUntil,

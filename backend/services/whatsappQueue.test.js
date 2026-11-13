@@ -134,7 +134,7 @@ async function recreateDb() {
         CREATE TABLE supplier_products (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, name VARCHAR(500),
             raw_price NUMERIC, source_category VARCHAR(200),
-            available BOOLEAN NOT NULL DEFAULT true
+            available BOOLEAN NOT NULL DEFAULT true, source VARCHAR(40)
         );
         CREATE TABLE supplier_category_rules (
             id SERIAL PRIMARY KEY, supplier_id INTEGER, source_category VARCHAR(200),
@@ -145,7 +145,8 @@ async function recreateDb() {
         );
         CREATE TABLE product_mappings (
             id SERIAL PRIMARY KEY, supplier_product_id INTEGER, odoo_product_id INTEGER,
-            odoo_company VARCHAR(20), active BOOLEAN DEFAULT true, match_confidence NUMERIC
+            odoo_company VARCHAR(20), active BOOLEAN DEFAULT true, match_confidence NUMERIC,
+            es_habitual BOOLEAN DEFAULT true
         );
         CREATE TABLE odoo_products_cache (
             id SERIAL PRIMARY KEY, odoo_id INTEGER, company VARCHAR(20), name VARCHAR(500),
@@ -252,46 +253,66 @@ async function stateOf(pool, batchId) {
     return rows;
 }
 
+async function plannedOf(pool, batchId) {
+    const { rows } = await pool.query(
+        `SELECT id, position, status, scheduled_at, deadline_at FROM whatsapp_messages WHERE batch_id = $1 ORDER BY position`,
+        [batchId]
+    );
+    return rows;
+}
+
+// Hora de Argentina (UTC-3) para los tests: '2020-01-01T09:00' → Date
+const arT = (s) => new Date(`${s}:00-03:00`);
+
 async function testQueue(pool) {
-    const base = new Date('2020-01-01T03:00:00.000Z');
+    // 2020-01-01 es miércoles. Dos productos desde las 9: se reparten hasta las 18.
     const created = await queue.createBatch(pool, {
         company: 'preventas',
         groupJid: '120363001@g.us',
         groupSubject: 'Ofertas',
         intervalSeconds: 90,
-        random: () => 0.5,
-        scheduledAt: '2020-01-01T00:00',
+        scheduledAt: '2020-01-01T09:00',
+        now: arT('2020-01-01T09:00'),
         maxAttempts: 3,
     });
     assert.strictEqual(created.total, 2);
+    assert.strictEqual(created.plan.programados, 2);
+    assert.strictEqual(created.plan.omitidos, 0);
+    let plan = await plannedOf(pool, created.batch.id);
+    const m0 = new Date(plan[0].scheduled_at);
+    assert.ok(m0 >= arT('2020-01-01T09:00') && m0 < arT('2020-01-01T13:30'), m0.toISOString());
+    assert.ok(new Date(plan[1].scheduled_at) > arT('2020-01-01T13:30'));
+    assert.ok(new Date(plan[1].scheduled_at) <= arT('2020-01-01T18:00'));
+    assert.strictEqual(new Date(plan[0].deadline_at).toISOString(), arT('2020-01-01T18:00').toISOString());
 
-    const first = await queue.tick(pool, senderOk(), base);
+    assert.strictEqual((await queue.tick(pool, senderOk(), new Date(m0.getTime() - 1000))).action, 'idle');
+    const first = await queue.tick(pool, senderOk(), m0);
     assert.strictEqual(first.action, 'enviado');
-    const again = await queue.tick(pool, senderOk(), new Date(base.getTime() + 89_000));
-    assert.strictEqual(again.action, 'idle');
     await queue.pauseBatch(pool, created.batch.id);
-    const paused = await queue.tick(pool, senderOk(), new Date(base.getTime() + 90_000));
-    assert.strictEqual(paused.action, 'idle');
-    await queue.resumeBatch(pool, created.batch.id);
-    // Los 90 s cuentan desde que terminó el envío anterior (unos ms después de base).
-    const second = await queue.tick(pool, senderOk(), new Date(base.getTime() + 91_000));
+    const m1 = new Date(plan[1].scheduled_at);
+    assert.strictEqual((await queue.tick(pool, senderOk(), m1)).action, 'idle');
+    await queue.resumeBatch(pool, created.batch.id, m1);
+    plan = await plannedOf(pool, created.batch.id);
+    const m1b = new Date(plan[1].scheduled_at);
+    const second = await queue.tick(pool, senderOk(), m1b);
     assert.strictEqual(second.action, 'enviado');
     const done = await queue.getBatch(pool, created.batch.id);
     assert.strictEqual(done.status, 'completada');
     assert.strictEqual(done.enviados, 2);
 
+    // Reintentos: el reintento sale a los 90 s del intento anterior
     const retry = await queue.createBatch(pool, {
         company: 'preventas',
         category: 'Bazar',
         destCategory: 'Bazar',
         groupJid: '120363001@g.us',
         intervalSeconds: 90,
-        random: () => 0.5,
-        scheduledAt: '2020-01-02T00:00',
+        scheduledAt: '2020-01-02T09:00',
+        now: arT('2020-01-02T09:00'),
         maxAttempts: 3,
     });
     await pool.query('DELETE FROM whatsapp_messages WHERE batch_id = $1 AND position > 0', [retry.batch.id]);
-    let t = new Date('2020-01-02T03:00:00.000Z');
+    let t = new Date((await plannedOf(pool, retry.batch.id))[0].scheduled_at);
     for (let i = 0; i < 3; i++) {
         const r = await queue.tick(pool, senderFail(), t);
         assert.strictEqual(r.action, 'error');
@@ -307,21 +328,21 @@ async function testQueue(pool) {
         company: 'preventas',
         groupJid: '120363001@g.us',
         intervalSeconds: 90,
-        random: () => 0.5,
-        scheduledAt: '2020-01-03T00:00',
+        scheduledAt: '2020-01-03T09:00',
+        now: arT('2020-01-03T09:00'),
         maxAttempts: 3,
     });
-    const c0 = new Date('2020-01-03T03:00:00.000Z');
+    const c0 = new Date((await plannedOf(pool, cancel.batch.id))[0].scheduled_at);
     assert.strictEqual((await queue.tick(pool, senderOk(), c0)).action, 'enviado');
     await queue.cancelBatch(pool, cancel.batch.id);
-    assert.strictEqual((await queue.tick(pool, senderOk(), new Date(c0.getTime() + 90_000))).action, 'idle');
+    assert.strictEqual((await queue.tick(pool, senderOk(), arT('2020-01-03T17:59'))).action, 'idle');
     const left = await stateOf(pool, cancel.batch.id);
     assert.strictEqual(left[0].status, 'enviado');
     assert.strictEqual(left[1].status, 'pendiente');
 
     await pool.query(`
         UPDATE whatsapp_messages
-        SET status = 'enviando', attempts = 1, updated_at = $2
+        SET status = 'enviando', attempts = 1, updated_at = $2, scheduled_at = $2
         WHERE batch_id = $1 AND position = 1
     `, [cancel.batch.id, new Date(c0.getTime() - 3 * 60_000)]);
     await pool.query(`UPDATE whatsapp_batches SET status = 'en_curso' WHERE id = $1`, [cancel.batch.id]);
@@ -330,6 +351,8 @@ async function testQueue(pool) {
     const finalRows = await stateOf(pool, cancel.batch.id);
     assert.strictEqual(finalRows[1].status, 'enviado');
     assert.strictEqual(finalRows[1].attempts, 2);
+
+    await testReparto(pool);
 
     const statusBatch = await queue.createBatch(pool, {
         company: 'preventas',
@@ -417,8 +440,10 @@ async function testQueue(pool) {
         groupJid: '120363001@g.us',
         products: [{ ...oneStatus, odoo_id: 10, name: 'Vaso largo', caption: 'Vaso largo\n$1.523' }],
         intervalSeconds: 90,
-        scheduledAt: '2020-01-06T00:00',
+        scheduledAt: '2020-01-06T09:00',
+        now: arT('2020-01-06T09:00'),
     });
+    await pool.query('UPDATE whatsapp_messages SET scheduled_at = $2, deadline_at = NULL WHERE batch_id = $1', [waiting.batch.id, tTimeout]); await pool.query('UPDATE whatsapp_batches SET scheduled_at = $2 WHERE id = $1', [waiting.batch.id, tTimeout]);
     const blocked = await queue.tick(pool, senderOk(), new Date(tTimeout.getTime() + 9 * 60_000));
     assert.strictEqual(blocked.action, 'idle');
     const queued = await queue.listQueue(pool, new Date(tTimeout.getTime() + 9 * 60_000));
@@ -433,9 +458,11 @@ async function testQueue(pool) {
         groupJid: '120363001@g.us',
         products: [oneStatus],
         intervalSeconds: 90,
-        scheduledAt: '2020-01-07T00:00',
+        scheduledAt: '2020-01-07T09:00',
+        now: arT('2020-01-07T09:00'),
     });
     const tLimit = new Date('2020-01-07T03:00:00.000Z');
+    await pool.query('UPDATE whatsapp_messages SET scheduled_at = $2, deadline_at = NULL WHERE batch_id = $1', [limited.batch.id, tLimit]); await pool.query('UPDATE whatsapp_batches SET scheduled_at = $2 WHERE id = $1', [limited.batch.id, tLimit]);
     const limitTick = await queue.tick(pool, {
         loadImage: async () => ({ base64: FAKE_JPEG, mimetype: 'image/jpeg' }),
         sendImage: async () => { throw new Error('Evolution API 400: Error: rate-overlimit'); },
@@ -477,6 +504,56 @@ async function testQueue(pool) {
     const logs = await pool.query('SELECT COUNT(*)::int AS n FROM whatsapp_logs');
     assert.ok(logs.rows[0].n > 0);
     console.log('cola ok');
+}
+
+// Reparto en el día contra la base: intercalado, 90 s, omitidos y vencidos.
+async function testReparto(pool) {
+    const base = {
+        company: 'preventas', groupJid: '120363001@g.us', intervalSeconds: 90, maxAttempts: 3,
+    };
+    const p = (odoo_id, name) => ({
+        odoo_id, company: 'preventas', name, price_amount: 1000, price_label: '$1.000',
+        caption: `${name}\n$1.000`, template_id: 500 + odoo_id,
+    });
+    const muchos = (n, desde) => Array.from({ length: n }, (_, i) => p(desde + i, `Prod ${desde + i}`));
+    // 2020-01-09 jueves: 10 desde las 9 y, a las 13, 6 más
+    const a = await queue.createBatch(pool, { ...base, products: muchos(10, 100), scheduledAt: '2020-01-09T09:00', now: arT('2020-01-09T09:00') });
+    assert.strictEqual(a.plan.programados, 10);
+    const b = await queue.createBatch(pool, { ...base, products: muchos(6, 200), scheduledAt: '2020-01-09T13:00', now: arT('2020-01-09T13:00') });
+    assert.strictEqual(b.plan.programados, 6);
+    const { rows } = await pool.query(`
+        SELECT batch_id, scheduled_at FROM whatsapp_messages
+        WHERE batch_id = ANY($1::int[]) AND scheduled_at >= $2 ORDER BY scheduled_at
+    `, [[a.batch.id, b.batch.id], arT('2020-01-09T13:00')]);
+    const orden = rows.map((r) => (r.batch_id === a.batch.id ? 'A' : 'B')).join('');
+    assert.ok(!/AAA|BBBB/.test(orden), orden);
+    for (let i = 1; i < rows.length; i++) {
+        assert.ok(new Date(rows[i].scheduled_at) - new Date(rows[i - 1].scheduled_at) >= 90_000);
+    }
+    assert.ok(rows.every((r) => new Date(r.scheduled_at) <= arT('2020-01-09T18:00')));
+    await queue.cancelBatch(pool, a.batch.id);
+    await queue.cancelBatch(pool, b.batch.id);
+
+    // A las 17:30, 30 fotos: entran las que caben a 90 s y el resto no se publica
+    const tarde = await queue.createBatch(pool, { ...base, products: muchos(30, 300), scheduledAt: '2020-01-10T17:30', now: arT('2020-01-10T17:30') });
+    assert.ok(tarde.plan.programados >= 19 && tarde.plan.programados <= 21, tarde.plan.programados);
+    assert.strictEqual(tarde.plan.programados + tarde.plan.omitidos, 30);
+    const detalle = await queue.getBatch(pool, tarde.batch.id);
+    assert.strictEqual(detalle.omitidos, tarde.plan.omitidos);
+    // Lo que no salió hasta las 18 se omite y la tanda termina
+    assert.strictEqual((await queue.tick(pool, senderOk(), arT('2020-01-10T18:01'))).action, 'idle');
+    const cerrada = await queue.getBatch(pool, tarde.batch.id);
+    assert.strictEqual(cerrada.pendientes, 0);
+    assert.strictEqual(cerrada.status, 'completada');
+
+    // Domingo: pasa al lunes. Programado para un día que ya pasó: no entra nada
+    const domingo = await queue.createBatch(pool, { ...base, products: muchos(2, 400), scheduledAt: '2020-01-12T10:00', now: arT('2020-01-11T12:00') });
+    assert.ok(new Date(domingo.plan.desde) >= arT('2020-01-13T09:00'));
+    await queue.cancelBatch(pool, domingo.batch.id);
+    const viejo = await queue.createBatch(pool, { ...base, products: muchos(2, 500), scheduledAt: '2020-01-14T10:00', now: arT('2020-01-15T10:00') });
+    assert.strictEqual(viejo.plan.programados, 0);
+    assert.strictEqual((await queue.getBatch(pool, viejo.batch.id)).status, 'completada');
+    console.log('reparto ok');
 }
 
 // Cola atrasada: todas las horas programadas ya pasaron, pero salen de a una.

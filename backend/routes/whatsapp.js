@@ -179,7 +179,7 @@ router.post('/batches/random', async (req, res) => {
         const created = [];
         let offset = 0;
         for (const g of prepared) {
-            const { batch, total, durationSeconds } = await queue.createBatch(pool, {
+            const { batch, total, durationSeconds, plan } = await queue.createBatch(pool, {
                 company,
                 category: g.category,
                 products: g.products,
@@ -192,8 +192,8 @@ router.post('/batches/random', async (req, res) => {
                 maxAttempts: maxAttempts(),
                 createdBy: req.user.id,
             });
-            created.push({ id: batch.id, category: g.category, total, scheduled_at: batch.scheduled_at });
-            // Las esperas varían al azar: la tanda siguiente arranca cuando termina esta.
+            created.push({ id: batch.id, category: g.category, total, scheduled_at: batch.scheduled_at, plan });
+            // En el grupo se intercalan solas (reparto del día). Los estados siguen encadenados.
             offset += durationSeconds;
         }
         return ok(res, created, 201);
@@ -202,15 +202,15 @@ router.post('/batches/random', async (req, res) => {
     }
 });
 
-// Una sola foto, ya. Entra a la cola como tanda de 1 para respetar el intervalo y los reintentos.
-// destino: 'grupo' (default) o 'estado' (sale por el número de estados).
+// Una sola foto. Entra a la cola como tanda de 1: en el grupo se suma al reparto del día
+// (lunes a sábado de 9 a 18), como el resto. destino: 'grupo' (default) o 'estado'.
 router.post('/send-now', async (req, res) => {
     try {
         const company = req.body.company === 'neggo' ? 'neggo' : 'preventas';
         const settings = await queue.getSettings(pool);
         const [product] = await findByIds(pool, company, [req.body.odoo_id]);
         if (!product) return fail(res, 'El producto no tiene foto o precio de catálogo', 400);
-        const { batch } = await queue.createBatch(pool, {
+        const { batch, plan } = await queue.createBatch(pool, {
             company,
             category: product.categ_name || null,
             products: [product],
@@ -222,7 +222,7 @@ router.post('/send-now', async (req, res) => {
             maxAttempts: maxAttempts(),
             createdBy: req.user.id,
         });
-        return ok(res, { id: batch.id, name: product.name }, 201);
+        return ok(res, { id: batch.id, name: product.name, plan }, 201);
     } catch (err) {
         return fail(res, err.message, 400);
     }
@@ -270,6 +270,7 @@ router.post('/batches', async (req, res) => {
             total: created.total,
             scheduled_at: created.batch.scheduled_at,
             sample: created.sample,
+            plan: created.plan,
         }, 201);
     } catch (err) {
         return fail(res, err.message, 400);
