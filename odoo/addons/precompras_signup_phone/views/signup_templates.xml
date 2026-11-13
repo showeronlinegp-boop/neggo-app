@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="signup_phone" inherit_id="auth_signup.signup" name="Teléfono en el registro">
+        <xpath expr="//div[hasclass('field-login')]" position="after">
+            <div class="mb-3 field-phone">
+                <label for="phone" class="form-label">Teléfono</label>
+                <input type="tel" name="phone" id="phone" class="form-control"
+                    t-att-value="phone" required="required" autocomplete="tel" inputmode="tel"
+                    placeholder="11 5555 5555"/>
+            </div>
+        </xpath>
+    </template>
+</odoo>
