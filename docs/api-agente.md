@@ -5,7 +5,7 @@ API REST para que Grok Bot haga el seguimiento por WhatsApp de los **clientes nu
 - Va bajo `/api/agente`. Especificación completa en `GET /api/agente/openapi.json` y Swagger UI en `GET /api/agente/docs`. Las dos son públicas y no tienen datos.
 - **No escribe nada en Odoo.** Lee Odoo y la base local. Solo escribe en `crm_bot_seguimiento`, `crm_bot_interacciones` y `crm_bot_feedback`, y en `crm_events` cuando un cliente pide que no le escriban.
 - Código: `backend/routes/agente.js`, `backend/services/agenteService.js`, `agenteNuevos.js` (cálculo y cadencia, lógica pura), `agenteImportantes.js` (clientes importantes, fase 1), `agenteInactivos.js` (clientes inactivos, lógica pura) y `agenteValidacion.js`. Config: `backend/config/importantes.json` y `backend/config/inactivos.json`. Migraciones `048_agente_bot.sql`, `049_agente_envios.sql`, `050_agente_reservas.sql` y `059_agente_inactivos.sql`.
-- Versión viva: **3.7.0** (clientes inactivos). 3.6.0: posibles clientes, ver al final. Antes, 3.5.0. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo. Clientes inactivos con su propio seguimiento (primer y segundo toque): ver sección abajo.
+- Versión viva: **3.8.0** (alta manual de posibles clientes, `POST /leads`). 3.7.0: clientes inactivos. 3.6.0: posibles clientes, ver al final. Antes, 3.5.0. `GET /clientes/importantes` (solo lectura) y bloque `importante` en `GET /clientes/{id}`. Pedidos activos: por defecto se excluyen de la lista los que tienen cotización enviada u orden abierta con saldo; ver sección abajo. Clientes inactivos con su propio seguimiento (primer y segundo toque): ver sección abajo.
 - Servidor de prueba (solo `/api/agente`, sin jobs): `node backend/scripts/agentePrueba.js` con `DATABASE_URL` apuntando a una copia de la base.
 
 ## Configuración
@@ -266,3 +266,19 @@ curl -s -X PATCH -H "Authorization: Bearer $KEY" -H "Content-Type: application/j
 ```
 
 Códigos 409 propios: `tope_diario`, `ya_en_odoo`, `fuera_de_zona`, `churn`, `seguido_por_el_equipo`, `respondio` (además de los de envíos: `fuera_de_horario`, `no_contactar`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `id_externo_usado`, `id_externo_distinto`).
+
+## Alta manual de posibles clientes (3.8.0)
+
+`POST /leads` da de alta un posible cliente que Mariano le pasa al bot (`origen: "manual"`). Migración `062_agente_leads_alta.sql` (columnas `direccion` y `rubro` en `crm_leads`); se guarda con `source = agente_manual`. Los demás (agenda de Google y altas desde la app) salen como `origen: "agenda"` y no cambian.
+
+- Body: `contacto` y `telefono` obligatorios; `nombre` (si no viene, = contacto), `direccion`, `rubro`, `ciudad`. Nada más (`additionalProperties: false`). El teléfono se normaliza con el mismo validador de celular que el resto.
+- Ciudad: la del body gana; si no, la localidad de la característica en `config/leadsZona.json` (2477 → Pergamino). Si no está en el mapa: `ciudad: null` y `advertencias: [{codigo: "ciudad_no_inferida"}]`.
+- Entra a la cola de hoy (`toca_hoy: presentacion`) **aunque esté fuera de la zona**: `POST /leads/{id}/envios` no le da `fuera_de_zona`. Fuera del mapa, `zona.prioridad` = 2 solo para ordenar. Churn, `no_contactar`, tope, horario y el chequeo en vivo de Odoo siguen igual.
+- El alta no ocupa lugar del tope (lo ocupan la reserva y el envío).
+- Chequeos, en orden: ya compró en el POS de Neggo (en vivo; Odoo caído → 502 y no crea) → 409 `ya_en_odoo` + `cliente_id`; lead con `no_contactar` → 409 `no_contactar` + `lead_id`; Churn → 409 `churn`; lead existente → 409 `lead_existente` + `lead_id` + `data`, o 200 `existente: true` con `?si_existe=devolver`.
+- Queda una nota en la ficha del CRM ("Alta manual por Grok Bot"). No escribe en Odoo.
+- `GET /leads?origen=manual|agenda` filtra; `Lead` trae `origen`, `rubro` y `direccion`.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"contacto":"Lucía Fernández","nombre":"Bazar Lucía","telefono":"02477 15-632211","direccion":"Alem 1200","rubro":"Bazar"}'   "$API/leads"
+```

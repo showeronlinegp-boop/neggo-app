@@ -3,6 +3,7 @@
 
 const v = require('./agenteValidacion');
 const leads = require('./agenteLeads');
+const { phoneKey } = require('./crmContacts');
 
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 const CONTACTO_MAX = 200;
@@ -78,6 +79,47 @@ function validarQueryLeads(query = {}) {
     else if (nc === 'todos') value.no_contactar = null;
     else if (nc === 'true' || nc === 'false') value.no_contactar = nc === 'true';
     else errors.push({ campo: 'no_contactar', error: 'Tiene que ser true, false o todos' });
+    if (query.origen) {
+        if (leads.ORIGENES.includes(query.origen)) value.origen = query.origen;
+        else errors.push({ campo: 'origen', error: `Tiene que ser uno de: ${leads.ORIGENES.join(', ')}` });
+    }
+    return { value, errors };
+}
+
+const NUEVO_CAMPOS = ['contacto', 'telefono', 'nombre', 'direccion', 'rubro', 'ciudad'];
+
+/**
+ * POST leads: { contacto, telefono, nombre?, direccion?, rubro?, ciudad? }. El teléfono se
+ * normaliza con el mismo validador de celular que el resto (phone_key de 10 dígitos).
+ * nombre vacío = contacto (el saludo usa nombre cuando no hay contacto).
+ */
+function validarLeadNuevo(body) {
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    const errors = desconocidos(body, NUEVO_CAMPOS);
+    const value = {};
+    value.contacto = texto('contacto', body.contacto, { obligatorio: true, max: CONTACTO_MAX }, errors);
+    value.nombre = texto('nombre', body.nombre, { obligatorio: false, max: 200 }, errors) || value.contacto;
+    value.direccion = texto('direccion', body.direccion, { obligatorio: false, max: 300 }, errors);
+    value.rubro = texto('rubro', body.rubro, { obligatorio: false, max: 100 }, errors);
+    value.ciudad = texto('ciudad', body.ciudad, { obligatorio: false, max: 100 }, errors);
+    const tel = texto('telefono', body.telefono, { obligatorio: true, max: 40 }, errors);
+    if (tel) {
+        value.phone_key = phoneKey(tel);
+        if (!value.phone_key) {
+            errors.push({ campo: 'telefono', error: 'No es un celular argentino válido: mandá característica y número, por ejemplo 2477 15-632211' });
+        }
+    }
+    return { value, errors };
+}
+
+/** POST leads: ?si_existe=devolver (opcional). */
+function validarQueryAlta(query = {}) {
+    const errors = [];
+    const value = { devolverExistente: false };
+    if (query.si_existe !== undefined && query.si_existe !== '') {
+        if (query.si_existe === 'devolver') value.devolverExistente = true;
+        else errors.push({ campo: 'si_existe', error: 'Tiene que ser devolver' });
+    }
     return { value, errors };
 }
 
@@ -147,4 +189,6 @@ module.exports = {
     validarEnvioLead,
     validarMensajeLead,
     validarLeadPatch,
+    validarLeadNuevo,
+    validarQueryAlta,
 };

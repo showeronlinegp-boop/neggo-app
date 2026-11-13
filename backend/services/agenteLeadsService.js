@@ -15,19 +15,23 @@ const followups = require('./crmFollowupService');
 const nuevos = require('./agenteNuevos');
 const leads = require('./agenteLeads');
 
-const MIGRACION = fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', '060_agente_leads.sql'), 'utf8');
+const MIGRACION = ['060_agente_leads.sql', '062_agente_leads_alta.sql']
+    .map((f) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', f), 'utf8'))
+    .join('\n');
 // Cada transacción que reserva toma este lock: así dos reservas en paralelo no pasan el tope
 const LOCK_TOPE = 60600601;
 const TZ = 'America/Argentina/Buenos_Aires';
 const INICIO_HOY_SQL = `(date_trunc('day', NOW() AT TIME ZONE '${TZ}') AT TIME ZONE '${TZ}')`;
 
 class AgenteError extends Error {
-    constructor(status, message, codigo, details) {
+    /** extra: campos que van sueltos en el cuerpo del error (cliente_id, lead_id, data). */
+    constructor(status, message, codigo, details, extra = null) {
         super(message);
         this.name = 'AgenteError';
         this.status = status;
         this.codigo = codigo;
         this.details = details;
+        this.extra = extra;
     }
 }
 
@@ -72,7 +76,8 @@ function iso(value) {
 // =============================================
 
 const LEAD_SELECT = `
-    SELECT l.id, l.name, l.phone, l.phone_key, l.city, l.source_status, l.source_list, l.odoo_partner_id,
+    SELECT l.id, l.name, l.phone, l.phone_key, l.city, l.source, l.source_status, l.source_list, l.odoo_partner_id,
+           l.direccion, l.rubro,
            COALESCE(f.stage, 'frio') AS crm_etapa,
            COALESCE(s.etapa, 'pendiente') AS etapa, s.resultado, s.resultado_at, s.ultimo_contacto,
            COALESCE(s.no_contactar, false) AS no_contactar, s.no_contactar_at, s.contacto, s.revisado_hasta,
@@ -122,9 +127,10 @@ async function meta(db = pool, ahora = new Date()) {
 
 /** Posible cliente como lo ve el agente. Mismo formato en la lista y en la ficha. */
 function armarLead(row, info) {
-    const zona = leads.zonaDe(row.phone_key);
+    const origen = leads.origenDe(row.source);
+    const zona = leads.zonaLead({ phoneKey: row.phone_key, origen, ciudad: row.city });
     // Los que pasaron a Churn porque se lo pidieron al bot siguen visibles como no_contactar
-    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status });
+    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status, origen });
     const bloqueado = Boolean(excluido) || Boolean(row.odoo_partner_id) || row.crm_etapa !== 'frio'
         || ['ya_en_odoo', 'interesado', 'no_interesado'].includes(row.resultado);
     const ef = leads.etapaEfectiva({
@@ -153,6 +159,9 @@ function armarLead(row, info) {
         contacto: row.contacto || null,
         telefono: row.phone_key ? `+549${row.phone_key}` : null,
         ciudad: row.city || null,
+        direccion: row.direccion || null,
+        rubro: row.rubro || null,
+        origen,
         zona: zona ? { prioridad: zona.prioridad, localidad: zona.localidad, caracteristica: zona.caracteristica } : null,
         excluido,
         estado_agenda: row.source_status || null,
@@ -196,7 +205,7 @@ async function exigirLead(id, db = pool) {
  * presentaciones por prioridad). Dispara el sync de clientes si pasaron 24 h, para que la
  * cola no traiga a alguien que ya compró.
  */
-async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conRespuesta, respondio, etapa, resultado, no_contactar: noContactar, page, limit, offset }) {
+async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conRespuesta, respondio, etapa, resultado, no_contactar: noContactar, origen, page, limit, offset }) {
     await ensureLeadsSchema();
     require('./clientMetricsService').refreshIfStale().catch((err) => console.error('❌ Agente leads: sync de clientes:', err.message));
     // Los que ya compraron salen del listado (la reserva igual lo chequea en vivo contra Odoo)
@@ -204,8 +213,9 @@ async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conResp
     await vencerReservas(pool);
     const info = await meta();
     const { rows } = await pool.query(`${LEAD_SELECT} WHERE l.odoo_partner_id IS NULL AND l.phone_key IS NOT NULL`);
-    // Fuera de la zona y Churn de la agenda no aparecen nunca
+    // Fuera de la zona (salvo los manuales) y Churn de la agenda no aparecen nunca
     let lista = rows.map((r) => armarLead(r, info)).filter((x) => !x.excluido);
+    if (origen) lista = lista.filter((x) => x.origen === origen);
     if (noContactar !== null) lista = lista.filter((x) => x.no_contactar === (noContactar ?? false));
     if (paraHoy !== undefined) lista = lista.filter((x) => Boolean(x.toca_hoy) === paraHoy);
     if (conRespuesta !== undefined) lista = lista.filter((x) => x.respuesta_pendiente === conRespuesta);
@@ -229,6 +239,78 @@ async function obtenerLead(id) {
         'SELECT * FROM crm_bot_lead_mensajes WHERE lead_id = $1 ORDER BY fecha DESC, id DESC LIMIT 20', [id]);
     data.ultimos_mensajes = rows.map(formatMensaje);
     return { data, meta: info };
+}
+
+// =============================================
+// Alta manual (POST leads)
+// =============================================
+
+async function leerPorTelefono(phoneKey, db = pool) {
+    const { rows: [row] } = await db.query(`${LEAD_SELECT} WHERE l.phone_key = $1`, [phoneKey]);
+    return row || null;
+}
+
+/**
+ * Teléfono que ya está en crm_leads: el error que corresponde, o el lead si se puede devolver.
+ * Orden: ya en Odoo (vinculado en la app) → no_contactar → Churn → lead existente.
+ */
+async function resolverExistente(row, devolverExistente) {
+    if (row.odoo_partner_id) {
+        throw new AgenteError(409, 'Ese teléfono ya es cliente en Odoo', 'ya_en_odoo', null, { cliente_id: row.odoo_partner_id });
+    }
+    if (row.no_contactar) {
+        throw new AgenteError(409, 'Ese teléfono pidió no recibir mensajes', 'no_contactar', null, { lead_id: row.id });
+    }
+    if (leads.ESTADOS_EXCLUIDOS.includes(row.source_status)) {
+        throw new AgenteError(409, 'Ese teléfono está en Churn: nos bloqueó o no quiere que lo contactemos', 'churn');
+    }
+    const data = armarLead(row, await meta());
+    if (devolverExistente) return { data, existente: true, advertencias: [] };
+    throw new AgenteError(409, 'Ese teléfono ya está cargado como lead', 'lead_existente', null, { lead_id: row.id, data });
+}
+
+/**
+ * POST leads: alta manual de un posible cliente (origen "manual"). Entra a la cola aunque no
+ * esté en la agenda ni en la zona de 150 km; queda pendiente, con la presentación para hoy.
+ * Chequea primero en vivo que no sea cliente en Odoo (si Odoo no responde: 502 y no crea).
+ * No escribe en Odoo. El alta no ocupa lugar en el tope (lo ocupan la reserva y el envío).
+ * @returns {{ data, existente: boolean, advertencias: Array<{codigo, mensaje}> }}
+ */
+async function crearLead(value, { devolverExistente = false } = {}) {
+    await ensureLeadsSchema();
+    const key = value.phone_key;
+    const partner = await clienteConTelefono(key);
+    if (partner) {
+        throw new AgenteError(409, 'Ese teléfono ya es cliente en Odoo', 'ya_en_odoo', null, { cliente_id: partner.id, nombre: partner.name });
+    }
+    const previo = await leerPorTelefono(key);
+    if (previo) return resolverExistente(previo, devolverExistente);
+
+    const { ciudad, inferida } = leads.ciudadAlta({ ciudad: value.ciudad, phoneKey: key });
+    const id = await enTransaccion(async (db) => {
+        const { rows: [row] } = await db.query(
+            `INSERT INTO crm_leads (name, phone, phone_key, city, source, direccion, rubro)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (phone_key) DO NOTHING RETURNING id`,
+            [value.nombre, `+549${key}`, key, ciudad, leads.SOURCE_MANUAL_AGENTE, value.direccion, value.rubro]);
+        if (!row) return null;
+        await db.query('INSERT INTO crm_bot_lead_seguimiento (lead_id, contacto) VALUES ($1, $2)', [row.id, value.contacto]);
+        await followups.insertEvent(db, { col: 'lead_id', id: row.id }, {
+            kind: 'nota',
+            text: `Alta manual por Grok Bot: ${[value.contacto, value.rubro, value.direccion].filter(Boolean).join(' · ')}`.slice(0, 2000),
+            meta: { origen: 'agente', alta: 'manual' },
+        });
+        return row.id;
+    });
+    // Otra alta con el mismo teléfono ganó la carrera: se responde como existente
+    if (!id) return resolverExistente(await leerPorTelefono(key), devolverExistente);
+
+    console.log(`✅ Agente leads: alta manual del posible cliente ${id} (${value.nombre})`);
+    const advertencias = inferida ? [] : [{
+        codigo: 'ciudad_no_inferida',
+        mensaje: 'No pude inferir la ciudad del código de área; ciudad quedó null',
+    }];
+    return { data: armarLead(await leerLead(id), await meta()), existente: false, advertencias };
 }
 
 // =============================================
@@ -394,7 +476,8 @@ async function reservarEnvio(id, value) {
     }
     if (!lead.phone_key) throw new AgenteError(409, 'No tiene un celular válido', 'sin_telefono');
     if (lead.odoo_partner_id) throw new AgenteError(409, 'Ya es cliente en Odoo: se sigue como cliente', 'ya_en_odoo');
-    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status });
+    // Los manuales (POST /leads) no tienen filtro de zona; Churn sí
+    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status, origen: leads.origenDe(lead.source) });
     if (excluido === 'churn') throw new AgenteError(409, 'Está en Churn: nos bloqueó o no quiere que lo contactemos', 'churn');
     if (excluido === 'fuera_de_zona') throw new AgenteError(409, 'La característica está fuera de la zona (150 km de Pergamino)', 'fuera_de_zona');
     if (leads.topeDiario() > 0 && (await enviadosHoy()) >= leads.topeDiario()) {
@@ -697,6 +780,7 @@ module.exports = {
     ensureLeadsSchema,
     listarLeads,
     obtenerLead,
+    crearLead,
     reservarEnvio,
     confirmarEnvio,
     cancelarEnvio,

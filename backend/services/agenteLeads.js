@@ -29,6 +29,21 @@ const TOPE_MAX = 200;
 const PRIORIDAD_ESTADO = { recuperar: 1, cliente: 2, lead: 3, sin_estado: 4, nri: 5 };
 const ESTADOS_EXCLUIDOS = ['churn'];
 
+// Origen del posible cliente para el agente. Los que da de alta el bot (POST /leads) se guardan
+// con source = SOURCE_MANUAL_AGENTE y salen como origen "manual"; todos los demás (la agenda de
+// Google y las altas a mano desde la app) salen como "agenda" y siguen con el filtro de zona.
+const SOURCE_MANUAL_AGENTE = 'agente_manual';
+const ORIGENES = ['manual', 'agenda'];
+// Fuera del mapa de zona, un lead manual ordena como prioridad 2 (no se excluye)
+const PRIORIDAD_FUERA_DE_MAPA = 2;
+// Características de 3 dígitos (el resto, salvo 11, son de 4). Solo para informar la
+// característica de un lead manual que no está en config/leadsZona.json.
+const CARACTERISTICAS_3 = new Set([
+    '220', '221', '223', '230', '236', '237', '249', '260', '261', '263', '264', '266', '280', '291',
+    '294', '297', '298', '299', '336', '341', '342', '343', '345', '348', '351', '353', '358', '362',
+    '364', '370', '376', '379', '380', '381', '383', '385', '387', '388',
+]);
+
 /** Zona de config/leadsZona.json: { prefijo: { prioridad, localidad } }. */
 function cargarZona(cfg = require('../config/leadsZona.json')) {
     const out = new Map();
@@ -54,6 +69,41 @@ function zonaDe(phoneKey, zona = ZONA) {
         if (hit) return { ...hit, caracteristica: String(phoneKey).slice(0, len) };
     }
     return null;
+}
+
+/** Característica de un celular (10 dígitos sin 0 ni 15), esté o no en la zona. */
+function caracteristicaDe(phoneKey) {
+    const d = String(phoneKey || '');
+    if (!/^\d{10}$/.test(d)) return null;
+    if (d.startsWith('11')) return '11';
+    if (CARACTERISTICAS_3.has(d.slice(0, 3))) return d.slice(0, 3);
+    return d.slice(0, 4);
+}
+
+function origenDe(source) {
+    return source === SOURCE_MANUAL_AGENTE ? 'manual' : 'agenda';
+}
+
+/**
+ * Zona como la ve el agente. Los de agenda: la del mapa o null (quedan fuera de zona).
+ * Los manuales fuera del mapa: la característica igual, localidad = ciudad y prioridad 2.
+ */
+function zonaLead({ phoneKey, origen = 'agenda', ciudad = null, zona = ZONA }) {
+    const hit = zonaDe(phoneKey, zona);
+    if (hit || origen !== 'manual' || !phoneKey) return hit;
+    const caracteristica = caracteristicaDe(phoneKey);
+    return caracteristica ? { prioridad: PRIORIDAD_FUERA_DE_MAPA, localidad: ciudad || null, caracteristica } : null;
+}
+
+/**
+ * Ciudad de un alta manual: la del body gana siempre; si no, la localidad del mapa de zona
+ * (2477 → Pergamino). { ciudad, inferida }: inferida=false si no se pudo (ciudad null).
+ */
+function ciudadAlta({ ciudad, phoneKey, zona = ZONA }) {
+    if (ciudad) return { ciudad, inferida: true };
+    const hit = zonaDe(phoneKey, zona);
+    if (hit && hit.localidad) return { ciudad: hit.localidad, inferida: true };
+    return { ciudad: null, inferida: false };
 }
 
 function topeDiario(env = process.env) {
@@ -105,12 +155,12 @@ function quedanHoy(tope, enviadosHoy) {
 
 /**
  * Por qué el bot no le escribe nunca (aunque no haya pedido nada), o null.
- * fuera_de_zona: la característica no está en config/leadsZona.json.
+ * fuera_de_zona: la característica no está en config/leadsZona.json (no aplica a los manuales).
  * churn: la agenda lo tiene como Churn (nos bloqueó o no quiere que lo contactemos).
  */
-function motivoExcluido({ phoneKey, estadoAgenda, zona = ZONA }) {
+function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', zona = ZONA }) {
     if (ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return 'churn';
-    if (!zonaDe(phoneKey, zona)) return 'fuera_de_zona';
+    if (origen !== 'manual' && !zonaDe(phoneKey, zona)) return 'fuera_de_zona';
     return null;
 }
 
@@ -162,8 +212,15 @@ module.exports = {
     TOPE_MAX,
     PRIORIDAD_ESTADO,
     ESTADOS_EXCLUIDOS,
+    SOURCE_MANUAL_AGENTE,
+    ORIGENES,
+    PRIORIDAD_FUERA_DE_MAPA,
     cargarZona,
     zonaDe,
+    zonaLead,
+    caracteristicaDe,
+    origenDe,
+    ciudadAlta,
     motivoExcluido,
     topeDiario,
     ordenEtapa,
