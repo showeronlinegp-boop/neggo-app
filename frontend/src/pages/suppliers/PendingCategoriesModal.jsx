@@ -19,7 +19,7 @@ const TONO_CONFIANZA = { alta: 'success', media: 'primary', baja: 'warn' };
 
 const MODOS = {
     todas:     { url: '/suppliers/pending-categories', subtitulo: 'Sin regla, los productos de estas categorías no entran en el ingreso ni en los catálogos.' },
-    preventas: { url: '/suppliers/pending-categories/preventas', subtitulo: 'Sin categoría de Preventas, Sync Preventas no crea, activa ni publica estos productos.' },
+    preventas: { url: '/suppliers/pending-categories/preventas', subtitulo: 'Sin categoría de Preventas, Sync Preventas no crea, activa ni publica estos productos, ni completa la de los que ya están en Odoo.' },
 };
 
 // Pre-matching de la categoría de Preventas (solo en la vista "Frenan Preventas")
@@ -315,7 +315,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                             </span>
                                             <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, ...t.numericStyle }}>
                                                 {enPreventas
-                                                    ? [row.para_crear > 0 && `${row.para_crear} para crear`, row.para_publicar > 0 && `${row.para_publicar} para publicar`].filter(Boolean).join(' · ')
+                                                    ? [row.para_crear > 0 && `${row.para_crear} para crear`, row.para_publicar > 0 && `${row.para_publicar} en Odoo sin categoría`].filter(Boolean).join(' · ')
                                                     : `${row.product_count} prod.`}
                                             </span>
                                             {row.regla_ignorada && <Badge tone="muted">Ignorada</Badge>}

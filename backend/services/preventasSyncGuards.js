@@ -24,8 +24,8 @@ const SIN_CATEGORIA = '(Sin categoría)';
 const CATEGORIA_PROVEEDOR_SQL = `COALESCE(NULLIF(TRIM(sp.source_category), ''), '${SIN_CATEGORIA}')`;
 
 // Acciones que dejan el producto publicado en la web de Precompras (nota 200):
-// crear y publicar, activar y publicar, publicar
-const ESTADOS_PUBLICAN = ['solo_scraper', 'activar', 'publicar'];
+// crear y publicar, activar y publicar, publicar; y completar categoría de lo ya publicado
+const ESTADOS_PUBLICAN = ['solo_scraper', 'activar', 'publicar', 'categoria'];
 
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
 

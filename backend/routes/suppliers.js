@@ -167,9 +167,9 @@ router.get('/pending-categories', authenticate, async (req, res) => {
 
 // =============================================
 // GET /pending-categories/preventas — Categorías que frenan subidas a Preventas (nota 200)
-// Las del proveedor con productos para crear, activar o publicar en Sync Preventas que no tienen
-// categoría de Preventas (sin regla, o regla sin la de Preventas). Activar y publicar solo se frenan
-// si el producto tampoco tiene categoría en Odoo. Las ofertas sin categoría van a "(Sin categoría)".
+// Las del proveedor con productos para crear, activar o publicar en Sync Preventas, o ya en Odoo,
+// que no tienen categoría de Preventas (sin regla, o regla sin la de Preventas). Los que ya están en
+// Odoo solo cuentan si tampoco tienen categoría ahí. Las ofertas sin categoría van a "(Sin categoría)".
 // Pre-matching de la categoría de Preventas, en este orden:
 //   1. la que más se repite entre los productos de esa categoría del proveedor que ya están en Odoo
 //   2. la regla que otros proveedores le pusieron a una categoría con el mismo nombre
@@ -190,7 +190,9 @@ router.get('/pending-categories/preventas', authenticate, async (req, res) => {
                        ON scc.supplier_id = pss.supplier_id AND scc.source_category = ${CAT} AND scc.active = true
                 WHERE scc.odoo_categ_id_preventas IS NULL
                   AND (pss.estado = 'solo_scraper'
-                       OR (pss.estado IN ('activar', 'publicar')
+                       -- Para activar o publicar, o ya en Odoo con stock: frena si tampoco tiene
+                       -- categoría interna (no hay de dónde completarla)
+                       OR ((pss.estado IN ('activar', 'publicar') OR (opc.active = true AND sp.available = true))
                            AND (NULLIF(TRIM(opc.categ_name), '') IS NULL OR opc.categ_name ~* '^all(\\s*/|$)')))
             ),
             grupos AS (

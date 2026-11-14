@@ -14,9 +14,11 @@ const {
 // =============================================
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
-    matcheados: ['activar', 'publicar', 'sin_cambios', 'precio_sube', 'precio_baja'],
+    matcheados: ['activar', 'publicar', 'categoria', 'sin_cambios', 'precio_sube', 'precio_baja'],
     // Activos en Odoo con stock en el proveedor que no se ven en la web (nota 200)
     publicar:   ['publicar'],
+    // Publicados sin categoría interna o web, que se puede completar con la regla (nota 200)
+    categoria:  ['categoria'],
     // Vinculados cuyo precio cambió (sube o baja): la vista "Cambiar precio" de la pantalla
     precio:     ['precio_sube', 'precio_baja'],
     inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
@@ -615,6 +617,15 @@ async function ejecutarAccion(prod, preventasCompanyId, pool) {
         return aviso;
     }
 
+    // Completar categoría (nota 200): ya publicado, le falta la categoría interna o la web
+    if (prod.estado === 'categoria') {
+        const templateId = prod.odoo_template_id || await templateDeVariante(prod.odoo_product_id);
+        if (!templateId) throw new Error(`Producto ${prod.odoo_ref || prod.odoo_product_id} sin template en Odoo`);
+        const aviso = await completarCategoria(prod, templateId, ctx, pool);
+        await pool.query(`UPDATE preventas_sync_state SET estado = 'sin_cambios' WHERE id = $1`, [prod.id]);
+        return aviso;
+    }
+
     // ─── Archivar / desarchivar — usa action_archive/unarchive en product.template
     // para que afecte el template y todas sus variantes (comportamiento correcto en Odoo).
     if (ESTADOS_INACTIVACION.includes(prod.estado)) {
@@ -871,6 +882,47 @@ async function publicarEnWeb(prod, templateId, ctx, pool) {
 
     if (!prod.odoo_web_categ_id && !web) {
         return `Publicado sin categoría web: en Odoo no hay una categoría web "${String(categoria).split('/').pop().trim()}"`;
+    }
+    return null;
+}
+
+// Producto de Odoo sin categoría interna ("All" es la de Odoo por defecto: no cuenta)
+const sinCategoriaInterna = nombre => !String(nombre || '').trim() || /^all(\s*\/|$)/i.test(String(nombre).trim());
+
+/**
+ * Completa lo que le falta a un producto ya publicado: la categoría interna (de la regla) y la web
+ * (la que se llama igual). No cambia una categoría que ya tenga. Devuelve un aviso o null.
+ */
+async function completarCategoria(prod, templateId, ctx, pool) {
+    const categoria = categoriaPublicacion(prod);
+    const valores = {};
+    const faltaInterna = sinCategoriaInterna(prod.odoo_categoria);
+    if (faltaInterna && prod.odoo_categ_id_preventas) valores.categ_id = prod.odoo_categ_id_preventas;
+
+    let web = null;
+    if (!prod.odoo_web_categ_id) {
+        web = await categoriaWebPara(categoria, ctx);
+        if (web) valores.public_categ_ids = [[4, web.id]];
+    }
+
+    if (Object.keys(valores).length > 0) {
+        await callOdoo('product.template', 'write', [[templateId], valores], { context: ctx });
+        await pool.query(
+            `UPDATE odoo_products_cache
+             SET categ_id_odoo  = COALESCE($2, categ_id_odoo),
+                 categ_name     = COALESCE($3, categ_name),
+                 web_categ_id   = COALESCE($4, web_categ_id),
+                 web_categ_name = COALESCE($5, web_categ_name)
+             WHERE template_id = $1 AND company = 'preventas'`,
+            [templateId, valores.categ_id || null, valores.categ_id ? (prod.regla_categoria_preventas || null) : null,
+             web?.id || null, web?.name || null]
+        );
+        console.log(`✅ Categoría completada: ${prod.scraper_sku || prod.odoo_ref} (template ${templateId})`
+            + `${valores.categ_id ? ` interna "${prod.regla_categoria_preventas}"` : ''}${web ? ` web "${web.name}"` : ''}`);
+    }
+
+    if (!prod.odoo_web_categ_id && !web) {
+        return `Sin categoría web: en Odoo no hay una categoría web "${String(categoria).split('/').pop().trim()}"`;
     }
     return null;
 }

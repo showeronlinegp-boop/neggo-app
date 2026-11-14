@@ -12,10 +12,21 @@
 //   bracket_code (87)  — código entre {} o () del nombre scraper vs nombre Odoo
 //   vinculo_neggo(89)  — oferta web vinculada a un producto de Neggo cuya oferta "neggo" ya está en Preventas
 
+const { CATEGORIA_PROVEEDOR_SQL } = require('./preventasSyncGuards');
+
 const LOCK_KEY = 987654321; // pg advisory lock
 const PRICE_TOL = 0.0001;
 
 // ─── SQL fragments ─────────────────────────────────────────────────────────────
+
+// Producto de Odoo sin categoría interna ("All" es la de Odoo por defecto: no cuenta)
+const SIN_CATEGORIA_INTERNA_SQL = `(NULLIF(TRIM(opc.categ_name), '') IS NULL OR opc.categ_name ~* '^all(\\s*/|$)')`;
+// El proveedor tiene regla con categoría de Preventas para la categoría de la oferta
+const TIENE_REGLA_PREVENTAS_SQL = `EXISTS (
+                 SELECT 1 FROM supplier_category_rules rc
+                 WHERE rc.supplier_id = sp.supplier_id AND rc.active = true
+                   AND rc.source_category = ${CATEGORIA_PROVEEDOR_SQL}
+                   AND rc.odoo_categ_id_preventas IS NOT NULL)`;
 
 // Proveedor con "Va a Preventas" apagado: no se propone nada salvo archivar lo que sigue activo
 const ESTADO_CASE = `
@@ -36,6 +47,11 @@ const ESTADO_CASE = `
              AND p.costo < opc.standard_price  THEN 'precio_baja'
         -- Activo y con stock pero no se ve en la web de Precompras (nota 200)
         WHEN opc.active = true AND sp.available = true AND opc.is_published IS NOT TRUE THEN 'publicar'
+        -- Publicado sin categoría interna o sin categoría web, y hay de dónde sacarla: la regla del
+        -- proveedor o la categoría interna que ya tiene (nota 200)
+        WHEN opc.active = true AND sp.available = true
+             AND (${SIN_CATEGORIA_INTERNA_SQL} OR opc.web_categ_id IS NULL)
+             AND (NOT ${SIN_CATEGORIA_INTERNA_SQL} OR ${TIENE_REGLA_PREVENTAS_SQL}) THEN 'categoria'
         ELSE 'sin_cambios'
     END`;
 

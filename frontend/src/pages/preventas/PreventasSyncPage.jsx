@@ -17,6 +17,7 @@ const ESTADO_INFO = {
     precio_baja:     { label: 'Precio baja',                 tone: 'primary' },
     activar:         { label: 'Activar y publicar',          tone: 'primary' },
     publicar:        { label: 'Publicar en la web',          tone: 'primary' },
+    categoria:       { label: 'Completar categoría',         tone: 'primary' },
     inactivar:       { label: 'Sin stock en el proveedor',   tone: 'danger' },
     solo_odoo:       { label: 'No está en el proveedor',     tone: 'danger' },
     fuera_preventas: { label: 'Proveedor no va a Preventas', tone: 'danger' },
@@ -37,7 +38,7 @@ const VINCULO_INFO = {
 };
 
 const ACCION_LABEL = {
-    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', inactivar: 'Archivar',
+    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', categoria: 'Completar categoría', inactivar: 'Archivar',
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
@@ -143,10 +144,11 @@ const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     precio:     ['precio_sube', 'precio_baja'],
     publicar:   ['publicar'],
+    categoria:  ['categoria'],
     inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
     al_dia:     ['sin_cambios', 'sin_fuente'],
 };
-const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'inactivar', 'solo_odoo', 'fuera_preventas'];
+const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'categoria', 'inactivar', 'solo_odoo', 'fuera_preventas'];
 // Motivo de bloqueo por falta de categoría (preventasSyncGuards.motivoSinCategoria, nota 200)
 const esSinCategoria = motivo => /^Falta la categoría/.test(motivo || '');
 const INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
@@ -158,6 +160,7 @@ const VISTAS = [
       subs: [{ key: 'precio_sube', label: 'Suben' }, { key: 'precio_baja', label: 'Bajan' }] },
     { key: 'desarchivar', titulo: 'Activar y publicar', ayuda: 'Archivados en Odoo que el proveedor volvió a tener', tone: 'primary', icon: Icon.Package, filtro: { estado: 'activar' } },
     { key: 'publicar',    titulo: 'Publicar',       ayuda: 'Activos en Odoo y con stock que no se ven en la web', tone: 'primary', icon: Icon.Eye, filtro: { estado: 'publicar' } },
+    { key: 'categoria',   titulo: 'Completar categoría', ayuda: 'Publicados sin categoría interna o web: se completa con la regla', tone: 'primary', icon: Icon.Tag, filtro: { estado: 'categoria' } },
     { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
       subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
     { key: 'al_dia',      titulo: 'Al día',         ayuda: 'No hace falta tocar nada',                     tone: 'muted',   icon: Icon.Check,   filtro: { grupo: 'al_dia' },
@@ -1042,7 +1045,7 @@ export default function PreventasSyncPage() {
                                     ['Activo en Odoo', detail.odoo_active === true ? 'Sí' : detail.odoo_active === false ? 'No (archivado)' : '—'],
                                     ['Disponible en el proveedor', detail.available ? 'Sí' : 'No'],
                                     ['En la web', detail.odoo_is_published === true ? `Sí${detail.odoo_categoria_web ? ` · ${detail.odoo_categoria_web}` : ' · sin categoría web'}` : detail.odoo_product_id ? 'No' : '—'],
-                                    ...(['solo_scraper', 'activar', 'publicar'].includes(detail.estado)
+                                    ...(['solo_scraper', 'activar', 'publicar', 'categoria'].includes(detail.estado)
                                         ? [['Categoría al publicar', detail.categoria_publicacion || 'Falta (asignala en Proveedores)']] : []),
                                 ].map(([k, v]) => (
                                     <Fragment key={k}>
