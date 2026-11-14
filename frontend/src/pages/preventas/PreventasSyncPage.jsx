@@ -19,6 +19,7 @@ const ESTADO_INFO = {
     publicar:        { label: 'Publicar en la web',          tone: 'primary' },
     categoria:       { label: 'Completar categoría',         tone: 'primary' },
     inactivar:       { label: 'Sin stock en el proveedor',   tone: 'danger' },
+    sin_foto:        { label: 'Sin foto',                    tone: 'danger' },
     solo_odoo:       { label: 'No está en el proveedor',     tone: 'danger' },
     fuera_preventas: { label: 'Proveedor no va a Preventas', tone: 'danger' },
     sin_cambios:     { label: 'Al día',                      tone: 'muted' },
@@ -38,7 +39,7 @@ const VINCULO_INFO = {
 };
 
 const ACCION_LABEL = {
-    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', categoria: 'Completar categoría', inactivar: 'Archivar',
+    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', categoria: 'Completar categoría', inactivar: 'Archivar', sin_foto: 'Archivar',
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
@@ -155,13 +156,15 @@ const GRUPO_ESTADOS = {
     precio:     ['precio_sube', 'precio_baja'],
     publicar:   ['publicar'],
     categoria:  ['categoria'],
-    inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
+    inactivar:  ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'],
     al_dia:     ['sin_cambios', 'sin_fuente'],
 };
-const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'categoria', 'inactivar', 'solo_odoo', 'fuera_preventas'];
+const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'categoria', 'inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'];
 // Motivo de bloqueo por falta de categoría (preventasSyncGuards.motivoSinCategoria, nota 200)
 const esSinCategoria = motivo => /^Falta la categoría/.test(motivo || '');
-const INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
+// Motivo de bloqueo por falta de foto (preventasSyncGuards.motivoSinFoto, nota 203)
+const esSinFoto = motivo => /^Sin foto/.test(motivo || '');
+const INACTIVACION = ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'];
 
 // Las tarjetas de arriba: cada una es una vista (filtro) de la tabla
 const VISTAS = [
@@ -171,8 +174,8 @@ const VISTAS = [
     { key: 'desarchivar', titulo: 'Activar y publicar', ayuda: 'Archivados en Odoo que el proveedor volvió a tener', tone: 'primary', icon: Icon.Package, filtro: { estado: 'activar' } },
     { key: 'publicar',    titulo: 'Publicar',       ayuda: 'Activos en Odoo y con stock que no se ven en la web', tone: 'primary', icon: Icon.Eye, filtro: { estado: 'publicar' } },
     { key: 'categoria',   titulo: 'Completar categoría', ayuda: 'Publicados sin categoría interna o web: se completa con la regla', tone: 'primary', icon: Icon.Tag, filtro: { estado: 'categoria' } },
-    { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
-      subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
+    { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene o que no tienen foto', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
+      subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'sin_foto', label: 'Sin foto' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
     { key: 'al_dia',      titulo: 'Al día',         ayuda: 'No hace falta tocar nada',                     tone: 'muted',   icon: Icon.Check,   filtro: { grupo: 'al_dia' },
       subs: [{ key: 'sin_cambios', label: 'Sin cambios' }, { key: 'sin_fuente', label: 'Sin proveedor activo (no se tocan)' }] },
 ];
@@ -315,6 +318,7 @@ function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCo
                     {fila('Vinculados por nombre parecido u otro código (no entran)', c.revision_vinculo, t.color.textMuted)}
                     {fila('Sin precio del proveedor (no se sincronizan)', c.sin_precio, t.color.textMuted)}
                     {fila('Sin categoría de Preventas (asignala en Proveedores)', c.sin_categoria, t.color.textMuted)}
+                    {fila('Sin foto del proveedor ni de Neggo (no se crean)', c.sin_foto, t.color.textMuted)}
                     {fila('Sin nada que hacer', c.sin_accion, t.color.textMuted)}
                 </div>
                 {c.revision_costo > 0 && (
@@ -643,14 +647,15 @@ export default function PreventasSyncPage() {
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
     const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
-    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0 } : aplicables;
+    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
 
     // Lo mismo para la selección, con las filas tildadas
-    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_accion: 0 };
+    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0, sin_accion: 0 };
     for (const row of selected.values()) {
         if (!ACCION_LABEL[row.estado]) seleccion.sin_accion++;
         else if (row.bloqueo_motivo && esSinCategoria(row.bloqueo_motivo)) seleccion.sin_categoria++;
+        else if (row.bloqueo_motivo && esSinFoto(row.bloqueo_motivo)) seleccion.sin_foto++;
         else if (row.bloqueo_motivo) seleccion.sin_precio++;
         else if (row.revision_tipo === 'vinculo') seleccion.revision_vinculo++;
         else if (row.revision_tipo === 'costo') seleccion.revision_costo++;

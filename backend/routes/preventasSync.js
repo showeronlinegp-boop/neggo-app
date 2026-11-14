@@ -7,6 +7,7 @@ const { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizar
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
 const { iniciarFotos, frenarFotos, getEstadoFotos } = require('../services/preventasFotosService');
+const { ESTADOS_ARCHIVAN } = require('../services/preventasSyncGuards');
 
 // Estado del apply masivo en background
 let bulkApplyJob = { running: false, result: null, error: null, startedAt: null, finishedAt: null };
@@ -60,7 +61,7 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
 
         if (esBulk) {
             // Inactivar en bloque solo por proveedor (se valida acá para responder antes del background)
-            const pideInactivar = grupo === 'inactivar' || ['inactivar', 'solo_odoo', 'fuera_preventas'].includes(estado);
+            const pideInactivar = grupo === 'inactivar' || ESTADOS_ARCHIVAN.includes(estado);
             if (pideInactivar && !supplierId) {
                 return fail(res, 'Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
             }

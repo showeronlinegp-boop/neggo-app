@@ -5,7 +5,7 @@
 const assert = require('assert');
 const {
     codigoEnNombre, motivoSinPrecio, motivoSinCategoria, categoriaPublicacion, claveCategoria,
-    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo,
+    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, motivoSinFoto, motivoBloqueo,
 } = require('./preventasSyncGuards');
 
 // Fila típica de un cambio de precio correcto: todo coincide y el cambio es chico
@@ -198,4 +198,19 @@ test('crear no consulta este control (no hay producto en Odoo todavía)', () => 
     assert.strictEqual(motivoOdoo(fila({ estado: 'solo_scraper' }), null), null);
 });
 
+test('crear sin foto del proveedor ni de Neggo se bloquea (nota 203)', () => {
+    const nuevo = fila({ estado: 'solo_scraper', sin_foto_disponible: true });
+    assert.match(motivoSinFoto(nuevo), /Sin foto/);
+    assert.match(motivoBloqueo(nuevo), /Sin foto/);
+    assert.match(motivoOmitir(nuevo), /Sin foto/);
+    assert.strictEqual(motivoSinFoto(fila({ estado: 'solo_scraper', sin_foto_disponible: false })), null);
+    // Solo frena crear: los demás estados no miran la foto
+    assert.strictEqual(motivoSinFoto(fila({ estado: 'precio_sube', sin_foto_disponible: true })), null);
+});
+test('archivar por falta de foto no se hace si Odoo ya tiene foto (nota 203)', () => {
+    assert.match(motivoOdoo(fila({ estado: 'sin_foto' }), { standard_price: 1000, active: true, tiene_foto: true }), /Ya tiene foto/);
+    assert.match(motivoOdoo(fila({ estado: 'sin_foto' }), { standard_price: 1000, active: false }), /Ya está archivado/);
+    assert.strictEqual(motivoOdoo(fila({ estado: 'sin_foto' }), { standard_price: 1000, active: true }), null);
+    assert.match(motivoOdoo(fila({ estado: 'sin_foto' }), null), /ya no existe/);
+});
 console.log(`\n✅ ${pasaron} tests OK`);

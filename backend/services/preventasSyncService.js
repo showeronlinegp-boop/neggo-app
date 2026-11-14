@@ -6,7 +6,8 @@ const { COSTO_EXPR, PRECIO_EXPR, isRecomputing } = require('./preventasMatchServ
 const { esFotoStorage, leerFotoStorage, urlDescargable } = require('./fotoStorage');
 const {
     motivoSinPrecio, motivoSinCategoria, motivoBloqueo, categoriaPublicacion, claveCategoria,
-    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO, CATEGORIA_PROVEEDOR_SQL,
+    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, motivoSinFoto, ESTADOS_ODOO, ESTADOS_ARCHIVAN,
+    CATEGORIA_PROVEEDOR_SQL, FOTO_PROVEEDOR_SQL, SIN_FOTO_DISPONIBLE_SQL, neggoFotoSubq,
 } = require('./preventasSyncGuards');
 
 // =============================================
@@ -21,7 +22,8 @@ const GRUPO_ESTADOS = {
     categoria:  ['categoria'],
     // Vinculados cuyo precio cambió (sube o baja): la vista "Cambiar precio" de la pantalla
     precio:     ['precio_sube', 'precio_baja'],
-    inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
+    // sin_foto: activos sin foto en Odoo, en el proveedor ni en Neggo (nota 203)
+    inactivar:  ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'],
     // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
     sin_fuente: ['sin_fuente'],
     // Lo que no necesita ninguna acción: la vista "Al día" de la pantalla
@@ -43,35 +45,21 @@ const REGLA_CATEGORIA_COLS = `
 // Estados que nunca generan una acción en Odoo
 const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
-const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
+const ESTADOS_INACTIVACION = ESTADOS_ARCHIVAN;
 
-// El proveedor tiene una foto de verdad (no el cartel "sin foto" de su web). Necesita sp.
-// Si la "foto del proveedor" es la de Odoo Neggo y la caché dice que allá tampoco hay foto, no hay
-// nada que copiar: no cuenta (nota 201). Si la caché no conoce el producto, se intenta igual.
-const FOTO_PROVEEDOR_SQL = `(COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
-    AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$' AND COALESCE((
-        SELECT bool_or(n.has_image) FROM odoo_products_cache n
-        WHERE n.company = 'neggo' AND n.template_id = substring(sp.image_url from '([0-9]+)$')::int
-    ), true) = false))`;
-
-// Template de un producto de Neggo con foto vinculado (confirmado) a la misma oferta: si el
-// proveedor no tiene foto, se usa esa (nota 203). Primero los activos. Necesita pss.
-const NEGGO_FOTO_SUBQ = `SELECT n.template_id
-    FROM product_mappings pn
-    JOIN odoo_products_cache n ON n.odoo_id = pn.odoo_product_id AND n.company = 'neggo'
-    WHERE pn.supplier_product_id = pss.supplier_product_id
-      AND pn.odoo_company = 'neggo' AND pn.estado = 'confirmado'
-      AND n.has_image = true AND n.template_id IS NOT NULL
-    ORDER BY n.active DESC, pn.id
-    LIMIT 1`;
+// Template del producto de Neggo con foto vinculado a la oferta de la fila (nota 203). Necesita pss.
+const NEGGO_FOTO_SUBQ = neggoFotoSubq('pss.supplier_product_id');
 
 // Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor o el producto
 // de Neggo vinculado sí tienen una. Fuera de Preventas o por archivar no cuentan (notas 182 y 203).
 // Necesita pss, sp y opc en el FROM.
 const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
     AND opc.active = true AND opc.has_image = false
-    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
+    AND pss.estado <> ALL(ARRAY['${ESTADOS_ARCHIVAN.join("', '")}'])
     AND (${FOTO_PROVEEDOR_SQL} OR EXISTS (${NEGGO_FOTO_SUBQ})))`;
+
+// Crear sin foto se bloquea (nota 203): solo se calcula para las filas a crear
+const SIN_FOTO_DISPONIBLE_COL = `CASE WHEN pss.estado = 'solo_scraper' THEN ${SIN_FOTO_DISPONIBLE_SQL} END AS sin_foto_disponible`;
 
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
@@ -189,8 +177,10 @@ async function getProductsToSync(pool, filters = {}) {
             opc.web_categ_name AS odoo_categoria_web,
             ${REGLA_CATEGORIA_COLS},
             ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
-            CASE WHEN opc.has_image = false AND NOT ${FOTO_PROVEEDOR_SQL}
-                 THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id
+            -- Sin foto en Odoo (o todavía no está) y el proveedor no tiene: la de Neggo (nota 203)
+            CASE WHEN opc.has_image IS NOT TRUE AND pss.supplier_product_id IS NOT NULL AND NOT ${FOTO_PROVEEDOR_SQL}
+                 THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id,
+            ${SIN_FOTO_DISPONIBLE_COL}
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
@@ -205,6 +195,7 @@ async function getProductsToSync(pool, filters = {}) {
                 WHEN 'precio_sube'  THEN 2
                 WHEN 'precio_baja'  THEN 3
                 WHEN 'inactivar'    THEN 4
+                WHEN 'sin_foto'     THEN 4
                 WHEN 'solo_scraper' THEN 5
                 WHEN 'solo_odoo'    THEN 6
                 WHEN 'fuera_preventas' THEN 6
@@ -240,7 +231,8 @@ async function contarAplicables(pool, whereClause, params, supplierId) {
         SELECT pss.estado, pss.match_type, pss.match_score, pss.costo, pss.precio_preventas,
                sp.name AS scraper_name, opc.name AS odoo_nombre, opc.standard_price AS odoo_standard_price,
                opc.categ_name AS odoo_categoria, ${REGLA_CATEGORIA_COLS},
-               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+               ${SIN_FOTO_DISPONIBLE_COL}
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
@@ -249,10 +241,11 @@ async function contarAplicables(pool, whereClause, params, supplierId) {
         ${REGLA_CATEGORIA_JOIN}
         ${where}
     `, p);
-    const r = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0 };
+    const r = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0 };
     for (const row of rows) {
         if (motivoSinPrecio(row)) { r.sin_precio++; continue; }
         if (motivoSinCategoria(row)) { r.sin_categoria++; continue; }
+        if (motivoSinFoto(row)) { r.sin_foto++; continue; }
         const tipo = tipoRevision(row);
         if (tipo === 'vinculo') r.revision_vinculo++;
         else if (tipo === 'costo') r.revision_costo++;
@@ -435,7 +428,11 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                    SELECT 1 FROM scraping_runs r
                    WHERE r.supplier_id = pss.supplier_id AND r.status IN ('running', 'queued')
                ) AS proveedor_scrapeando,
-               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+               ${SIN_FOTO_DISPONIBLE_COL},
+               -- Al crear sin foto del proveedor se usa la del producto de Neggo vinculado (nota 203)
+               CASE WHEN pss.estado = 'solo_scraper' AND NOT ${FOTO_PROVEEDOR_SQL}
+                    THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp ON sp.id = pss.supplier_product_id
         LEFT JOIN suppliers s ON s.id = sp.supplier_id
@@ -517,6 +514,8 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
         targets.filter(p => p.odoo_product_id && ESTADOS_ODOO.includes(p.estado)).map(p => p.odoo_product_id),
         ctx
     );
+    // Archivar por falta de foto: antes se pregunta a Odoo si ya tiene una (nota 203)
+    await marcarFotoEnOdoo(odooActual, targets.filter(p => p.estado === 'sin_foto' && p.odoo_template_id), ctx, pool);
 
     for (const prod of targets) {
         if (ESTADOS_SIN_ACCION.includes(prod.estado)) { resultados.skipped++; continue; }
@@ -583,6 +582,32 @@ async function leerEstadoOdoo(odooIds, ctx) {
         for (const f of filas) mapa.set(f.id, { standard_price: f.standard_price, active: f.active, is_published: f.is_published });
     }
     return mapa;
+}
+
+/**
+ * A los productos por archivar sin foto (nota 203) les marca tiene_foto en el mapa de leerEstadoOdoo
+ * si en Odoo ya tienen foto, y corrige la caché para que dejen de figurar. Si Odoo no responde se
+ * corta el apply: sin saberlo no se archiva nada.
+ */
+async function marcarFotoEnOdoo(odooActual, prods, ctx, pool) {
+    const templateIds = [...new Set(prods.map(p => p.odoo_template_id))];
+    const conFoto = new Set();
+    const LOTE = 50;
+    for (let i = 0; i < templateIds.length; i += LOTE) {
+        const filas = await callOdoo('product.template', 'read', [templateIds.slice(i, i + LOTE), ['image_128']],
+            { context: { ...ctx, active_test: false } });
+        for (const f of filas || []) if (f.image_128) conFoto.add(f.id);
+    }
+    for (const p of prods) {
+        const odoo = odooActual.get(p.odoo_product_id);
+        if (odoo && conFoto.has(p.odoo_template_id)) odoo.tiene_foto = true;
+    }
+    if (conFoto.size) {
+        await pool.query(
+            `UPDATE odoo_products_cache SET has_image = true WHERE template_id = ANY($1::int[]) AND company = 'preventas'`,
+            [[...conFoto]]
+        );
+    }
 }
 
 // Referencia interna que se le pone en Odoo a un producto creado desde el scraper
@@ -835,7 +860,9 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
     `, [variantId, prod.scraper_name, internalRef,
         Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku, templateId]);
 
-    if (prod.image_url) await syncImage(templateId, prod.image_url, ctx, pool, variantId);
+    // Sin foto del proveedor, la del producto de Neggo vinculado (nota 203)
+    const foto = prod.neggo_foto_template_id ? `/api/products/odoo-image/neggo/${prod.neggo_foto_template_id}` : prod.image_url;
+    if (foto) await syncImage(templateId, foto, ctx, pool, variantId);
     console.log(`✅ Creado en Odoo Preventas: ${prod.scraper_sku} (variant: ${variantId})`);
     return { templateId, variantId };
 }
