@@ -78,6 +78,37 @@ const sinRechazo = (spCol, odooCol) => `NOT EXISTS (
             AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
       )`;
 
+// ─── Productos que vinieron de Odoo Neggo en un proveedor de catálogo (nota 200) ──────────────
+// Si el catálogo del proveedor es su web o su lista, lo de Preventas que se cargó desde Neggo
+// (código PRE + prefijo + NEG...) no sigue por defecto: solo se queda, con el costo del catálogo,
+// si coincide con una oferta por código o por nombre casi exacto. Si no, no se vincula: el de Odoo
+// queda para archivar ("No está en el proveedor") y la oferta para crear y publicar.
+const SIMILITUD_CASI_EXACTA = 0.9;
+
+const esNeggoEnCatalogo = (opc, s) => `(
+        ${s}.scraper_key IS DISTINCT FROM 'neggo_scraper'
+        AND ${s}.preventas_fuente IS DISTINCT FROM 'neggo'
+        AND (UPPER(REGEXP_REPLACE(COALESCE(${opc}.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'
+             OR UPPER(REGEXP_REPLACE(COALESCE(${opc}.external_id, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'))`;
+
+// El código de la oferta (su código de proveedor, o un número de 3+ cifras del nombre que no sea una
+// medida como "500ML") aparece suelto en el nombre o la referencia del producto de Odoo:
+// "ABROCHADOR" (2753) ↔ "[PL2753] Abrochadora" · "PORTA CINTA 1401" ↔ "Porta Cintas Art. 1401"
+const coincideCodigo = (sp, opc) => `EXISTS (
+        SELECT 1
+        FROM regexp_matches(COALESCE(${sp}.codigo_proveedor, '') || ' ' || ${sp}.name,
+                            '([0-9]{3,})(?![0-9])(?!\\s*(ml|cm|mm|gr|grs|kg|lt|lts|w|v|mah|u|un|unid)([^a-z]|$))', 'gi') AS m(t)
+        WHERE (${opc}.name || ' ' || COALESCE(${opc}.internal_ref, '')) ~ ('(^|[^0-9])' || m.t[1] || '($|[^0-9])')
+    )`;
+
+// El vínculo vale: no es un producto de Neggo en un proveedor de catálogo, o coincide por código o
+// por nombre casi exacto
+const vinculoValido = (sp, opc, s, matchType) => `(
+        NOT ${esNeggoEnCatalogo(opc, s)}
+        OR ${matchType} IN ('exact_sku', 'internal_ref', 'bracket_code')
+        OR similarity(LOWER(${sp}.name), LOWER(${opc}.name)) >= ${SIMILITUD_CASI_EXACTA}
+        OR ${coincideCodigo(sp, opc)})`;
+
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
 const MATCH_SQL = `
@@ -200,8 +231,10 @@ best_by_sp AS (
     FROM candidates c
     JOIN supplier_products sp ON sp.id = c.sp_id
     JOIN suppliers s ON s.id = sp.supplier_id
+    JOIN odoo_products_cache opcv ON opcv.odoo_id = c.odoo_id AND opcv.company = 'preventas'
     WHERE ${FUENTE_PREVENTAS}
       AND ${sinRechazo('c.sp_id', 'c.odoo_id')}
+      AND ${vinculoValido('sp', 'opcv', 's', 'c.match_type')}
     ORDER BY c.sp_id, c.score DESC, c.match_type
 ),
 
@@ -270,6 +303,7 @@ LEFT JOIN LATERAL (
       -- Un vínculo rechazado en la tabla maestra no se vuelve a proponer (nota 143)
       AND ${sinRechazo('sp.id', 'opc2.odoo_id')}
       AND similarity(LOWER(sp.name), LOWER(opc2.name)) >= 0.75
+      AND ${vinculoValido('sp', 'opc2', 's', "'fuzzy_name'")}
     ORDER BY sim DESC
     LIMIT 1
 ) best ON true
