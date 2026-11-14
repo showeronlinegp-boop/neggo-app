@@ -47,11 +47,17 @@ const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
 // Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor sí tiene una
 // (no el cartel "sin foto" de su web). Fuera de Preventas o por archivar no cuentan (nota 182).
+// Si la "foto del proveedor" es la de Odoo Neggo y la caché dice que allá tampoco hay foto, no hay
+// nada que copiar: no cuenta (nota 201). Si la caché no conoce el producto, se intenta igual.
 // Necesita pss, sp y opc en el FROM.
 const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
     AND opc.active = true AND opc.has_image = false
     AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
-    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo')`;
+    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
+    AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$' AND COALESCE((
+        SELECT bool_or(n.has_image) FROM odoo_products_cache n
+        WHERE n.company = 'neggo' AND n.template_id = substring(sp.image_url from '([0-9]+)$')::int
+    ), true) = false))`;
 
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
