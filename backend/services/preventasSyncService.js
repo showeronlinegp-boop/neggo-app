@@ -26,19 +26,33 @@ const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
 const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
-// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor sí tiene una
-// (no el cartel "sin foto" de su web). Fuera de Preventas o por archivar no cuentan (nota 182).
+// El proveedor tiene una foto de verdad (no el cartel "sin foto" de su web). Necesita sp.
 // Si la "foto del proveedor" es la de Odoo Neggo y la caché dice que allá tampoco hay foto, no hay
 // nada que copiar: no cuenta (nota 201). Si la caché no conoce el producto, se intenta igual.
-// Necesita pss, sp y opc en el FROM.
-const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
-    AND opc.active = true AND opc.has_image = false
-    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
-    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
+const FOTO_PROVEEDOR_SQL = `(COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
     AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$' AND COALESCE((
         SELECT bool_or(n.has_image) FROM odoo_products_cache n
         WHERE n.company = 'neggo' AND n.template_id = substring(sp.image_url from '([0-9]+)$')::int
     ), true) = false))`;
+
+// Template de un producto de Neggo con foto vinculado (confirmado) a la misma oferta: si el
+// proveedor no tiene foto, se usa esa (nota 203). Primero los activos. Necesita pss.
+const NEGGO_FOTO_SUBQ = `SELECT n.template_id
+    FROM product_mappings pn
+    JOIN odoo_products_cache n ON n.odoo_id = pn.odoo_product_id AND n.company = 'neggo'
+    WHERE pn.supplier_product_id = pss.supplier_product_id
+      AND pn.odoo_company = 'neggo' AND pn.estado = 'confirmado'
+      AND n.has_image = true AND n.template_id IS NOT NULL
+    ORDER BY n.active DESC, pn.id
+    LIMIT 1`;
+
+// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor o el producto
+// de Neggo vinculado sí tienen una. Fuera de Preventas o por archivar no cuentan (notas 182 y 203).
+// Necesita pss, sp y opc en el FROM.
+const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
+    AND opc.active = true AND opc.has_image = false
+    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
+    AND (${FOTO_PROVEEDOR_SQL} OR EXISTS (${NEGGO_FOTO_SUBQ})))`;
 
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
@@ -152,7 +166,9 @@ async function getProductsToSync(pool, filters = {}) {
             opc.vendor_name AS odoo_vendor_name,
             opc.template_id AS odoo_template_id,
             opc.has_image   AS odoo_has_image,
-            ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+            ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+            CASE WHEN opc.has_image = false AND NOT ${FOTO_PROVEEDOR_SQL}
+                 THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
@@ -876,4 +892,4 @@ async function actualizarFotoOdoo(pool, { supplierProductId }) {
     return { template_id: fila.template_id };
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL };
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL, FOTO_PROVEEDOR_SQL, NEGGO_FOTO_SUBQ };

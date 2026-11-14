@@ -50,6 +50,8 @@ const URL_FOTO_ODOO = (templateId, size) => {
     const v = versionFotoOdoo.get(templateId);
     return `/api/products/odoo-image/preventas/${templateId}?size=${size}${v ? `&v=${v}` : ''}`;
 };
+// Foto del producto de Neggo vinculado a la oferta (nota 203)
+const URL_FOTO_NEGGO = (templateId, size) => `/api/products/odoo-image/neggo/${templateId}?size=${size}`;
 // Se puede pisar la foto de Odoo con la del proveedor: la oferta está vinculada y tiene foto
 const puedeActualizarFoto = (row) => !!(row.supplier_product_id && row.odoo_template_id && row.image_url);
 
@@ -99,6 +101,9 @@ function FotosFila({ t, row, onActualizar }) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[1], flexShrink: 0 }}>
             <div style={{ display: 'flex', gap: t.space[2] }}>
                 <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
+                {row.neggo_foto_template_id && (
+                    <FotoMini t={t} src={URL_FOTO_NEGGO(row.neggo_foto_template_id, 128)} etiqueta="Neggo" vacio="Foto del producto de Neggo vinculado" />
+                )}
                 <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
             </div>
             {onActualizar && puedeActualizarFoto(row) && (
@@ -132,6 +137,11 @@ function FotosComparadas({ t, detail, notaAlAplicar = true }) {
     return (
         <div style={{ display: 'flex', gap: t.space[5], flexWrap: 'wrap' }}>
             <FotoCaja t={t} titulo="Foto del proveedor" src={fotoProveedor} vacio="El proveedor no tiene foto" nota={notaProveedor} />
+            {detail.neggo_foto_template_id && (
+                <FotoCaja t={t} titulo="Foto en Neggo" src={URL_FOTO_NEGGO(detail.neggo_foto_template_id, 512)}
+                    grande={URL_FOTO_NEGGO(detail.neggo_foto_template_id, 1920)} vacio="No se pudo cargar la foto de Neggo"
+                    nota={'Del producto de Neggo vinculado: se sube con "Subir fotos que faltan".'} />
+            )}
             <FotoCaja t={t} titulo="Foto actual en Odoo" src={fotoOdoo} grande={fotoOdooGrande} vacio={enOdoo ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
         </div>
     );
@@ -479,6 +489,7 @@ export default function PreventasSyncPage() {
                     else if (result) {
                         const fallidos = result.fallidos.slice(0, 3).map(f => f.sku).join(', ');
                         const msg = `${result.frenado ? 'Frenado. ' : ''}Fotos subidas a Odoo: ${fmtN(result.subidas)}`
+                            + (result.de_neggo > 0 ? ` (${fmtN(result.de_neggo)} de Neggo)` : '')
                             + (result.ya_tenian > 0 ? `, ${fmtN(result.ya_tenian)} ya tenían` : '')
                             + (result.errores > 0 ? `, ${fmtN(result.errores)} no se pudieron (${fallidos}${result.errores > 3 ? '…' : ''})` : '');
                         showToast(msg, result.errores > 0 || result.frenado ? 'warning' : 'success');
@@ -844,7 +855,7 @@ export default function PreventasSyncPage() {
                                 } />
                         )}
                         {(resumen.sin_foto > 0 || subiendoFotos) && (
-                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: el proveedor tiene foto y Odoo no" tone="warn" icon={Icon.Image}
+                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: Odoo no tiene foto y el proveedor o Neggo sí" tone="warn" icon={Icon.Image}
                                 count={resumen.sin_foto} activa={sinFoto} onClick={() => elegirVista('sin_foto')}
                                 extra={
                                     <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} style={{ marginTop: t.space[1] }}>
@@ -973,7 +984,7 @@ export default function PreventasSyncPage() {
                 }
             >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[3], fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
-                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor.</span>
+                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor. Si el proveedor no tiene, se usa la del producto de Neggo vinculado.</span>
                     <span style={{ color: t.color.textMuted }}>Nunca reemplaza una foto que ya está: antes de subir, se fija en Odoo. Va de a una foto, así que con muchos productos tarda (unos 2.500 llevan cerca de una hora). Lo podés frenar cuando quieras.</span>
                     {!supplierId && <span style={{ color: t.color.textMuted }}>Para probar primero, elegí un proveedor arriba.</span>}
                 </div>

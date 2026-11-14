@@ -91,5 +91,32 @@ const fila = (template_id, extra = {}) => ({ template_id, odoo_product_id: templ
         assert.deepStrictEqual(escritos, []);
         assert.deepStrictEqual(r.fallidos.map(f => f.motivo), ['En Odoo Neggo tampoco tiene foto', 'No se pudo descargar la foto del proveedor']);
     }
-    console.log('✅ preventasFotos: 6 casos ok');
+    // 7. Sin foto del proveedor: se sube la del producto de Neggo vinculado (nota 203)
+    {
+        const leidas = [];
+        const { deps, escritos } = armar({ filas: [
+            fila(1, { foto_proveedor: false, image_url: null, neggo_template_id: 77 }),
+            fila(2),
+        ] });
+        const leer = deps.getImageBase64;
+        deps.getImageBase64 = async url => { leidas.push(url); return leer(url); };
+        const r = await subirFotosFaltantes({}, deps);
+        assert.deepStrictEqual(escritos, [1, 2]);
+        assert.deepStrictEqual(leidas, ['/api/products/odoo-image/neggo/77', 'u2']);
+        assert.strictEqual(r.subidas, 2);
+        assert.strictEqual(r.de_neggo, 1);
+    }
+    // 8. La foto del proveedor no baja: se prueba con la de Neggo; si tampoco, queda en fallidos
+    {
+        const { deps, escritos } = armar({
+            filas: [fila(1, { neggo_template_id: 77 }), fila(2, { foto_proveedor: false, neggo_template_id: 88 })],
+            fotos: { u1: null, '/api/products/odoo-image/neggo/88': null },
+        });
+        const r = await subirFotosFaltantes({}, deps);
+        assert.deepStrictEqual(escritos, [1]);
+        assert.strictEqual(r.de_neggo, 1);
+        assert.strictEqual(r.errores, 1);
+        assert.match(r.fallidos[0].motivo, /ni la de Neggo/);
+    }
+    console.log('✅ preventasFotos: 8 casos ok');
 })().catch(err => { console.error('❌', err); process.exit(1); });
