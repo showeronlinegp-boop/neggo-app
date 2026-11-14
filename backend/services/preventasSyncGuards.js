@@ -15,7 +15,17 @@ const FUZZY_MIN_AUTOMATICO = 90;
 const TOL_PESOS = 0.01;
 
 const ESTADOS_PRECIO = ['precio_sube', 'precio_baja'];
-const ESTADOS_ODOO = ['activar', 'inactivar', 'solo_odoo', 'fuera_preventas', 'precio_sube', 'precio_baja'];
+const ESTADOS_ODOO = ['activar', 'publicar', 'inactivar', 'solo_odoo', 'fuera_preventas', 'precio_sube', 'precio_baja'];
+
+// Categoría del proveedor para las ofertas que no traen ninguna (ej. filas del Excel de Pan Lin):
+// en Sync Preventas se les puede poner una regla como a cualquier otra categoría (nota 200)
+const SIN_CATEGORIA = '(Sin categoría)';
+// Expresión SQL de la categoría del proveedor para buscar su regla en Sync Preventas
+const CATEGORIA_PROVEEDOR_SQL = `COALESCE(NULLIF(TRIM(sp.source_category), ''), '${SIN_CATEGORIA}')`;
+
+// Acciones que dejan el producto publicado en la web de Precompras (nota 200):
+// crear y publicar, activar y publicar, publicar
+const ESTADOS_PUBLICAN = ['solo_scraper', 'activar', 'publicar'];
 
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
 
@@ -33,6 +43,45 @@ function motivoSinPrecio(prod) {
     const precio = num(prod.precio_preventas);
     if (!(costo > 0) || !(precio > 0)) return 'Sin precio válido (costo o precio en 0 o vacío): no se sincroniza';
     return null;
+}
+
+/**
+ * Categoría de Preventas con la que se publica: la de la regla del proveedor para esa categoría
+ * suya; si no hay regla, la que el producto ya tiene en Odoo (crear siempre necesita la regla).
+ * "All" es la categoría por defecto de Odoo: no cuenta. Devuelve el nombre, o null.
+ */
+function categoriaPublicacion(prod) {
+    if (prod.odoo_categ_id_preventas) return prod.regla_categoria_preventas || prod.odoo_categoria || '(regla)';
+    if (prod.estado === 'solo_scraper') return null;
+    const enOdoo = String(prod.odoo_categoria || '').trim();
+    if (!enOdoo || /^all(\s*\/|$)/i.test(enOdoo)) return null;
+    return enOdoo;
+}
+
+/**
+ * Crear, activar o publicar sin categoría de Preventas no se hace: el producto quedaría en la web
+ * sin categoría. Se asigna en Proveedores → Categorías pendientes (nota 200).
+ */
+function motivoSinCategoria(prod) {
+    if (!ESTADOS_PUBLICAN.includes(prod.estado)) return null;
+    if (categoriaPublicacion(prod)) return null;
+    return 'Falta la categoría de Preventas: asignala en Proveedores → Categorías pendientes';
+}
+
+/**
+ * Clave para encontrar la categoría web con el mismo nombre que la de Preventas (nota 200):
+ * último tramo, sin acentos ni "de". "Accesorios de Moda" → "accesorios moda" = "Accesorios Moda"
+ */
+function claveCategoria(nombre) {
+    return String(nombre || '').split('/').pop()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+        .split(' ').filter(p => p && !['de', 'del', 'la', 'el', 'y'].includes(p)).join(' ');
+}
+
+/** Lo que impide aplicar la fila aunque se confirme: sin precio o sin categoría */
+function motivoBloqueo(prod) {
+    return motivoSinPrecio(prod) || motivoSinCategoria(prod);
 }
 
 /**
@@ -62,8 +111,8 @@ function motivoOmitir(prod) {
         return 'El producto ya no está en el scraper: recalculá';
     }
 
-    const sinPrecio = motivoSinPrecio(prod);
-    if (sinPrecio) return sinPrecio;
+    const bloqueo = motivoBloqueo(prod);
+    if (bloqueo) return bloqueo;
 
     if (prod.estado === 'solo_scraper' || ESTADOS_PRECIO.includes(prod.estado)) {
         const costo = num(prod.costo);
@@ -145,6 +194,10 @@ function motivoOdoo(prod, odoo) {
     if (!odoo) return 'El producto ya no existe en Odoo: sincronizá Odoo';
 
     if (prod.estado === 'activar' && odoo.active === true) return 'Ya está activo en Odoo';
+    if (prod.estado === 'publicar') {
+        if (odoo.active === false) return 'Está archivado en Odoo: sincronizá Odoo';
+        if (odoo.is_published === true) return 'Ya está publicado en la web';
+    }
     if (['inactivar', 'solo_odoo', 'fuera_preventas'].includes(prod.estado) && odoo.active === false) {
         return 'Ya está archivado en Odoo';
     }
@@ -159,7 +212,8 @@ function motivoOdoo(prod, odoo) {
 }
 
 module.exports = {
-    codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, motivoRevisionVinculo,
-    motivoRevisionCosto, tipoRevision, motivoOdoo,
-    UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO,
+    codigoEnNombre, motivoSinPrecio, motivoSinCategoria, motivoBloqueo, categoriaPublicacion, claveCategoria,
+    motivoOmitir, motivoRevision, motivoRevisionVinculo, motivoRevisionCosto, tipoRevision, motivoOdoo,
+    UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO, ESTADOS_PUBLICAN,
+    SIN_CATEGORIA, CATEGORIA_PROVEEDOR_SQL,
 };

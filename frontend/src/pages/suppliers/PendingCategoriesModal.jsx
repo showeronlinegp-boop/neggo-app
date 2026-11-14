@@ -12,8 +12,30 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 // Se asigna la categoría de Odoo de cada empresa (o se ignora) sin salir de Proveedores.
 // Claude revisa tandas con scripts/categoriasClaude.js (nota 131): su propuesta llega precargada
 // en los selectores; nada se guarda hasta tocar Asignar.
+// Vista "Frenan Preventas" (nota 200): solo las categorías con productos para crear, activar o
+// publicar en Sync Preventas que no tienen categoría de Preventas, con un pre-matching precargado.
 
 const TONO_CONFIANZA = { alta: 'success', media: 'primary', baja: 'warn' };
+
+const MODOS = {
+    todas:     { url: '/suppliers/pending-categories', subtitulo: 'Sin regla, los productos de estas categorías no entran en el ingreso ni en los catálogos.' },
+    preventas: { url: '/suppliers/pending-categories/preventas', subtitulo: 'Sin categoría de Preventas, Sync Preventas no crea, activa ni publica estos productos.' },
+};
+
+// Pre-matching de la categoría de Preventas (solo en la vista "Frenan Preventas")
+function preMatchDe(row) {
+    if (!row.pre_categ_preventas) return null;
+    const enOdoo = row.pre_origen === 'odoo';
+    return {
+        preventas: row.pre_categ_preventas,
+        nombre: row.pre_nombre,
+        // Confiable: la mitad o más de lo que ya está en Odoo de esa categoría tiene la misma
+        confiable: enOdoo && row.pre_total > 0 && row.pre_votos / row.pre_total >= 0.5,
+        texto: enOdoo
+            ? `${row.pre_votos} de ${row.pre_total} ya en Odoo están en "${row.pre_nombre}"`
+            : `Otros proveedores usan "${row.pre_nombre}" para esta categoría`,
+    };
+}
 
 // Propuesta de Claude de una fila, o null si todavía no la revisó
 function propuestaDe(row) {
@@ -39,30 +61,44 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
     const [choices, setChoices] = useState({});
     const [savingKey, setSavingKey] = useState(null);
     const [asignandoLote, setAsignandoLote] = useState(null); // { hechas, total } mientras asigna en lote
+    const [modo, setModo] = useState('todas');
+    const enPreventas = modo === 'preventas';
 
     useEffect(() => {
         if (!isOpen) return;
         setSupplierFilter(initialSupplierId ? String(initialSupplierId) : '');
         setChoices({});
-        loadPending();
+        loadPending(modo);
         if (categsNeggo.length === 0) loadOdooCategories();
     }, [isOpen, initialSupplierId]);
 
-    async function loadPending() {
+    function cambiarModo(nuevo) {
+        if (nuevo === modo) return;
+        setModo(nuevo);
+        setPending([]);
+        loadPending(nuevo);
+    }
+
+    async function loadPending(modoActual = modo) {
         setLoading(true);
-        const res = await api.get('/suppliers/pending-categories');
+        const res = await api.get(MODOS[modoActual].url);
         setLoading(false);
         if (!res.success) return showToast(res.error || 'Error al cargar categorías pendientes', 'error');
         const rows = res.data || [];
         setPending(rows);
-        // Precargar los selectores con la propuesta de Claude
+        // Precargar los selectores con la propuesta de Claude; en "Frenan Preventas" también con la
+        // categoría de Neggo que ya tiene la regla y, si Claude no propuso, el pre-matching
         const iniciales = {};
         for (const row of rows) {
             const p = propuestaDe(row);
-            if (p && !p.sinPropuesta) {
+            const conClaude = p && !p.sinPropuesta;
+            const pre = modoActual === 'preventas' ? preMatchDe(row) : null;
+            const neggo = row.regla_categ_neggo || (conClaude ? p.neggo : null);
+            const preventas = (conClaude ? p.preventas : null) || pre?.preventas;
+            if (neggo || preventas) {
                 iniciales[keyOf(row)] = {
-                    neggo: p.neggo ? String(p.neggo) : '',
-                    preventas: p.preventas ? String(p.preventas) : '',
+                    neggo: neggo ? String(neggo) : '',
+                    preventas: preventas ? String(preventas) : '',
                 };
             }
         }
@@ -118,7 +154,10 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                 odoo_categ_id_preventas: choice.preventas ? parseInt(choice.preventas, 10) : null,
             };
         setSavingKey(k);
-        const res = await api.post(`/suppliers/${row.supplier_id}/rules`, body);
+        // La categoría ya tenía regla (sin la de Preventas, o ignorada): se completa esa regla
+        const res = row.regla_id
+            ? await api.put(`/suppliers/${row.supplier_id}/rules/${row.regla_id}`, { ...body, ignored: !!ignored })
+            : await api.post(`/suppliers/${row.supplier_id}/rules`, body);
         setSavingKey(null);
         if (!res.success) {
             showToast(`${row.source_category}: ${res.error || 'Error al guardar la regla'}`, 'error');
@@ -141,10 +180,15 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
     ];
     const visible = supplierFilter ? pending.filter(r => String(r.supplier_id) === supplierFilter) : pending;
     const revisadas = visible.filter(r => r.sug_revisada).length;
-    // Para el lote: propuesta alta/media y selectores con algo elegido
+    // Para el lote: propuesta alta/media (o, en "Frenan Preventas", un pre-matching confiable) y
+    // selectores con algo elegido
     const filasParaLote = visible.filter(r => {
         const p = propuestaDe(r);
         const c = choices[keyOf(r)] || {};
+        if (enPreventas) {
+            const claudeOk = p && !p.sinPropuesta && p.confianza !== 'baja';
+            return !!c.preventas && (claudeOk || !!preMatchDe(r)?.confiable);
+        }
         return p && !p.sinPropuesta && p.confianza !== 'baja' && (c.neggo || c.preventas);
     });
     const ocupado = !!asignandoLote;
@@ -173,11 +217,31 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
             isOpen={isOpen}
             onClose={onClose}
             title="Categorías pendientes"
-            subtitle="Sin regla, los productos de estas categorías no entran en el ingreso ni en los catálogos."
+            subtitle={MODOS[modo].subtitulo}
             size="xl"
         >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[3], marginBottom: t.space[5], flexWrap: 'wrap' }}>
-                <Select value={supplierFilter} onChange={setSupplierFilter} options={supplierOptions} style={{ minWidth: 260 }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
+                    <div role="tablist" style={{ display: 'inline-flex', border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, overflow: 'hidden' }}>
+                        {[['todas', 'Todas sin regla'], ['preventas', 'Frenan Preventas']].map(([k, label]) => (
+                            <button
+                                key={k} type="button" role="tab" aria-selected={modo === k}
+                                disabled={loading || ocupado}
+                                onClick={() => cambiarModo(k)}
+                                style={{
+                                    border: 'none', padding: '6px 12px', cursor: 'pointer',
+                                    fontSize: t.font.size.sm, fontFamily: t.font.family,
+                                    fontWeight: modo === k ? t.font.weight.semibold : t.font.weight.regular,
+                                    background: modo === k ? t.color.primarySoft : t.color.surface,
+                                    color: modo === k ? t.color.primary : t.color.textMuted,
+                                }}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                    <Select value={supplierFilter} onChange={setSupplierFilter} options={supplierOptions} style={{ minWidth: 260 }} />
+                </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
                     {loadingCategs && (
                         <span style={{ fontSize: t.font.size.sm, color: t.color.textFaint, fontFamily: t.font.family }}>
@@ -196,7 +260,9 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                         size="sm" variant="primary"
                         disabled={ocupado || filasParaLote.length === 0}
                         onClick={asignarSugeridas}
-                        title="Asigna las propuestas de confianza alta y media tal como están en los selectores"
+                        title={enPreventas
+                            ? 'Asigna las de Claude con confianza alta o media y las del pre-matching confiable, tal como están en los selectores'
+                            : 'Asigna las propuestas de confianza alta y media tal como están en los selectores'}
                     >
                         {asignandoLote
                             ? `Asignando ${asignandoLote.hechas}/${asignandoLote.total}…`
@@ -209,7 +275,7 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
 
             {!loading && visible.length === 0 && (
                 <div style={{ padding: `${t.space[8]}px 0`, textAlign: 'center', color: t.color.textMuted, fontSize: t.font.size.sm, fontFamily: t.font.family }}>
-                    No hay categorías pendientes. Todo tiene regla.
+                    {enPreventas ? 'Nada frenado: todo lo que hay para subir a Preventas tiene categoría.' : 'No hay categorías pendientes. Todo tiene regla.'}
                 </div>
             )}
 
@@ -248,8 +314,11 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                                 {row.source_category}
                                             </span>
                                             <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, ...t.numericStyle }}>
-                                                {row.product_count} prod.
+                                                {enPreventas
+                                                    ? [row.para_crear > 0 && `${row.para_crear} para crear`, row.para_publicar > 0 && `${row.para_publicar} para publicar`].filter(Boolean).join(' · ')
+                                                    : `${row.product_count} prod.`}
                                             </span>
+                                            {row.regla_ignorada && <Badge tone="muted">Ignorada</Badge>}
                                         </div>
                                         {row.sample_products?.length > 0 && (
                                             <div
@@ -260,6 +329,17 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                                 }}
                                             >
                                                 Ej: {row.sample_products.join(' · ')}
+                                            </div>
+                                        )}
+                                        {enPreventas && preMatchDe(row) && (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], marginTop: 4, minWidth: 0 }}>
+                                                <Badge tone={preMatchDe(row).confiable ? 'success' : 'primary'}>Pre-matching</Badge>
+                                                <span title={preMatchDe(row).texto} style={{
+                                                    fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family,
+                                                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...t.numericStyle,
+                                                }}>
+                                                    {preMatchDe(row).texto}
+                                                </span>
                                             </div>
                                         )}
                                         {propuesta && (
@@ -290,12 +370,15 @@ export default function PendingCategoriesModal({ isOpen, onClose, onChanged, ini
                                     </select>
 
                                     <div style={{ display: 'flex', gap: t.space[2], minWidth: 150, justifyContent: 'flex-end' }}>
-                                        <Button size="sm" variant="ghost" disabled={saving} onClick={() => resolve(row, true)}>
-                                            Ignorar
-                                        </Button>
+                                        {/* Ignorar no destraba nada en Preventas: ahí solo se asigna */}
+                                        {!enPreventas && (
+                                            <Button size="sm" variant="ghost" disabled={saving} onClick={() => resolve(row, true)}>
+                                                Ignorar
+                                            </Button>
+                                        )}
                                         <Button
                                             size="sm" variant="primary"
-                                            disabled={saving || (!choice.neggo && !choice.preventas)}
+                                            disabled={saving || (enPreventas ? !choice.preventas : (!choice.neggo && !choice.preventas))}
                                             onClick={() => resolve(row, false)}
                                         >
                                             {saving ? 'Guardando…' : 'Asignar'}

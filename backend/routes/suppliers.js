@@ -9,6 +9,7 @@ const { getAvailableKeys } = require('../scrapers/registry');
 const NeggoScraper = require('../scrapers/neggoScraper');
 const { getDeletePreview, deleteSupplier } = require('../services/supplierDeleteService');
 const { scheduleRecompute } = require('../services/preventasMatchService');
+const { SIN_CATEGORIA, CATEGORIA_PROVEEDOR_SQL } = require('../services/preventasSyncGuards');
 const { normalizarCondiciones, guardarCondiciones } = require('../services/supplierCondiciones');
 const multer = require('multer');
 const { enqueueRun } = require('../services/scrapingService');
@@ -161,6 +162,105 @@ router.get('/pending-categories', authenticate, async (req, res) => {
     } catch (error) {
         console.error('❌ Error al obtener categorías pendientes:', error.message);
         return fail(res, 'Error al obtener categorías pendientes', 500);
+    }
+});
+
+// =============================================
+// GET /pending-categories/preventas — Categorías que frenan subidas a Preventas (nota 200)
+// Las del proveedor con productos para crear, activar o publicar en Sync Preventas que no tienen
+// categoría de Preventas (sin regla, o regla sin la de Preventas). Activar y publicar solo se frenan
+// si el producto tampoco tiene categoría en Odoo. Las ofertas sin categoría van a "(Sin categoría)".
+// Pre-matching de la categoría de Preventas, en este orden:
+//   1. la que más se repite entre los productos de esa categoría del proveedor que ya están en Odoo
+//   2. la regla que otros proveedores le pusieron a una categoría con el mismo nombre
+// La propuesta de Claude (category_rule_suggestions) se devuelve aparte, como en /pending-categories.
+// =============================================
+router.get('/pending-categories/preventas', authenticate, async (req, res) => {
+    const CAT = CATEGORIA_PROVEEDOR_SQL;
+    try {
+        const { rows } = await pool.query(`
+            WITH frenados AS (
+                SELECT pss.supplier_id, ${CAT} AS source_category, sp.name, pss.estado
+                FROM preventas_sync_state pss
+                JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+                JOIN suppliers s ON s.id = pss.supplier_id AND s.active = true AND s.va_a_preventas = true
+                LEFT JOIN odoo_products_cache opc
+                       ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+                LEFT JOIN supplier_category_rules scc
+                       ON scc.supplier_id = pss.supplier_id AND scc.source_category = ${CAT} AND scc.active = true
+                WHERE scc.odoo_categ_id_preventas IS NULL
+                  AND (pss.estado = 'solo_scraper'
+                       OR (pss.estado IN ('activar', 'publicar')
+                           AND (NULLIF(TRIM(opc.categ_name), '') IS NULL OR opc.categ_name ~* '^all(\\s*/|$)')))
+            ),
+            grupos AS (
+                SELECT supplier_id, source_category,
+                       COUNT(*)::INTEGER AS product_count,
+                       COUNT(*) FILTER (WHERE estado = 'solo_scraper')::INTEGER AS para_crear,
+                       COUNT(*) FILTER (WHERE estado <> 'solo_scraper')::INTEGER AS para_publicar,
+                       (ARRAY_AGG(name ORDER BY name))[1:3] AS sample_products
+                FROM frenados
+                GROUP BY supplier_id, source_category
+            ),
+            -- 1. Lo que ya está en Odoo Preventas de esa categoría del proveedor
+            en_odoo AS (
+                SELECT DISTINCT ON (supplier_id, source_category)
+                       supplier_id, source_category, categ_id_odoo, categ_name, n, total
+                FROM (
+                    SELECT pss.supplier_id, ${CAT} AS source_category, opc.categ_id_odoo, opc.categ_name,
+                           COUNT(*) AS n,
+                           SUM(COUNT(*)) OVER (PARTITION BY pss.supplier_id, ${CAT}) AS total
+                    FROM preventas_sync_state pss
+                    JOIN supplier_products sp ON sp.id = pss.supplier_product_id
+                    JOIN odoo_products_cache opc
+                      ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+                    WHERE opc.categ_id_odoo IS NOT NULL
+                      AND NULLIF(TRIM(opc.categ_name), '') IS NOT NULL
+                      AND opc.categ_name !~* '^all(\\s*/|$)'
+                    GROUP BY 1, 2, 3, 4
+                ) x
+                ORDER BY supplier_id, source_category, n DESC
+            ),
+            -- 2. Reglas de otros proveedores para una categoría con el mismo nombre
+            otras_reglas AS (
+                SELECT DISTINCT ON (g.supplier_id, g.source_category)
+                       g.supplier_id, g.source_category, r.odoo_categ_id_preventas, r.dest_category_preventas,
+                       COUNT(*) AS n
+                FROM grupos g
+                JOIN supplier_category_rules r
+                  ON LOWER(TRIM(r.source_category)) = LOWER(TRIM(g.source_category))
+                 AND r.supplier_id <> g.supplier_id AND r.active = true AND r.odoo_categ_id_preventas IS NOT NULL
+                WHERE g.source_category <> $1
+                GROUP BY 1, 2, 3, 4
+                ORDER BY g.supplier_id, g.source_category, COUNT(*) DESC
+            )
+            SELECT g.*, s.name AS supplier_name,
+                   scc.id AS regla_id, (scc.ignored IS TRUE) AS regla_ignorada,
+                   scc.odoo_categ_id_neggo AS regla_categ_neggo, scc.dest_category_neggo AS regla_dest_neggo,
+                   crs.odoo_categ_id_neggo     AS sug_categ_neggo,
+                   crs.odoo_categ_id_preventas AS sug_categ_preventas,
+                   crs.confianza               AS sug_confianza,
+                   crs.motivo                  AS sug_motivo,
+                   (crs.revisada_at IS NOT NULL) AS sug_revisada,
+                   COALESCE(eo.categ_id_odoo, orr.odoo_categ_id_preventas) AS pre_categ_preventas,
+                   COALESCE(eo.categ_name, orr.dest_category_preventas)    AS pre_nombre,
+                   CASE WHEN eo.categ_id_odoo IS NOT NULL THEN 'odoo'
+                        WHEN orr.odoo_categ_id_preventas IS NOT NULL THEN 'otros_proveedores' END AS pre_origen,
+                   eo.n::INTEGER AS pre_votos, eo.total::INTEGER AS pre_total
+            FROM grupos g
+            JOIN suppliers s ON s.id = g.supplier_id
+            LEFT JOIN supplier_category_rules scc
+                   ON scc.supplier_id = g.supplier_id AND scc.source_category = g.source_category AND scc.active = true
+            LEFT JOIN category_rule_suggestions crs
+                   ON crs.supplier_id = g.supplier_id AND crs.source_category = g.source_category
+            LEFT JOIN en_odoo eo ON eo.supplier_id = g.supplier_id AND eo.source_category = g.source_category
+            LEFT JOIN otras_reglas orr ON orr.supplier_id = g.supplier_id AND orr.source_category = g.source_category
+            ORDER BY s.name, g.product_count DESC
+        `, [SIN_CATEGORIA]);
+        return ok(res, rows);
+    } catch (error) {
+        console.error('❌ Error al obtener categorías que frenan Preventas:', error.message);
+        return fail(res, 'Error al obtener categorías pendientes de Preventas', 500);
     }
 });
 

@@ -12,10 +12,11 @@ import * as Icon from '../../components/common/icons';
 
 // ─── Estados del sync: cómo se nombran y con qué tono se muestran ──────────────
 const ESTADO_INFO = {
-    solo_scraper:    { label: 'Crear en Odoo',               tone: 'success' },
+    solo_scraper:    { label: 'Crear y publicar',            tone: 'success' },
     precio_sube:     { label: 'Precio sube',                 tone: 'warn' },
     precio_baja:     { label: 'Precio baja',                 tone: 'primary' },
-    activar:         { label: 'Desarchivar',                 tone: 'primary' },
+    activar:         { label: 'Activar y publicar',          tone: 'primary' },
+    publicar:        { label: 'Publicar en la web',          tone: 'primary' },
     inactivar:       { label: 'Sin stock en el proveedor',   tone: 'danger' },
     solo_odoo:       { label: 'No está en el proveedor',     tone: 'danger' },
     fuera_preventas: { label: 'Proveedor no va a Preventas', tone: 'danger' },
@@ -36,7 +37,7 @@ const VINCULO_INFO = {
 };
 
 const ACCION_LABEL = {
-    solo_scraper: 'Crear', activar: 'Desarchivar', inactivar: 'Archivar',
+    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', inactivar: 'Archivar',
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
@@ -141,18 +142,22 @@ function FotosComparadas({ t, detail, notaAlAplicar = true }) {
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
     precio:     ['precio_sube', 'precio_baja'],
+    publicar:   ['publicar'],
     inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
     al_dia:     ['sin_cambios', 'sin_fuente'],
 };
-const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'inactivar', 'solo_odoo', 'fuera_preventas'];
+const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'inactivar', 'solo_odoo', 'fuera_preventas'];
+// Motivo de bloqueo por falta de categoría (preventasSyncGuards.motivoSinCategoria, nota 200)
+const esSinCategoria = motivo => /^Falta la categoría/.test(motivo || '');
 const INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
 
 // Las tarjetas de arriba: cada una es una vista (filtro) de la tabla
 const VISTAS = [
-    { key: 'crear',       titulo: 'Crear en Odoo',  ayuda: 'Los tiene el proveedor y no están en Odoo',  tone: 'success', icon: Icon.Plus,    filtro: { grupo: 'nuevos' } },
+    { key: 'crear',       titulo: 'Crear y publicar', ayuda: 'Los tiene el proveedor y no están en Odoo: se crean y quedan en la web', tone: 'success', icon: Icon.Plus, filtro: { grupo: 'nuevos' } },
     { key: 'precio',      titulo: 'Cambiar precio', ayuda: 'El proveedor cambió el precio',               tone: 'warn',    icon: Icon.TrendUp, filtro: { grupo: 'precio' },
       subs: [{ key: 'precio_sube', label: 'Suben' }, { key: 'precio_baja', label: 'Bajan' }] },
-    { key: 'desarchivar', titulo: 'Desarchivar',    ayuda: 'Archivados en Odoo que el proveedor volvió a tener', tone: 'primary', icon: Icon.Package, filtro: { estado: 'activar' } },
+    { key: 'desarchivar', titulo: 'Activar y publicar', ayuda: 'Archivados en Odoo que el proveedor volvió a tener', tone: 'primary', icon: Icon.Package, filtro: { estado: 'activar' } },
+    { key: 'publicar',    titulo: 'Publicar',       ayuda: 'Activos en Odoo y con stock que no se ven en la web', tone: 'primary', icon: Icon.Eye, filtro: { estado: 'publicar' } },
     { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
       subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
     { key: 'al_dia',      titulo: 'Al día',         ayuda: 'No hace falta tocar nada',                     tone: 'muted',   icon: Icon.Check,   filtro: { grupo: 'al_dia' },
@@ -182,7 +187,9 @@ const resumenApply = r => [
     `${r.ok} ok`,
     r.error > 0 ? `${r.error} errores` : null,
     r.omitidos > 0 ? `${r.omitidos} omitidos (revisalos uno por uno)` : null,
+    sinCategoriaWeb(r) > 0 ? `${sinCategoriaWeb(r)} publicados sin categoría web (no existe en Odoo)` : null,
 ].filter(Boolean).join(', ');
+const sinCategoriaWeb = r => (r.detalles || []).filter(d => d.aviso).length;
 
 // Colores de un tono del sistema de diseño
 const toneColors = (t, tone) => ({
@@ -263,7 +270,7 @@ function Numeros({ resumen: r, t }) {
 }
 
 // ─── Confirmación de "Aplicar" (bloque o selección) con el desglose ───────────
-// conteo: { listos, revision_costo, revision_vinculo, sin_precio, sin_accion? }
+// conteo: { listos, revision_costo, revision_vinculo, sin_precio, sin_categoria, sin_accion? }
 function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCosto, onClose, onConfirm }) {
     const c = conteo || {};
     const aAplicar = (c.listos || 0) + (incluirCosto ? (c.revision_costo || 0) : 0);
@@ -294,6 +301,7 @@ function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCo
                     {fila('Con cambio de costo de más del 20%', c.revision_costo, t.color.warn)}
                     {fila('Vinculados por nombre parecido u otro código (no entran)', c.revision_vinculo, t.color.textMuted)}
                     {fila('Sin precio del proveedor (no se sincronizan)', c.sin_precio, t.color.textMuted)}
+                    {fila('Sin categoría de Preventas (asignala en Proveedores)', c.sin_categoria, t.color.textMuted)}
                     {fila('Sin nada que hacer', c.sin_accion, t.color.textMuted)}
                 </div>
                 {c.revision_costo > 0 && (
@@ -621,13 +629,14 @@ export default function PreventasSyncPage() {
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
     const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
-    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
+    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
 
     // Lo mismo para la selección, con las filas tildadas
-    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_accion: 0 };
+    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_accion: 0 };
     for (const row of selected.values()) {
         if (!ACCION_LABEL[row.estado]) seleccion.sin_accion++;
+        else if (row.bloqueo_motivo && esSinCategoria(row.bloqueo_motivo)) seleccion.sin_categoria++;
         else if (row.bloqueo_motivo) seleccion.sin_precio++;
         else if (row.revision_tipo === 'vinculo') seleccion.revision_vinculo++;
         else if (row.revision_tipo === 'costo') seleccion.revision_costo++;
@@ -721,7 +730,7 @@ export default function PreventasSyncPage() {
                 const label = ACCION_LABEL[row.estado];
                 let accion = null;
                 if (label && row.bloqueo_motivo) {
-                    accion = <span title={row.bloqueo_motivo} style={{ fontSize: t.font.size.xs, color: t.color.danger, fontFamily: t.font.family }}>Sin precio: no se sincroniza</span>;
+                    accion = <span title={row.bloqueo_motivo} style={{ fontSize: t.font.size.xs, color: t.color.danger, fontFamily: t.font.family }}>{esSinCategoria(row.bloqueo_motivo) ? 'Sin categoría de Preventas' : 'Sin precio: no se sincroniza'}</span>;
                 } else if (label && row.revision_motivo && row.revision_tipo === 'vinculo' && row.supplier_product_id && row.odoo_product_id) {
                     // Vínculo dudoso: se elige acá mismo si es el mismo producto o si va como artículo nuevo
                     accion = (
@@ -1032,6 +1041,9 @@ export default function PreventasSyncPage() {
                                     ['Qué hay que hacer', (() => { const e = ESTADO_INFO[detail.estado]; return e ? <Badge tone={e.tone}>{e.label}</Badge> : '—'; })()],
                                     ['Activo en Odoo', detail.odoo_active === true ? 'Sí' : detail.odoo_active === false ? 'No (archivado)' : '—'],
                                     ['Disponible en el proveedor', detail.available ? 'Sí' : 'No'],
+                                    ['En la web', detail.odoo_is_published === true ? `Sí${detail.odoo_categoria_web ? ` · ${detail.odoo_categoria_web}` : ' · sin categoría web'}` : detail.odoo_product_id ? 'No' : '—'],
+                                    ...(['solo_scraper', 'activar', 'publicar'].includes(detail.estado)
+                                        ? [['Categoría al publicar', detail.categoria_publicacion || 'Falta (asignala en Proveedores)']] : []),
                                 ].map(([k, v]) => (
                                     <Fragment key={k}>
                                         <span style={{ fontWeight: t.font.weight.medium, color: t.color.textMuted, fontSize: t.font.size.sm, fontFamily: t.font.family }}>{k}</span>
@@ -1071,7 +1083,7 @@ export default function PreventasSyncPage() {
 
                         {ACCION_LABEL[detail.estado] && detail.bloqueo_motivo && (
                             <div style={{ background: t.color.dangerSoft, color: t.color.danger, border: `1px solid ${t.color.danger}`, borderRadius: t.radius.sm, padding: '10px 14px', fontSize: t.font.size.sm, fontFamily: t.font.family }}>
-                                <strong>No se sincroniza:</strong> {detail.bloqueo_motivo}. Cuando el proveedor tenga precio se va a poder aplicar.
+                                <strong>No se sincroniza:</strong> {detail.bloqueo_motivo}. {esSinCategoria(detail.bloqueo_motivo) ? 'Con la categoría asignada se va a poder aplicar.' : 'Cuando el proveedor tenga precio se va a poder aplicar.'}
                             </div>
                         )}
 

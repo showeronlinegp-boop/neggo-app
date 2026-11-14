@@ -34,6 +34,8 @@ const ESTADO_CASE = `
              AND opc.standard_price > 0
              AND ABS(p.costo - opc.standard_price) / opc.standard_price > ${PRICE_TOL}
              AND p.costo < opc.standard_price  THEN 'precio_baja'
+        -- Activo y con stock pero no se ve en la web de Precompras (nota 200)
+        WHEN opc.active = true AND sp.available = true AND opc.is_published IS NOT TRUE THEN 'publicar'
         ELSE 'sin_cambios'
     END`;
 
