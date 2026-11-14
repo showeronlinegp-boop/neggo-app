@@ -83,5 +83,13 @@ const fila = (template_id, extra = {}) => ({ template_id, odoo_product_id: templ
         assert.strictEqual(escritos.length, 120);
         assert.strictEqual(r.total, 120);
     }
-    console.log('✅ preventasFotos: 5 casos ok');
+    // 6. Foto de Odoo Neggo que allá tampoco existe: el motivo lo dice (nota 201)
+    {
+        const neggo = '/api/products/odoo-image/neggo/34386';
+        const { deps, escritos } = armar({ filas: [fila(1, { image_url: neggo }), fila(2)], fotos: { [neggo]: null, u2: null } });
+        const r = await subirFotosFaltantes({}, deps);
+        assert.deepStrictEqual(escritos, []);
+        assert.deepStrictEqual(r.fallidos.map(f => f.motivo), ['En Odoo Neggo tampoco tiene foto', 'No se pudo descargar la foto del proveedor']);
+    }
+    console.log('✅ preventasFotos: 6 casos ok');
 })().catch(err => { console.error('❌', err); process.exit(1); });

@@ -10,6 +10,9 @@ const { getImageBase64, SIN_FOTO_SQL } = require('./preventasSyncService');
 const { olvidarFotoOdoo } = require('./odooImageService');
 const { fotoCompatibleBase64 } = require('./fotoFormato');
 
+// La "foto del proveedor" de los productos que salen del catálogo de Neggo es la de Odoo Neggo
+const FOTO_NEGGO_RE = /^\/api\/products\/odoo-image\/neggo\/\d+$/;
+
 const LOTE_LECTURA = 50;
 const PAUSA_MS = 300;
 const MAX_FALLIDOS = 100;
@@ -99,7 +102,11 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
             try {
                 let base64 = null;
                 try { base64 = await leerFoto(p.image_url); } catch (err) { /* se informa abajo */ }
-                if (!base64) { fallo(p, 'No se pudo descargar la foto del proveedor'); continue; }
+                if (!base64) {
+                    // Si viene de Odoo Neggo y no llegó nada, es que allá tampoco tiene foto (nota 201)
+                    fallo(p, FOTO_NEGGO_RE.test(p.image_url || '') ? 'En Odoo Neggo tampoco tiene foto' : 'No se pudo descargar la foto del proveedor');
+                    continue;
+                }
                 // AVIF → JPG; si no es una foto, el error dice qué llegó (nota 183)
                 try { base64 = await fotoCompatibleBase64(base64); } catch (err) { fallo(p, err.message); continue; }
 
