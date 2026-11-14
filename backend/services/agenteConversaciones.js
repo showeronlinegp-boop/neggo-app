@@ -172,7 +172,24 @@ function agruparConversaciones(filas, { incluirGrupos = false } = {}) {
     return out.map(({ _ts, ...c }) => c);
 }
 
+/**
+ * Suma al chat lo que se sabe de quién es (whatsapp_chat_identidad) y el nombre de la agenda.
+ * identificado_por = null cuando no se sabe.
+ */
+function conIdentidad(chat, identidad, nombreAgenda) {
+    const { mensajes, ...resto } = chat;
+    return {
+        ...resto,
+        numero: chat.numero || (identidad && identidad.numero) || null,
+        nombre: (identidad && identidad.nombre) || nombreAgenda || chat.nombre,
+        cliente_id: (identidad && identidad.cliente_id) || null,
+        identificado_por: identidad ? { fuente: identidad.fuente, confianza: identidad.confianza } : null,
+        mensajes,
+    };
+}
+
 module.exports = {
+    conIdentidad,
     RETENCION_DIAS,
     TIPOS_IGNORADOS,
     fechaAr,

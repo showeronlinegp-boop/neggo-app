@@ -11,6 +11,7 @@
 //                                                 — carritos de la web sin confirmar, en vivo, por cliente
 // GET    /api/agente/whatsapp/conversaciones?fecha=AAAA-MM-DD&incluir_grupos=&sin_respuesta=&page=&limit=
 //                                                 — charlas del WhatsApp del negocio de un día (por defecto ayer)
+// POST   /api/agente/whatsapp/identidades        — { chat, cliente_id? | numero? | nombre? } de quién es un chat
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
 // POST   /api/agente/clientes/:id/envios         — { etapa | tipo_inactivo, mensaje, id_externo, productos_recomendados } RESERVA el mensaje
@@ -57,6 +58,7 @@ const agenteNotas = require('../services/agenteNotas');
 const v = require('../services/agenteValidacion');
 const agenteLeads = require('../services/agenteLeadsService');
 const vLeads = require('../services/agenteLeadsValidacion');
+const waIdentidad = require('../services/whatsappIdentidadService');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
 const SWAGGER_VERSION = '5.17.14';
@@ -192,6 +194,18 @@ router.get('/whatsapp/conversaciones', async (req, res) => {
         return sendPage(res, await agente.listarConversaciones(value));
     } catch (err) {
         return handle(res, err, 'No se pudieron leer las conversaciones de WhatsApp');
+    }
+});
+
+router.post('/whatsapp/identidades', async (req, res) => {
+    const { value, errors } = v.validarIdentidadChat(req.body);
+    if (errors.length) return invalid(res, errors);
+    try {
+        const data = await waIdentidad.asignar({ ...value, fuente: 'agente' });
+        if (!data) return res.status(404).json({ success: false, error: 'No existe ese cliente en Odoo', codigo: 'no_encontrado' });
+        return res.json({ success: true, data });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar de quién es el chat');
     }
 });
 

@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const odooSync = require('./odooSync');
 const { syncSalesWeekly } = require('./salesWeeklySync');
+const whatsappIdentidad = require('../services/whatsappIdentidadService');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -30,6 +31,21 @@ async function initScheduler(pool) {
     }, TZ));
 
     console.log('✅ Cron de sync Odoo registrado (cada 1 hora).');
+
+    // WhatsApp del negocio: identificar chats por las cotizaciones nombradas en la charla.
+    // Todos los días a las 19 y una vez al arrancar (la PC no siempre está prendida a esa hora)
+    const identificarWhatsapp = async () => {
+        try {
+            const r = await whatsappIdentidad.identificarRecientes({ dias: 8 });
+            console.log(`✅ WhatsApp del negocio: ${r.identificados} chats identificados por cotización (${r.guardados} guardados)`);
+        } catch (err) {
+            // Sin el contenedor del negocio no existe evolution_negocio: no es un error de la app
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error identificando chats de WhatsApp:', err.message);
+        }
+    };
+    scheduledTasks.push(cron.schedule('0 19 * * *', identificarWhatsapp, TZ));
+    setTimeout(identificarWhatsapp, 2 * 60 * 1000).unref();
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {

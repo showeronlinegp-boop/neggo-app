@@ -15,6 +15,7 @@ const importantes = require('./agenteImportantes');
 const inactivos = require('./agenteInactivos');
 const cotWeb = require('./agenteCotizacionesWeb');
 const waConv = require('./agenteConversaciones');
+const waIdentidad = require('./whatsappIdentidadService');
 const testNotes = require('./testNotesService');
 
 const COMPANY = 'neggo';
@@ -846,8 +847,11 @@ async function listarConversaciones({ fecha, hoy, incluir_grupos: incluirGrupos,
     let chats = waConv.agruparConversaciones(filas, { incluirGrupos });
     if (sinRespuesta !== undefined) chats = chats.filter((c) => c.sin_respuesta === sinRespuesta);
     const limite = waConv.fechaAr(Date.now() - waConv.RETENCION_DIAS * 24 * 60 * 60 * 1000);
+    const pagina = chats.slice(offset, offset + limit);
+    const jids = pagina.map((c) => c.chat);
+    const [identidades, agenda] = await Promise.all([waIdentidad.obtenerIdentidades(jids), waIdentidad.nombresDeAgenda(jids)]);
     return {
-        data: chats.slice(offset, offset + limit),
+        data: pagina.map((c) => waConv.conIdentidad(c, identidades.get(c.chat), agenda.get(c.chat))),
         total: chats.length,
         page,
         limit,
