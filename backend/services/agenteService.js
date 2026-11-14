@@ -14,6 +14,7 @@ const nuevos = require('./agenteNuevos');
 const importantes = require('./agenteImportantes');
 const inactivos = require('./agenteInactivos');
 const cotWeb = require('./agenteCotizacionesWeb');
+const waConv = require('./agenteConversaciones');
 const testNotes = require('./testNotesService');
 
 const COMPANY = 'neggo';
@@ -804,6 +805,67 @@ function armarClienteCotizaciones(base, row, conv) {
 }
 
 /** GET clientes/cotizaciones-web: en vivo y sin caché. Solo lectura. */
+// ── Conversaciones del WhatsApp del negocio ──────────────────
+
+const CONVERSACIONES_TIMEOUT = '15s';
+
+/**
+ * Mensajes de un día (hora de Argentina) del WhatsApp del negocio, agrupados por chat. Solo lectura del
+ * esquema evolution_negocio (lo llena el contenedor neggo-evolution-negocio): no manda nada.
+ */
+async function listarConversaciones({ fecha, hoy, incluir_grupos: incluirGrupos, sin_respuesta: sinRespuesta, page, limit, offset }) {
+    const { desde, hasta } = waConv.rangoDia(fecha);
+    const client = await pool.connect();
+    let filas;
+    try {
+        await client.query('BEGIN READ ONLY');
+        await client.query(`SET LOCAL statement_timeout = '${CONVERSACIONES_TIMEOUT}'`);
+        ({ rows: filas } = await client.query(
+            `SELECT m."key", m."pushName", m."participant", m."messageType", m."message", m."contextInfo",
+                    m."messageTimestamp", c."name" AS chat_nombre
+               FROM evolution_negocio."Message" m
+               LEFT JOIN evolution_negocio."Chat" c
+                 ON c."remoteJid" = m."key"->>'remoteJid' AND c."instanceId" = m."instanceId"
+              WHERE m."messageTimestamp" >= $1 AND m."messageTimestamp" < $2
+                AND m."messageType" <> ALL($3::text[])
+              ORDER BY m."messageTimestamp", m."id"`,
+            [desde, hasta, waConv.TIPOS_IGNORADOS],
+        ));
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        // Sin el contenedor del negocio no existe el esquema
+        if (err.code === '42P01' || err.code === '3F000') {
+            throw new AgenteError(503, 'El registro del WhatsApp del negocio no está disponible', 'whatsapp_no_disponible');
+        }
+        throw err;
+    } finally {
+        client.release();
+    }
+
+    let chats = waConv.agruparConversaciones(filas, { incluirGrupos });
+    if (sinRespuesta !== undefined) chats = chats.filter((c) => c.sin_respuesta === sinRespuesta);
+    const limite = waConv.fechaAr(Date.now() - waConv.RETENCION_DIAS * 24 * 60 * 60 * 1000);
+    return {
+        data: chats.slice(offset, offset + limit),
+        total: chats.length,
+        page,
+        limit,
+        meta: {
+            fecha,
+            desde: waConv.isoAr(desde),
+            hasta: waConv.isoAr(hasta),
+            dia_completo: fecha < hoy,
+            chats: chats.length,
+            mensajes: chats.reduce((n, c) => n + c.cantidad_mensajes, 0),
+            retencion_dias: waConv.RETENCION_DIAS,
+            aviso: fecha < limite
+                ? `Se guardan ${waConv.RETENCION_DIAS} días: lo anterior al ${limite} puede estar borrado`
+                : null,
+        },
+    };
+}
+
 async function listarCotizacionesWeb({ dias, no_contactar: noContactar, compro_despues: comproDespues, page, limit, offset }) {
     await ensureSchema();
     const base = await odoo(() => cotizacionesWebOdoo(dias));
@@ -1848,6 +1910,7 @@ module.exports = {
     actualizarSeguimientoInactivo,
     obtenerCliente,
     listarCotizacionesWeb,
+    listarConversaciones,
     actualizarSeguimiento,
     actualizarCliente,
     registrarInteraccion,

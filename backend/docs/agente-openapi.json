@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "API del agente de Neggo (Grok Bot)",
-    "version": "3.7.0",
-    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo.\n\n**Posibles clientes (v3.6, tag Leads):** contactos de la agenda que todavía no están en Odoo. Solo los celulares de la zona (150 km de Pergamino, prioridad 1: Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y nunca los de Churn. Cadencia: `presentacion` → `recordatorio` (7 días después) → `cierre` (14 días después). **Tope: 15 mensajes de la cadencia por día** entre todos (lo controla la API: 409 `tope_diario`). Mismo envío en dos pasos que con los clientes, en `/leads/{id}/envios` y `/leads/envios/{id_externo}`. Si contesta, la cadencia se frena: seguí la charla y marcá el resultado con PATCH (`interesado`, `no_interesado`, o `no_contactar: true`).\n\n**Clientes inactivos (3.7.0):** `GET /clientes/inactivos` lista a los que compraron alguna vez y llevan **más de 60 días** sin comprar (60 justos no entran; hasta `dias_max`, 365 por defecto). Defaults en `backend/config/inactivos.json` (editable sin tocar código). Quedan afuera los que tienen un pedido activo, los que están en la cadencia de nuevos, los que hoy califican como importantes (ese flujo gana) y los marcados a mano con `PATCH /clientes/{id}/inactivo` (`marca: excluido`, con nota). `no_contactar` y `respuesta_pendiente` no los sacan de la lista, pero bloquean el envío. `meta.excluidos` dice cuántos se sacaron por cada motivo.\nSeguimiento propio (no usa `etapa`): `toca_hoy` es `primer_toque` (nunca contactado como inactivo desde su última compra) o `segundo_toque` (pasaron `reintento_dias`, 15, sin respuesta ni compra). Después del segundo, el ciclo se cierra hasta que vuelva a comprar; si vuelve a comprar y otra vez pasa los 60 días, arranca un ciclo nuevo. Si contesta al primer toque, no hay segundo en ese ciclo.\nConvivencia: prioridad nuevos > importantes > inactivos; un solo mensaje por día por cliente entre todos los flujos (409 `ya_contactado_hoy`), y si recibió un mensaje de cualquier flujo en los últimos `pausa_entre_flujos_dias` (3) inactivos no toca (409 `pausa_entre_flujos`). Una sola reserva activa por cliente, de cualquier flujo.\nPara mandar: `POST /clientes/{id}/envios` con `tipo_inactivo` en lugar de `etapa` (exactamente uno de los dos; id_externo sugerido `grok-<cliente>-inactivo<N>-AAAAMMDD`), mandar el WhatsApp y `POST /envios/{id_externo}/confirmar` (con `enviado_at` opcional) o `cancelar`. Mismas reglas de horario, reserva de 10 minutos, IVA y productos que en nuevos. Errores nuevos: `no_es_inactivo`, `ciclo_cerrado`, `tipo_no_corresponde`, `en_flujo_nuevos`, `ya_contactado_hoy`, `pausa_entre_flujos`.\nTablero: `GET /clientes/inactivos/resumen`. Corrección a mano del ciclo: `PATCH /clientes/{id}/seguimiento-inactivo`. `GET /clientes/{id}` trae el bloque `inactivo`.\n\n**Flujo diario de inactivos:** `GET /clientes/inactivos?toca_hoy=true&con_telefono=true` → para cada uno con `puede_enviar_ahora`, `GET /clientes/{id}` (mirá `inactivo.toca_hoy`) → reservar con `tipo_inactivo` → mandar → confirmar."
+    "version": "3.9.0",
+    "description": "API para el seguimiento por WhatsApp de los **clientes nuevos** de Neggo Mayorista: mensajes el día 1, el día 7 y el día 15 después de la primera compra.\n\n**Cadencia (la calcula la API):**\n- Día N = fecha de la primera compra + N, en hora de Argentina. Si el cliente vuelve a comprar, la cadencia sigue igual.\n- Cada mensaje se puede mandar en un rango: día 1 del día 1 al 6, día 7 del 7 al 14, día 15 del 15 al 20. Si entra tarde, le toca el mensaje del rango en el que está y los anteriores se saltean.\n- `toca_hoy` dice qué mensaje le toca hoy (o null). `puede_enviar_ahora` además chequea que tenga teléfono y que estemos en horario.\n- `seguimiento.etapa` es la **última etapa enviada**: pendiente (nada todavía) → dia_1 → dia_7 → dia_15. `finalizado` = cadencia cerrada (no contactar, o la cerró el equipo).\n- Horario de envío: **lunes a viernes de 9 a 18** (hora de Argentina). Fuera de ese horario `POST envios` devuelve 409.\n\n**Envío en dos pasos (para no mandar un mensaje que después no se puede registrar):**\n1. `POST /clientes/{id}/envios` **reserva** el mensaje: valida todo con la hora del servidor (horario, no contactar, teléfono, respuesta pendiente, etapa que toca, ya enviada) y bloquea la etapa 10 minutos.\n2. Recién con la reserva hecha se manda el WhatsApp. El bot de envío puede consultar `GET /envios/{id_externo}` y mandar solo si está `reservado` (si está `enviado`, no lo repite).\n3. `POST /envios/{id_externo}/confirmar` cuando salió (avanza la etapa) o `POST /envios/{id_externo}/cancelar` si no salió (libera la etapa).\nTodos los pasos se pueden reintentar con el mismo `id_externo` y **el mismo contenido** sin duplicar nada (200, `repetido: true`). Con el mismo `id_externo` y otro mensaje, etapa o productos → 409 `id_externo_distinto`. Una reserva cancelada o vencida no se reusa: reservá con un `id_externo` nuevo.\nSi el cliente pide no contactar con una reserva activa, la reserva pasa a `cancelado` (`motivo_cancelacion: no_contactar`) y el bot no tiene que mandarla. Si ya la había mandado, igual se puede confirmar.\nConfirmar y cancelar responden 200 (no 201): mirá `repetido` para saber si ya estaba hecho.\n\n**Flujo diario:** `GET /clientes/nuevos?para_hoy=true` → para cada cliente con `puede_enviar_ahora`, `GET /clientes/{id}` → reservar → mandar → confirmar.\n\n**Errores:** todos traen `codigo` estable (también el 404 de una ruta inexistente). En los 409: `fuera_de_horario`, `no_contactar`, `sin_telefono`, `respuesta_pendiente`, `etapa_no_corresponde`, `ya_enviado`, `etapa_reservada`, `reserva_cancelada`, `reserva_vencida`, `transicion_invalida`, `id_externo_usado`, `id_externo_distinto`. Otros: `api_key_invalida`, `no_encontrado`, `datos_invalidos`, `odoo_caido`, `deshabilitada`, `error_interno`.\n\n**No contactar:** cuando el cliente pide que no le escriban, `PATCH /clientes/{id}` con `no_contactar: true`. Desde ahí todo envío da 409 y la etapa no se puede reabrir. Solo el equipo de Neggo lo puede desmarcar.\n\n**Respuestas de WhatsApp:** las recibís vos en tu WhatsApp; registralas con `POST /clientes/{id}/interacciones` (`tipo: recibido`). Detectar un \"no me escriban más\" es tu tarea: en ese caso marcá no contactar. Mientras haya una respuesta sin atender (`respuesta_pendiente`), no se puede reservar un mensaje de la cadencia: contestá (`interacciones`, `enviado`) o marcala como revisada (`POST /clientes/{id}/revisado`).\n\nOtras reglas:\n- No escribe nada en Odoo: solo lo lee. Compra = ticket del POS de Neggo pagado o facturado. Seña y saldo de un mismo pedido son una sola compra.\n- Precios: son el precio final. **No menciones el IVA ni impuestos en los mensajes**: decí solo el precio. Un mensaje que los nombre se rechaza con 422.\n- El `monto` de una compra es lo cobrado en el ticket: incluye señas, saldos y envíos, que no aparecen en `productos` (solo van los productos físicos). Por eso la suma de productos puede ser menor que el monto.\n- Sin feriados: el horario es lunes a viernes de 9 a 18. `vence` es el último día para mandar el mensaje que toca: priorizá a los que vencen antes.\n- Fechas: `YYYY-MM-DD` y datetimes ISO 8601 con offset (`2026-10-22T10:15:00-03:00`). Un datetime sin offset se toma como hora de Argentina.\n- Textos en UTF-8. Un texto con caracteres rotos (U+FFFD) se rechaza con 422.\n- `telefono: null` = el número de Odoo no es un celular argentino válido: no le escribas y avisá por `POST /feedback`. `contacto: null` = no sabemos el nombre de la persona: saludá sin nombre y, si se presenta, guardalo con `PATCH /clientes/{id}`.\n- `ciudad` es la ciudad del cliente en Odoo (no necesariamente la de entrega).\n- Si algo de la API no te sirve o te falta, mandalo a `POST /feedback`.\n\n**Reposición (solo lectura):** `GET /reposicion/proveedores`, `/reposicion/pendientes`, `/reposicion/encargados` y `/reposicion/cotizaciones` dan los datos para ayudar a armar los pedidos a proveedores de la semana. Neggo no lleva stock en Odoo: la cantidad sugerida sale de la venta semanal × semanas de cobertura. Las decisiones (marcar como encargado, resolver) se toman en la app. Ideas o errores: `POST /feedback` con `modulo: reposicion`.\n\n**Tareas para Claude (`/notas`):** pedile a Claude Code investigación, diseño o búsquedas (también en páginas web). **No** sirven para cambiar el código de la app, escribir en Odoo ni mandar mensajes: Claude no lo hace aunque se lo pidas.\nFlujo: **indicación → discusión → acuerdo → ejecución → respuesta final**.\n1. `POST /notas` con la indicación (fase `discusion`).\n2. `POST /notas/{id}/ejecutar` → Claude la lee y contesta con una propuesta o preguntas (`estado: consulta`). Tarda unos minutos: consultá `GET /notas/{id}` cada tanto y mirá `esperando`.\n3. Si hay que ajustar: `POST /notas/{id}/mensajes` y de nuevo `ejecutar`. Cuando estén de acuerdo: `mensajes` con `acordado: true` (fase `acordada`) y `ejecutar`.\n4. Claude hace lo acordado y deja la respuesta final (`estado: para_revisar`, en `respuesta` y al final de `hilo`). Cerrala con `POST /notas/{id}/cerrar`, o seguí la charla con `mensajes`.\nClaude trabaja de a una tarea por vez y hay un máximo de ejecuciones por día (429 `limite_diario`). Solo ves las tareas que creaste por la API.\n\n**Clientes importantes (3.4.0, fase 1):** `GET /clientes/importantes` lista a los que llegan al monto acumulado en la ventana, o tuvieron un pedido grande, según `backend/config/importantes.json` (editable sin tocar código). Solo lectura: no escribe ni manda nada. `GET /clientes/{id}` agrega el bloque `importante`. Las marcas manuales (fijo/excluido), el seguimiento y `toca_hoy` de importantes llegan en la fase 2.\n\n**Pedidos activos (3.5.0):** por defecto `GET /clientes/importantes` excluye a quienes tienen cotización enviada reciente u orden de venta abierta con saldo relevante (`pedido_activo` en `config/importantes.json`). Con `incluir_pedido_activo=true` quedan en la lista y cada ítem trae el bloque `pedido_activo`. `GET /clientes/{id}` siempre trae `pedido_activo` (y en `importante.pedido_activo` si hay bloque importante). `meta.excluidos_pedido_activo` dice cuántos se sacaron por este motivo.\n\n**Posibles clientes (v3.6, tag Leads):** contactos de la agenda que todavía no están en Odoo. Solo los celulares de la zona (150 km de Pergamino, prioridad 1: Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y nunca los de Churn. Cadencia: `presentacion` → `recordatorio` (7 días después) → `cierre` (14 días después). **Tope: 15 mensajes de la cadencia por día** entre todos (lo controla la API: 409 `tope_diario`). Mismo envío en dos pasos que con los clientes, en `/leads/{id}/envios` y `/leads/envios/{id_externo}`. Si contesta, la cadencia se frena: seguí la charla y marcá el resultado con PATCH (`interesado`, `no_interesado`, o `no_contactar: true`).\n\n**Clientes inactivos (3.7.0):** `GET /clientes/inactivos` lista a los que compraron alguna vez y llevan **más de 60 días** sin comprar (60 justos no entran; hasta `dias_max`, 365 por defecto). Defaults en `backend/config/inactivos.json` (editable sin tocar código). Quedan afuera los que tienen un pedido activo, los que están en la cadencia de nuevos, los que hoy califican como importantes (ese flujo gana) y los marcados a mano con `PATCH /clientes/{id}/inactivo` (`marca: excluido`, con nota). `no_contactar` y `respuesta_pendiente` no los sacan de la lista, pero bloquean el envío. `meta.excluidos` dice cuántos se sacaron por cada motivo.\nSeguimiento propio (no usa `etapa`): `toca_hoy` es `primer_toque` (nunca contactado como inactivo desde su última compra) o `segundo_toque` (pasaron `reintento_dias`, 15, sin respuesta ni compra). Después del segundo, el ciclo se cierra hasta que vuelva a comprar; si vuelve a comprar y otra vez pasa los 60 días, arranca un ciclo nuevo. Si contesta al primer toque, no hay segundo en ese ciclo.\nConvivencia: prioridad nuevos > importantes > inactivos; un solo mensaje por día por cliente entre todos los flujos (409 `ya_contactado_hoy`), y si recibió un mensaje de cualquier flujo en los últimos `pausa_entre_flujos_dias` (3) inactivos no toca (409 `pausa_entre_flujos`). Una sola reserva activa por cliente, de cualquier flujo.\nPara mandar: `POST /clientes/{id}/envios` con `tipo_inactivo` en lugar de `etapa` (exactamente uno de los dos; id_externo sugerido `grok-<cliente>-inactivo<N>-AAAAMMDD`), mandar el WhatsApp y `POST /envios/{id_externo}/confirmar` (con `enviado_at` opcional) o `cancelar`. Mismas reglas de horario, reserva de 10 minutos, IVA y productos que en nuevos. Errores nuevos: `no_es_inactivo`, `ciclo_cerrado`, `tipo_no_corresponde`, `en_flujo_nuevos`, `ya_contactado_hoy`, `pausa_entre_flujos`.\nTablero: `GET /clientes/inactivos/resumen`. Corrección a mano del ciclo: `PATCH /clientes/{id}/seguimiento-inactivo`. `GET /clientes/{id}` trae el bloque `inactivo`.\n\n**Flujo diario de inactivos:** `GET /clientes/inactivos?toca_hoy=true&con_telefono=true` → para cada uno con `puede_enviar_ahora`, `GET /clientes/{id}` (mirá `inactivo.toca_hoy`) → reservar con `tipo_inactivo` → mandar → confirmar.\n\n**Conversaciones del WhatsApp del negocio (3.9.0, tag WhatsApp):** `GET /whatsapp/conversaciones` devuelve las charlas de un día (por defecto **ayer**, hora de Argentina) del WhatsApp del negocio, un elemento por chat con sus mensajes en orden. Solo lectura: ese número solo registra, no manda nada. Se guardan 7 días (una depuración semanal borra lo anterior). Casi todos los chats llegan como `@lid`, sin número ni nombre: `numero` y `nombre` pueden venir en null; identificá al cliente por lo que dice en la charla. Los audios, fotos y documentos vienen como `tipo`, sin el archivo (solo la leyenda o el nombre del archivo en `texto`)."
   },
   "servers": [
     {
@@ -48,6 +48,10 @@
     {
       "name": "Leads",
       "description": "Posibles clientes (todavía no están en Odoo): cola del día, envíos con tope diario, charla y resultado."
+    },
+    {
+      "name": "WhatsApp",
+      "description": "Charlas del WhatsApp del negocio (solo lectura, últimos 7 días)"
     }
   ],
   "paths": {
@@ -4494,6 +4498,175 @@
           }
         }
       }
+    },
+    "/whatsapp/conversaciones": {
+      "get": {
+        "tags": [
+          "WhatsApp"
+        ],
+        "operationId": "listarConversacionesWhatsapp",
+        "summary": "Conversaciones del WhatsApp del negocio de un día (por defecto ayer)",
+        "description": "Mensajes del día en hora de Argentina (00:00 a 00:00), agrupados por chat, del chat con el último mensaje más nuevo al más viejo. Sin reacciones, mensajes borrados ni estados. Por defecto sin grupos. La paginación es por chat. Solo lectura.",
+        "parameters": [
+          {
+            "name": "fecha",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Día a leer (YYYY-MM-DD). Por defecto, ayer. No puede ser futura",
+            "example": "2026-11-13"
+          },
+          {
+            "name": "incluir_grupos",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "true = también los grupos"
+          },
+          {
+            "name": "sin_respuesta",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true = solo los chats cuyo último mensaje del día es del cliente; false = solo los que contestó Neggo"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Página, desde 1"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "Elementos por página (máximo 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WhatsappConversacion"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/Paginacion"
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/MetaConversaciones"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "data": [
+                    {
+                      "chat": "98689825669267@lid",
+                      "numero": null,
+                      "nombre": null,
+                      "es_grupo": false,
+                      "cantidad_mensajes": 2,
+                      "mensajes_cliente": 1,
+                      "primer_mensaje": "2026-11-13T15:03:44-03:00",
+                      "ultimo_mensaje": "2026-11-13T17:31:37-03:00",
+                      "ultimo_de": "cliente",
+                      "sin_respuesta": true,
+                      "mensajes": [
+                        {
+                          "id": "3EB083D90A9347490D9F48",
+                          "fecha": "2026-11-13T15:03:44-03:00",
+                          "de": "neggo",
+                          "tipo": "texto",
+                          "texto": "¡Hola! Soy Mariano de Neggo…",
+                          "responde_a": null
+                        },
+                        {
+                          "id": "AC531AA372D710DA7D37E02A6FB7F60B",
+                          "fecha": "2026-11-13T17:31:37-03:00",
+                          "de": "cliente",
+                          "tipo": "foto",
+                          "texto": "¿Tenés de estas?",
+                          "responde_a": null
+                        }
+                      ]
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "pages": 1
+                  },
+                  "meta": {
+                    "fecha": "2026-11-13",
+                    "desde": "2026-11-13T00:00:00-03:00",
+                    "hasta": "2026-11-14T00:00:00-03:00",
+                    "dia_completo": true,
+                    "chats": 1,
+                    "mensajes": 2,
+                    "retencion_dias": 7,
+                    "aviso": null
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NoAutorizado"
+          },
+          "422": {
+            "$ref": "#/components/responses/Validacion"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErrorInterno"
+          },
+          "503": {
+            "description": "La API está deshabilitada (`deshabilitada`) o el registro del WhatsApp del negocio no está disponible (`whatsapp_no_disponible`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7463,6 +7636,180 @@
             "type": "string",
             "format": "date-time",
             "description": "Cuándo salió de verdad. Opcional: sin esto se usa la hora del servidor. No puede ser futura (1 minuto de margen) ni anterior a la reserva"
+          }
+        }
+      },
+      "WhatsappMensaje": {
+        "type": "object",
+        "required": [
+          "id",
+          "fecha",
+          "de",
+          "tipo",
+          "texto",
+          "responde_a"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Id del mensaje en WhatsApp"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-11-13T17:31:37-03:00"
+          },
+          "de": {
+            "type": "string",
+            "enum": [
+              "cliente",
+              "neggo"
+            ]
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "texto",
+              "foto",
+              "audio",
+              "video",
+              "documento",
+              "sticker",
+              "ubicacion",
+              "contacto",
+              "album",
+              "encuesta",
+              "otro"
+            ]
+          },
+          "tipo_original": {
+            "type": "string",
+            "description": "Solo cuando tipo = otro: el messageType de WhatsApp"
+          },
+          "texto": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cuerpo, leyenda de la foto o nombre del archivo. Null en audios y fotos sin leyenda"
+          },
+          "responde_a": {
+            "type": "string",
+            "nullable": true,
+            "description": "id del mensaje al que responde (si citó uno)"
+          },
+          "autor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Solo en grupos: nombre de WhatsApp de quien escribió"
+          },
+          "autor_numero": {
+            "type": "string",
+            "nullable": true,
+            "description": "Solo en grupos: número de quien escribió, si se conoce"
+          }
+        }
+      },
+      "WhatsappConversacion": {
+        "type": "object",
+        "required": [
+          "chat",
+          "numero",
+          "nombre",
+          "es_grupo",
+          "cantidad_mensajes",
+          "mensajes_cliente",
+          "primer_mensaje",
+          "ultimo_mensaje",
+          "ultimo_de",
+          "sin_respuesta",
+          "mensajes"
+        ],
+        "properties": {
+          "chat": {
+            "type": "string",
+            "description": "Id del chat en WhatsApp (…@lid, …@s.whatsapp.net o …@g.us)",
+            "example": "98689825669267@lid"
+          },
+          "numero": {
+            "type": "string",
+            "nullable": true,
+            "description": "+549… si WhatsApp lo dio; null en casi todos los @lid",
+            "example": null
+          },
+          "nombre": {
+            "type": "string",
+            "nullable": true,
+            "description": "Nombre que se puso el cliente en WhatsApp, si lo hay"
+          },
+          "es_grupo": {
+            "type": "boolean"
+          },
+          "cantidad_mensajes": {
+            "type": "integer"
+          },
+          "mensajes_cliente": {
+            "type": "integer"
+          },
+          "primer_mensaje": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ultimo_mensaje": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ultimo_de": {
+            "type": "string",
+            "enum": [
+              "cliente",
+              "neggo"
+            ]
+          },
+          "sin_respuesta": {
+            "type": "boolean",
+            "description": "El último mensaje del día es del cliente"
+          },
+          "mensajes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WhatsappMensaje"
+            }
+          }
+        }
+      },
+      "MetaConversaciones": {
+        "type": "object",
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "format": "date"
+          },
+          "desde": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "hasta": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dia_completo": {
+            "type": "boolean",
+            "description": "false si la fecha es hoy (el día todavía no terminó)"
+          },
+          "chats": {
+            "type": "integer"
+          },
+          "mensajes": {
+            "type": "integer"
+          },
+          "retencion_dias": {
+            "type": "integer",
+            "example": 7
+          },
+          "aviso": {
+            "type": "string",
+            "nullable": true,
+            "description": "Si la fecha es de hace más de 7 días, puede estar borrada"
           }
         }
       }

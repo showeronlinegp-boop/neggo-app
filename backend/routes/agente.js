@@ -9,6 +9,8 @@
 // PATCH  /api/agente/clientes/:id/seguimiento-inactivo — { ultimo_contacto, toques_enviados, proxima_accion, cerrado }
 // GET    /api/agente/clientes/cotizaciones-web?dias=30&no_contactar=false|true|todos&compro_despues=&page=&limit=
 //                                                 — carritos de la web sin confirmar, en vivo, por cliente
+// GET    /api/agente/whatsapp/conversaciones?fecha=AAAA-MM-DD&incluir_grupos=&sin_respuesta=&page=&limit=
+//                                                 — charlas del WhatsApp del negocio de un día (por defecto ayer)
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
 // POST   /api/agente/clientes/:id/envios         — { etapa | tipo_inactivo, mensaje, id_externo, productos_recomendados } RESERVA el mensaje
@@ -180,6 +182,16 @@ router.get('/clientes/cotizaciones-web', async (req, res) => {
         return sendPage(res, await agente.listarCotizacionesWeb(value));
     } catch (err) {
         return handle(res, err, 'No se pudo armar la lista de cotizaciones web');
+    }
+});
+
+router.get('/whatsapp/conversaciones', async (req, res) => {
+    const { value, errors } = v.validarQueryConversaciones(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agente.listarConversaciones(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer las conversaciones de WhatsApp');
     }
 });
 

@@ -6,6 +6,7 @@ const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
 const { DIAS_DEFAULT: COTIZACIONES_DIAS_DEFAULT } = require('./agenteCotizacionesWeb');
 const importantes = require('./agenteImportantes');
 const inactivos = require('./agenteInactivos');
+const conversaciones = require('./agenteConversaciones');
 
 const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -252,6 +253,32 @@ function validarQueryCotizacionesWeb(query = {}) {
         else value.compro_despues = b;
     }
     return { value, errors };
+}
+
+/** Query de GET whatsapp/conversaciones: fecha (por defecto ayer, en Argentina), grupos y paginación por chat. */
+function validarQueryConversaciones(query = {}, now = new Date()) {
+    const pag = validarPaginacion(query);
+    const errors = [...pag.errors];
+    const hoy = conversaciones.fechaAr(now.getTime());
+    let fecha = conversaciones.ayerAr(now);
+    if (query.fecha !== undefined && query.fecha !== '') {
+        if (!esFechaSimple(query.fecha)) errors.push({ campo: 'fecha', error: 'Tiene que ser una fecha YYYY-MM-DD' });
+        else if (query.fecha > hoy) errors.push({ campo: 'fecha', error: 'No puede ser una fecha futura' });
+        else fecha = query.fecha;
+    }
+    let incluirGrupos = false;
+    if (query.incluir_grupos !== undefined) {
+        const b = booleanoQuery(query.incluir_grupos);
+        if (b === undefined) errors.push({ campo: 'incluir_grupos', error: 'Tiene que ser true o false' });
+        else incluirGrupos = b;
+    }
+    let sinRespuesta;
+    if (query.sin_respuesta !== undefined) {
+        const b = booleanoQuery(query.sin_respuesta);
+        if (b === undefined) errors.push({ campo: 'sin_respuesta', error: 'Tiene que ser true o false' });
+        else sinRespuesta = b;
+    }
+    return { value: { fecha, hoy, incluir_grupos: incluirGrupos, sin_respuesta: sinRespuesta, ...pag.value }, errors };
 }
 
 /** Query de GET productos. */
@@ -680,6 +707,7 @@ module.exports = {
     validarQueryImportantes,
     validarQueryCotizacionesWeb,
     validarQueryProductos,
+    validarQueryConversaciones,
     validarQueryReposicion,
     validarId,
     validarSeguimiento,
