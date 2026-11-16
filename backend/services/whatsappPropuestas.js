@@ -294,7 +294,15 @@ async function ultimaPendiente(db) {
     `, [COMPANY]);
     if (!prop) return null;
     const items = Array.isArray(prop.items) ? prop.items : [];
-    const productos = await findByIds(db, COMPANY, items.map((it) => it.odoo_id));
+    // Se revalida al cargar: lo que salió o entró en cola después de que Claude armó la
+    // propuesta (por ejemplo, con otro sorteo) queda afuera para no repetirlo
+    const ids = items.map((it) => Number(it.odoo_id)).filter(Number.isInteger);
+    const { rows: libres } = ids.length ? await db.query(`
+        SELECT opc.odoo_id FROM odoo_products_cache opc
+        WHERE ${BASE_WHERE} AND ${NOT_RECENT} AND opc.odoo_id = ANY($3::int[])
+    `, [COMPANY, RECENT_DAYS, ids]) : { rows: [] };
+    const publicables = new Set(libres.map((x) => x.odoo_id));
+    const productos = (await findByIds(db, COMPANY, ids)).filter((p) => publicables.has(p.odoo_id));
     const { grupos, omitidos } = agrupar(items, productos);
     return {
         id: prop.id,
