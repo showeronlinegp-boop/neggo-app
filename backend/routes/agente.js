@@ -32,8 +32,9 @@
 // GET    /api/agente/reposicion/pendientes?proveedor=   — cola para reponer, con ventas y cantidad sugerida
 // GET    /api/agente/reposicion/encargados?proveedor=   — lo que ya se pidió y todavía no llegó
 // GET    /api/agente/reposicion/cotizaciones?proveedor= — cotizaciones con etiqueta "Pendiente" (Neggo y Preventas)
-// GET    /api/agente/leads?para_hoy=&con_respuesta_pendiente=&respondio=&etapa=&resultado=&no_contactar=&page=&limit=
-//                                                 — posibles clientes de la zona (para_hoy: la cola del día, ordenada)
+// GET    /api/agente/leads?para_hoy=&con_respuesta_pendiente=&respondio=&etapa=&resultado=&no_contactar=&origen=&page=&limit=
+//                                                 — posibles clientes de la zona y manuales (para_hoy: la cola del día, ordenada)
+// POST   /api/agente/leads?si_existe=devolver    — { contacto, telefono, nombre?, direccion?, rubro?, ciudad? } alta manual
 // GET    /api/agente/leads/:id                   — ficha en vivo con los últimos mensajes
 // POST   /api/agente/leads/:id/envios            — { etapa, mensaje, id_externo } RESERVA (presentacion | recordatorio | cierre)
 // GET    /api/agente/leads/envios/:idExterno     — estado del envío
@@ -446,12 +447,29 @@ for (const [lista, fn] of Object.entries(LISTAS_REPOSICION)) {
 
 function handleLeads(res, err, generic) {
     if (err instanceof agenteLeads.AgenteError) {
-        const body = { success: false, error: err.message, codigo: err.codigo || null };
+        const body = { success: false, error: err.message, codigo: err.codigo || null, ...(err.extra || {}) };
         if (err.details) body.details = err.details;
         return res.status(err.status).json(body);
     }
     return handle(res, err, generic);
 }
+
+// Alta manual: entra a la cola aunque esté fuera de la zona (Churn y no_contactar siguen afuera)
+router.post('/leads', async (req, res) => {
+    const q = vLeads.validarQueryAlta(req.query);
+    const b = vLeads.validarLeadNuevo(req.body);
+    const errors = [...q.errors, ...b.errors];
+    if (errors.length) return invalid(res, errors);
+    try {
+        const { data, existente, advertencias } = await agenteLeads.crearLead(b.value, q.value);
+        const body = { success: true, data };
+        if (existente) body.existente = true;
+        if (advertencias.length) body.advertencias = advertencias;
+        return res.status(existente ? 200 : 201).json(body);
+    } catch (err) {
+        return handleLeads(res, err, 'No se pudo dar de alta el posible cliente');
+    }
+});
 
 router.get('/leads', async (req, res) => {
     const { value, errors } = vLeads.validarQueryLeads(req.query);
