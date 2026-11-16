@@ -285,8 +285,9 @@ function agrupar(items, productos) {
 }
 
 // La misma propuesta se usa en el grupo/estados de WhatsApp ('whatsapp') y en Imágenes para estados
-// ('imagenes'). No se marca como usada al programar: cada pantalla saca lo que ya salió, igual que
-// su sorteo (en cola o publicado en los últimos días; en 'imagenes', también lo descargado).
+// ('imagenes'). No se marca como usada al programar: cada pantalla saca lo que ya usó en los últimos
+// días. 'whatsapp': lo que está en cola o se publicó. 'imagenes': solo lo descargado, así la misma
+// propuesta que salió al grupo sirve para armar los estados.
 const PARA = ['whatsapp', 'imagenes'];
 
 async function idsVigentes(db, ids, para) {
@@ -297,8 +298,7 @@ async function idsVigentes(db, ids, para) {
         FROM odoo_products_cache opc
         WHERE opc.company = $1
           AND opc.odoo_id = ANY($3::int[])
-          AND ${NOT_RECENT}
-          ${para === 'imagenes' ? `AND ${NOT_DOWNLOADED}` : ''}
+          AND ${para === 'imagenes' ? NOT_DOWNLOADED : NOT_RECENT}
     `, [COMPANY, RECENT_DAYS, ids]);
     const vigentes = new Set(rows.map((r) => r.odoo_id));
     return ids.filter((id) => vigentes.has(id));
