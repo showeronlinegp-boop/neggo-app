@@ -9,6 +9,7 @@ import ConfirmDialog from '../../components/common/ConfirmDialog';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
 import { defaultSchedule, odooImageUrl } from './whatsappUtils';
+import { usePropuestaClaude, BotonesPropuesta, RecuadroPropuesta, MotivoClaude } from './PropuestaClaude';
 
 // Sorteo de N fotos por categoría: se revisan, se cambian o archivan, y se programan.
 // destino: 'grupo' (default) o 'estado' — misma UI, otro número de WhatsApp.
@@ -23,10 +24,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
     const [picks, setPicks] = useState([]);
     const [busy, setBusy] = useState('');
     const [toArchive, setToArchive] = useState(null);
-    // Propuesta de Claude por temporada (nota 204, solo Neggo)
-    const [propuesta, setPropuesta] = useState(null);
-    const [cargadaId, setCargadaId] = useState(null);
-    const [esperandoHasta, setEsperandoHasta] = useState(0);
+    const prop = usePropuestaClaude({ company, para: 'whatsapp', onError, onNotice });
 
     useEffect(() => {
         api.get('/whatsapp/random-categories', { company }).then((res) => {
@@ -34,63 +32,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         });
         setSelected([]);
         setPicks([]);
-        setCargadaId(null);
     }, [company]);
-
-    async function buscarPropuesta({ silencioso = false } = {}) {
-        if (!silencioso) { setBusy('propuesta'); onError(null); }
-        const res = await api.get('/whatsapp/propuestas/ultima');
-        if (!silencioso) setBusy('');
-        if (!res.success) { if (!silencioso) onError(res.error); return null; }
-        setPropuesta(res.data || null);
-        if (!silencioso && !res.data) onNotice('Todavía no hay ninguna propuesta de Claude.');
-        return res.data || null;
-    }
-
-    useEffect(() => {
-        if (company === 'neggo') buscarPropuesta({ silencioso: true });
-        else setPropuesta(null);
-    }, [company]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Mientras Claude trabaja en la terminal, se busca la propuesta cada 15 s (hasta 20 min)
-    useEffect(() => {
-        if (company !== 'neggo' || !esperandoHasta) return undefined;
-        const desde = propuesta?.id || 0;
-        const timer = setInterval(async () => {
-            if (Date.now() > esperandoHasta) { setEsperandoHasta(0); return; }
-            const p = await buscarPropuesta({ silencioso: true });
-            if (p && p.id !== desde) {
-                setEsperandoHasta(0);
-                onNotice(`Claude dejó la propuesta «${p.titulo}» con ${p.total} fotos. Tocá «Cargar propuesta».`);
-            }
-        }, 15000);
-        return () => clearInterval(timer);
-    }, [company, esperandoHasta]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    function sugerirConClaude() {
-        onError(null);
-        // Abre Windows Terminal con Claude (tools/claude-link). El pedido es fijo: el link no lleva datos.
-        window.location.href = 'neggo-claude://whatsapp/neggo';
-        setEsperandoHasta(Date.now() + 20 * 60 * 1000);
-        onNotice('Se abre una terminal con Claude. Cuando termine, la propuesta aparece acá sola.');
-    }
-
-    function cargarPropuesta() {
-        setPicks(propuesta.grupos);
-        setCargadaId(propuesta.id);
-        onNotice(propuesta.omitidos
-            ? `Propuesta cargada. ${propuesta.omitidos} producto${propuesta.omitidos === 1 ? '' : 's'} ya no se podía${propuesta.omitidos === 1 ? '' : 'n'} publicar y quedaron afuera.`
-            : 'Propuesta cargada. Revisala y programala como siempre.');
-    }
-
-    async function descartarPropuesta() {
-        setBusy('propuesta'); onError(null);
-        const res = await api.post(`/whatsapp/propuestas/${propuesta.id}/estado`, { estado: 'descartada' });
-        setBusy('');
-        if (!res.success) { onError(res.error); return; }
-        if (cargadaId === propuesta.id) { setPicks([]); setCargadaId(null); }
-        setPropuesta(null);
-    }
 
     const shownIds = (except = null) => picks
         .filter((c) => c.category !== except)
@@ -106,7 +48,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         setBusy('');
         if (!res.success) { onError(res.error); return; }
         setPicks(res.data);
-        setCargadaId(null);
+        prop.setCargadaId(null);
         const short = res.data.filter((c) => c.products.length < Number(count));
         if (short.length) {
             onNotice(`No alcanzaron los productos nuevos en: ${short.map((c) => `${c.category} (${c.products.length})`).join(', ')}. Lo publicado en los últimos 7 días no se repite.`);
@@ -202,11 +144,10 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
             ? `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} de estados con ${total} fotos.`
             : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos.`);
         setPicks([]);
-        if (cargadaId) {
-            // La propuesta ya se usó: deja de ofrecerse (si falla no importa, solo vuelve a aparecer)
-            await api.post(`/whatsapp/propuestas/${cargadaId}/estado`, { estado: 'usada' });
-            setCargadaId(null);
-            setPropuesta(null);
+        if (prop.cargadaId) {
+            // Lo programado ya no vuelve en la propuesta; si quedó algo sin usar, se vuelve a ofrecer
+            prop.setCargadaId(null);
+            prop.buscar({ silencioso: true });
         }
         onScheduled();
     }
@@ -270,21 +211,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                 <Button variant="primary" leftIcon={<Icon.Refresh size={16} />} onClick={generate} disabled={busy === 'generate' || !selected.length}>
                     {busy === 'generate' ? 'Sorteando…' : 'Generar imágenes'}
                 </Button>
-                {company === 'neggo' && (
-                    <Button
-                        variant="accent"
-                        leftIcon={<Icon.Bot size={16} />}
-                        onClick={sugerirConClaude}
-                        title="Abre una terminal con Claude: propone qué publicar según la época del año y las ventas del año pasado"
-                    >
-                        Sugerir con Claude
-                    </Button>
-                )}
-                {company === 'neggo' && (
-                    <Button variant="ghost" leftIcon={<Icon.Search size={16} />} onClick={() => buscarPropuesta()} disabled={busy === 'propuesta'}>
-                        {esperandoHasta ? 'Esperando a Claude…' : 'Buscar propuesta'}
-                    </Button>
-                )}
+                <BotonesPropuesta prop={prop} />
                 {total > 0 && (
                     <Button
                         variant="success"
@@ -296,38 +223,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                     </Button>
                 )}
             </div>
-
-            {company === 'neggo' && propuesta && propuesta.id !== cargadaId && (
-                <div style={{
-                    marginTop: t.space[4],
-                    padding: t.space[4],
-                    borderRadius: t.radius.md,
-                    border: `1px solid ${t.color.primary}`,
-                    background: t.color.primarySoft,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: t.space[2],
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], color: t.color.primary, fontWeight: t.font.weight.semibold }}>
-                        <Icon.Bot size={16} /> Propuesta de Claude: {propuesta.titulo}
-                    </div>
-                    <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>
-                        <span style={t.numericStyle}>{propuesta.total}</span> fotos en {propuesta.grupos.length} categoría{propuesta.grupos.length === 1 ? '' : 's'}
-                        {' · '}{new Date(propuesta.created_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' })}
-                    </div>
-                    {propuesta.resumen && (
-                        <div style={{ fontSize: t.font.size.sm, color: t.color.text, whiteSpace: 'pre-line' }}>{propuesta.resumen}</div>
-                    )}
-                    <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
-                        <Button size="sm" variant="primary" onClick={cargarPropuesta} disabled={!propuesta.total}>
-                            Cargar propuesta
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={descartarPropuesta} disabled={busy === 'propuesta'}>
-                            Descartar
-                        </Button>
-                    </div>
-                </div>
-            )}
+            <RecuadroPropuesta prop={prop} onCargar={setPicks} onDescartada={() => setPicks([])} />
 
             {picks.map((c) => (
                 <div key={c.category} style={{ marginTop: t.space[8] }}>
@@ -358,11 +254,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                                 }}>
                                     <ProductThumb imageUrl={odooImageUrl(company, p.template_id)} emoji={p.name?.[0]} size={146} style={{ alignSelf: 'center' }} />
                                     <div style={{ fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.3, minHeight: 34 }}>{p.name}</div>
-                                    {p.motivo && (
-                                        <div style={{ fontSize: t.font.size.xs, color: t.color.primary, lineHeight: 1.3 }} title="Por qué lo eligió Claude">
-                                            {p.motivo}
-                                        </div>
-                                    )}
+                                    <MotivoClaude motivo={p.motivo} />
                                     <div style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{p.odoo_id}</div>
                                     <div style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text, ...t.numericStyle }}>{p.price_label}</div>
                                     {p.url ? (

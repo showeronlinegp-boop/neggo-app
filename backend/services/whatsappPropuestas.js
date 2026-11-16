@@ -3,14 +3,15 @@
 //   1. datos      → fecha, ventas por rubro en la misma época del año pasado y productos publicables
 //                   (con foto y precio, sin lo publicado hace poco) con sus ventas.
 //   2. registrar  → Claude devuelve el listado (id + motivo) y queda como propuesta PENDIENTE.
-// La pantalla /admin/whatsapp la carga en "Generar imágenes": ahí una persona la revisa, cambia lo
-// que quiera y la programa como cualquier sorteo. Acá no se programa ni se manda nada.
+// /admin/whatsapp ("Generar imágenes" del grupo y de estados) y /admin/estados ("Imágenes para
+// estados") la cargan en su sorteo: ahí una persona la revisa, cambia lo que quiera y la programa o
+// descarga como siempre. Acá no se programa ni se manda nada.
 // Solo Neggo: es la única empresa con ventas en product_sales_weekly.
 
 const fs = require('fs');
 const path = require('path');
 const { formatMoneyAR } = require('./whatsappPrice');
-const { findByIds, BASE_WHERE, NOT_RECENT, RECENT_DAYS } = require('./whatsappRandom');
+const { findByIds, BASE_WHERE, NOT_RECENT, NOT_DOWNLOADED, RECENT_DAYS } = require('./whatsappRandom');
 
 const COMPANY = 'neggo';
 const VENTANA_DIAS = 28;
@@ -283,18 +284,41 @@ function agrupar(items, productos) {
     return { grupos, omitidos };
 }
 
-async function ultimaPendiente(db) {
+// La misma propuesta se usa en el grupo/estados de WhatsApp ('whatsapp') y en Imágenes para estados
+// ('imagenes'). No se marca como usada al programar: cada pantalla saca lo que ya salió, igual que
+// su sorteo (en cola o publicado en los últimos días; en 'imagenes', también lo descargado).
+const PARA = ['whatsapp', 'imagenes'];
+
+async function idsVigentes(db, ids, para) {
+    if (!ids.length) return [];
+    if (para === 'imagenes') await require('./estadoImagenes').ensureSchema(db);
+    const { rows } = await db.query(`
+        SELECT opc.odoo_id
+        FROM odoo_products_cache opc
+        WHERE opc.company = $1
+          AND opc.odoo_id = ANY($3::int[])
+          AND ${NOT_RECENT}
+          ${para === 'imagenes' ? `AND ${NOT_DOWNLOADED}` : ''}
+    `, [COMPANY, RECENT_DAYS, ids]);
+    const vigentes = new Set(rows.map((r) => r.odoo_id));
+    return ids.filter((id) => vigentes.has(id));
+}
+
+async function ultimaPendiente(db, { para = 'whatsapp' } = {}) {
+    if (!PARA.includes(para)) throw new Error('para tiene que ser whatsapp o imagenes');
     await ensureSchema(db);
     const { rows: [prop] } = await db.query(`
         SELECT id, titulo, resumen, items, created_at
         FROM whatsapp_propuestas
         WHERE company = $1 AND estado = 'pendiente'
+          AND created_at > NOW() - ($2::int * INTERVAL '1 day')
         ORDER BY created_at DESC, id DESC
         LIMIT 1
-    `, [COMPANY]);
+    `, [COMPANY, RECENT_DAYS]);
     if (!prop) return null;
     const items = Array.isArray(prop.items) ? prop.items : [];
-    const productos = await findByIds(db, COMPANY, items.map((it) => it.odoo_id));
+    const ids = await idsVigentes(db, items.map((it) => Number(it.odoo_id)), para);
+    const productos = await findByIds(db, COMPANY, ids);
     const { grupos, omitidos } = agrupar(items, productos);
     return {
         id: prop.id,

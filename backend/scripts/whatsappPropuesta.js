@@ -43,7 +43,7 @@ async function main() {
         for (const e of r.errores) console.log(`❌ ${e}`);
         console.log(`📦 «${r.titulo || 'sin título'}»: ${r.items.length} productos`);
         if (r.errores.length) console.log('⚠️ Corregí los errores: no se guardó nada.');
-        else if (r.id) console.log(`✅ Propuesta #${r.id} guardada. Ya aparece en http://localhost/admin/whatsapp → Generar imágenes.`);
+        else if (r.id) console.log(`✅ Propuesta #${r.id} guardada. Ya aparece en /admin/whatsapp (Generar imágenes) y /admin/estados (Imágenes para estados).`);
         else console.log('⚠️ Prueba: no se guardó nada. Repetí con --aplicar.');
         return;
     }

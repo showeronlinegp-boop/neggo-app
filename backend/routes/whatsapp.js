@@ -302,15 +302,17 @@ router.post('/batches/:id/cancel', (req, res) => action(req, res, queue.cancelBa
 
 // Propuesta de Claude por temporada (nota 204, solo Neggo): la última pendiente, ya revalidada
 // y agrupada por categoría como el sorteo. null si no hay.
+// ?para=whatsapp (default) | imagenes (Imágenes para estados: también saca lo descargado)
 router.get('/propuestas/ultima', async (req, res) => {
     try {
-        return ok(res, await propuestas.ultimaPendiente(pool));
+        const para = req.query.para === 'imagenes' ? 'imagenes' : 'whatsapp';
+        return ok(res, await propuestas.ultimaPendiente(pool, { para }));
     } catch (err) {
         return fail(res, err.message, 500);
     }
 });
 
-// estado: 'usada' (se programó) o 'descartada'
+// estado: 'usada' o 'descartada' (las pantallas solo descartan)
 router.post('/propuestas/:id/estado', async (req, res) => {
     try {
         return ok(res, await propuestas.marcar(pool, req.params.id, req.body.estado));

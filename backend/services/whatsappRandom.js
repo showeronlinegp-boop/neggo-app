@@ -162,4 +162,4 @@ async function findByIds(pool, company, odooIds) {
     return attachLinks(found, company);
 }
 
-module.exports = { listCategories, pickRandom, findByIds, attachLinks, toProduct, MAX_PICK, RECENT_DAYS, BASE_WHERE, NOT_RECENT };
+module.exports = { listCategories, pickRandom, findByIds, attachLinks, toProduct, MAX_PICK, RECENT_DAYS, BASE_WHERE, NOT_RECENT, NOT_DOWNLOADED };

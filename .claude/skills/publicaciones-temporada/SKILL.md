@@ -1,6 +1,6 @@
 ---
 name: publicaciones-temporada
-description: Armar la propuesta de publicaciones de WhatsApp de Neggo según la época del año - Claude, como experto en marketing mayorista, elige qué productos publicar y en qué orden (fiestas, verano, Reyes, vuelta a clases, Día del Niño, etc.) con las ventas de la misma época del año pasado; queda precargada en /admin/whatsapp → Generar imágenes para que una persona la programe. Trigger - cuando la sesión arranca con "Propuesta de publicaciones de WhatsApp para Neggo" (botón "Sugerir con Claude"), o el usuario pide "publicaciones de temporada", "qué publico esta semana" o invoca /publicaciones-temporada.
+description: Armar la propuesta de publicaciones de WhatsApp de Neggo según la época del año - Claude, como experto en marketing mayorista, elige qué productos publicar y en qué orden (fiestas, verano, Reyes, vuelta a clases, Día del Niño, etc.) con las ventas de la misma época del año pasado; queda precargada en /admin/whatsapp (Generar imágenes) y /admin/estados (Imágenes para estados) para que una persona la programe o descargue. Trigger - cuando la sesión arranca con "Propuesta de publicaciones de WhatsApp para Neggo" (botón "Sugerir con Claude"), o el usuario pide "publicaciones de temporada", "qué publico esta semana" o invoca /publicaciones-temporada.
 ---
 
 # Publicaciones de temporada (Neggo)
@@ -80,6 +80,12 @@ en el orden en que aparecen en tu listado: poné primero lo más fuerte de la te
 ## Al terminar
 
 Decile al usuario en 3 o 4 líneas qué temporada priorizaste y por qué, cuántos productos dejaste
-y que la propuesta ya está en http://localhost/admin/whatsapp → **Generar imágenes**, botón
-**Cargar propuesta** (si no la ve, que toque **Buscar propuesta** o recargue). Ahí la revisa,
-cambia lo que quiera y la programa como cualquier sorteo.
+y que la propuesta ya está, con el botón **Cargar propuesta** (si no la ve, que toque **Buscar
+propuesta** o recargue), en:
+- http://localhost/admin/whatsapp → **Generar imágenes** (grupo y estados): la programa como
+  cualquier sorteo.
+- http://localhost/admin/estados → **Imágenes para estados**: arma las imágenes y las descarga
+  como siempre.
+
+La misma propuesta sirve para las dos. Cada pantalla saca sola lo que ya salió o se descargó en
+los últimos 7 días, y pasado ese tiempo la propuesta deja de mostrarse.
