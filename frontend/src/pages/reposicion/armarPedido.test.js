@@ -153,3 +153,21 @@ assert.equal(linkDelProducto({ url: 'https://x.com/p' }, { tipo: 'abierta', siti
 assert.equal(linkDelProducto({ url: 'https://f.com/p' }, { tipo: 'pdf', sitio: null }, 'F').texto, 'Abrir ficha');
 assert.equal(linkDelProducto(null, { tipo: 'pdf', sitio: null }, 'F'), null);
 console.log('armarPedido nota 192 ok');
+
+// Nota 218: el principal no tiene oferta vinculada → va de entrada a uno que sí la tenga
+const caroDisp = { ...caro, disponible: true, precio: 9500 };
+const sinPrincipal = item({ id: 7, standard_price: 5000, ofertas: { conviene: null, mas_economico: null, ofertas: [caroDisp] } });
+assert.equal(destinoDe(sinPrincipal), 'Caro');
+const candsSin = candidatosDe(sinPrincipal);
+assert.deepEqual(candsSin.map(c => [c.nombre, c.precio, c.sin_oferta]), [['Alif', 5000, true], ['Caro', 9500, false]]);
+// Sale en la lista de Caro y el principal queda como pestaña para mandarlo de vuelta
+assert.deepEqual(proveedoresDelPedido([sinPrincipal]).map(g => [g.nombre, g.n]), [['Caro', 1], ['Alif', 0]]);
+// Si se elige el principal a mano, se respeta
+assert.equal(destinoDe(sinPrincipal, [{ destino: 'Alif', qty: null }]), 'Alif');
+// Con oferta del principal, nada cambia
+assert.equal(destinoDe(item({ id: 8, ofertas: { conviene: null, mas_economico: null, ofertas: [alif, caroDisp] } })), 'Alif');
+assert.equal(candidatosDe(item({ id: 8, ofertas: { ofertas: [alif, caroDisp] } }))[0].sin_oferta, false);
+// Sin ninguna oferta: sigue en el principal y no dice «sin oferta vinculada»
+assert.equal(destinoDe(item({ id: 9 })), 'Alif');
+assert.equal(candidatosDe(item({ id: 9 }))[0].sin_oferta, false);
+console.log('armarPedido nota 218 ok');

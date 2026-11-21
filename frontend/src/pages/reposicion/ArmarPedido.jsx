@@ -473,9 +473,12 @@ export default function ArmarPedido({
                         const candidatos = candidatosDe(it);
                         const aca = candidatoAca(it);
                         const precio = aca?.precio ?? it.standard_price;
+                        // Vinculado a otros, pero no al principal (nota 218)
+                        const principalSinOferta = !!candidatos[0]?.sin_oferta;
                         const etiqueta = !aca || aca.es_principal
-                            ? (barata ? 'principal' : 'principal, sin más barato')
-                            : aca.mas_barato ? 'más económico' : 'otro proveedor';
+                            ? (principalSinOferta ? 'principal, sin oferta vinculada' : barata ? 'principal' : 'principal, sin más barato')
+                            : aca.mas_barato ? 'más económico'
+                                : principalSinOferta ? 'con oferta vinculada (el principal no tiene)' : 'otro proveedor';
                         // Vinculado, pero la web de este proveedor lo da sin stock
                         const noDisponible = asignado && aca && !aca.disponible;
                         const asig = asignaciones[it.id];
@@ -490,7 +493,7 @@ export default function ArmarPedido({
                         const textoCandidato = (c) => [
                             c.nombre,
                             c.precio != null ? fmtAR(c.precio) : 'sin precio',
-                            c.es_principal ? 'principal' : c.mas_barato ? 'más económico' : null,
+                            c.es_principal ? (c.sin_oferta ? 'principal, sin oferta vinculada' : 'principal') : c.mas_barato ? 'más económico' : null,
                             c.disponible ? null : 'no disponible',
                         ].filter(Boolean).join(' · ');
                         return (
