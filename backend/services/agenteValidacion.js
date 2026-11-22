@@ -312,6 +312,19 @@ function validarIdentidadChat(body) {
     return { value, errors };
 }
 
+/** Query de GET whatsapp/chats-sin-numero: page, limit, solo_prospectos (por defecto true). */
+function validarQueryChatsSinNumero(query = {}) {
+    const pag = validarPaginacion(query);
+    const errors = [...pag.errors];
+    let soloProspectos = true;
+    if (query.solo_prospectos !== undefined && query.solo_prospectos !== '') {
+        const b = booleanoQuery(query.solo_prospectos);
+        if (b === undefined) errors.push({ campo: 'solo_prospectos', error: 'Tiene que ser true o false' });
+        else soloProspectos = b;
+    }
+    return { value: { ...pag.value, solo_prospectos: soloProspectos }, errors };
+}
+
 /** Query de GET productos. */
 function validarQueryProductos(query = {}) {
     const pag = validarPaginacion(query);
@@ -725,6 +738,7 @@ function validarQueryTareas(query = {}) {
 }
 
 module.exports = {
+    validarQueryChatsSinNumero,
     LIMIT_DEFAULT,
     LIMIT_MAX,
     TEXTO_MAX,

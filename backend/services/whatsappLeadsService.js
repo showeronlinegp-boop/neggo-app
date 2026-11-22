@@ -122,7 +122,7 @@ async function registrarChats(filas, db = pool) {
                     ultimo_de_ellos_at = GREATEST(whatsapp_chat_identidad.ultimo_de_ellos_at, EXCLUDED.ultimo_de_ellos_at),
                     ultimo_nuestro_at = GREATEST(whatsapp_chat_identidad.ultimo_nuestro_at, EXCLUDED.ultimo_nuestro_at)
              RETURNING (xmax = 0) AS creado`,
-            [c.chat, numero, contacts.cleanContactName(c.nombre) || null, c.primero, c.ultimo,
+            [c.chat, numero, reglas.nombreDeChat(c.nombre), c.primero, c.ultimo,
                 c.ultimo_de_ellos || null, c.ultimo_nuestro || null],
         );
         if (r.creado) nuevos += 1;
@@ -396,6 +396,45 @@ async function vincular(db = pool) {
     return out;
 }
 
+/**
+ * Chats privados sin número (@lid), para que alguien los busque en WhatsApp Web y devuelva el número
+ * con POST /agente/whatsapp/identidades. Primero los más recientes. solo_prospectos: sin los que ya
+ * se sabe que son clientes de Odoo. Nunca los proveedores.
+ */
+async function chatsSinNumero({ page, limit, offset, solo_prospectos: soloProspectos = true }, db = pool) {
+    await ensureSchema(db);
+    const where = [`w.numero IS NULL`, `w.chat_jid LIKE '%@lid'`, `w.tipo IS DISTINCT FROM 'proveedor'`];
+    if (soloProspectos) where.push('w.odoo_partner_id IS NULL');
+    const sql = where.join(' AND ');
+    const { rows: [{ total }] } = await db.query(`SELECT COUNT(*)::int AS total FROM whatsapp_chat_identidad w WHERE ${sql}`);
+    const { rows } = await db.query(
+        `SELECT w.chat_jid, w.nombre, w.lead_id, w.odoo_partner_id, w.primer_mensaje_at, w.ultimo_mensaje_at,
+                w.ultimo_de_ellos_at, w.ultimo_nuestro_at
+           FROM whatsapp_chat_identidad w WHERE ${sql}
+          ORDER BY w.ultimo_mensaje_at DESC NULLS LAST, w.chat_jid
+          LIMIT $1 OFFSET $2`,
+        [limit, offset],
+    );
+    const hace7 = Date.now() - 7 * 86400000;
+    const data = rows.map((r) => {
+        const ellos = r.ultimo_de_ellos_at ? new Date(r.ultimo_de_ellos_at).getTime() : null;
+        const nuestro = r.ultimo_nuestro_at ? new Date(r.ultimo_nuestro_at).getTime() : null;
+        return {
+            chat: r.chat_jid,
+            nombre_whatsapp: r.nombre,
+            prospecto_id: r.lead_id,
+            cliente_id: r.odoo_partner_id,
+            primer_mensaje_at: r.primer_mensaje_at,
+            ultimo_mensaje_at: r.ultimo_mensaje_at,
+            escribio_ultimo: ellos === null && nuestro === null ? null : ((ellos || 0) >= (nuestro || 0) ? 'contacto' : 'neggo'),
+            solo_escribimos_nosotros: ellos === null && nuestro !== null,
+            // Si el último mensaje es de los últimos 7 días, la charla está en GET whatsapp/conversaciones
+            en_conversaciones: r.ultimo_mensaje_at ? new Date(r.ultimo_mensaje_at).getTime() >= hace7 : false,
+        };
+    });
+    return { data, total, page, limit };
+}
+
 /** Marca a mano un chat como proveedor (true) o como que no lo es (false). */
 async function marcarProveedorManual(chat, esProveedor, db = pool) {
     await ensureSchema(db);
@@ -618,6 +657,7 @@ async function marcarEtapa(leadId, etapa, { motivo = null, userId = null } = {},
 module.exports = {
     ensureSchema,
     registrarChats,
+    chatsSinNumero,
     vincular,
     marcarProveedorManual,
     chatsProveedores,

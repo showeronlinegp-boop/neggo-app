@@ -63,6 +63,11 @@ assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: 'Beto  Estado: LEAD NLD-23'
 assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: null, pushName: 'Kiosco Sol' }), 'Kiosco Sol');
 assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: 'Estado: NRI NLD-09', pushName: '.' }), null);
 
+assert.strictEqual(r.nombreDeChat('126835098677422'), null);
+assert.strictEqual(r.nombreDeChat('+54 9 2477'), null);
+assert.strictEqual(r.nombreDeChat('Kiosco 24'), 'Kiosco 24');
+assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: null, pushName: '126835098677422' }), null);
+
 // Candidatos para vincular a mano: primero los que comparten palabra, después los recientes
 const cands = r.ordenarCandidatos('Kiosco Sol de Rojas', [
     { chat: 'a@lid', nombre: 'Marta', ultimo_mensaje_at: '2026-11-21T10:00:00Z' },

@@ -177,7 +177,9 @@ async function asignar({ chat, cliente_id: clienteId, numero, nombre, fuente }, 
         `INSERT INTO whatsapp_chat_identidad (chat_jid, numero, nombre, odoo_partner_id, fuente, confianza, evidencia)
          VALUES ($1, $2, $3, $4, $5, 'alta', $6)
          ON CONFLICT (chat_jid) DO UPDATE
-            SET numero = EXCLUDED.numero, nombre = EXCLUDED.nombre, odoo_partner_id = EXCLUDED.odoo_partner_id,
+            SET numero = COALESCE(EXCLUDED.numero, whatsapp_chat_identidad.numero),
+                nombre = COALESCE(EXCLUDED.nombre, whatsapp_chat_identidad.nombre),
+                odoo_partner_id = COALESCE(EXCLUDED.odoo_partner_id, whatsapp_chat_identidad.odoo_partner_id),
                 fuente = EXCLUDED.fuente, confianza = 'alta',
                 evidencia = whatsapp_chat_identidad.evidencia || EXCLUDED.evidencia, updated_at = NOW()
          RETURNING *`,

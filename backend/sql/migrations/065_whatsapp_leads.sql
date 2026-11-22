@@ -45,3 +45,7 @@ BEGIN
             CHECK (phone_key IS NOT NULL OR email IS NOT NULL OR source = 'whatsapp');
     END IF;
 END $$;
+
+-- Limpieza: chats sin nombre que quedaron con el código del chat como nombre (solo dígitos)
+UPDATE whatsapp_chat_identidad SET nombre = NULL WHERE nombre ~ '^[0-9 +]+$';
+UPDATE crm_leads SET name = NULL WHERE source = 'whatsapp' AND name ~ '^[0-9 +]+$';

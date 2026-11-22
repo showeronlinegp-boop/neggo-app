@@ -74,9 +74,15 @@ function decidirVinculo(identidad, { partnerPorTelefono, leadPorTelefono }) {
     return { accion: 'nuevo_lead', phoneKey: key };
 }
 
+/** Nombre de WhatsApp usable: null si viene vacío o es solo un número (el código del chat o un teléfono). */
+function nombreDeChat(nombre) {
+    const limpio = cleanContactName(nombre);
+    return limpio && !/^[0-9 +]+$/.test(limpio) ? limpio : null;
+}
+
 /** Nombre para un posible cliente nuevo: el de la agenda o el que se puso en WhatsApp. */
 function nombreLeadNuevo({ nombreAgenda, pushName }) {
-    return cleanContactName(nombreAgenda) || cleanContactName(pushName) || null;
+    return nombreDeChat(nombreAgenda) || nombreDeChat(pushName) || null;
 }
 
 function norm(s) {
@@ -159,6 +165,7 @@ module.exports = {
     mapeosDeChats,
     decidirVinculo,
     nombreLeadNuevo,
+    nombreDeChat,
     ordenarCandidatos,
     prepararProveedores,
     proveedorPorNombre,
