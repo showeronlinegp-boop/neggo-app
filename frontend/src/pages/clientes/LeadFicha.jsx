@@ -3,6 +3,7 @@ import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import Drawer from '../../components/common/Drawer';
 import AsignarCliente from './AsignarCliente';
+import ChatsWhatsapp from './ChatsWhatsapp';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
@@ -73,7 +74,8 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                             <Badge tone={origen.tone} >{`Agenda: ${origen.label}${datos.source_list ? ` ${datos.source_list}` : ''}`}</Badge>
                         )}
                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
-                            {datos.source === 'google_contacts' ? 'Importado de los contactos' : 'Cargado a mano'} el {fmtFecha(String(datos.created_at).slice(0, 10))}
+                            {datos.source === 'google_contacts' ? 'Importado de los contactos'
+                                : datos.source === 'whatsapp' ? 'Entró por el WhatsApp del negocio' : 'Cargado a mano'} el {fmtFecha(String(datos.created_at).slice(0, 10))}
                         </span>
                         {lead && (lead.presentacion_at
                             ? <Badge tone="success">{`Presentación enviada el ${fmtDia(lead.presentacion_at)}`}</Badge>
@@ -89,6 +91,7 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                     <AsignarCliente leadId={leadId} nombre={datos ? nombreLead(datos) : null} t={t}
                         onAsignado={() => { onCambio?.(); onClose(); }} />
                 )}
+                {leadId && <ChatsWhatsapp leadId={leadId} t={t} onCambio={onCambio} />}
                 {leadId && <Seguimiento key={version} tipo="lead" id={leadId} onCambio={onCambio} />}
             </div>
         </Drawer>

@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const odooSync = require('./odooSync');
 const { syncSalesWeekly } = require('./salesWeeklySync');
 const whatsappIdentidad = require('../services/whatsappIdentidadService');
+const whatsappLeads = require('../services/whatsappLeadsService');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -46,6 +47,27 @@ async function initScheduler(pool) {
     };
     scheduledTasks.push(cron.schedule('0 19 * * *', identificarWhatsapp, TZ));
     setTimeout(identificarWhatsapp, 2 * 60 * 1000).unref();
+
+    // CRM WhatsApp (L1): cruzar los chats del negocio con posibles clientes y clientes cada 15 minutos.
+    // Solo lee evolution_negocio; una vuelta por vez.
+    let cruzandoWhatsapp = false;
+    const cruzarWhatsappLeads = async () => {
+        if (cruzandoWhatsapp) return;
+        cruzandoWhatsapp = true;
+        try {
+            const r = await whatsappLeads.cruzar();
+            if (r.clientes || r.leads || r.leads_nuevos || r.leads_a_cliente) {
+                console.log(`✅ CRM WhatsApp: ${r.leads} chat(s) con posible cliente, ${r.leads_nuevos} posible(s) cliente(s) nuevo(s), ${r.clientes} con cliente de Odoo, ${r.leads_a_cliente} posible(s) cliente(s) pasados a cliente`);
+            }
+        } catch (err) {
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error cruzando chats de WhatsApp con posibles clientes:', err.message);
+        } finally {
+            cruzandoWhatsapp = false;
+        }
+    };
+    scheduledTasks.push(cron.schedule('*/15 * * * *', cruzarWhatsappLeads, TZ));
+    setTimeout(cruzarWhatsappLeads, 3 * 60 * 1000).unref();
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {

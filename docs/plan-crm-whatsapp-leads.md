@@ -98,14 +98,25 @@ Cada parte se puede desplegar sola.
 
 Después: clientes (mismo cruce con `res.partner`, ciclo Activo → En riesgo → Inactivo), grupo y duplicados.
 
-## 5. Decisiones
+## 5. Decisiones (respuestas de Mariano, 2026-11-22)
 
-1. El backend lee la memoria del negocio en solo lectura (nunca manda nada). Cambia la regla del 14/11.
-2. Chats viejos (879 sin número): ¿consultar a WhatsApp el @lid de los 4.190 números de la agenda en tandas chicas?
-   Es una consulta, no un mensaje, pero hacerla masiva es una señal de bot. Alternativa: solo hacia adelante + vínculo manual.
-3. ¿Qué datos mínimos hacen "calificado" a un lead? Propuesta: rubro + ciudad dentro de los 150 km.
-4. ¿Desde qué número escribe Grok? Si es un teléfono aparte, ¿se suma su memoria o alcanza con lo que informa?
-5. Topes de cada etapa (tabla de la sección 2).
+1. **Sí**: el backend lee la memoria del negocio en solo lectura y nunca manda nada. **La depuración semanal de 7 días
+   se mantiene**: la app guarda solo quién es cada chat y las fechas, no el texto.
+2. **Solo hacia adelante + vínculo manual**, sin consulta masiva. Si el contenido del chat ayuda a cruzar con Odoo, se usa
+   (hoy: cotizaciones nombradas). Más adelante, un botón **Averiguar** que consulte a WhatsApp de a un número.
+   Hallazgo técnico: WhatsApp solo responde número → @lid (no al revés), y Evolution 2.3.7 no expone esa consulta: el botón
+   necesita un parche nuevo en la imagen de Evolution del negocio y reiniciar ese contenedor.
+3. **No** alcanza con rubro + ciudad para "calificado": falta definir el criterio (pendiente).
+4. Grok: alcanza con lo que ya informa a la API (`crm_bot_lead_mensajes`), que se suma como canal `grok`.
+5. Topes de cada etapa: pendiente.
+
+## Estado
+
+- **L1 hecha** (rama `objetivos/crm-whatsapp-leads`, migración 065): cruce cada 15 min, alta de posibles clientes nuevos
+  con `source = 'whatsapp'` (Grok no les escribe: 409 `escribio_al_negocio`, API 3.10.0), bloque "WhatsApp del negocio"
+  en la ficha con vínculo y desvínculo a mano. Simulación en la base real (22/11, 8 días): 148 chats privados, 106 con
+  número → 45 ya clientes por cotización, 31 clientes/proveedores de Odoo por teléfono, 15 posibles clientes existentes,
+  1 posible cliente que pasa a cliente por cotizaciones, 13 posibles clientes nuevos.
 
 ## 6. Riesgos
 

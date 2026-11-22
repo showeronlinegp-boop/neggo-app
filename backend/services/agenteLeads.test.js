@@ -31,6 +31,9 @@ test('excluidos: churn siempre, y los de fuera de zona', () => {
     assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'churn' }), 'churn');
     assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: 'nri' }), 'fuera_de_zona');
     assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'nri' }), null);
+    // Entró por el WhatsApp del negocio: lo sigue el equipo, aunque esté en zona (Churn gana)
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: null, source: 'whatsapp' }), 'escribio_al_negocio');
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'churn', source: 'whatsapp' }), 'churn');
 });
 
 // ── Cadencia ─────────────────────────────────────────────────

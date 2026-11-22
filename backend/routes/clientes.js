@@ -13,6 +13,9 @@
 // GET    /api/clientes/leads/bot      — lo que hace Grok Bot con los posibles clientes (tope del día, respuestas)
 // GET    /api/clientes/leads/:id
 // POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
+// GET    /api/clientes/leads/:id/whatsapp — chats del WhatsApp del negocio vinculados y candidatos para vincular a mano
+// POST   /api/clientes/leads/:id/whatsapp — { chat }: este chat es de este posible cliente
+// DELETE /api/clientes/leads/:id/whatsapp/:chat — saca el vínculo (no se vuelve a poner solo)
 //
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
@@ -42,6 +45,7 @@ const followups = require('../services/crmFollowupService');
 const leads = require('../services/crmLeadService');
 const botMonitor = require('../services/agenteMonitorService');
 const botLeads = require('../services/agenteLeadsService');
+const waLeads = require('../services/whatsappLeadsService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -167,6 +171,44 @@ router.post('/leads/:id/asignar', ...auth, async (req, res) => {
         return ok(res, await followups.assignLead(req.params.id, partnerId, req.user.id));
     } catch (err) {
         return handle(res, err, 'No se pudo asignar el posible cliente');
+    }
+});
+
+// ── Chats del WhatsApp del negocio (CRM WhatsApp, L1) ────────────
+
+function handleWhatsapp(res, err, generic) {
+    if (err instanceof waLeads.WhatsappLeadError) return fail(res, err.message, err.status);
+    // Sin el contenedor del WhatsApp del negocio no existe evolution_negocio
+    if (err.code === '3F000' || err.code === '42P01') return fail(res, 'El WhatsApp del negocio no está disponible', 503);
+    return handle(res, err, generic);
+}
+
+router.get('/leads/:id/whatsapp', ...auth, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const vinculados = await waLeads.chatsDeLead(id);
+        const candidatos = await waLeads.candidatosParaLead(id);
+        if (!candidatos) return fail(res, 'No encontré ese posible cliente', 404);
+        return ok(res, { vinculados, candidatos });
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudieron leer los chats de WhatsApp');
+    }
+});
+
+router.post('/leads/:id/whatsapp', ...auth, async (req, res) => {
+    try {
+        const { chat } = req.body || {};
+        return ok(res, await waLeads.vincularChat(parseInt(req.params.id, 10), chat, req.user.id));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo vincular el chat');
+    }
+});
+
+router.delete('/leads/:id/whatsapp/:chat', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.desvincularChat(req.params.id, req.params.chat));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo desvincular el chat');
     }
 });
 

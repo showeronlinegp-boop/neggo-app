@@ -232,6 +232,7 @@ Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos q
 - Solo a los celulares de la **zona**: `backend/config/leadsZona.json` (150 km de Pergamino). Va primero `prioridad_1` (Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y después `prioridad_2`. Para sumar una característica, se agrega ahí y se reinicia el backend.
 - **Nunca a los de Churn** (nos bloquearon o no quieren que los contactemos). El que le pide al bot que no le escriba **pasa a Churn**.
 - NRI = no les llegan las difusiones (no agendaron el número): entran.
+- **Nunca a los que entraron por el WhatsApp del negocio** (3.10.0, `source = 'whatsapp'`): escribieron o les escribió el equipo, así que ya los sigue una persona. No aparecen en `GET /leads` y la reserva da 409 `escribio_al_negocio`. Se cuentan en `excluidos.escribio_al_negocio` del resumen.
 - Ni a los que **ya compraron**: salen del listado y se siguen como clientes. Se cruza con la lista de Clientes en cada `GET /leads` y en vivo con Odoo (POS de Neggo) antes de cada envío. Un contacto de Odoo que nunca compró sigue como posible cliente. Tampoco a los que el equipo movió de Frío en el CRM.
 
 **Tope diario:** `AGENTE_LEADS_TOPE_DIARIO` en el `.env` (por defecto **15**; 0 apaga los envíos). Cuenta todos los mensajes de la cadencia del día, confirmados y reservas vigentes. Las respuestas de la charla no cuentan. Un pedido de más da 409 `tope_diario`.
