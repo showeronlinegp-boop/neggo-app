@@ -392,7 +392,8 @@ ON CONFLICT DO NOTHING
 // Cada producto de Preventas se atribuye a un proveedor por su código: PRE + prefijo + resto.
 // Solo se propone inactivar ('solo_odoo') si ese proveedor tiene el scraping habilitado,
 // una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días
-// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien).
+// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien;
+// con "Preventas desde Neggo", con que haya productos de Neggo leídos, nota 219).
 // En cualquier otro caso queda 'sin_fuente' y nunca se aplica nada en Odoo.
 
 const SOLO_ODOO_SQL = `
@@ -402,6 +403,15 @@ SELECT
     sx.id,
     CASE
         WHEN sx.id IS NOT NULL AND sx.va_a_preventas = false THEN 'fuera_preventas'
+        -- "Preventas desde Neggo" (nota 219): lo que vale es Neggo, no cómo terminó el scraping
+        -- de la web. Alcanza con tener productos de Neggo leídos (0 = falló Odoo: no se archiva).
+        WHEN sx.id IS NOT NULL
+             AND sx.preventas_fuente = 'neggo'
+             AND sx.scraper_key IS DISTINCT FROM 'neggo_scraper'
+             AND sx.scrape_enabled = true
+             AND EXISTS (SELECT 1 FROM supplier_products sn
+                         WHERE sn.supplier_id = sx.id AND sn.source = 'neggo')
+        THEN 'solo_odoo'
         WHEN sx.id IS NOT NULL
              AND sx.scrape_enabled = true
              AND sx.scraper_key IS NOT NULL
@@ -415,7 +425,7 @@ SELECT
     NOW()
 FROM odoo_products_cache opc
 LEFT JOIN LATERAL (
-    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas
+    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas, s.preventas_fuente
     FROM suppliers s
     WHERE UPPER(REGEXP_REPLACE(COALESCE(NULLIF(opc.internal_ref, ''), opc.ext_id_clean, ''), '[^A-Za-z0-9]', '', 'g'))
           LIKE 'PRE' || UPPER(s.prefix) || '%'
