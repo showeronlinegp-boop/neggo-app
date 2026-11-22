@@ -10,6 +10,7 @@ import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Toggle from '../../components/common/Toggle';
+import Select from '../../components/common/Select';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import FotoAmpliada from '../../components/common/FotoAmpliada';
 import MiniaturaFoto from '../../components/common/MiniaturaFoto';
@@ -32,6 +33,8 @@ export default function OdooProducts() {
     const [search, setSearch] = useState('');
     const [includeInactive, setIncludeInactive] = useState(false);
     const [sinImagen, setSinImagen] = useState(false);
+    const [categoria, setCategoria] = useState('');
+    const [categorias, setCategorias] = useState([]);
     const [page, setPage] = useState(0);
     const [products, setProducts] = useState([]);
     const [total, setTotal] = useState(0);
@@ -52,6 +55,7 @@ export default function OdooProducts() {
                 company, search: search || undefined,
                 include_inactive: includeInactive ? 'true' : 'false',
                 sin_imagen: sinImagen ? 'true' : 'false',
+                categoria: categoria || undefined,
                 limit: LIMIT, offset: page * LIMIT,
             });
             if (res.success) {
@@ -61,9 +65,32 @@ export default function OdooProducts() {
             } else setError(res.error || 'Error cargando productos');
         } catch (err) { setError(err.message); }
         finally { setLoading(false); }
-    }, [company, search, includeInactive, sinImagen, page]);
+    }, [company, search, includeInactive, sinImagen, categoria, page]);
 
     useEffect(() => { load(); }, [load]);
+
+    // Categorías de la empresa elegida (con cuántos productos hay), para el filtro
+    useEffect(() => {
+        let vivo = true;
+        api.get('/products/odoo/cache-categories', {
+            company,
+            include_inactive: includeInactive ? 'true' : 'false',
+            sin_imagen: sinImagen ? 'true' : 'false',
+        }).then(res => { if (vivo && res.success) setCategorias(res.data || []); })
+          .catch(() => { if (vivo) setCategorias([]); });
+        return () => { vivo = false; };
+    }, [company, includeInactive, sinImagen]);
+
+    const opcionesCategoria = [
+        { value: '', label: 'Todas las categorías' },
+        ...categorias.map(c => c.categ_name
+            ? { value: c.categ_name, label: `${c.categ_name} (${c.total.toLocaleString('es-AR')})` }
+            : { value: '__sin__', label: `Sin categoría (${c.total.toLocaleString('es-AR')})` }),
+    ];
+    // Si la categoría elegida no está en la otra empresa, igual se ve en el selector
+    if (categoria && !opcionesCategoria.some(o => o.value === categoria)) {
+        opcionesCategoria.push({ value: categoria, label: categoria === '__sin__' ? 'Sin categoría (0)' : `${categoria} (0)` });
+    }
 
     const reponer = async (p) => {
         setTrabajando(p.odoo_id); setError(null); setAviso(null);
@@ -219,6 +246,13 @@ export default function OdooProducts() {
                         leftIcon={<Icon.Search size={14} />}
                         style={{ flex: '1 1 240px', minWidth: 180 }}
                     />
+                    <Select
+                        value={categoria}
+                        onChange={v => { setCategoria(v); setPage(0); }}
+                        options={opcionesCategoria}
+                        placeholder="Todas las categorías"
+                        style={{ flex: isMobile ? '1 1 100%' : '0 1 260px', minWidth: 200 }}
+                    />
                     <label style={{ display: 'flex', alignItems: 'center', gap: t.space[2], fontSize: t.font.size.sm, color: t.color.textMuted, cursor: 'pointer', fontFamily: t.font.family }}>
                         <Toggle checked={includeInactive} onChange={v => { setIncludeInactive(v); setPage(0); }} size="sm" />
                         Incluir inactivos
@@ -252,7 +286,7 @@ export default function OdooProducts() {
                     <div style={{ padding: 60, textAlign: 'center', color: t.color.textFaint }}>
                         <div style={{ fontSize: 40, marginBottom: 12 }}>📦</div>
                         <div style={{ fontWeight: t.font.weight.medium, fontFamily: t.font.family, color: t.color.textMuted }}>
-                            No hay productos{sinImagen ? ' sin imagen' : ''}{search ? ' que coincidan con la búsqueda' : ''}
+                            No hay productos{sinImagen ? ' sin imagen' : ''}{categoria ? ' en esa categoría' : ''}{search ? ' que coincidan con la búsqueda' : ''}
                         </div>
                     </div>
                 ) : isMobile ? (

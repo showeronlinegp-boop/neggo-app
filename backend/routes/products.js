@@ -70,6 +70,7 @@ router.get('/odoo/sync/status', authenticate, async (req, res) => {
 //   company   — 'neggo' | 'preventas' (requerido)
 //   search    — búsqueda por nombre o referencia interna
 //   category  — filtra por categ_name (texto parcial)
+//   categoria — filtra por categ_name exacto; '__sin__' = sin categoría (Productos Odoo)
 //   estado    — 'activos' | 'archivados' | 'todos' (Vincular). Si no viene, sigue el filtro de siempre.
 //   limit     — número de resultados (default: 100, max: 500)
 //   offset    — paginación (default: 0)
@@ -80,6 +81,7 @@ router.get('/odoo', authenticate, async (req, res) => {
         company,
         search = '',
         category = '',
+        categoria = '',
         include_inactive = 'false',
         estado = '',
         sin_imagen = 'false',
@@ -136,6 +138,14 @@ router.get('/odoo', authenticate, async (req, res) => {
         if (category) {
             conditions.push(`opc.categ_name ILIKE $${paramIdx}`);
             params.push(`%${category}%`);
+            paramIdx++;
+        }
+
+        if (categoria === '__sin__') {
+            conditions.push(`COALESCE(TRIM(opc.categ_name), '') = ''`);
+        } else if (categoria) {
+            conditions.push(`opc.categ_name = $${paramIdx}`);
+            params.push(String(categoria));
             paramIdx++;
         }
 
@@ -280,6 +290,37 @@ router.patch('/odoo/:odooId/archive', authenticate, async (req, res) => {
     } catch (err) {
         console.error('❌ Error al archivar producto en Odoo:', err.message);
         fail(res, err.message, 500);
+    }
+});
+
+// =============================================
+// GET /api/products/odoo/cache-categories
+// Categorías presentes en la caché local de una empresa, con cuántos productos hay en cada una.
+// Respeta los mismos filtros que /odoo (include_inactive, sin_imagen) para que los números
+// coincidan con la tabla. categ_name '' = sin categoría.
+// =============================================
+
+router.get('/odoo/cache-categories', authenticate, async (req, res) => {
+    const { company, include_inactive = 'false', sin_imagen = 'false' } = req.query;
+    if (!company || !['neggo', 'preventas'].includes(company)) {
+        return fail(res, 'Parámetro "company" requerido: "neggo" o "preventas"');
+    }
+    try {
+        const conditions = ['company = $1', 'locally_archived = false'];
+        if (include_inactive !== 'true') conditions.push('active = true');
+        if (sin_imagen === 'true') conditions.push('has_image = false');
+        const { rows } = await pool.query(
+            `SELECT COALESCE(TRIM(categ_name), '') AS categ_name, COUNT(*)::int AS total
+               FROM odoo_products_cache
+              WHERE ${conditions.join(' AND ')}
+              GROUP BY 1
+              ORDER BY 1`,
+            [company]
+        );
+        return ok(res, rows);
+    } catch (err) {
+        console.error('❌ Error al listar categorías de la caché:', err.message);
+        return fail(res, err.message, 500);
     }
 });
 
