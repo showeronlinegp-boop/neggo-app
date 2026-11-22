@@ -40,7 +40,8 @@ async function leer(archivo, chats, refs) {
             chats.set(m.chat, c);
         }
         if (!c.numero) c.numero = reglas.mapeosDeChats([{ chat: m.chat, alt: m.chat_alt }])[0]?.numero || null;
-        if (!m.de_neggo && m.nombre && m.nombre !== '$$') c.nombre = m.nombre;
+        // El nombre que puso en WhatsApp; a veces viene el código del chat en su lugar: ese no pisa
+        if (!m.de_neggo && reglas.nombreDeChat(m.nombre)) c.nombre = m.nombre;
         c.primero = menor(c.primero, fecha);
         c.ultimo = mayor(c.ultimo, fecha);
         if (m.de_neggo) c.ultimo_nuestro = mayor(c.ultimo_nuestro, fecha);
