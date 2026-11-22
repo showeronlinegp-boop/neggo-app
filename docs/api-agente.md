@@ -290,6 +290,6 @@ WhatsApp manda casi todos los chats viejos con un código (`…@lid`) y sin el t
 
 - `GET /whatsapp/chats-sin-numero?solo_prospectos=true&page=&limit=` lista esos chats, primero los más recientes. Por defecto sin los que ya se sabe que son clientes de Odoo (`solo_prospectos=false` los incluye). Nunca trae proveedores.
 - Cada elemento: `chat` (el código), `nombre_whatsapp` (el nombre que se puso; puede ser null), `prospecto_id`, `cliente_id`, `primer_mensaje_at`, `ultimo_mensaje_at`, `escribio_ultimo` (`contacto` | `neggo`), `solo_escribimos_nosotros` y `en_conversaciones` (si es true, la charla de esos días está en `GET /whatsapp/conversaciones`).
-- Para encontrarlo en WhatsApp Web: buscá por `nombre_whatsapp` y chequeá con la fecha del último mensaje. Abrí la info del contacto: si muestra el teléfono, devolvelo.
+- Para encontrarlo en WhatsApp Web **del negocio**: poné en la lupa el número del `chat` sin el `@lid` (ej. `190525437137127`) y se abre ese chat. Chequeá con la fecha del último mensaje. Abrí la info del contacto: si muestra el teléfono, devolvelo. Casi ninguno tiene `nombre_whatsapp`: el id es la forma de buscarlo.
 - Devolver: `POST /whatsapp/identidades` con `{ "chat": "…@lid", "numero": "+5492477…" }` (o `cliente_id` si sabés qué cliente de Odoo es). Solo cambia lo que mandás: no borra el nombre ni el cliente que ya tenía. Enseguida corre el cruce: si el número es de un cliente de Odoo, el prospecto pasa a cliente; si no, el prospecto queda con su teléfono.
 - No hay que mandarle nada al contacto para esto.
