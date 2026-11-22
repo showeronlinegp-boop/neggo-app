@@ -293,3 +293,12 @@ WhatsApp manda casi todos los chats viejos con un código (`…@lid`) y sin el t
 - Para encontrarlo en WhatsApp Web **del negocio**: poné en la lupa el número del `chat` sin el `@lid` (ej. `190525437137127`) y se abre ese chat. Chequeá con la fecha del último mensaje. Abrí la info del contacto: si muestra el teléfono, devolvelo. Casi ninguno tiene `nombre_whatsapp`: el id es la forma de buscarlo.
 - Devolver: `POST /whatsapp/identidades` con `{ "chat": "…@lid", "numero": "+5492477…", "nombre": "Fernanda (despensa)" }` (o `cliente_id` si sabés qué cliente de Odoo es). Mandá lo que veas: si WhatsApp Web no muestra el teléfono, alcanza con el `nombre` (el del encabezado del chat o el de la info del contacto). Solo cambia lo que mandás: no borra el nombre ni el cliente que ya tenía. El `nombre` pasa también al prospecto de ese chat (la respuesta trae `prospecto_renombrado` con su id, o null). Enseguida corre el cruce: si el número es de un cliente de Odoo, el prospecto pasa a cliente; si no, el prospecto queda con su teléfono.
 - No hay que mandarle nada al contacto para esto.
+
+## Preguntas frecuentes (3.12.0)
+
+El equipo carga en la app (Clientes › Respuestas) las preguntas que más hacen los clientes y el mensaje que va como respuesta: mínimo de compra, horario, dónde estamos, envíos, formas de pago, etc.
+
+- `GET /respuestas` las devuelve en el orden que eligió el equipo: `id`, `pregunta`, `respuesta` (el mensaje tal cual, con sus renglones), `informar_a_todos` y `actualizado_at`. Solo las activas y con texto. Solo lectura.
+- Si te preguntan algo de eso, usá ese texto (podés adaptar el saludo, no los datos). Así el bot y el equipo dicen lo mismo.
+- `informar_a_todos: true` = objetivo de nutrición: a cada prospecto hay que contárselo aunque no pregunte.
+- Los textos cambian: leelos de nuevo cada día.

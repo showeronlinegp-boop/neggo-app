@@ -13,6 +13,7 @@
 //                                                 — charlas del WhatsApp del negocio de un día (por defecto ayer)
 // POST   /api/agente/whatsapp/identidades        — { chat, cliente_id? | numero? | nombre? } de quién es un chat
 // GET    /api/agente/whatsapp/chats-sin-numero?solo_prospectos=true&page=&limit=
+// GET    /api/agente/respuestas                  — preguntas frecuentes con el mensaje que va como respuesta
 //                                                 — chats @lid sin número para buscar en WhatsApp Web y devolver el número
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
@@ -63,6 +64,7 @@ const agenteLeads = require('../services/agenteLeadsService');
 const vLeads = require('../services/agenteLeadsValidacion');
 const waIdentidad = require('../services/whatsappIdentidadService');
 const waLeads = require('../services/whatsappLeadsService');
+const respuestas = require('../services/crmRespuestasService');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
 const SWAGGER_VERSION = '5.17.14';
@@ -211,6 +213,18 @@ router.get('/whatsapp/chats-sin-numero', async (req, res) => {
             return res.status(503).json({ success: false, error: 'El WhatsApp del negocio no está disponible', codigo: 'whatsapp_no_disponible' });
         }
         return handle(res, err, 'No se pudo armar la lista de chats sin número');
+    }
+});
+
+// Preguntas frecuentes que cargó el equipo (solo activas y con respuesta), para responder igual que ellos
+router.get('/respuestas', async (req, res) => {
+    try {
+        const data = (await respuestas.listarUsables()).map((r) => ({
+            id: r.id, pregunta: r.pregunta, respuesta: r.respuesta, informar_a_todos: r.informar_a_todos, actualizado_at: r.actualizado_at,
+        }));
+        return res.json({ success: true, data });
+    } catch (err) {
+        return handle(res, err, 'No se pudieron cargar las preguntas frecuentes');
     }
 });
 

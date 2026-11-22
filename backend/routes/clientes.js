@@ -17,6 +17,13 @@
 // POST   /api/clientes/leads/:id/whatsapp — { chat }: este chat es de este posible cliente
 // DELETE /api/clientes/leads/:id/whatsapp/:chat — saca el vínculo (no se vuelve a poner solo)
 //
+// Preguntas frecuentes y sus respuestas (066)
+// GET    /api/clientes/respuestas
+// POST   /api/clientes/respuestas            — { pregunta, respuesta?, informar_a_todos?, activa? }
+// PUT    /api/clientes/respuestas/:id        — lo mismo, solo lo que cambia
+// POST   /api/clientes/respuestas/:id/mover  — { direccion: -1 | 1 } sube o baja un lugar
+// DELETE /api/clientes/respuestas/:id
+//
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
 // GET    /api/clientes/seguimiento/:tipo/:id           — etapa, acciones pendientes e historial
@@ -46,6 +53,7 @@ const leads = require('../services/crmLeadService');
 const botMonitor = require('../services/agenteMonitorService');
 const botLeads = require('../services/agenteLeadsService');
 const waLeads = require('../services/whatsappLeadsService');
+const respuestas = require('../services/crmRespuestasService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -212,6 +220,65 @@ router.post('/leads/:id/asignar', ...auth, async (req, res) => {
 });
 
 // ── Chats del WhatsApp del negocio (CRM WhatsApp, L1) ────────────
+
+// Preguntas frecuentes y sus respuestas (066)
+function handleRespuesta(res, err, generic) {
+    if (err instanceof respuestas.RespuestaError) {
+        return res.status(err.status).json({ success: false, error: err.message, errors: err.errors || undefined });
+    }
+    return handle(res, err, generic);
+}
+
+function idDe(req) {
+    const id = Number(req.params.id);
+    return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+router.get('/respuestas', ...auth, async (req, res) => {
+    try {
+        return ok(res, await respuestas.listar());
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudieron cargar las preguntas frecuentes');
+    }
+});
+
+router.post('/respuestas', ...auth, async (req, res) => {
+    try {
+        return ok(res, await respuestas.crear(req.body, req.user.id), 201);
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo guardar la pregunta');
+    }
+});
+
+router.put('/respuestas/:id', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.editar(id, req.body, req.user.id));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo guardar la pregunta');
+    }
+});
+
+router.post('/respuestas/:id/mover', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.mover(id, Number((req.body || {}).direccion)));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo mover la pregunta');
+    }
+});
+
+router.delete('/respuestas/:id', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.borrar(id));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo borrar la pregunta');
+    }
+});
 
 function handleWhatsapp(res, err, generic) {
     if (err instanceof waLeads.WhatsappLeadError) return fail(res, err.message, err.status);
