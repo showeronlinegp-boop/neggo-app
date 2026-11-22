@@ -639,7 +639,8 @@ export default function PreventasSyncPage() {
         setRecomputing(true);
         const res = await api.post('/preventas-sync/recompute', {});
         setRecomputing(false);
-        if (res.success) { const s = res.data; showToast(`Recomputo listo: ${s.total} productos en ${s.elapsed_ms}ms`, 'success'); setPage(1); fetchData(1); setSelected(new Map()); }
+        // Corre en segundo plano (tarda un par de minutos): el chequeo de estado avisa al terminar y recarga
+        if (res.success) { setBgRecomputing(true); wasRunningRef.current = true; setSelected(new Map()); showToast('Recalculando la comparación… tarda un par de minutos, te avisamos cuando termine', 'info'); }
         else showToast(res.error || 'Error al recomputar', 'error');
     }
 
@@ -929,6 +930,24 @@ export default function PreventasSyncPage() {
                 {selected.size === 0 && archivaSinProveedor && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                         Para archivar en bloque elegí un proveedor (no se archivan todos los proveedores juntos). También podés seleccionar productos.
+                    </div>
+                )}
+                {/* Lo que no se aplica nunca, ni seleccionándolo (nota 202): que se vea sin abrir fila por fila */}
+                {selected.size === 0 && (bloque.sin_precio > 0 || bloque.sin_categoria > 0) && (
+                    <div style={{ padding: `${t.space[3]}px ${t.space[4]}px`, borderRadius: t.radius.md, background: t.color.surface2, border: `1px solid ${t.color.border}`, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.45, display: 'flex', flexDirection: 'column', gap: t.space[1] }}>
+                        {bloque.sin_precio > 0 && (
+                            <span>
+                                <strong style={t.numericStyle}>{fmtN(bloque.sin_precio)}</strong> {bloque.sin_precio === 1 ? 'producto no tiene' : 'productos no tienen'} precio del proveedor (en su web dice "Consultar precio" o viene en $0): no se {vistaDef?.key === 'crear' ? 'crean' : 'sincronizan'} hasta que el proveedor publique el precio y se vuelva a scrapear.
+                            </span>
+                        )}
+                        {bloque.sin_categoria > 0 && (
+                            <span>
+                                <strong style={t.numericStyle}>{fmtN(bloque.sin_categoria)}</strong> {bloque.sin_categoria === 1 ? 'producto no tiene' : 'productos no tienen'} categoría de Preventas: asignala en Proveedores → Categorías pendientes.
+                            </span>
+                        )}
+                        {enBloque === 0 && bloque.revision_vinculo === 0 && (
+                            <span style={{ color: t.color.textMuted, fontSize: t.font.size.xs }}>Por eso no aparece el botón para aplicar.</span>
+                        )}
                     </div>
                 )}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
