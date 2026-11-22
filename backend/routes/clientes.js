@@ -24,6 +24,18 @@
 // POST   /api/clientes/respuestas/:id/mover  — { direccion: -1 | 1 } sube o baja un lugar
 // DELETE /api/clientes/respuestas/:id
 //
+// Ficha comercial del prospecto y pantalla Contactos (067)
+// GET    /api/clientes/contactos?grupo=activos|abiertos|dormidos|sinchat&tipo=todos|prospecto|cliente&q=&solo_esperan=&limit=&offset=
+// GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
+// PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
+// PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
+// POST   /api/clientes/leads/:id/pedido           — { texto, cantidad?, product_id?, chat?, mensaje_id? }
+// PUT    /api/clientes/leads/:id/pedido/:itemId   — lo mismo, solo lo que cambia
+// DELETE /api/clientes/leads/:id/pedido/:itemId
+// GET    /api/clientes/productos-neggo?q=         — productos activos de Neggo para elegir el del pedido
+// GET    /api/clientes/leads/:id/contactos-odoo   — contactos de Odoo parecidos (para no duplicar)
+// POST   /api/clientes/leads/:id/cotizar          — { cliente_id | crear_contacto: true } cotización en borrador en Odoo
+//
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
 // GET    /api/clientes/seguimiento/:tipo/:id           — etapa, acciones pendientes e historial
@@ -54,6 +66,7 @@ const botMonitor = require('../services/agenteMonitorService');
 const botLeads = require('../services/agenteLeadsService');
 const waLeads = require('../services/whatsappLeadsService');
 const respuestas = require('../services/crmRespuestasService');
+const fichaService = require('../services/crmFichaService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -277,6 +290,96 @@ router.delete('/respuestas/:id', ...auth, async (req, res) => {
         return ok(res, await respuestas.borrar(id));
     } catch (err) {
         return handleRespuesta(res, err, 'No se pudo borrar la pregunta');
+    }
+});
+
+// Ficha comercial del prospecto y pantalla Contactos (067)
+function handleFicha(res, err, generic) {
+    if (err instanceof fichaService.FichaError) {
+        return res.status(err.status).json({ success: false, error: err.message, errors: err.errors || undefined });
+    }
+    return handle(res, err, generic);
+}
+
+router.get('/contactos', ...auth, async (req, res) => {
+    try {
+        const { tipo, grupo, q, solo_esperan: soloEsperan, limit, offset } = req.query;
+        return ok(res, await fichaService.contactos({ tipo, grupo, q, solo_esperan: soloEsperan === 'true' || soloEsperan === '1', limit, offset }));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron cargar los contactos');
+    }
+});
+
+router.get('/productos-neggo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.buscarProductos(req.query.q));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron buscar los productos');
+    }
+});
+
+router.get('/leads/:id/ficha', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.ficha(req.params.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cargar la ficha');
+    }
+});
+
+router.put('/leads/:id/perfil', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.guardarPerfil(req.params.id, req.body, req.user.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron guardar los datos');
+    }
+});
+
+router.put('/leads/:id/informado/:respuestaId', ...auth, async (req, res) => {
+    try {
+        const hecho = (req.body || {}).hecho !== false;
+        return ok(res, await fichaService.marcarInformado(req.params.id, req.params.respuestaId, hecho, req.user.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo marcar el objetivo');
+    }
+});
+
+router.post('/leads/:id/pedido', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.crearItem(req.params.id, req.body, req.user.id), 201);
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo anotar el pedido');
+    }
+});
+
+router.put('/leads/:id/pedido/:itemId', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.editarItem(req.params.id, req.params.itemId, req.body));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cambiar el pedido');
+    }
+});
+
+router.delete('/leads/:id/pedido/:itemId', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.borrarItem(req.params.id, req.params.itemId));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo borrar el pedido');
+    }
+});
+
+router.get('/leads/:id/contactos-odoo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.contactosParecidos(req.params.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron buscar los contactos de Odoo');
+    }
+});
+
+router.post('/leads/:id/cotizar', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.cotizar(req.params.id, req.body, req.user.id), 201);
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo crear la cotización en Odoo');
     }
 });
 

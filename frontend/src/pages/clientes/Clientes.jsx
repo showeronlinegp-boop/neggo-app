@@ -20,6 +20,7 @@ import EmbudoWhatsapp from './EmbudoWhatsapp';
 import BotSeguimiento from './BotSeguimiento';
 import BotLeads from './BotLeads';
 import RespuestasFrecuentes from './RespuestasFrecuentes';
+import Contactos from './Contactos';
 import {
     HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
@@ -536,6 +537,7 @@ export default function Clientes() {
                 style={{ marginBottom: t.space[6] }}
                 tabs={[
                     { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
+                    { value: 'contactos', label: 'Contactos', icon: <Icon.MessageCircle size={16} /> },
                     { value: 'leads_chat', label: 'Prospectos con WhatsApp', icon: <Icon.MessageCircle size={16} />, count: leadsTotal?.con_whatsapp ?? null },
                     { value: 'leads', label: 'Prospectos sin chat', icon: <Icon.Plus size={16} />, count: leadsTotal?.sin_whatsapp ?? null },
                     { value: 'respuestas', label: 'Preguntas frecuentes', icon: <Icon.BookOpen size={16} /> },
@@ -544,7 +546,9 @@ export default function Clientes() {
                 ]}
             />
 
-            {tab === 'leads_chat' ? (
+            {tab === 'contactos' ? (
+                <Contactos onCambio={cargarContadoresLeads} />
+            ) : tab === 'leads_chat' ? (
                 <EmbudoWhatsapp onCambio={cargarContadoresLeads} />
             ) : tab === 'leads' ? (
                 <PosiblesClientes whatsapp="sin" onResumen={(r) => setLeadsTotal(r.whatsapp || null)} />

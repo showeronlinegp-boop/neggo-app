@@ -18,7 +18,15 @@ const { linkLead } = require('./crmFollowupService');
 const { zonaDe } = require('./agenteLeads');
 const { callOdoo } = require('../config/odoo');
 
-const SCHEMA = fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', '065_whatsapp_leads.sql'), 'utf8');
+// 066 (preguntas frecuentes) y 067 (ficha del prospecto) van juntas: la ficha cuenta como uso del prospecto
+const SCHEMA = ['065_whatsapp_leads.sql', '066_crm_respuestas.sql', '067_crm_ficha_prospecto.sql']
+    .map((f) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', f), 'utf8')).join(';\n');
+// Lo que hace que un prospecto creado solo por el cruce ya no se pueda borrar: alguien lo usó
+const USO_FICHA = `
+                AND NOT EXISTS (SELECT 1 FROM crm_lead_perfil p WHERE p.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_lead_informado i WHERE i.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_lead_pedido_items it WHERE it.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_lead_cotizaciones c WHERE c.lead_id = l.id)`;
 // Los teléfonos de Odoo se releen como mucho una vez por hora
 const TTL_TELEFONOS_MS = 60 * 60 * 1000;
 // Cuántos días de mensajes se miran en cada vuelta (la depuración deja 7)
@@ -178,7 +186,7 @@ async function esLeadAutomaticoSinUso(leadId, db) {
                 AND NOT EXISTS (SELECT 1 FROM crm_actions a WHERE a.lead_id = l.id)
                 AND NOT EXISTS (SELECT 1 FROM crm_followups f WHERE f.lead_id = l.id)
                 AND NOT EXISTS (SELECT 1 FROM crm_lead_etapa_manual m WHERE m.lead_id = l.id)
-                AND NOT EXISTS (SELECT 1 FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id) AS libre
+                AND NOT EXISTS (SELECT 1 FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id)${USO_FICHA} AS libre
            FROM crm_leads l WHERE l.id = $1`,
         [leadId, reglas.SOURCE_WHATSAPP],
     );
@@ -404,7 +412,7 @@ async function vincular(db = pool) {
             AND NOT EXISTS (SELECT 1 FROM crm_events e WHERE e.lead_id = l.id)
             AND NOT EXISTS (SELECT 1 FROM crm_actions a WHERE a.lead_id = l.id)
             AND NOT EXISTS (SELECT 1 FROM crm_followups f WHERE f.lead_id = l.id)
-            AND NOT EXISTS (SELECT 1 FROM crm_lead_etapa_manual m WHERE m.lead_id = l.id)`,
+            AND NOT EXISTS (SELECT 1 FROM crm_lead_etapa_manual m WHERE m.lead_id = l.id)${USO_FICHA}`,
         [reglas.SOURCE_WHATSAPP],
     );
     out.huerfanos_borrados = huerfanos;

@@ -4,6 +4,7 @@ import { useTheme } from '../../theme/ThemeContext';
 import Drawer from '../../components/common/Drawer';
 import AsignarCliente from './AsignarCliente';
 import ChatsWhatsapp from './ChatsWhatsapp';
+import FichaComercial from './FichaComercial';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
@@ -48,7 +49,7 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
             onClose={onClose}
             title={nombreLead(datos)}
             subtitle={[datos?.city, datos?.phone, datos?.email].filter(Boolean).join(' · ') || null}
-            width={560}
+            width={760}
             footer={wa || datos?.email ? (
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: t.space[2], flex: 1, flexWrap: 'wrap' }}>
                     {datos?.email && (
@@ -87,6 +88,7 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                         Cuando compre y aparezca en Odoo con este mismo teléfono, pasa solo a Clientes con todo su seguimiento.
                     </div>
                 )}
+                {leadId && <FichaComercial key={`ficha-${version}`} leadId={leadId} telefono={datos?.phone || null} t={t} onCambio={onCambio} />}
                 {leadId && (
                     <AsignarCliente leadId={leadId} nombre={datos ? nombreLead(datos) : null} t={t}
                         onAsignado={() => { onCambio?.(); onClose(); }} />
