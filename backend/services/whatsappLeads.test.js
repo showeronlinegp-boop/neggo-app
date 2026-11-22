@@ -74,4 +74,24 @@ assert.deepStrictEqual(cands.map((c) => c.chat), ['b@lid', 'c@lid', 'd@lid', 'a@
 assert.deepStrictEqual(cands.map((c) => c.coincide), [true, true, false, false]);
 assert.strictEqual(r.ordenarCandidatos('x', [{ chat: 'a' }, { chat: 'b' }], 1).length, 1);
 
+// Proveedores por nombre del chat
+const prov = r.prepararProveedores(['ZLE', 'Impotekno', 'El Rey', 'El Rey del Sahumerio', 'Importadora Jorge', 'Pan Lin', 'El 10', 'zle', 'Chuang Yi']);
+assert.deepStrictEqual(prov.map((p) => p.palabras.join(' ')), ['zle', 'impotekno', 'rey', 'rey sahumerio', 'importadora jorge', 'pan lin', 'chuang']);
+assert.strictEqual(r.proveedorPorNombre('ZLE Store', prov), 'ZLE');
+assert.strictEqual(r.proveedorPorNombre('IMPOTEKNO ✅', prov), 'Impotekno');
+assert.strictEqual(r.proveedorPorNombre('El Rey del Sahumerio Once', prov), 'El Rey del Sahumerio');
+assert.strictEqual(r.proveedorPorNombre('Jorge', prov), null); // falta "importadora"
+assert.strictEqual(r.proveedorPorNombre('Pan', prov), null);
+assert.strictEqual(r.proveedorPorNombre('Kiosco Lin Pan', prov), 'Pan Lin');
+assert.strictEqual(r.proveedorPorNombre('Zlequi', prov), null); // palabra entera
+assert.strictEqual(r.proveedorPorNombre('El 10', prov), null);
+assert.strictEqual(r.proveedorPorNombre(null, prov), null);
+assert.strictEqual(r.proveedorPorNombre('Chuang Yi Import', prov), 'Chuang Yi');
+
+// Prospecto sin teléfono cuando llega el número
+assert.strictEqual(r.resolverLeadSinTelefono({ phoneKey: null }), null);
+assert.strictEqual(r.resolverLeadSinTelefono({ phoneKey: '2477111111', partner: { id: 1 } }), 'es_cliente');
+assert.strictEqual(r.resolverLeadSinTelefono({ phoneKey: '2477111111', otroLead: { id: 2 } }), 'es_otro_lead');
+assert.strictEqual(r.resolverLeadSinTelefono({ phoneKey: '2477111111' }), 'completar_telefono');
+
 console.log('✅ whatsappLeads: todos los tests pasaron');

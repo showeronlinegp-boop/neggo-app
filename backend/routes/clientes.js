@@ -129,6 +129,24 @@ router.get('/leads/whatsapp-embudo', ...auth, async (req, res) => {
     }
 });
 
+// Chats ocultos como proveedores y marca a mano { es: true|false }
+router.get('/leads/whatsapp-proveedores', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.chatsProveedores());
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudieron leer los proveedores de WhatsApp');
+    }
+});
+
+router.put('/whatsapp/chats/:chat/proveedor', ...auth, async (req, res) => {
+    try {
+        const { es } = req.body || {};
+        return ok(res, await waLeads.marcarProveedorManual(req.params.chat, es !== false));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo marcar el chat');
+    }
+});
+
 router.put('/leads/:id/etapa-whatsapp', ...auth, async (req, res) => {
     try {
         const { etapa, motivo } = req.body || {};

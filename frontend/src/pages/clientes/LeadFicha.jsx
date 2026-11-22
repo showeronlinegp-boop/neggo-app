@@ -91,7 +91,7 @@ export default function LeadFicha({ leadId, resumen, onClose, onCambio }) {
                     <AsignarCliente leadId={leadId} nombre={datos ? nombreLead(datos) : null} t={t}
                         onAsignado={() => { onCambio?.(); onClose(); }} />
                 )}
-                {leadId && <ChatsWhatsapp leadId={leadId} t={t} onCambio={onCambio} />}
+                {leadId && <ChatsWhatsapp leadId={leadId} t={t} onCambio={onCambio} onSacado={onClose} />}
                 {leadId && <Seguimiento key={version} tipo="lead" id={leadId} onCambio={onCambio} />}
             </div>
         </Drawer>

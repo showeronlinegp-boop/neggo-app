@@ -9,6 +9,8 @@ import * as Icon from '../../components/common/icons';
 import LeadFicha from './LeadFicha';
 import { ETAPA_TONO, haceCuanto } from './etapasWhatsappUi';
 
+const POR_COLUMNA = 30;
+
 // Prospectos (posibles clientes) que tienen chat con el WhatsApp del negocio, en columnas por etapa.
 // Cada columna dice su objetivo: cumplirlo es lo que lo pasa a la siguiente.
 export default function EmbudoWhatsapp({ onCambio }) {
@@ -18,6 +20,22 @@ export default function EmbudoWhatsapp({ onCambio }) {
     const [soloEsperan, setSoloEsperan] = useState(false);
     const [abierto, setAbierto] = useState(null);
     const huboCambios = useRef(false);
+    // Columnas abiertas completas (por defecto se ven las primeras POR_COLUMNA tarjetas)
+    const [completas, setCompletas] = useState({});
+    const [proveedores, setProveedores] = useState(null);
+    const [verProveedores, setVerProveedores] = useState(false);
+
+    const cargarProveedores = useCallback(async () => {
+        const res = await api.get('/clientes/leads/whatsapp-proveedores');
+        if (res.success) setProveedores(res.data || []);
+    }, []);
+    useEffect(() => { cargarProveedores(); }, [cargarProveedores]);
+
+    const noEsProveedor = async (chat) => {
+        const res = await api.put(`/clientes/whatsapp/chats/${encodeURIComponent(chat)}/proveedor`, { es: false });
+        if (!res.success) { setError(res.error || 'No se pudo marcar el chat'); return; }
+        setProveedores((prev) => (prev || []).filter((p) => p.chat !== chat));
+    };
 
     const cargar = useCallback(async () => {
         const res = await api.get('/clientes/leads/whatsapp-embudo');
@@ -29,7 +47,7 @@ export default function EmbudoWhatsapp({ onCambio }) {
 
     const cerrarFicha = () => {
         setAbierto(null);
-        if (huboCambios.current) { huboCambios.current = false; cargar(); onCambio?.(); }
+        if (huboCambios.current) { huboCambios.current = false; cargar(); cargarProveedores(); onCambio?.(); }
     };
 
     const columnas = (datos?.etapas || []).map((g) => ({
@@ -48,10 +66,37 @@ export default function EmbudoWhatsapp({ onCambio }) {
                         <Button size="sm" variant={soloEsperan ? 'primary' : 'secondary'} onClick={() => setSoloEsperan((v) => !v)}>
                             {`Te escribieron y esperan respuesta · ${fmtInt(datos.espera_respuesta)}`}
                         </Button>
-                        <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={14} />} onClick={cargar}>Actualizar</Button>
+                        {proveedores && proveedores.length > 0 && (
+                            <Button size="sm" variant={verProveedores ? 'primary' : 'secondary'} onClick={() => setVerProveedores((v) => !v)}>
+                                {`Proveedores ocultos · ${fmtInt(proveedores.length)}`}
+                            </Button>
+                        )}
+                        <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={14} />} onClick={() => { cargar(); cargarProveedores(); }}>Actualizar</Button>
                     </div>
                 )}
             </div>
+
+            {verProveedores && proveedores && (
+                <Card padding={false}>
+                    <div style={{ padding: `${t.space[4]}px ${t.space[6]}px`, fontSize: t.font.size.sm, color: t.color.textMuted, borderBottom: `1px solid ${t.color.border}` }}>
+                        Chats que no entran al tablero porque son de proveedores. Los nuevos se reconocen por el nombre; si alguno no es proveedor, sacalo de acá y en la próxima vuelta (15 min) entra como prospecto.
+                    </div>
+                    {proveedores.map((p, i) => (
+                        <div key={p.chat} style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], flexWrap: 'wrap',
+                            padding: `${t.space[3]}px ${t.space[6]}px`, borderTop: i ? `1px solid ${t.color.border}` : 'none',
+                        }}>
+                            <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                                <span style={{ fontSize: t.font.size.sm, color: t.color.text }}>{p.nombre || 'Sin nombre'}</span>
+                                <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>
+                                    {[p.numero, p.por === 'manual' ? 'marcado a mano' : `por el nombre (${p.proveedor})`, p.ultimo_mensaje_at ? `último mensaje ${haceCuanto(p.ultimo_mensaje_at)}` : null].filter(Boolean).join(' · ')}
+                                </span>
+                            </span>
+                            <Button size="sm" variant="ghost" onClick={() => noEsProveedor(p.chat)}>No es proveedor</Button>
+                        </div>
+                    ))}
+                </Card>
+            )}
 
             {error && <div role="alert" style={{ fontSize: t.font.size.sm, color: t.color.danger }}>{error}</div>}
             {!datos && !error && <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>Cargando…</div>}
@@ -80,7 +125,7 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                         <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Objetivo: {g.objetivo}</span>
                                     )}
                                 </div>
-                                {g.items.map((l) => (
+                                {(completas[g.id] ? g.items : g.items.slice(0, POR_COLUMNA)).map((l) => (
                                     <button key={l.id} type="button" onClick={() => setAbierto(l)} style={{
                                         textAlign: 'left', cursor: 'pointer', background: t.color.surface,
                                         border: `1px solid ${l.espera_respuesta ? t.color.accent : t.color.border}`,
@@ -91,7 +136,7 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                             {l.name || 'Sin nombre'}
                                         </span>
                                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.mono }}>
-                                            {[l.phone, l.city].filter(Boolean).join(' · ')}
+                                            {[l.phone || 'sin número', l.city].filter(Boolean).join(' · ')}
                                         </span>
                                         <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                             {l.espera_respuesta && <Badge tone="accent">{`Te escribió ${haceCuanto(l.ultimo_mensaje_at)}`}</Badge>}
@@ -103,6 +148,11 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                         </span>
                                     </button>
                                 ))}
+                                {g.items.length > POR_COLUMNA && !completas[g.id] && (
+                                    <Button size="sm" variant="ghost" onClick={() => setCompletas((c) => ({ ...c, [g.id]: true }))}>
+                                        {`Ver los ${fmtInt(g.items.length)}`}
+                                    </Button>
+                                )}
                                 {!g.items.length && <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Nadie en esta etapa</span>}
                             </div>
                         ))}

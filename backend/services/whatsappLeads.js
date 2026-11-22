@@ -100,6 +100,58 @@ function ordenarCandidatos(nombreLead, chats, limite = 20) {
         .slice(0, limite);
 }
 
+// Artículos y conectores que no identifican a un proveedor ("El Rey" → rey)
+const PALABRAS_VACIAS = new Set(['el', 'la', 'los', 'las', 'de', 'del', 'al', 'y', 'e']);
+
+function palabras(s) {
+    return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+        .replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Proveedores como listas de palabras para comparar con el nombre de un chat. Se descartan los
+ * artículos y las palabras de menos de 3 letras; un proveedor que queda sin palabras no se usa.
+ * @param {string[]} nombres
+ * @returns {Array<{ nombre: string, palabras: string[] }>}
+ */
+function prepararProveedores(nombres) {
+    const vistos = new Set();
+    const out = [];
+    for (const nombre of nombres || []) {
+        const p = palabras(nombre).filter((w) => !PALABRAS_VACIAS.has(w) && w.length >= 3);
+        const clave = p.join(' ');
+        if (!p.length || vistos.has(clave)) continue;
+        vistos.add(clave);
+        out.push({ nombre, palabras: p });
+    }
+    return out;
+}
+
+/**
+ * El proveedor cuyo nombre está completo dentro del nombre del chat ("ZLE Store" → ZLE), o null.
+ * Gana el que tiene más palabras ("El Rey del Sahumerio" antes que "El Rey").
+ */
+function proveedorPorNombre(nombreChat, proveedores) {
+    const delChat = new Set(palabras(nombreChat));
+    if (!delChat.size) return null;
+    let mejor = null;
+    for (const p of proveedores || []) {
+        if (p.palabras.every((w) => delChat.has(w)) && (!mejor || p.palabras.length > mejor.palabras.length)) mejor = p;
+    }
+    return mejor ? mejor.nombre : null;
+}
+
+/**
+ * Prospecto creado solo a partir de un chat sin teléfono, cuando WhatsApp manda el número.
+ * @returns {'es_cliente'|'es_otro_lead'|'completar_telefono'|null}
+ */
+function resolverLeadSinTelefono({ phoneKey, partner, otroLead }) {
+    if (!phoneKey) return null;
+    if (partner) return 'es_cliente';
+    if (otroLead) return 'es_otro_lead';
+    return 'completar_telefono';
+}
+
 module.exports = {
     SOURCE_WHATSAPP,
     FUENTES_FIJAS,
@@ -108,4 +160,7 @@ module.exports = {
     decidirVinculo,
     nombreLeadNuevo,
     ordenarCandidatos,
+    prepararProveedores,
+    proveedorPorNombre,
+    resolverLeadSinTelefono,
 };

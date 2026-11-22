@@ -26,3 +26,22 @@ CREATE TABLE IF NOT EXISTS crm_lead_etapa_manual (
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Qué es el chat cuando no es cliente ni prospecto: proveedor (por nombre o marcado a mano) o
+-- no_proveedor (una persona dijo que no lo es: la detección por nombre no lo vuelve a marcar)
+ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS tipo VARCHAR(20);
+-- nombre | manual
+ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS tipo_fuente VARCHAR(20);
+
+-- Prospectos que salen de un chat sin número (WhatsApp manda solo el código @lid): se identifican
+-- por el chat hasta que llegue el teléfono. Los demás siguen necesitando celular o mail.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'crm_leads_check' AND conrelid = 'crm_leads'::regclass) THEN
+        ALTER TABLE crm_leads DROP CONSTRAINT crm_leads_check;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'crm_leads_contacto_check' AND conrelid = 'crm_leads'::regclass) THEN
+        ALTER TABLE crm_leads ADD CONSTRAINT crm_leads_contacto_check
+            CHECK (phone_key IS NOT NULL OR email IS NOT NULL OR source = 'whatsapp');
+    END IF;
+END $$;

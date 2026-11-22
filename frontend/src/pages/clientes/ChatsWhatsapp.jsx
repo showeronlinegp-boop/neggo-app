@@ -13,6 +13,7 @@ const VINCULO = {
     alta_whatsapp: 'entró por WhatsApp',
     cotizacion: 'cotizaciones nombradas en el chat',
     manual: 'vinculado a mano',
+    chat_sin_numero: 'salió de su chat (WhatsApp no mandó el teléfono)',
 };
 
 // Etapa del prospecto con chat: cuál es, su objetivo y los cambios a mano (Interesado, Descartado, automático)
@@ -77,7 +78,7 @@ function EtapaWhatsapp({ leadId, etapa, t, onCambio }) {
 
 // Chats del WhatsApp del negocio de un posible cliente: los vinculados y, si falta, elegir uno a mano.
 // Los chats viejos (antes del 14/11) llegan sin número: solo se pueden vincular acá.
-export default function ChatsWhatsapp({ leadId, t, onCambio }) {
+export default function ChatsWhatsapp({ leadId, t, onCambio, onSacado }) {
     const [datos, setDatos] = useState(null);
     const [error, setError] = useState(null);
     const [eligiendo, setEligiendo] = useState(false);
@@ -114,6 +115,16 @@ export default function ChatsWhatsapp({ leadId, t, onCambio }) {
         onCambio?.();
     };
 
+    // Es proveedor: sale del tablero (si el prospecto salió solo de ese chat, se borra)
+    const esProveedor = async (chat) => {
+        setGuardando(chat);
+        const res = await api.put(`/clientes/whatsapp/chats/${encodeURIComponent(chat)}/proveedor`, { es: true });
+        setGuardando(null);
+        if (!res.success) { setError(res.error || 'No se pudo marcar como proveedor'); return; }
+        onCambio?.();
+        onSacado?.();
+    };
+
     const texto = { fontSize: t.font.size.sm, color: t.color.text };
     const suave = { fontSize: t.font.size.xs, color: t.color.textMuted };
     const fila = {
@@ -148,9 +159,14 @@ export default function ChatsWhatsapp({ leadId, t, onCambio }) {
                                     {c.ultimo_mensaje_at ? ` · último mensaje ${fmtFechaHora(c.ultimo_mensaje_at)}` : ''}
                                 </span>
                             </div>
-                            <Button size="sm" variant="ghost" disabled={guardando === c.chat} onClick={() => desvincular(c.chat)}>
-                                {guardando === c.chat ? 'Sacando…' : 'No es este'}
-                            </Button>
+                            <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                                <Button size="sm" disabled={Boolean(guardando)} onClick={() => esProveedor(c.chat)}>Es proveedor</Button>
+                                {c.vinculado_por !== 'chat_sin_numero' && (
+                                    <Button size="sm" variant="ghost" disabled={guardando === c.chat} onClick={() => desvincular(c.chat)}>
+                                        {guardando === c.chat ? 'Sacando…' : 'No es este'}
+                                    </Button>
+                                )}
+                            </div>
                         </div>
                     ))}
                 </div>

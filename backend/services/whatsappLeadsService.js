@@ -16,6 +16,7 @@ const etapas = require('./leadEtapas');
 const { readOdooPhones } = require('./crmLeadService');
 const { linkLead } = require('./crmFollowupService');
 const { zonaDe } = require('./agenteLeads');
+const { callOdoo } = require('../config/odoo');
 
 const SCHEMA = fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', '065_whatsapp_leads.sql'), 'utf8');
 // Los teléfonos de Odoo se releen como mucho una vez por hora
@@ -87,6 +88,120 @@ async function crearLeadWhatsapp({ key, nombre }, db) {
     return row;
 }
 
+/** Número propio del negocio (+549…): su chat consigo mismo no es de nadie. */
+async function numerosPropios(db) {
+    const { rows } = await db.query('SELECT "ownerJid" FROM evolution_negocio."Instance"');
+    return new Set(rows.map((r) => reglas.numeroDeJid(r.ownerJid)).filter(Boolean));
+}
+
+/**
+ * Registra (o actualiza) cada chat privado: número si hay, nombre que puso en WhatsApp y fechas del
+ * primer y último mensaje de cada lado. Nunca el texto. Sirve para la memoria reciente y para el
+ * historial de los exports JSONL.
+ * @param {Array<{ chat: string, numero?: string|null, nombre?: string|null, primero: Date, ultimo: Date,
+ *                 ultimo_de_ellos?: Date|null, ultimo_nuestro?: Date|null }>} filas
+ */
+async function registrarChats(filas, db = pool) {
+    await ensureSchema(db);
+    const propios = await numerosPropios(db);
+    let nuevos = 0;
+    for (const c of filas) {
+        if (!c.chat || !/@(lid|s\.whatsapp\.net)$/.test(c.chat)) continue;
+        const numero = c.numero || null;
+        if (numero && propios.has(numero)) continue;
+        const { rows: [r] } = await db.query(
+            `INSERT INTO whatsapp_chat_identidad
+                (chat_jid, numero, nombre, fuente, confianza, evidencia,
+                 primer_mensaje_at, ultimo_mensaje_at, ultimo_de_ellos_at, ultimo_nuestro_at)
+             VALUES ($1, $2, $3, 'chat', 'baja', '{}'::jsonb, $4, $5, $6, $7)
+             ON CONFLICT (chat_jid) DO UPDATE
+                SET numero = COALESCE(whatsapp_chat_identidad.numero, EXCLUDED.numero),
+                    nombre = COALESCE(whatsapp_chat_identidad.nombre, EXCLUDED.nombre),
+                    primer_mensaje_at = LEAST(whatsapp_chat_identidad.primer_mensaje_at, EXCLUDED.primer_mensaje_at),
+                    ultimo_mensaje_at = GREATEST(whatsapp_chat_identidad.ultimo_mensaje_at, EXCLUDED.ultimo_mensaje_at),
+                    ultimo_de_ellos_at = GREATEST(whatsapp_chat_identidad.ultimo_de_ellos_at, EXCLUDED.ultimo_de_ellos_at),
+                    ultimo_nuestro_at = GREATEST(whatsapp_chat_identidad.ultimo_nuestro_at, EXCLUDED.ultimo_nuestro_at)
+             RETURNING (xmax = 0) AS creado`,
+            [c.chat, numero, contacts.cleanContactName(c.nombre) || null, c.primero, c.ultimo,
+                c.ultimo_de_ellos || null, c.ultimo_nuestro || null],
+        );
+        if (r.creado) nuevos += 1;
+    }
+    return { nuevos };
+}
+
+// Proveedores: los de la app y los que tienen órdenes de compra en Odoo (menos los internos)
+let proveedoresCache = { at: 0, lista: null };
+async function proveedores(db) {
+    if (proveedoresCache.lista && Date.now() - proveedoresCache.at < TTL_TELEFONOS_MS) return proveedoresCache.lista;
+    const { rows } = await db.query('SELECT name, odoo_vendor_name FROM suppliers');
+    const nombres = rows.flatMap((r) => [r.name, r.odoo_vendor_name]).filter(Boolean);
+    try {
+        const grupos = await callOdoo('purchase.order', 'read_group', [[], ['partner_id'], ['partner_id']], { lazy: false });
+        const internos = new Set(await partnersInternosIds());
+        for (const g of grupos) {
+            if (Array.isArray(g.partner_id) && !internos.has(g.partner_id[0])) nombres.push(g.partner_id[1]);
+        }
+    } catch (err) {
+        console.error('⚠️ CRM WhatsApp: no se pudieron leer los proveedores de Odoo:', err.message);
+    }
+    proveedoresCache = { at: Date.now(), lista: reglas.prepararProveedores(nombres) };
+    return proveedoresCache.lista;
+}
+
+async function partnersInternosIds() {
+    const [usuarios, empresas] = await Promise.all([
+        callOdoo('res.users', 'search_read', [[['share', '=', false]]], { fields: ['partner_id'], context: { active_test: false } }),
+        callOdoo('res.company', 'search_read', [[]], { fields: ['partner_id'] }),
+    ]);
+    return [...usuarios, ...empresas].map((r) => (Array.isArray(r.partner_id) ? r.partner_id[0] : null)).filter(Boolean);
+}
+
+/**
+ * El prospecto es un cliente de Odoo. Si lo creó el cruce y nadie lo usó, se borra (no hay nada que
+ * pasar); si tiene historial, pasa al cliente con todo (linkLead).
+ */
+async function pasarACliente(leadId, partnerId, note, db) {
+    if (await esLeadAutomaticoSinUso(leadId, db)) {
+        await db.query('UPDATE whatsapp_chat_identidad SET lead_id = NULL WHERE lead_id = $1', [leadId]);
+        await db.query('DELETE FROM crm_leads WHERE id = $1', [leadId]);
+        return;
+    }
+    await linkLead(leadId, partnerId, { note });
+}
+
+/** Un prospecto que el cruce creó solo y que nadie tocó (sin historial, acciones ni etapa a mano). */
+async function esLeadAutomaticoSinUso(leadId, db) {
+    const { rows: [r] } = await db.query(
+        `SELECT l.source = $2
+                AND NOT EXISTS (SELECT 1 FROM crm_events e WHERE e.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_actions a WHERE a.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_followups f WHERE f.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_lead_etapa_manual m WHERE m.lead_id = l.id)
+                AND NOT EXISTS (SELECT 1 FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id) AS libre
+           FROM crm_leads l WHERE l.id = $1`,
+        [leadId, reglas.SOURCE_WHATSAPP],
+    );
+    return Boolean(r && r.libre);
+}
+
+/**
+ * Saca el chat del embudo como proveedor. Si su prospecto lo creó el cruce y nadie lo usó, lo borra;
+ * si no, solo lo desvincula (queda en Prospectos sin chat).
+ */
+async function marcarComoProveedor(chat, { fuente, proveedor = null }, db) {
+    const { rows: [w] } = await db.query(
+        `UPDATE whatsapp_chat_identidad
+            SET tipo = 'proveedor', tipo_fuente = $2, evidencia = evidencia || $3, updated_at = NOW()
+          WHERE chat_jid = $1 RETURNING lead_id`,
+        [chat, fuente, { proveedor: proveedor || null }],
+    );
+    if (!w || !w.lead_id) return;
+    await db.query('UPDATE whatsapp_chat_identidad SET lead_id = NULL WHERE chat_jid = $1', [chat]);
+    const { rows: [otro] } = await db.query('SELECT 1 FROM whatsapp_chat_identidad WHERE lead_id = $1 LIMIT 1', [w.lead_id]);
+    if (!otro && await esLeadAutomaticoSinUso(w.lead_id, db)) await db.query('DELETE FROM crm_leads WHERE id = $1', [w.lead_id]);
+}
+
 /**
  * Una vuelta completa del cruce. Devuelve los contadores para el log.
  * @param {{ dias?: number }} opciones
@@ -99,36 +214,55 @@ async function cruzar({ dias = DIAS_RECIENTES } = {}, db = pool) {
     // 1. Número de cada chat (lo que WhatsApp relacionó queda guardado aunque se borren los mensajes)
     const mapeos = reglas.mapeosDeChats(chats);
     await identidad.identificarPorMapeo(mapeos, db);
+    const numeroPorChat = new Map(mapeos.map((m) => [m.chat, m.numero]));
 
-    // 2. Fechas de primer y último mensaje de los chats que ya tienen identidad
-    for (const c of chats) {
-        await db.query(
-            `UPDATE whatsapp_chat_identidad
-                SET primer_mensaje_at = LEAST(COALESCE(primer_mensaje_at, $2), $2),
-                    ultimo_mensaje_at = GREATEST(COALESCE(ultimo_mensaje_at, $3), $3),
-                    ultimo_de_ellos_at = GREATEST(ultimo_de_ellos_at, $4),
-                    ultimo_nuestro_at = GREATEST(ultimo_nuestro_at, $5)
-              WHERE chat_jid = $1`,
-            [c.chat, c.primero, c.ultimo, c.ultimo_de_ellos, c.ultimo_nuestro],
-        );
-    }
+    // 2. Todos los chats privados recientes, con nombre y fechas de cada lado
+    const reg = await registrarChats(chats.map((c) => ({
+        chat: c.chat, numero: numeroPorChat.get(c.chat) || null, nombre: c.push_name,
+        primero: c.primero, ultimo: c.ultimo, ultimo_de_ellos: c.ultimo_de_ellos, ultimo_nuestro: c.ultimo_nuestro,
+    })), db);
 
-    // 3. Cruce de los que tienen número y todavía no tienen dueño (o tienen cliente y puede haber un lead)
-    const { rows: pendientes } = await db.query(
-        `SELECT chat_jid, numero, fuente, confianza, odoo_partner_id, lead_id, nombre,
-                (evidencia->>'desvinculado_lead')::int AS desvinculado_lead
-           FROM whatsapp_chat_identidad
-          WHERE numero IS NOT NULL AND lead_id IS NULL`,
+    // 3. Clientes por cotizaciones nombradas en la charla, antes de dar de alta prospectos
+    await identidad.identificarPorCotizaciones({ refsPorChat: await identidad.referenciasEnBase(desde, db) }, db);
+
+    return { chats: chats.length, chats_nuevos: reg.nuevos, con_numero: mapeos.length, ...(await vincular(db)) };
+}
+
+/**
+ * Cruce de lo que ya está registrado (sirve para la memoria reciente y para el historial importado):
+ * proveedores por nombre, chats con número contra Odoo y prospectos, prospectos sin teléfono que ya
+ * tienen número, prospectos que resultaron clientes y alta de prospectos nuevos.
+ */
+async function vincular(db = pool) {
+    await ensureSchema(db);
+    const out = { proveedores: 0, clientes: 0, leads: 0, leads_nuevos: 0, leads_sin_telefono: 0, leads_a_cliente: 0, telefonos_completados: 0 };
+
+    // a. Proveedores por el nombre del chat (o del prospecto); lo marcado a mano no se toca
+    const lista = await proveedores(db);
+    const { rows: sinTipo } = await db.query(
+        `SELECT w.chat_jid, COALESCE(w.nombre, l.name) AS nombre, l.name AS nombre_lead
+           FROM whatsapp_chat_identidad w LEFT JOIN crm_leads l ON l.id = w.lead_id
+          WHERE w.tipo IS NULL AND w.odoo_partner_id IS NULL`,
     );
-    const out = { chats: chats.length, con_numero: mapeos.length, clientes: 0, leads: 0, leads_nuevos: 0, leads_a_cliente: 0 };
-    if (!pendientes.length) return out;
+    for (const r of sinTipo) {
+        const prov = reglas.proveedorPorNombre(r.nombre, lista) || reglas.proveedorPorNombre(r.nombre_lead, lista);
+        if (!prov) continue;
+        await marcarComoProveedor(r.chat_jid, { fuente: 'nombre', proveedor: prov }, db);
+        out.proveedores += 1;
+    }
 
     const odoo = await indiceTelefonosOdoo();
     const { rows: leadRows } = await db.query(
         'SELECT id, phone_key, odoo_partner_id FROM crm_leads WHERE phone_key IS NOT NULL');
     const leadsPorKey = new Map(leadRows.map((l) => [l.phone_key, l]));
-    const pushPorChat = new Map(chats.map((c) => [c.chat, c.push_name]));
 
+    // b. Chats con número y sin prospecto
+    const { rows: pendientes } = await db.query(
+        `SELECT chat_jid, numero, fuente, confianza, odoo_partner_id, lead_id, nombre,
+                (evidencia->>'desvinculado_lead')::int AS desvinculado_lead
+           FROM whatsapp_chat_identidad
+          WHERE numero IS NOT NULL AND lead_id IS NULL AND tipo IS DISTINCT FROM 'proveedor'`,
+    );
     for (const p of pendientes) {
         const decision = reglas.decidirVinculo({
             fuente: p.fuente,
@@ -160,10 +294,7 @@ async function cruzar({ dias = DIAS_RECIENTES } = {}, db = pool) {
             );
             out.leads += 1;
         } else if (decision.accion === 'nuevo_lead') {
-            const nombre = reglas.nombreLeadNuevo({
-                nombreAgenda: await nombreDeAgenda(p.numero, db),
-                pushName: pushPorChat.get(p.chat_jid) || p.nombre,
-            });
+            const nombre = reglas.nombreLeadNuevo({ nombreAgenda: await nombreDeAgenda(p.numero, db), pushName: p.nombre });
             const lead = await crearLeadWhatsapp({ key: decision.phoneKey, nombre }, db);
             leadsPorKey.set(decision.phoneKey, { id: lead.id, phone_key: decision.phoneKey, odoo_partner_id: null });
             await db.query(
@@ -187,7 +318,113 @@ async function cruzar({ dias = DIAS_RECIENTES } = {}, db = pool) {
             out.leads_a_cliente += 1;
         }
     }
+
+    // c. Prospectos sin teléfono (salieron de un chat @lid) cuyo chat ya trae el número
+    const { rows: sinTel } = await db.query(
+        `SELECT w.chat_jid, w.numero, w.lead_id FROM whatsapp_chat_identidad w
+           JOIN crm_leads l ON l.id = w.lead_id
+          WHERE w.numero IS NOT NULL AND l.phone_key IS NULL AND l.odoo_partner_id IS NULL`,
+    );
+    for (const r of sinTel) {
+        const key = contacts.phoneKey(r.numero);
+        const partner = key ? odoo.find(key) : null;
+        const otro = key ? leadsPorKey.get(key) : null;
+        const que = reglas.resolverLeadSinTelefono({ phoneKey: key, partner, otroLead: otro && otro.id !== r.lead_id ? otro : null });
+        if (que === 'es_cliente') {
+            await pasarACliente(r.lead_id, partner.id, 'WhatsApp mandó el número de su chat y es de este cliente de Odoo: pasa de posible cliente a cliente', db);
+            await db.query('UPDATE whatsapp_chat_identidad SET odoo_partner_id = COALESCE(odoo_partner_id, $2) WHERE chat_jid = $1', [r.chat_jid, partner.id]);
+            out.leads_a_cliente += 1;
+        } else if (que === 'es_otro_lead') {
+            await db.query('UPDATE whatsapp_chat_identidad SET lead_id = $2 WHERE chat_jid = $1', [r.chat_jid, otro.id]);
+            if (await esLeadAutomaticoSinUso(r.lead_id, db)) await db.query('DELETE FROM crm_leads WHERE id = $1', [r.lead_id]);
+            out.leads += 1;
+        } else if (que === 'completar_telefono') {
+            const zona = zonaDe(key);
+            await db.query(
+                `UPDATE crm_leads SET phone = $2, phone_key = $3, city = COALESCE(city, $4) WHERE id = $1 AND phone_key IS NULL`,
+                [r.lead_id, contacts.phoneDisplay(key), key, zona ? zona.localidad : null],
+            );
+            leadsPorKey.set(key, { id: r.lead_id, phone_key: key, odoo_partner_id: null });
+            out.telefonos_completados += 1;
+        }
+    }
+
+    // d. Prospectos cuyo chat resultó ser de un cliente (cotizaciones nombradas, confianza alta o media)
+    const { rows: aCliente } = await db.query(
+        `SELECT w.lead_id, w.odoo_partner_id, w.fuente FROM whatsapp_chat_identidad w
+           JOIN crm_leads l ON l.id = w.lead_id
+          WHERE w.odoo_partner_id IS NOT NULL AND l.odoo_partner_id IS NULL
+            AND (w.confianza IN ('alta', 'media') OR w.fuente = ANY($1::text[]))`,
+        [reglas.FUENTES_FIJAS],
+    );
+    for (const r of aCliente) {
+        await pasarACliente(r.lead_id, r.odoo_partner_id, `Su chat de WhatsApp es de este cliente (${r.fuente}): pasa de posible cliente a cliente`, db);
+        out.leads_a_cliente += 1;
+    }
+
+    // e. Chats sin número y sin dueño: prospecto nuevo identificado por el chat (sin teléfono)
+    const { rows: libres } = await db.query(
+        `SELECT chat_jid, nombre FROM whatsapp_chat_identidad
+          WHERE numero IS NULL AND lead_id IS NULL AND odoo_partner_id IS NULL
+            AND tipo IS DISTINCT FROM 'proveedor' AND evidencia->>'desvinculado_lead' IS NULL`,
+    );
+    for (const r of libres) {
+        const { rows: [lead] } = await db.query(
+            `INSERT INTO crm_leads (name, source) VALUES ($1, $2) RETURNING id`,
+            [r.nombre, reglas.SOURCE_WHATSAPP],
+        );
+        await db.query(
+            `UPDATE whatsapp_chat_identidad SET lead_id = $2, evidencia = evidencia || $3, updated_at = NOW()
+              WHERE chat_jid = $1 AND lead_id IS NULL`,
+            [r.chat_jid, lead.id, { lead_por: 'chat_sin_numero' }],
+        );
+        out.leads_sin_telefono += 1;
+    }
+
+    // f. Prospectos sin teléfono que creó el cruce y quedaron sin chat (dos vueltas a la vez): se borran
+    const { rowCount: huerfanos } = await db.query(
+        `DELETE FROM crm_leads l
+          WHERE l.source = $1 AND l.phone_key IS NULL AND l.email IS NULL AND l.odoo_partner_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM whatsapp_chat_identidad w WHERE w.lead_id = l.id)
+            AND NOT EXISTS (SELECT 1 FROM crm_events e WHERE e.lead_id = l.id)
+            AND NOT EXISTS (SELECT 1 FROM crm_actions a WHERE a.lead_id = l.id)
+            AND NOT EXISTS (SELECT 1 FROM crm_followups f WHERE f.lead_id = l.id)
+            AND NOT EXISTS (SELECT 1 FROM crm_lead_etapa_manual m WHERE m.lead_id = l.id)`,
+        [reglas.SOURCE_WHATSAPP],
+    );
+    out.huerfanos_borrados = huerfanos;
     return out;
+}
+
+/** Marca a mano un chat como proveedor (true) o como que no lo es (false). */
+async function marcarProveedorManual(chat, esProveedor, db = pool) {
+    await ensureSchema(db);
+    const jid = String(chat || '').trim();
+    const { rows: [w] } = await db.query('SELECT chat_jid FROM whatsapp_chat_identidad WHERE chat_jid = $1', [jid]);
+    if (!w) throw new WhatsappLeadError('No encontré ese chat', 404);
+    if (esProveedor) {
+        await marcarComoProveedor(jid, { fuente: 'manual' }, db);
+    } else {
+        await db.query(
+            `UPDATE whatsapp_chat_identidad SET tipo = 'no_proveedor', tipo_fuente = 'manual', updated_at = NOW() WHERE chat_jid = $1`,
+            [jid],
+        );
+    }
+    return { chat: jid, proveedor: Boolean(esProveedor) };
+}
+
+/** Chats ocultos como proveedores, para revisarlos. */
+async function chatsProveedores(db = pool) {
+    await ensureSchema(db);
+    const { rows } = await db.query(
+        `SELECT chat_jid, numero, nombre, tipo_fuente, evidencia->>'proveedor' AS proveedor, ultimo_mensaje_at
+           FROM whatsapp_chat_identidad WHERE tipo = 'proveedor'
+          ORDER BY ultimo_mensaje_at DESC NULLS LAST`,
+    );
+    return rows.map((r) => ({
+        chat: r.chat_jid, numero: r.numero, nombre: r.nombre, por: r.tipo_fuente, proveedor: r.proveedor,
+        ultimo_mensaje_at: r.ultimo_mensaje_at,
+    }));
 }
 
 function formatearChat(r) {
@@ -223,8 +460,10 @@ async function candidatosParaLead(leadId, db = pool) {
     const desde = Math.floor(Date.now() / 1000) - DIAS_RECIENTES * 86400;
     const chats = await chatsRecientes(desde, db);
     const { rows: conDueno } = await db.query(
-        `SELECT chat_jid FROM whatsapp_chat_identidad
-          WHERE chat_jid = ANY($1::text[]) AND (lead_id IS NOT NULL OR odoo_partner_id IS NOT NULL)`,
+        `SELECT w.chat_jid FROM whatsapp_chat_identidad w LEFT JOIN crm_leads l ON l.id = w.lead_id
+          WHERE w.chat_jid = ANY($1::text[])
+            AND (w.odoo_partner_id IS NOT NULL OR w.tipo = 'proveedor'
+                 OR (w.lead_id IS NOT NULL AND NOT (l.source = 'whatsapp' AND l.phone_key IS NULL)))`,
         [chats.map((c) => c.chat)],
     );
     const ocupados = new Set(conDueno.map((r) => r.chat_jid));
@@ -256,7 +495,13 @@ async function vincularChat(leadId, chat, userId = null, db = pool) {
     if (lead.odoo_partner_id) throw new WhatsappLeadError('Ya pasó a cliente de Odoo', 409);
     const { rows: [actual] } = await db.query('SELECT lead_id, odoo_partner_id FROM whatsapp_chat_identidad WHERE chat_jid = $1', [jid]);
     if (actual && actual.odoo_partner_id) throw new WhatsappLeadError('Ese chat ya es de un cliente de Odoo', 409);
-    if (actual && actual.lead_id && actual.lead_id !== lead.id) throw new WhatsappLeadError('Ese chat ya está vinculado a otro posible cliente', 409);
+    // Un prospecto que el cruce creó solo desde este chat (sin teléfono ni uso) se reemplaza por este
+    const reemplaza = actual && actual.lead_id && actual.lead_id !== lead.id ? actual.lead_id : null;
+    if (reemplaza) {
+        const { rows: [prev] } = await db.query('SELECT phone_key, source FROM crm_leads WHERE id = $1', [reemplaza]);
+        const automatico = prev && prev.source === reglas.SOURCE_WHATSAPP && !prev.phone_key && await esLeadAutomaticoSinUso(reemplaza, db);
+        if (!automatico) throw new WhatsappLeadError('Ese chat ya está vinculado a otro posible cliente', 409);
+    }
     const numero = reglas.numeroDeJid(jid.endsWith('@s.whatsapp.net') ? jid : null);
     const { rows: [row] } = await db.query(
         `INSERT INTO whatsapp_chat_identidad (chat_jid, numero, nombre, lead_id, fuente, confianza, evidencia)
@@ -268,6 +513,7 @@ async function vincularChat(leadId, chat, userId = null, db = pool) {
          RETURNING *`,
         [jid, numero, lead.name, lead.id, { lead_por: 'manual', asignado_por_usuario: userId, asignado_at: new Date().toISOString() }],
     );
+    if (reemplaza) await db.query('DELETE FROM crm_leads WHERE id = $1', [reemplaza]);
     return formatearChat(row);
 }
 
@@ -292,7 +538,7 @@ async function embudo(db = pool) {
     const { rows } = await db.query(
         `SELECT l.id, l.name, l.phone, l.city, l.source, l.source_status,
                 MAX(w.ultimo_de_ellos_at) AS ultimo_de_ellos, MAX(w.ultimo_nuestro_at) AS ultimo_nuestro,
-                MAX(w.ultimo_mensaje_at) AS ultimo_chat,
+                MAX(w.ultimo_mensaje_at) AS ultimo_chat, MAX(w.nombre) AS nombre_chat, MAX(w.chat_jid) AS chat,
                 f.stage AS crm_stage, s.resultado, COALESCE(s.no_contactar, false) AS no_contactar,
                 (SELECT MAX(fecha) FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id AND b.tipo = 'recibido') AS recibido_grok,
                 (SELECT MAX(fecha) FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id AND b.tipo = 'enviado' AND b.estado = 'enviado') AS enviado_grok,
@@ -300,6 +546,7 @@ async function embudo(db = pool) {
                 m.etapa AS manual, m.motivo AS manual_motivo
            FROM crm_leads l
            JOIN whatsapp_chat_identidad w ON w.lead_id = l.id
+                AND w.tipo IS DISTINCT FROM 'proveedor' AND w.odoo_partner_id IS NULL
            LEFT JOIN crm_followups f ON f.lead_id = l.id
            LEFT JOIN crm_bot_lead_seguimiento s ON s.lead_id = l.id
            LEFT JOIN crm_lead_etapa_manual m ON m.lead_id = l.id
@@ -320,8 +567,9 @@ async function embudo(db = pool) {
         });
         return {
             id: r.id,
-            name: r.name,
+            name: r.name || r.nombre_chat,
             phone: r.phone,
+            chat: r.chat,
             city: r.city,
             entro_por_whatsapp: r.source === reglas.SOURCE_WHATSAPP,
             ...e,
@@ -369,6 +617,10 @@ async function marcarEtapa(leadId, etapa, { motivo = null, userId = null } = {},
 
 module.exports = {
     ensureSchema,
+    registrarChats,
+    vincular,
+    marcarProveedorManual,
+    chatsProveedores,
     embudo,
     etapaDeLead,
     marcarEtapa,
