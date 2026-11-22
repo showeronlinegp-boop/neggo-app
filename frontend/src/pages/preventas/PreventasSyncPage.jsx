@@ -9,6 +9,7 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
+import PendingCategoriesModal from '../suppliers/PendingCategoriesModal';
 
 // ─── Estados del sync: cómo se nombran y con qué tono se muestran ──────────────
 const ESTADO_INFO = {
@@ -364,6 +365,8 @@ export default function PreventasSyncPage() {
     const [fotosProgreso, setFotosProgreso] = useState(null);
     const [frenandoFotos, setFrenandoFotos] = useState(false);
     const [confirmarFotos, setConfirmarFotos] = useState(false);
+    // Categorías pendientes abiertas desde el aviso de lo que no se crea (nota 220)
+    const [categoriasOpen, setCategoriasOpen] = useState(false);
     const wasFotosRef = useRef(false);
     const wasRunningRef = useRef(false);
     const wasApplyingRef = useRef(false);
@@ -932,24 +935,37 @@ export default function PreventasSyncPage() {
                         Para archivar en bloque elegí un proveedor (no se archivan todos los proveedores juntos). También podés seleccionar productos.
                     </div>
                 )}
-                {/* Lo que no se aplica nunca, ni seleccionándolo (nota 202): que se vea sin abrir fila por fila */}
-                {selected.size === 0 && (bloque.sin_precio > 0 || bloque.sin_categoria > 0) && (
-                    <div style={{ padding: `${t.space[3]}px ${t.space[4]}px`, borderRadius: t.radius.md, background: t.color.surface2, border: `1px solid ${t.color.border}`, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.45, display: 'flex', flexDirection: 'column', gap: t.space[1] }}>
-                        {bloque.sin_precio > 0 && (
-                            <span>
-                                <strong style={t.numericStyle}>{fmtN(bloque.sin_precio)}</strong> {bloque.sin_precio === 1 ? 'producto no tiene' : 'productos no tienen'} precio del proveedor (en su web dice "Consultar precio" o viene en $0): no se {vistaDef?.key === 'crear' ? 'crean' : 'sincronizan'} hasta que el proveedor publique el precio y se vuelva a scrapear.
+                {/* Lo que no se aplica nunca, ni seleccionándolo (nota 202): que se vea sin abrir fila por fila.
+                    Cada motivo dice qué hacer para destrabarlo (nota 220) */}
+                {selected.size === 0 && (bloque.sin_precio > 0 || bloque.sin_categoria > 0 || bloque.sin_foto > 0) && (() => {
+                    const seCrean = vistaDef?.key === 'crear';
+                    const total = (bloque.sin_precio || 0) + (bloque.sin_categoria || 0) + (bloque.sin_foto || 0);
+                    const motivo = (n, singular, plural, queHacer, accion) => n > 0 && (
+                        <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                            <span style={{ flex: '1 1 320px' }}>
+                                <strong style={t.numericStyle}>{fmtN(n)}</strong> {n === 1 ? singular : plural}
+                                <span style={{ display: 'block', color: t.color.textMuted, fontSize: t.font.size.xs }}>{queHacer}</span>
                             </span>
-                        )}
-                        {bloque.sin_categoria > 0 && (
-                            <span>
-                                <strong style={t.numericStyle}>{fmtN(bloque.sin_categoria)}</strong> {bloque.sin_categoria === 1 ? 'producto no tiene' : 'productos no tienen'} categoría de Preventas: asignala en Proveedores → Categorías pendientes.
-                            </span>
-                        )}
-                        {enBloque === 0 && bloque.revision_vinculo === 0 && (
-                            <span style={{ color: t.color.textMuted, fontSize: t.font.size.xs }}>Por eso no aparece el botón para aplicar.</span>
-                        )}
-                    </div>
-                )}
+                            {accion}
+                        </div>
+                    );
+                    return (
+                        <div style={{ padding: `${t.space[3]}px ${t.space[4]}px`, borderRadius: t.radius.md, background: t.color.surface2, border: `1px solid ${t.color.border}`, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.45, display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+                            {enBloque === 0 && bloque.revision_vinculo === 0 && (
+                                <span style={{ fontWeight: t.font.weight.semibold }}>
+                                    Todavía no se {seCrean ? 'puede crear' : 'puede aplicar'} ninguno: a {total === 1 ? 'este le falta' : <>estos <span style={t.numericStyle}>{fmtN(total)}</span> les falta</>} algo. Por eso no aparece el botón para aplicar.
+                                </span>
+                            )}
+                            {motivo(bloque.sin_categoria, 'no tiene categoría de Preventas', 'no tienen categoría de Preventas',
+                                'Asignale la categoría a cada categoría del proveedor y vuelven a aparecer listos acá.',
+                                <Button size="sm" variant="secondary" leftIcon={<Icon.Tag size={13} />} onClick={() => setCategoriasOpen(true)}>Asignar categorías</Button>)}
+                            {motivo(bloque.sin_precio, 'no tiene precio del proveedor', 'no tienen precio del proveedor',
+                                `En su web dice "Consultar precio" o viene en $0. No se ${seCrean ? 'crean' : 'sincronizan'} hasta que el proveedor publique el precio y se vuelva a scrapear.`)}
+                            {motivo(bloque.sin_foto, 'no tiene foto', 'no tienen foto',
+                                'Ni el proveedor ni el producto de Neggo tienen foto, y sin foto no se crean. Se destraban cuando el proveedor suba la foto (y se vuelva a scrapear) o cuando el producto de Neggo tenga foto en Odoo.')}
+                        </div>
+                    );
+                })()}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                         {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, elegí en cada fila "Es este" o "No es este" (va como artículo nuevo).
@@ -1003,6 +1019,13 @@ export default function PreventasSyncPage() {
                 setIncluirCosto={setIncluirCosto}
                 onClose={() => setConfirmar(null)}
                 onConfirm={aplicarConfirmado}
+            />
+
+            <PendingCategoriesModal
+                isOpen={categoriasOpen}
+                onClose={() => setCategoriasOpen(false)}
+                onChanged={() => fetchData()}
+                initialSupplierId={supplierId || null}
             />
 
             {/* Confirmar "Subir fotos que faltan" (nota 182) */}
