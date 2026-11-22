@@ -13,6 +13,7 @@ const VentasXMayorScraper = require('./ventasxmayor');
 const ToysPalaceScraper = require('./toyspalace');
 const OdooShopScraper = require('./odooshop');
 const BlumenScraper = require('./blumen');
+const RenacerScraper = require('./renacer');
 const NeggoScraper = require('./neggoScraper');
 const ListaScraper = require('./listaScraper');
 
@@ -36,6 +37,7 @@ const SCRAPER_REGISTRY = {
     'toyspalace': ToysPalaceScraper,
     'odooshop': OdooShopScraper,
     'blumen': BlumenScraper,
+    'renacer': RenacerScraper,
     // Fuente interna: productos de Neggo (no scrapea ninguna web)
     'neggo_scraper': NeggoScraper,
     // Lista de precios en Excel que se sube en Proveedores (nota 175)

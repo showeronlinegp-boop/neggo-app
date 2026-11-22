@@ -126,4 +126,80 @@ test('validación: PATCH de lead', () => {
     assert.ok(V.validarLeadPatch({ no_contactar: true, resultado: 'interesado' }).errors.length);
 });
 
+// ── Alta manual (3.8.0) ──────────────────────────────────────
+test('origen: solo agente_manual es manual; agenda y altas de la app son agenda', () => {
+    assert.strictEqual(L.origenDe('agente_manual'), 'manual');
+    assert.strictEqual(L.origenDe('google_contacts'), 'agenda');
+    assert.strictEqual(L.origenDe('manual'), 'agenda');
+    assert.strictEqual(L.origenDe(null), 'agenda');
+});
+
+test('manual: fuera de zona no se excluye, Churn sí; los de agenda siguen igual', () => {
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: null, origen: 'manual' }), null);
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: 'churn', origen: 'manual' }), 'churn');
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: null }), 'fuera_de_zona');
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: null, origen: 'agenda' }), 'fuera_de_zona');
+});
+
+test('característica: 11, de 3 y de 4 dígitos', () => {
+    assert.strictEqual(L.caracteristicaDe('1123456789'), '11');
+    assert.strictEqual(L.caracteristicaDe('3815123456'), '381');
+    assert.strictEqual(L.caracteristicaDe('2477632211'), '2477');
+    assert.strictEqual(L.caracteristicaDe('2966123456'), '2966');
+    assert.strictEqual(L.caracteristicaDe('123'), null);
+});
+
+test('zonaLead: en el mapa igual que siempre; manual fuera del mapa = prioridad 2', () => {
+    assert.deepStrictEqual(L.zonaLead({ phoneKey: '2477632211', origen: 'manual' }), { prioridad: 1, localidad: 'Pergamino', caracteristica: '2477' });
+    assert.deepStrictEqual(L.zonaLead({ phoneKey: '3815123456', origen: 'manual', ciudad: 'Tucumán' }), { prioridad: 2, localidad: 'Tucumán', caracteristica: '381' });
+    assert.deepStrictEqual(L.zonaLead({ phoneKey: '1123456789', origen: 'manual' }), { prioridad: 2, localidad: null, caracteristica: '11' });
+    assert.strictEqual(L.zonaLead({ phoneKey: '3815123456', origen: 'agenda' }), null);
+});
+
+test('ciudad del alta: la del body gana; si no, el mapa; si no, null', () => {
+    assert.deepStrictEqual(L.ciudadAlta({ ciudad: null, phoneKey: '2477632211' }), { ciudad: 'Pergamino', inferida: true });
+    assert.deepStrictEqual(L.ciudadAlta({ ciudad: 'Rojas', phoneKey: '2477632211' }), { ciudad: 'Rojas', inferida: true });
+    assert.deepStrictEqual(L.ciudadAlta({ ciudad: null, phoneKey: '3415123456' }), { ciudad: 'Rosario', inferida: true });
+    assert.deepStrictEqual(L.ciudadAlta({ ciudad: null, phoneKey: '1123456789' }), { ciudad: null, inferida: false });
+});
+
+test('cola: un manual fuera del mapa va con las presentaciones de prioridad 2', () => {
+    const base = { toca_hoy: 'presentacion', estado_agenda: null, nombre: 'x' };
+    const cola = [
+        { ...base, id: 3, zona: { prioridad: 2 } },
+        { ...base, id: 2, zona: { prioridad: 1 } },
+        { ...base, id: 1, toca_hoy: 'recordatorio', desde: '2026-11-01', zona: { prioridad: 2 } },
+    ].sort(L.compararCola);
+    assert.deepStrictEqual(cola.map((x) => x.id), [1, 2, 3]);
+});
+
+test('validación: alta manual normaliza el celular y completa nombre con contacto', () => {
+    const ok = V.validarLeadNuevo({ contacto: 'Lucía Fernández', nombre: 'Bazar Lucía', telefono: '02477 15-632211', direccion: 'Alem 1200', rubro: 'Bazar' });
+    assert.deepStrictEqual(ok.errors, []);
+    assert.strictEqual(ok.value.phone_key, '2477632211');
+    assert.strictEqual(ok.value.nombre, 'Bazar Lucía');
+    assert.strictEqual(ok.value.ciudad, null);
+    const sinNombre = V.validarLeadNuevo({ contacto: 'Lucía', telefono: '+54 9 2477 63-2211' });
+    assert.strictEqual(sinNombre.value.nombre, 'Lucía');
+    assert.strictEqual(sinNombre.value.phone_key, '2477632211');
+});
+
+test('validación: alta manual rechaza teléfono inválido, U+FFFD y campos de más', () => {
+    assert.strictEqual(V.validarLeadNuevo({ contacto: 'X', telefono: '1234' }).errors[0].campo, 'telefono');
+    assert.strictEqual(V.validarLeadNuevo({ contacto: 'Luc�a', telefono: '2477632211' }).errors[0].campo, 'contacto');
+    const extra = V.validarLeadNuevo({ contacto: 'X', telefono: '2477632211', origen: 'agenda', etapa: 'cierre' });
+    assert.deepStrictEqual(extra.errors.map((e) => e.campo).sort(), ['etapa', 'origen']);
+    assert.deepStrictEqual(V.validarLeadNuevo({ telefono: '2477632211' }).errors.map((e) => e.campo), ['contacto']);
+    assert.strictEqual(V.validarLeadNuevo({ contacto: 'X', telefono: '2477632211', rubro: 'r'.repeat(101) }).errors[0].campo, 'rubro');
+    assert.strictEqual(V.validarLeadNuevo([]).errors[0].campo, 'body');
+});
+
+test('validación: si_existe y origen en los query', () => {
+    assert.strictEqual(V.validarQueryAlta({}).value.devolverExistente, false);
+    assert.strictEqual(V.validarQueryAlta({ si_existe: 'devolver' }).value.devolverExistente, true);
+    assert.strictEqual(V.validarQueryAlta({ si_existe: 'pisar' }).errors[0].campo, 'si_existe');
+    assert.strictEqual(V.validarQueryLeads({ origen: 'manual' }).value.origen, 'manual');
+    assert.strictEqual(V.validarQueryLeads({ origen: 'web' }).errors[0].campo, 'origen');
+});
+
 console.log(`\n✅ ${n} tests de leads OK`);
