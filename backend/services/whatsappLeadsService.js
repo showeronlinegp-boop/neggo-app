@@ -450,6 +450,24 @@ async function chatsSinNumero({ page, limit, offset, solo_prospectos: soloProspe
     return { data, total, page, limit };
 }
 
+/**
+ * El nombre que mandó una persona o el agente para un chat pasa al prospecto de ese chat, aunque ya
+ * tuviera uno (el de WhatsApp suele ser un apodo). Solo prospectos que salieron del WhatsApp: los de
+ * listas o cargados a mano conservan su nombre. Devuelve el id del prospecto renombrado o null.
+ */
+async function nombrarLeadDelChat(chat, nombre, db = pool) {
+    const limpio = reglas.nombreDeChat(nombre);
+    if (!limpio) return null;
+    const { rows } = await db.query(
+        `UPDATE crm_leads l SET name = $2
+           FROM whatsapp_chat_identidad w
+          WHERE w.chat_jid = $1 AND w.lead_id = l.id AND l.source = $3 AND l.name IS DISTINCT FROM $2
+          RETURNING l.id`,
+        [chat, limpio, reglas.SOURCE_WHATSAPP],
+    );
+    return rows[0] ? rows[0].id : null;
+}
+
 /** Marca a mano un chat como proveedor (true) o como que no lo es (false). */
 async function marcarProveedorManual(chat, esProveedor, db = pool) {
     await ensureSchema(db);
@@ -675,6 +693,7 @@ module.exports = {
     chatsSinNumero,
     vincular,
     marcarProveedorManual,
+    nombrarLeadDelChat,
     chatsProveedores,
     embudo,
     etapaDeLead,

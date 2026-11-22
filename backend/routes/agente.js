@@ -220,6 +220,8 @@ router.post('/whatsapp/identidades', async (req, res) => {
     try {
         const data = await waIdentidad.asignar({ ...value, fuente: 'agente' });
         if (!data) return res.status(404).json({ success: false, error: 'No existe ese cliente en Odoo', codigo: 'no_encontrado' });
+        // El nombre que vio en WhatsApp Web queda también en el prospecto de ese chat
+        data.prospecto_renombrado = value.nombre ? await waLeads.nombrarLeadDelChat(value.chat, value.nombre) : null;
         // CRM WhatsApp: con el número o el cliente nuevo, el prospecto se completa o pasa a cliente ya
         waLeads.vincular().catch((err) => console.error('❌ CRM WhatsApp: cruce después de identidades:', err.message));
         return res.json({ success: true, data });
