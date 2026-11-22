@@ -170,6 +170,11 @@ async function listLeads(f = {}) {
     if (f.presentacion === 'sin') where.push(`NOT ${PRESENTACION_EXISTS}`);
     else if (f.presentacion === 'con') where.push(PRESENTACION_EXISTS);
     if (f.celular) where.push('l.phone IS NOT NULL');
+    // CRM WhatsApp: con o sin chat con el WhatsApp del negocio
+    if (f.whatsapp === 'sin' || f.whatsapp === 'con') {
+        await require('./whatsappLeadsService').ensureSchema();
+        where.push(`${f.whatsapp === 'sin' ? 'NOT ' : ''}EXISTS (SELECT 1 FROM whatsapp_chat_identidad w WHERE w.lead_id = l.id)`);
+    }
 
     const whereSql = where.join(' AND ');
     const limit = Math.min(Math.max(parseInt(f.limit, 10) || 50, 1), 200);
@@ -203,7 +208,14 @@ async function leadsSummary() {
         `SELECT COUNT(*) FILTER (WHERE ${PRESENTACION_EXISTS})::int AS con,
                 COUNT(*) FILTER (WHERE NOT ${PRESENTACION_EXISTS})::int AS sin
          FROM crm_leads l WHERE l.odoo_partner_id IS NULL`);
+    // CRM WhatsApp: prospectos con y sin chat con el WhatsApp del negocio
+    await require('./whatsappLeadsService').ensureSchema();
+    const CON_CHAT = 'EXISTS (SELECT 1 FROM whatsapp_chat_identidad w WHERE w.lead_id = l.id)';
+    const { rows: [wa] } = await pool.query(
+        `SELECT COUNT(*) FILTER (WHERE ${CON_CHAT})::int AS con, COUNT(*) FILTER (WHERE NOT ${CON_CHAT})::int AS sin
+         FROM crm_leads l WHERE l.odoo_partner_id IS NULL`);
     return {
+        whatsapp: { con_whatsapp: wa.con, sin_whatsapp: wa.sin },
         presentacion: { con: pres.con, sin: pres.sin },
         total: byStatus.reduce((s, r) => s + r.n, 0),
         status: Object.fromEntries(byStatus.map((r) => [r.status, r.n])),

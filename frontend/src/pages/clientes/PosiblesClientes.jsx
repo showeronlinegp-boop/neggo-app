@@ -168,7 +168,8 @@ function FilaLead({ l, onAbrir, onPresentada, isMobile, t }) {
     );
 }
 
-export default function PosiblesClientes({ onResumen }) {
+// whatsapp: 'sin' = solo los que no tienen chat con el WhatsApp del negocio (los que tienen chat van al embudo)
+export default function PosiblesClientes({ onResumen, whatsapp }) {
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
     const [resumen, setResumen] = useState(null);
@@ -196,8 +197,8 @@ export default function PosiblesClientes({ onResumen }) {
     // Filtros de la lista que también usa la cola de presentaciones
     const filtrosCola = useMemo(() => ({
         search: busqueda || undefined, status: status || undefined, stage: stage || undefined,
-        city: city || undefined, sort,
-    }), [busqueda, status, stage, city, sort]);
+        city: city || undefined, sort, whatsapp: whatsapp || undefined,
+    }), [busqueda, status, stage, city, sort, whatsapp]);
     const filtros = useCallback((offset) => ({
         ...filtrosCola, presentacion: presentacion || undefined, limit: PAGE, offset,
     }), [filtrosCola, presentacion]);

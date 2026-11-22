@@ -12,6 +12,7 @@ const pool = require('../config/database');
 const contacts = require('./crmContacts');
 const identidad = require('./whatsappIdentidadService');
 const reglas = require('./whatsappLeads');
+const etapas = require('./leadEtapas');
 const { readOdooPhones } = require('./crmLeadService');
 const { linkLead } = require('./crmFollowupService');
 const { zonaDe } = require('./agenteLeads');
@@ -50,6 +51,8 @@ async function chatsRecientes(desde, db = pool) {
                 MAX(m."key"->>'remoteJidAlt') AS alt,
                 to_timestamp(MIN(m."messageTimestamp")) AS primero,
                 to_timestamp(MAX(m."messageTimestamp")) AS ultimo,
+                to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE NOT COALESCE((m."key"->>'fromMe')::boolean, false))) AS ultimo_de_ellos,
+                to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE COALESCE((m."key"->>'fromMe')::boolean, false))) AS ultimo_nuestro,
                 (ARRAY_AGG(NULLIF(m."pushName", '') ORDER BY m."messageTimestamp" DESC)
                     FILTER (WHERE NOT COALESCE((m."key"->>'fromMe')::boolean, false) AND NULLIF(m."pushName", '') IS NOT NULL))[1] AS push_name
            FROM evolution_negocio."Message" m
@@ -102,9 +105,11 @@ async function cruzar({ dias = DIAS_RECIENTES } = {}, db = pool) {
         await db.query(
             `UPDATE whatsapp_chat_identidad
                 SET primer_mensaje_at = LEAST(COALESCE(primer_mensaje_at, $2), $2),
-                    ultimo_mensaje_at = GREATEST(COALESCE(ultimo_mensaje_at, $3), $3)
+                    ultimo_mensaje_at = GREATEST(COALESCE(ultimo_mensaje_at, $3), $3),
+                    ultimo_de_ellos_at = GREATEST(ultimo_de_ellos_at, $4),
+                    ultimo_nuestro_at = GREATEST(ultimo_nuestro_at, $5)
               WHERE chat_jid = $1`,
-            [c.chat, c.primero, c.ultimo],
+            [c.chat, c.primero, c.ultimo, c.ultimo_de_ellos, c.ultimo_nuestro],
         );
     }
 
@@ -279,8 +284,94 @@ async function desvincularChat(leadId, chat, db = pool) {
     return { desvinculado: true };
 }
 
+// ── Etapas de los posibles clientes con chat (L3 provisoria) ─────
+
+/** Posibles clientes con chat de WhatsApp, cada uno con su etapa, agrupados como embudo. */
+async function embudo(db = pool) {
+    await ensureSchema(db);
+    const { rows } = await db.query(
+        `SELECT l.id, l.name, l.phone, l.city, l.source, l.source_status,
+                MAX(w.ultimo_de_ellos_at) AS ultimo_de_ellos, MAX(w.ultimo_nuestro_at) AS ultimo_nuestro,
+                MAX(w.ultimo_mensaje_at) AS ultimo_chat,
+                f.stage AS crm_stage, s.resultado, COALESCE(s.no_contactar, false) AS no_contactar,
+                (SELECT MAX(fecha) FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id AND b.tipo = 'recibido') AS recibido_grok,
+                (SELECT MAX(fecha) FROM crm_bot_lead_mensajes b WHERE b.lead_id = l.id AND b.tipo = 'enviado' AND b.estado = 'enviado') AS enviado_grok,
+                (SELECT MAX(e.created_at) FROM crm_events e WHERE e.lead_id = l.id AND e.kind = 'presentacion') AS presentacion,
+                m.etapa AS manual, m.motivo AS manual_motivo
+           FROM crm_leads l
+           JOIN whatsapp_chat_identidad w ON w.lead_id = l.id
+           LEFT JOIN crm_followups f ON f.lead_id = l.id
+           LEFT JOIN crm_bot_lead_seguimiento s ON s.lead_id = l.id
+           LEFT JOIN crm_lead_etapa_manual m ON m.lead_id = l.id
+          WHERE l.odoo_partner_id IS NULL
+          GROUP BY l.id, f.stage, s.resultado, s.no_contactar, m.etapa, m.motivo`,
+    );
+    const items = rows.map((r) => {
+        const e = etapas.calcularEtapa({
+            manual: r.manual,
+            churn: r.source_status === 'churn',
+            noContactar: r.no_contactar,
+            descartadoCrm: r.crm_stage === 'descartado',
+            resultadoGrok: r.resultado,
+            ultimoDeEllos: r.ultimo_de_ellos,
+            ultimoNuestro: r.ultimo_nuestro,
+            ultimoRecibidoGrok: r.recibido_grok,
+            ultimoEnviadoGrok: r.enviado_grok || r.presentacion,
+        });
+        return {
+            id: r.id,
+            name: r.name,
+            phone: r.phone,
+            city: r.city,
+            entro_por_whatsapp: r.source === reglas.SOURCE_WHATSAPP,
+            ...e,
+            ultimo_mensaje_at: e.ultimo_mensaje_at ? new Date(e.ultimo_mensaje_at).toISOString() : (r.ultimo_chat || null),
+            motivo: r.manual ? r.manual_motivo : null,
+        };
+    });
+    const grupos = etapas.agruparPorEtapa(items).map((g) => ({
+        id: g.id, label: g.label, objetivo: g.objetivo, total: g.items.length, items: g.items,
+    }));
+    return { total: items.length, espera_respuesta: items.filter((i) => i.espera_respuesta).length, etapas: grupos };
+}
+
+/** Etapa de un posible cliente: la del embudo si tiene chat, o null. */
+async function etapaDeLead(leadId, db = pool) {
+    const { etapas: grupos } = await embudo(db);
+    for (const g of grupos) {
+        const it = g.items.find((i) => i.id === leadId);
+        if (it) return { ...it, label: g.label, objetivo: g.objetivo };
+    }
+    return null;
+}
+
+/** Marca a mano la etapa (contactado, conversando, interesado o descartado) o la vuelve a automática (null). */
+async function marcarEtapa(leadId, etapa, { motivo = null, userId = null } = {}, db = pool) {
+    await ensureSchema(db);
+    const id = parseInt(leadId, 10);
+    const { rows: [lead] } = await db.query('SELECT id FROM crm_leads WHERE id = $1', [id]);
+    if (!lead) throw new WhatsappLeadError('No encontré ese posible cliente', 404);
+    if (etapa === null || etapa === 'automatica') {
+        await db.query('DELETE FROM crm_lead_etapa_manual WHERE lead_id = $1', [id]);
+        return etapaDeLead(id, db);
+    }
+    if (!etapas.MANUALES.includes(etapa)) throw new WhatsappLeadError('Esa etapa no se puede marcar a mano');
+    const texto = String(motivo || '').trim().slice(0, 200) || null;
+    if (etapa === 'descartado' && !texto) throw new WhatsappLeadError('Poné por qué lo descartás');
+    await db.query(
+        `INSERT INTO crm_lead_etapa_manual (lead_id, etapa, motivo, changed_by) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (lead_id) DO UPDATE SET etapa = EXCLUDED.etapa, motivo = EXCLUDED.motivo,
+                changed_by = EXCLUDED.changed_by, updated_at = NOW()`,
+        [id, etapa, texto, userId],
+    );
+    return etapaDeLead(id, db);
+}
+
 module.exports = {
     ensureSchema,
+    embudo,
+    etapaDeLead,
+    marcarEtapa,
     cruzar,
     chatsDeLead,
     candidatosParaLead,

@@ -11,3 +11,18 @@ ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS primer_mensaje_at T
 ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS ultimo_mensaje_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_whatsapp_chat_identidad_lead ON whatsapp_chat_identidad (lead_id);
+
+-- Último mensaje de cada lado: para saber si la conversación espera respuesta nuestra (L2)
+ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS ultimo_de_ellos_at TIMESTAMPTZ;
+ALTER TABLE whatsapp_chat_identidad ADD COLUMN IF NOT EXISTS ultimo_nuestro_at TIMESTAMPTZ;
+
+-- Etapa que marcó una persona (gana sobre la automática hasta volver a automático). Ver leadEtapas.js
+CREATE TABLE IF NOT EXISTS crm_lead_etapa_manual (
+    lead_id INTEGER PRIMARY KEY REFERENCES crm_leads(id) ON DELETE CASCADE,
+    -- contactado | conversando | interesado | descartado
+    etapa VARCHAR(20) NOT NULL,
+    motivo VARCHAR(200),
+    changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);

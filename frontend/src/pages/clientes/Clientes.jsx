@@ -16,6 +16,7 @@ import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
 import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
+import EmbudoWhatsapp from './EmbudoWhatsapp';
 import BotSeguimiento from './BotSeguimiento';
 import BotLeads from './BotLeads';
 import {
@@ -406,10 +407,11 @@ export default function Clientes() {
 
     useEffect(() => () => clearTimeout(pollRef.current), []);
 
-    // Cantidad de posibles clientes para la pestaña
-    useEffect(() => {
-        api.get('/clientes/leads/resumen').then((res) => { if (res.success) setLeadsTotal(res.data.total); });
+    // Cantidad de prospectos con y sin chat de WhatsApp para las pestañas
+    const cargarContadoresLeads = useCallback(() => {
+        api.get('/clientes/leads/resumen').then((res) => { if (res.success) setLeadsTotal(res.data.whatsapp || null); });
     }, []);
+    useEffect(() => { cargarContadoresLeads(); }, [cargarContadoresLeads]);
 
     // Al terminar un sync que estaba corriendo, recarga la lista
     const prevSync = useRef(false);
@@ -533,14 +535,17 @@ export default function Clientes() {
                 style={{ marginBottom: t.space[6] }}
                 tabs={[
                     { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
-                    { value: 'leads', label: 'Posibles clientes', icon: <Icon.Plus size={16} />, count: leadsTotal },
+                    { value: 'leads_chat', label: 'Prospectos con WhatsApp', icon: <Icon.MessageCircle size={16} />, count: leadsTotal?.con_whatsapp ?? null },
+                    { value: 'leads', label: 'Prospectos sin chat', icon: <Icon.Plus size={16} />, count: leadsTotal?.sin_whatsapp ?? null },
                     { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
                     { value: 'bot_leads', label: 'Bot de leads', icon: <Icon.MessageCircle size={16} /> },
                 ]}
             />
 
-            {tab === 'leads' ? (
-                <PosiblesClientes onResumen={(r) => setLeadsTotal(r.total)} />
+            {tab === 'leads_chat' ? (
+                <EmbudoWhatsapp onCambio={cargarContadoresLeads} />
+            ) : tab === 'leads' ? (
+                <PosiblesClientes whatsapp="sin" onResumen={(r) => setLeadsTotal(r.whatsapp || null)} />
             ) : tab === 'bot_leads' ? (
                 <BotLeads />
             ) : tab === 'bot' ? (

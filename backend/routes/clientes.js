@@ -109,6 +109,7 @@ router.get('/leads', ...auth, async (req, res) => {
             city: req.query.city,
             presentacion: req.query.presentacion,
             celular: req.query.celular === '1' || req.query.celular === 'true',
+            whatsapp: req.query.whatsapp,
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -116,6 +117,24 @@ router.get('/leads', ...auth, async (req, res) => {
         return paginated(res, rows, total, limit, offset);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar la lista de posibles clientes');
+    }
+});
+
+// Posibles clientes con chat de WhatsApp, cada uno con su etapa (embudo)
+router.get('/leads/whatsapp-embudo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.embudo());
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo armar el embudo de WhatsApp');
+    }
+});
+
+router.put('/leads/:id/etapa-whatsapp', ...auth, async (req, res) => {
+    try {
+        const { etapa, motivo } = req.body || {};
+        return ok(res, await waLeads.marcarEtapa(req.params.id, etapa ?? null, { motivo, userId: req.user.id }));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo cambiar la etapa');
     }
 });
 
@@ -189,7 +208,8 @@ router.get('/leads/:id/whatsapp', ...auth, async (req, res) => {
         const vinculados = await waLeads.chatsDeLead(id);
         const candidatos = await waLeads.candidatosParaLead(id);
         if (!candidatos) return fail(res, 'No encontré ese posible cliente', 404);
-        return ok(res, { vinculados, candidatos });
+        const etapa = vinculados.length ? await waLeads.etapaDeLead(id) : null;
+        return ok(res, { vinculados, candidatos, etapa });
     } catch (err) {
         return handleWhatsapp(res, err, 'No se pudieron leer los chats de WhatsApp');
     }
