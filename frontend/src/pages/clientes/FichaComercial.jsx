@@ -31,7 +31,7 @@ const LOCAL = [
 ];
 const FUENTE_INFORMADO = { manual: 'lo marcó una persona', chat: 'se lo mandamos por el chat', bot: 'se lo mandó Grok' };
 
-export default function FichaComercial({ leadId, telefono, t, onCambio }) {
+export default function FichaComercial({ leadId, telefono, t, onCambio, sinCharla = false }) {
     const { showToast } = useToast();
     const [datos, setDatos] = useState(null);
     const [error, setError] = useState(null);
@@ -55,7 +55,7 @@ export default function FichaComercial({ leadId, telefono, t, onCambio }) {
             <Objetivos datos={datos} leadId={leadId} telefono={telefono} t={t} showToast={showToast} onCambio={cambio} />
             <Resumen datos={datos} leadId={leadId} t={t} showToast={showToast} onCambio={cambio} />
             <Pedido datos={datos} leadId={leadId} t={t} showToast={showToast} onCambio={cambio} onCotizar={() => setCotizando(true)} />
-            <Charla datos={datos} leadId={leadId} t={t} showToast={showToast} onCambio={cambio} />
+            {!sinCharla && <Charla datos={datos} leadId={leadId} t={t} showToast={showToast} onCambio={cambio} />}
             {cotizando && (
                 <Cotizar leadId={leadId} datos={datos} t={t} showToast={showToast}
                     onClose={() => setCotizando(false)} onHecho={() => { setCotizando(false); cambio(); }} />

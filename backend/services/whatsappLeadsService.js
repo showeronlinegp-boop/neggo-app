@@ -21,6 +21,9 @@ const { callOdoo } = require('../config/odoo');
 // 066 (preguntas frecuentes) y 067 (ficha del prospecto) van juntas: la ficha cuenta como uso del prospecto
 const SCHEMA = ['065_whatsapp_leads.sql', '066_crm_respuestas.sql', '067_crm_ficha_prospecto.sql']
     .map((f) => fs.readFileSync(path.join(__dirname, '..', 'sql', 'migrations', f), 'utf8')).join(';\n');
+// Respuestas automáticas del WhatsApp del negocio (fuera de horario, aviso de horario): no cuentan
+// como que le contestamos. Condición SQL sobre la fila m de evolution_negocio."Message".
+const SQL_AUTOMATICO = `(COALESCE(m."message"->>'conversation', m."message"->'extendedTextMessage'->>'text', '') ~* '(mensaje autom[aá]tico|en este momento est[aá] [*]?(abierto|cerrado))')`;
 // Lo que hace que un prospecto creado solo por el cruce ya no se pueda borrar: alguien lo usó
 const USO_FICHA = `
                 AND NOT EXISTS (SELECT 1 FROM crm_lead_perfil p WHERE p.lead_id = l.id)
@@ -61,7 +64,7 @@ async function chatsRecientes(desde, db = pool) {
                 to_timestamp(MIN(m."messageTimestamp")) AS primero,
                 to_timestamp(MAX(m."messageTimestamp")) AS ultimo,
                 to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE NOT COALESCE((m."key"->>'fromMe')::boolean, false))) AS ultimo_de_ellos,
-                to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE COALESCE((m."key"->>'fromMe')::boolean, false))) AS ultimo_nuestro,
+                to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE COALESCE((m."key"->>'fromMe')::boolean, false) AND NOT ${SQL_AUTOMATICO})) AS ultimo_nuestro,
                 (ARRAY_AGG(NULLIF(m."pushName", '') ORDER BY m."messageTimestamp" DESC)
                     FILTER (WHERE NOT COALESCE((m."key"->>'fromMe')::boolean, false) AND NULLIF(m."pushName", '') IS NOT NULL))[1] AS push_name
            FROM evolution_negocio."Message" m
@@ -696,6 +699,7 @@ async function marcarEtapa(leadId, etapa, { motivo = null, userId = null } = {},
 }
 
 module.exports = {
+    SQL_AUTOMATICO,
     ensureSchema,
     registrarChats,
     chatsSinNumero,

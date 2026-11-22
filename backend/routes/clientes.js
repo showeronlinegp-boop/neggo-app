@@ -26,6 +26,8 @@
 //
 // Ficha comercial del prospecto y pantalla Contactos (067)
 // GET    /api/clientes/contactos?grupo=activos|abiertos|dormidos|sinchat&tipo=todos|prospecto|cliente&q=&solo_esperan=&limit=&offset=
+// GET    /api/clientes/chats?filtro=todos|esperan|prospecto|cliente|dormidos&q=&limit=&offset= — lista estilo WhatsApp
+// GET    /api/clientes/chats/:chat/mensajes       — conversación de los últimos 7 días (con los otros chats del contacto)
 // GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
 // PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
 // PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
@@ -307,6 +309,23 @@ router.get('/contactos', ...auth, async (req, res) => {
         return ok(res, await fichaService.contactos({ tipo, grupo, q, solo_esperan: soloEsperan === 'true' || soloEsperan === '1', limit, offset }));
     } catch (err) {
         return handleFicha(res, err, 'No se pudieron cargar los contactos');
+    }
+});
+
+router.get('/chats', ...auth, async (req, res) => {
+    try {
+        const { filtro, q, limit, offset } = req.query;
+        return ok(res, await fichaService.chats({ filtro, q, limit, offset }));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron cargar los chats');
+    }
+});
+
+router.get('/chats/:chat/mensajes', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.mensajesDelChat(req.params.chat));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cargar la conversación');
     }
 });
 

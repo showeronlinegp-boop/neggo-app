@@ -13,7 +13,7 @@ const reglas = require('./leadObjetivos');
 const etapas = require('./leadEtapas');
 const waLeads = require('./whatsappLeadsService');
 const respuestasService = require('./crmRespuestasService');
-const { agruparConversaciones } = require('./agenteConversaciones');
+const { agruparConversaciones, textoDe } = require('./agenteConversaciones');
 const contacts = require('./crmContacts');
 const { createCustomer } = require('./odooService');
 
@@ -451,6 +451,18 @@ async function objetivosEnLote(leads, db) {
     return out;
 }
 
+/** Prospectos con chat (con su etapa) y clientes de Odoo con chat, cada uno con su grupo de charla. */
+async function todosLosContactos(db, ahora = new Date()) {
+    const { etapas: grupos } = await waLeads.embudo(db);
+    const prospectos = grupos.flatMap((g) => g.items.map((it) => ({
+        tipo: 'prospecto', id: it.id, nombre: it.name, numero: it.phone, chat: it.chat,
+        ultimo_mensaje_at: it.ultimo_mensaje_at, espera_respuesta: it.espera_respuesta,
+        etapa: { id: it.etapa, label: g.label, objetivo: g.objetivo },
+    })));
+    const clientes = await clientesConChat(db);
+    return [...prospectos, ...clientes].map((c) => ({ ...c, grupo: reglas.grupoDeCharla(c.ultimo_mensaje_at, ahora) }));
+}
+
 /**
  * Contactos en 4 grupos según el último mensaje: activos (≤ 7 días), abiertos (≤ 15), dormidos y
  * sin chat (solo el número: la lista sale de Prospectos sin chat).
@@ -464,14 +476,7 @@ async function contactos(f = {}, db = pool) {
     const offset = Math.max(parseInt(f.offset, 10) || 0, 0);
     const ahora = new Date();
 
-    const { etapas: grupos } = await waLeads.embudo(db);
-    const prospectos = grupos.flatMap((g) => g.items.map((it) => ({
-        tipo: 'prospecto', id: it.id, nombre: it.name, numero: it.phone, chat: it.chat,
-        ultimo_mensaje_at: it.ultimo_mensaje_at, espera_respuesta: it.espera_respuesta,
-        etapa: { id: it.etapa, label: g.label, objetivo: g.objetivo },
-    })));
-    const clientes = await clientesConChat(db);
-    const todos = [...prospectos, ...clientes].map((c) => ({ ...c, grupo: reglas.grupoDeCharla(c.ultimo_mensaje_at, ahora) }));
+    const todos = await todosLosContactos(db, ahora);
 
     const { rows: [sin] } = await db.query(
         `SELECT COUNT(*)::int AS n FROM crm_leads l
@@ -507,8 +512,190 @@ async function contactos(f = {}, db = pool) {
     };
 }
 
+// ── Pantalla Chats (estilo WhatsApp) ───────────────────────────────────────────────────────
+
+const TIPO_PREVIEW = { foto: '📷 Foto', audio: '🎤 Audio', video: '🎥 Video', documento: '📄 Documento', sticker: 'Sticker', ubicacion: '📍 Ubicación', contacto: '👤 Contacto', album: '📷 Fotos', encuesta: 'Encuesta' };
+const FILTROS_CHATS = ['todos', 'esperan', 'prospecto', 'cliente', 'dormidos'];
+const TIPOS_CONV = {
+    imageMessage: 'foto', audioMessage: 'audio', videoMessage: 'video', ptvMessage: 'video', documentMessage: 'documento',
+    documentWithCaptionMessage: 'documento', stickerMessage: 'sticker', locationMessage: 'ubicacion', liveLocationMessage: 'ubicacion',
+    contactMessage: 'contacto', contactsArrayMessage: 'contacto', albumMessage: 'album', pollCreationMessage: 'encuesta', pollCreationMessageV3: 'encuesta',
+};
+
+function claveDe(w) {
+    if (w.odoo_partner_id) return `cliente:${w.odoo_partner_id}`;
+    if (w.lead_id) return `prospecto:${w.lead_id}`;
+    return null;
+}
+
+/** Lo que pasó en la semana en cada chat, leído en vivo del WhatsApp del negocio. Map chat → datos. */
+async function actividadSemana(jids, db) {
+    const out = new Map();
+    if (!jids.length) return out;
+    const desde = Math.floor(Date.now() / 1000) - DIAS_CHARLA * 86400;
+    let filas;
+    let ultimos;
+    try {
+        ({ rows: filas } = await db.query(
+            `SELECT m."key"->>'remoteJid' AS jid, m."messageTimestamp" AS ts,
+                    COALESCE((m."key"->>'fromMe')::boolean, false) AS yo, ${waLeads.SQL_AUTOMATICO} AS automatico
+               FROM evolution_negocio."Message" m
+              WHERE m."key"->>'remoteJid' = ANY($1::text[]) AND m."messageTimestamp" >= $2
+                AND m."messageType" <> ALL($3::text[])
+                AND NOT (m."messageType" = 'conversation' AND COALESCE(m."message"->>'conversation', '') = '')`,
+            [jids, desde, TIPOS_IGNORADOS]));
+        ({ rows: ultimos } = await db.query(
+            `SELECT DISTINCT ON (m."key"->>'remoteJid') m."key"->>'remoteJid' AS jid, m."messageType", m."message",
+                    COALESCE((m."key"->>'fromMe')::boolean, false) AS yo
+               FROM evolution_negocio."Message" m
+              WHERE m."key"->>'remoteJid' = ANY($1::text[]) AND m."messageTimestamp" >= $2
+                AND m."messageType" <> ALL($3::text[])
+                AND NOT (m."messageType" = 'conversation' AND COALESCE(m."message"->>'conversation', '') = '')
+              ORDER BY m."key"->>'remoteJid', m."messageTimestamp" DESC, m."id" DESC`,
+            [jids, desde, TIPOS_IGNORADOS]));
+    } catch (err) {
+        if (err.code === '3F000' || err.code === '42P01') return out;
+        throw err;
+    }
+    for (const f of filas) {
+        const ts = Number(f.ts);
+        const a = out.get(f.jid) || { ultimo: 0, nuestro: 0, deEllos: [] };
+        a.ultimo = Math.max(a.ultimo, ts);
+        // La respuesta automática de fuera de horario no es contestarle
+        if (f.yo && !f.automatico) a.nuestro = Math.max(a.nuestro, ts); else if (!f.yo) a.deEllos.push(ts);
+        out.set(f.jid, a);
+    }
+    for (const u of ultimos) {
+        const a = out.get(u.jid);
+        if (!a) continue;
+        const texto = textoDe(u.message);
+        const tipo = TIPOS_CONV[u.messageType] || 'otro';
+        a.preview = { de: u.yo ? 'neggo' : 'contacto', texto: texto || TIPO_PREVIEW[tipo] || 'Mensaje' };
+    }
+    return out;
+}
+
+// La lista se arma con varias lecturas (embudo, clientes, mensajes de la semana): se guarda 20 s
+// para que filtrar y buscar no la recalcule cada vez
+const TTL_BASE_MS = 20 * 1000;
+let baseCache = { at: 0, datos: null };
+async function baseDeChats(db, ahora) {
+    if (baseCache.datos && Date.now() - baseCache.at < TTL_BASE_MS) return baseCache.datos;
+    const contactosTodos = await todosLosContactos(db, ahora);
+    const { rows: ids } = await db.query(
+        `SELECT chat_jid, lead_id, odoo_partner_id FROM whatsapp_chat_identidad
+          WHERE tipo IS DISTINCT FROM 'proveedor' AND (lead_id IS NOT NULL OR odoo_partner_id IS NOT NULL)`);
+    const semana = await actividadSemana(ids.map((w) => w.chat_jid), db);
+    baseCache = { at: Date.now(), datos: { contactosTodos, ids, semana } };
+    return baseCache.datos;
+}
+
+/** Chats cuyo texto de la semana tiene `q` (para el buscador). */
+async function chatsConTexto(jids, q, db) {
+    if (!jids.length || !q) return new Set();
+    const desde = Math.floor(Date.now() / 1000) - DIAS_CHARLA * 86400;
+    try {
+        const { rows } = await db.query(
+            `SELECT DISTINCT m."key"->>'remoteJid' AS jid
+               FROM evolution_negocio."Message" m
+              WHERE m."key"->>'remoteJid' = ANY($1::text[]) AND m."messageTimestamp" >= $2
+                AND (m."message"->>'conversation' ILIKE $3 OR m."message"->'extendedTextMessage'->>'text' ILIKE $3)`,
+            [jids, desde, `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`]);
+        return new Set(rows.map((r) => r.jid));
+    } catch (err) {
+        if (err.code === '3F000' || err.code === '42P01') return new Set();
+        throw err;
+    }
+}
+
+/**
+ * Lista de chats como WhatsApp: el más reciente arriba. Por defecto los de los últimos 15 días
+ * (activos y conversación abierta); con `q` busca en todos (nombre, teléfono, código del chat y el
+ * texto de la semana). filtro: todos | esperan | prospecto | cliente | dormidos.
+ */
+async function chats(f = {}, db = pool) {
+    await ensureSchema(db);
+    const filtro = FILTROS_CHATS.includes(f.filtro) ? f.filtro : 'todos';
+    const limit = Math.min(Math.max(parseInt(f.limit, 10) || 60, 1), 200);
+    const offset = Math.max(parseInt(f.offset, 10) || 0, 0);
+    const qCruda = String(f.q || '').trim().slice(0, 80);
+    const q = reglas.normalizar(qCruda);
+    const ahora = new Date();
+
+    const { contactosTodos, ids, semana } = await baseDeChats(db, ahora);
+    const chatsPorClave = new Map();
+    for (const w of ids) {
+        const k = claveDe(w);
+        if (!k) continue;
+        if (!chatsPorClave.has(k)) chatsPorClave.set(k, []);
+        chatsPorClave.get(k).push(w.chat_jid);
+    }
+    const conTexto = await chatsConTexto(ids.map((w) => w.chat_jid), qCruda, db);
+
+    const lista = [];
+    for (const c of contactosTodos) {
+        const propios = chatsPorClave.get(`${c.tipo}:${c.id}`) || (c.chat ? [c.chat] : []);
+        // El chat más reciente del contacto (si tiene más de uno)
+        let mejor = null;
+        for (const j of propios) {
+            const a = semana.get(j);
+            if (a && (!mejor || a.ultimo > mejor.a.ultimo)) mejor = { j, a };
+        }
+        let ultimo = c.ultimo_mensaje_at ? new Date(c.ultimo_mensaje_at) : null;
+        let espera = c.espera_respuesta;
+        let sinLeer = 0;
+        let preview = null;
+        if (mejor) {
+            const vivo = new Date(mejor.a.ultimo * 1000);
+            if (!ultimo || vivo > ultimo) ultimo = vivo;
+            sinLeer = mejor.a.deEllos.filter((ts) => ts > mejor.a.nuestro).length;
+            espera = sinLeer > 0;
+            preview = mejor.a.preview || null;
+        }
+        const grupo = reglas.grupoDeCharla(ultimo, ahora);
+        const coincide = !q || reglas.normalizar(`${c.nombre || ''} ${c.numero || ''} ${propios.join(' ')}`).includes(q)
+            || propios.some((j) => conTexto.has(j));
+        if (!coincide) continue;
+        if (filtro === 'prospecto' || filtro === 'cliente') { if (c.tipo !== filtro) continue; }
+        if (filtro === 'esperan' && !espera) continue;
+        if (filtro === 'dormidos') { if (grupo !== 'dormidos') continue; } else if (!q && grupo !== 'activos' && grupo !== 'abiertos') continue;
+        lista.push({
+            clave: `${c.tipo}:${c.id}`, tipo: c.tipo, id: c.id, nombre: c.nombre, numero: c.numero,
+            chat: mejor ? mejor.j : c.chat, chats: propios, grupo,
+            ultimo_mensaje_at: ultimo ? ultimo.toISOString() : null,
+            espera_respuesta: espera, sin_leer: sinLeer, preview,
+            etapa: c.etapa || null, health: c.health || null,
+        });
+    }
+    lista.sort((a, b) => new Date(b.ultimo_mensaje_at || 0) - new Date(a.ultimo_mensaje_at || 0) || a.clave.localeCompare(b.clave));
+    const esperan = lista.filter((c) => c.espera_respuesta).length;
+    return { filtro, q: qCruda, total: lista.length, esperan, limit, offset, items: lista.slice(offset, offset + limit) };
+}
+
+/** Conversación de un chat (con los otros chats del mismo contacto), de los últimos 7 días. */
+async function mensajesDelChat(chat, db = pool) {
+    if (typeof chat !== 'string' || !/^[\d]{6,20}@(lid|s\.whatsapp\.net)$/.test(chat)) throw new FichaError('Chat inválido', 422);
+    await ensureSchema(db);
+    const { rows: [w] } = await db.query('SELECT chat_jid, lead_id, odoo_partner_id, numero, nombre FROM whatsapp_chat_identidad WHERE chat_jid = $1', [chat]);
+    if (!w) throw new FichaError('No conozco ese chat', 404);
+    const { rows } = w.odoo_partner_id
+        ? await db.query(`SELECT chat_jid FROM whatsapp_chat_identidad WHERE odoo_partner_id = $1 AND tipo IS DISTINCT FROM 'proveedor'`, [w.odoo_partner_id])
+        : w.lead_id
+            ? await db.query(`SELECT chat_jid FROM whatsapp_chat_identidad WHERE lead_id = $1 AND odoo_partner_id IS NULL AND tipo IS DISTINCT FROM 'proveedor'`, [w.lead_id])
+            : { rows: [{ chat_jid: chat }] };
+    const propios = rows.map((r) => r.chat_jid);
+    const desde = Math.floor(Date.now() / 1000) - DIAS_CHARLA * 86400;
+    return {
+        chat, chats: propios, numero: w.numero || null,
+        contacto: w.odoo_partner_id ? { tipo: 'cliente', id: w.odoo_partner_id } : w.lead_id ? { tipo: 'prospecto', id: w.lead_id } : null,
+        mensajes: await mensajesDeChats(propios, desde, db),
+    };
+}
+
 module.exports = {
     FichaError,
+    chats,
+    mensajesDelChat,
     ensureSchema,
     mensajesDeChats,
     ficha,
