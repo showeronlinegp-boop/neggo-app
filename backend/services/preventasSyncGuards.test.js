@@ -3,7 +3,10 @@
 // Los casos salen de datos reales encontrados en la auditoría del 2026-10-20.
 
 const assert = require('assert');
-const { codigoEnNombre, motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo } = require('./preventasSyncGuards');
+const {
+    codigoEnNombre, motivoSinPrecio, motivoSinCategoria, categoriaPublicacion, claveCategoria,
+    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo,
+} = require('./preventasSyncGuards');
 
 // Fila típica de un cambio de precio correcto: todo coincide y el cambio es chico
 function fila(overrides = {}) {
@@ -22,6 +25,9 @@ function fila(overrides = {}) {
         costo_actual: '1100.00',
         precio_actual: '1500.00',
         odoo_standard_price: '1000.00',
+        // Regla de categoría del proveedor (para crear, activar o publicar)
+        odoo_categ_id_preventas: 40,
+        regla_categoria_preventas: 'Bazar',
         ...overrides,
     };
 }
@@ -82,6 +88,42 @@ test('crear exige SKU y nombre', () => {
 test('activar con precio y archivar sin scraper se aplican', () => {
     assert.strictEqual(motivoOmitir(fila({ estado: 'activar' })), null);
     assert.strictEqual(motivoOmitir({ estado: 'solo_odoo', supplier_product_id: null, proveedor_scrapeando: false }), null);
+});
+
+// ─── Categoría para crear / activar / publicar (nota 200) ────────────────────
+const sinRegla = { odoo_categ_id_preventas: null, regla_categoria_preventas: null };
+test('crear sin regla de categoría de Preventas no se hace', () => {
+    assert.match(motivoOmitir(fila({ estado: 'solo_scraper', ...sinRegla })), /Falta la categoría de Preventas/);
+    // Crear siempre necesita la regla: no hay categoría en Odoo todavía
+    assert.match(motivoSinCategoria(fila({ estado: 'solo_scraper', ...sinRegla, odoo_categoria: 'Bazar' })), /Falta la categoría/);
+    assert.strictEqual(motivoSinCategoria(fila({ estado: 'solo_scraper' })), null);
+});
+test('activar o publicar sin regla usa la categoría que ya tiene en Odoo', () => {
+    assert.strictEqual(motivoSinCategoria(fila({ estado: 'publicar', ...sinRegla, odoo_categoria: 'Tecnología' })), null);
+    assert.strictEqual(categoriaPublicacion(fila({ estado: 'activar', ...sinRegla, odoo_categoria: 'Tecnología' })), 'Tecnología');
+    // "All" es la categoría por defecto de Odoo: no cuenta
+    assert.match(motivoSinCategoria(fila({ estado: 'publicar', ...sinRegla, odoo_categoria: 'All' })), /Falta la categoría/);
+    assert.match(motivoSinCategoria(fila({ estado: 'activar', ...sinRegla, odoo_categoria: 'All / Saleable' })), /Falta la categoría/);
+    assert.match(motivoOmitir(fila({ estado: 'publicar', ...sinRegla, odoo_categoria: '' })), /Falta la categoría/);
+});
+test('la categoría web se encuentra por nombre aunque cambien acentos o el "de"', () => {
+    assert.strictEqual(claveCategoria('Accesorios de Moda'), claveCategoria('Accesorios Moda'));
+    assert.strictEqual(claveCategoria('Tecnologia'), claveCategoria('Tecnología'));
+    assert.strictEqual(claveCategoria('All / Hogar / Bazar'), 'bazar');
+    assert.strictEqual(claveCategoria('navidad'), claveCategoria('Navidad'));
+    assert.notStrictEqual(claveCategoria('Insumos'), claveCategoria('Insumos de Comercios'));
+    assert.strictEqual(claveCategoria(null), '');
+});
+test('la regla manda sobre la categoría de Odoo', () => {
+    assert.strictEqual(categoriaPublicacion(fila({ estado: 'publicar', odoo_categoria: 'Tecnología' })), 'Bazar');
+});
+test('cambiar precio y archivar no piden categoría', () => {
+    assert.strictEqual(motivoSinCategoria(fila({ ...sinRegla })), null);
+    assert.strictEqual(motivoSinCategoria({ estado: 'inactivar', ...sinRegla }), null);
+    assert.strictEqual(motivoOmitir(fila({ ...sinRegla })), null);
+});
+test('publicar no pide precio del proveedor (ya está a la venta con el de Odoo)', () => {
+    assert.strictEqual(motivoSinPrecio(fila({ estado: 'publicar', costo: null, precio_preventas: null })), null);
 });
 
 // ─── motivoRevision ──────────────────────────────────────────────────────────
@@ -146,6 +188,11 @@ test('activar/archivar algo que ya está así no hace nada', () => {
     assert.match(motivoOdoo(fila({ estado: 'activar' }), { standard_price: 1000, active: true }), /Ya está activo/);
     assert.match(motivoOdoo(fila({ estado: 'solo_odoo' }), { standard_price: 1000, active: false }), /Ya está archivado/);
     assert.strictEqual(motivoOdoo(fila({ estado: 'activar' }), { standard_price: 1000, active: false }), null);
+});
+test('publicar algo archivado o ya publicado no hace nada', () => {
+    assert.match(motivoOdoo(fila({ estado: 'publicar' }), { standard_price: 1000, active: false, is_published: false }), /archivado/);
+    assert.match(motivoOdoo(fila({ estado: 'publicar' }), { standard_price: 1000, active: true, is_published: true }), /Ya está publicado/);
+    assert.strictEqual(motivoOdoo(fila({ estado: 'publicar' }), { standard_price: 1000, active: true, is_published: false }), null);
 });
 test('crear no consulta este control (no hay producto en Odoo todavía)', () => {
     assert.strictEqual(motivoOdoo(fila({ estado: 'solo_scraper' }), null), null);

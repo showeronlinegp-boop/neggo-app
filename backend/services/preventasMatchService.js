@@ -14,10 +14,21 @@
 //   vinculo_web  (89)  — al revés: oferta "neggo" cuya oferta web vinculada ya está en Preventas
 //   codigo_web   (84)  — oferta "neggo" con el código de la web (sin PRE+prefijo+NEG ni el prefijo repetido)
 
+const { CATEGORIA_PROVEEDOR_SQL } = require('./preventasSyncGuards');
+
 const LOCK_KEY = 987654321; // pg advisory lock
 const PRICE_TOL = 0.0001;
 
 // ─── SQL fragments ─────────────────────────────────────────────────────────────
+
+// Producto de Odoo sin categoría interna ("All" es la de Odoo por defecto: no cuenta)
+const SIN_CATEGORIA_INTERNA_SQL = `(NULLIF(TRIM(opc.categ_name), '') IS NULL OR opc.categ_name ~* '^all(\\s*/|$)')`;
+// El proveedor tiene regla con categoría de Preventas para la categoría de la oferta
+const TIENE_REGLA_PREVENTAS_SQL = `EXISTS (
+                 SELECT 1 FROM supplier_category_rules rc
+                 WHERE rc.supplier_id = sp.supplier_id AND rc.active = true
+                   AND rc.source_category = ${CATEGORIA_PROVEEDOR_SQL}
+                   AND rc.odoo_categ_id_preventas IS NOT NULL)`;
 
 // Proveedor con "Va a Preventas" apagado: no se propone nada salvo archivar lo que sigue activo
 const ESTADO_CASE = `
@@ -36,6 +47,13 @@ const ESTADO_CASE = `
              AND opc.standard_price > 0
              AND ABS(p.costo - opc.standard_price) / opc.standard_price > ${PRICE_TOL}
              AND p.costo < opc.standard_price  THEN 'precio_baja'
+        -- Activo y con stock pero no se ve en la web de Precompras (nota 200)
+        WHEN opc.active = true AND sp.available = true AND opc.is_published IS NOT TRUE THEN 'publicar'
+        -- Publicado sin categoría interna o sin categoría web, y hay de dónde sacarla: la regla del
+        -- proveedor o la categoría interna que ya tiene (nota 200)
+        WHEN opc.active = true AND sp.available = true
+             AND (${SIN_CATEGORIA_INTERNA_SQL} OR opc.web_categ_id IS NULL)
+             AND (NOT ${SIN_CATEGORIA_INTERNA_SQL} OR ${TIENE_REGLA_PREVENTAS_SQL}) THEN 'categoria'
         ELSE 'sin_cambios'
     END`;
 
@@ -77,6 +95,37 @@ const sinRechazo = (spCol, odooCol) => `NOT EXISTS (
           WHERE pmr.supplier_product_id = ${spCol} AND pmr.odoo_product_id = ${odooCol}
             AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
       )`;
+
+// ─── Productos que vinieron de Odoo Neggo en un proveedor de catálogo (nota 200) ──────────────
+// Si el catálogo del proveedor es su web o su lista, lo de Preventas que se cargó desde Neggo
+// (código PRE + prefijo + NEG...) no sigue por defecto: solo se queda, con el costo del catálogo,
+// si coincide con una oferta por código o por nombre casi exacto. Si no, no se vincula: el de Odoo
+// queda para archivar ("No está en el proveedor") y la oferta para crear y publicar.
+const SIMILITUD_CASI_EXACTA = 0.9;
+
+const esNeggoEnCatalogo = (opc, s) => `(
+        ${s}.scraper_key IS DISTINCT FROM 'neggo_scraper'
+        AND ${s}.preventas_fuente IS DISTINCT FROM 'neggo'
+        AND (UPPER(REGEXP_REPLACE(COALESCE(${opc}.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'
+             OR UPPER(REGEXP_REPLACE(COALESCE(${opc}.external_id, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'))`;
+
+// El código de la oferta (su código de proveedor, o un número de 3+ cifras del nombre que no sea una
+// medida como "500ML") aparece suelto en el nombre o la referencia del producto de Odoo:
+// "ABROCHADOR" (2753) ↔ "[PL2753] Abrochadora" · "PORTA CINTA 1401" ↔ "Porta Cintas Art. 1401"
+const coincideCodigo = (sp, opc) => `EXISTS (
+        SELECT 1
+        FROM regexp_matches(COALESCE(${sp}.codigo_proveedor, '') || ' ' || ${sp}.name,
+                            '([0-9]{3,})(?![0-9])(?!\\s*(ml|cm|mm|gr|grs|kg|lt|lts|w|v|mah|u|un|unid)([^a-z]|$))', 'gi') AS m(t)
+        WHERE (${opc}.name || ' ' || COALESCE(${opc}.internal_ref, '')) ~ ('(^|[^0-9])' || m.t[1] || '($|[^0-9])')
+    )`;
+
+// El vínculo vale: no es un producto de Neggo en un proveedor de catálogo, o coincide por código o
+// por nombre casi exacto
+const vinculoValido = (sp, opc, s, matchType) => `(
+        NOT ${esNeggoEnCatalogo(opc, s)}
+        OR ${matchType} IN ('exact_sku', 'internal_ref', 'bracket_code')
+        OR similarity(LOWER(${sp}.name), LOWER(${opc}.name)) >= ${SIMILITUD_CASI_EXACTA}
+        OR ${coincideCodigo(sp, opc)})`;
 
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
@@ -247,8 +296,10 @@ best_by_sp AS (
     FROM candidates c
     JOIN supplier_products sp ON sp.id = c.sp_id
     JOIN suppliers s ON s.id = sp.supplier_id
+    JOIN odoo_products_cache opcv ON opcv.odoo_id = c.odoo_id AND opcv.company = 'preventas'
     WHERE ${FUENTE_PREVENTAS}
       AND ${sinRechazo('c.sp_id', 'c.odoo_id')}
+      AND ${vinculoValido('sp', 'opcv', 's', 'c.match_type')}
     ORDER BY c.sp_id, c.score DESC, c.match_type
 ),
 
@@ -317,6 +368,7 @@ LEFT JOIN LATERAL (
       -- Un vínculo rechazado en la tabla maestra no se vuelve a proponer (nota 143)
       AND ${sinRechazo('sp.id', 'opc2.odoo_id')}
       AND similarity(LOWER(sp.name), LOWER(opc2.name)) >= 0.75
+      AND ${vinculoValido('sp', 'opc2', 's', "'fuzzy_name'")}
     ORDER BY sim DESC
     LIMIT 1
 ) best ON true
