@@ -110,6 +110,17 @@ function estadoDeContacto({ chats = [], numero = null } = {}, indice) {
     };
 }
 
+/**
+ * Aviso para cuando el WhatsApp del negocio no está conectado (estado de Evolution distinto de "open").
+ * null si está conectado o no se sabe: ahí se muestra el error original.
+ */
+function mensajeDesconectado(estado) {
+    const e = String(estado || '').toLowerCase();
+    if (!e || e === 'open') return null;
+    const como = e === 'connecting' ? 'está tratando de reconectarse' : 'está desconectado';
+    return `El WhatsApp del negocio ${como} (estado «${e}»): hay que volver a vincularlo escaneando el QR con el teléfono del negocio. Mientras tanto sigue valiendo la última foto del grupo.`;
+}
+
 module.exports = {
     digitos,
     claveTelefono,
@@ -118,4 +129,5 @@ module.exports = {
     fotoConfiable,
     indiceMiembros,
     estadoDeContacto,
+    mensajeDesconectado,
 };

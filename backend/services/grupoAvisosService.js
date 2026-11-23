@@ -41,6 +41,18 @@ function ensureSchema(db = pool) {
     return schemaReady;
 }
 
+/** Estado de la conexión del WhatsApp del negocio ("open", "close", "connecting") o null si no se supo. Solo GET. */
+async function estadoConexion(fetchImpl, apiKey) {
+    try {
+        const url = `${EVOLUTION_URL}/instance/connectionState/${encodeURIComponent(EVOLUTION_INSTANCE)}`;
+        const r = await fetchImpl(url, { method: 'GET', headers: { apikey: apiKey }, signal: AbortSignal.timeout(10 * 1000) });
+        const b = await r.json().catch(() => null);
+        return b?.instance?.state || b?.state || null;
+    } catch {
+        return null;
+    }
+}
+
 /** Lista de miembros del grupo, leída en vivo. Solo GET. */
 async function leerGrupo(fetchImpl = fetch) {
     const apiKey = process.env.EVOLUTION_NEGOCIO_API_KEY || process.env.EVOLUTION_API_KEY || '';
@@ -53,6 +65,9 @@ async function leerGrupo(fetchImpl = fetch) {
     }
     const body = await res.json().catch(() => null);
     if (!res.ok || !body || !Array.isArray(body.participants)) {
+        // Casi siempre es que el WhatsApp se desconectó: se pregunta el estado (solo lectura) para decirlo claro
+        const aviso = g.mensajeDesconectado(await estadoConexion(fetchImpl, apiKey));
+        if (aviso) throw new GrupoAvisosError(aviso, 503);
         const detalle = body?.response?.message || body?.message || `HTTP ${res.status}`;
         throw new GrupoAvisosError(`El WhatsApp del negocio no devolvió el grupo de avisos (${Array.isArray(detalle) ? detalle.join(' ') : detalle})`, 503);
     }
