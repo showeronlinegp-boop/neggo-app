@@ -35,11 +35,11 @@ import {
 
 const PAGE = 50;
 // Cliente · estado · etapa · última compra · compras · 12 meses · tendencia · cotización
-const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
+const COLUMNAS = 'minmax(190px, 2fr) 118px 128px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
 // Medio: sin el gráfico de barras y con la tendencia abajo del monto de 12 meses
-const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 96px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
+const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 124px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
 // Ancho de la tabla (con la estrella) desde el que entra cada diseño; más angosto, tarjetas
-const ANCHO_MIN = { ancho: 1110, medio: 860 };
+const ANCHO_MIN = { ancho: 1130, medio: 890 };
 // Alto mínimo de la lista con scroll propio: en pantallas muy bajas scrollea la página entera
 const ALTO_MIN_LISTA = 240;
 // Aire entre el final de la lista (o del chat) y el borde de abajo de la ventana
@@ -58,16 +58,23 @@ function useAnchoDe(el) {
 }
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
 const SORTS = [...SORT_OPTIONS, { value: 'importancia', label: 'Más importantes' }, { value: 'accion', label: 'Próxima acción' }];
+// En compu, sin nada elegido, los selectores angostos dicen solo qué filtran (nota #223)
+const ETAPAS_CORTO = [{ value: '', label: 'Etapa' }, ...ETAPAS.slice(1)];
+const IMPORTANCIA_CORTO = [{ value: '', label: 'Importancia' }, ...IMPORTANCIA_FILTRO.slice(1)];
 
 function Etapa({ c, t }) {
     const meta = STAGE_META[c.stage] || STAGE_META.frio;
     const proxima = fmtProxima(c.next_action_date);
     const vencida = c.next_action_date && c.next_action_date < hoyAr();
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start', minWidth: 0 }}>
             <Badge tone={meta.tone}>{meta.label}</Badge>
             {proxima && (
-                <span style={{ fontSize: t.font.size.xs, color: vencida ? t.color.danger : t.color.textMuted, ...t.numericStyle }}>
+                // En un solo renglón (nota #223): partido en dos hacía la fila más alta
+                <span title={proxima} style={{
+                    fontSize: t.font.size.xs, color: vencida ? t.color.danger : t.color.textMuted, ...t.numericStyle,
+                    maxWidth: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
                     {proxima}
                 </span>
             )}
@@ -129,13 +136,25 @@ function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
                 }} title={c.partner_name}>
                     {c.partner_name}
                 </div>
-                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px' }}>
-                    {/* En la tabla la importancia va en el mismo renglón que el teléfono (nota #223: filas más bajas) */}
-                    {!isMobile && <Importancia value={c.importance} size={12} onChange={(n) => onImportancia(c, n)} />}
-                    <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
-                    {c.city && <span>{c.city}</span>}
-                    {c.rubro && <span>{c.rubro}</span>}
-                </div>
+                {isMobile ? (
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px' }}>
+                        <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
+                        {c.city && <span>{c.city}</span>}
+                        {c.rubro && <span>{c.rubro}</span>}
+                    </div>
+                ) : (
+                    // En la tabla: importancia, teléfono, ciudad y rubro en un solo renglón, cortado con «…» (nota #223)
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <Importancia value={c.importance} size={12} onChange={(n) => onImportancia(c, n)} />
+                        <span style={{ fontFamily: t.font.mono, whiteSpace: 'nowrap', flexShrink: 0 }}>{c.phone || 'Sin teléfono'}</span>
+                        {(c.city || c.rubro) && (
+                            <span title={[c.city, c.rubro].filter(Boolean).join(' · ')}
+                                style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {[c.city, c.rubro].filter(Boolean).join(' · ')}
+                            </span>
+                        )}
+                    </div>
+                )}
                 {isMobile && (
                     <div style={{ marginTop: 6 }}>
                         <Importancia value={c.importance} size={20} onChange={(n) => onImportancia(c, n)} />
@@ -305,8 +324,9 @@ function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
         <button type="button" onClick={onClick} aria-pressed={activo} title={meta.hint}
             style={{
                 display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'flex-start' : 'center',
-                justifyContent: 'space-between', gap: isMobile ? 4 : 8,
-                padding: isMobile ? '10px 12px' : '6px 12px', minWidth: isMobile ? 0 : 120, flex: isMobile ? '1 1 40%' : '1 1 0',
+                justifyContent: 'space-between', gap: isMobile ? 4 : 6,
+                // En compu arrancan del ancho justo de su texto, así entran en la misma línea que los interruptores
+                padding: isMobile ? '10px 12px' : '5px 8px', minWidth: 0, flex: isMobile ? '1 1 40%' : '1 1 auto',
                 borderRadius: t.radius.md, cursor: 'pointer', textAlign: 'left', fontFamily: t.font.family,
                 border: `1px solid ${activo ? t.color.primary : t.color.border}`,
                 background: activo ? t.color.primarySoft : t.color.surface,
@@ -450,9 +470,10 @@ export default function Clientes() {
         setRows((prev) => [...prev, ...(res.data || [])]);
     };
 
-    const ciudades = [{ value: '', label: 'Todas las ciudades' },
+    // En compu los selectores son angostos: sin nada elegido dicen solo qué filtran (nota #223)
+    const ciudades = [{ value: '', label: isMobile ? 'Todas las ciudades' : 'Ciudad' },
         ...(resumen?.cities || []).map((c) => ({ value: c.city, label: `${c.city} · ${c.n}` }))];
-    const rubros = [{ value: '', label: 'Todos los rubros' },
+    const rubros = [{ value: '', label: isMobile ? 'Todos los rubros' : 'Rubro' },
         ...(resumen?.rubros || []).map((r) => ({ value: r.rubro, label: `${r.rubro} · ${r.n}` }))];
 
     const variacion90 = resumen && resumen.revenue_prev_90d > 0
@@ -520,34 +541,34 @@ export default function Clientes() {
 
     const resumenNumeros = resumen ? (
         <div style={{
-            display: 'flex', gap: isMobile ? t.space[3] : `0 ${t.space[8]}px`, flexWrap: 'wrap',
+            display: 'flex', gap: isMobile ? t.space[3] : `0 ${t.space[6]}px`, flexWrap: 'wrap',
             fontSize: compu ? t.font.size.xs : t.font.size.sm, color: t.color.textMuted,
             marginBottom: compu ? 0 : t.space[4], ...t.numericStyle,
         }}>
-            <span title="Incluye las ventas a Consumidor Final">
-                Facturación 90 días: <strong style={{ color: t.color.text }}>{fmtAR(resumen.revenue_90d)}</strong>
+            <span title={`Facturación de los últimos 90 días. Incluye las ventas a Consumidor Final${variacion90 != null ? '. El % es contra los 90 días anteriores' : ''}`}>
+                {compu ? '90 días' : 'Facturación 90 días'}: <strong style={{ color: t.color.text }}>{fmtAR(resumen.revenue_90d)}</strong>
                 {variacion90 != null && (
                     <span style={{ color: variacion90 >= 0 ? t.color.success : t.color.danger, marginLeft: 6 }}>
                         {variacion90 > 0 ? '+' : ''}{variacion90}%{compu ? '' : ' vs. 90 días anteriores'}
                     </span>
                 )}
             </span>
-            <span>Nuevos este mes: <strong style={{ color: t.color.text }}>{fmtInt(resumen.nuevos_mes)}</strong></span>
-            <span title="Cotizaciones abiertas de los últimos 60 días: una excusa para hablarle">Con cotización reciente: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
+            <span>{compu ? 'Nuevos del mes' : 'Nuevos este mes'}: <strong style={{ color: t.color.text }}>{fmtInt(resumen.nuevos_mes)}</strong></span>
+            <span title="Cotizaciones abiertas de los últimos 60 días: una excusa para hablarle">{compu ? 'Con cotización' : 'Con cotización reciente'}: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
         </div>
     ) : null;
 
     const estiloInterruptor = { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer', whiteSpace: 'nowrap' };
     const interruptores = (
         <>
-            <label style={estiloInterruptor} title="Clientes con una cotización abierta de los últimos 60 días">
+            <label style={estiloInterruptor} title="Solo los clientes con una cotización abierta de los últimos 60 días">
                 <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
-                {compu ? 'Con cotización' : 'Solo con cotización reciente'}
+                {compu ? 'Cotización' : 'Solo con cotización reciente'}
             </label>
-            <label style={estiloInterruptor} title="Los clientes que marcaste con la estrella">
+            <label style={estiloInterruptor} title="Solo los clientes en seguimiento cercano (los que marcaste con la estrella)">
                 <Toggle checked={soloCercanos} onChange={setSoloCercanos} />
                 <Icon.Star size={14} filled color={t.color.warn} />
-                <span style={t.numericStyle}>{compu ? 'Cercanos' : 'Seguimiento cercano'} · {fmtInt(resumen?.cercanos ?? 0)}</span>
+                <span style={t.numericStyle}>{compu ? '' : 'Seguimiento cercano · '}{fmtInt(resumen?.cercanos ?? 0)}</span>
             </label>
         </>
     );
@@ -618,11 +639,15 @@ export default function Clientes() {
                     {compu && resumenNumeros}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
-                        {sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}
-                    </span>
+                    {/* En compu «Actualizado hace…» va en el cartelito del botón, para no ocupar otro renglón */}
+                    {!compu && (
+                        <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
+                            {sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}
+                        </span>
+                    )}
                     {compu && tab === 'clientes' && botonElegir}
-                    <Button variant="secondary" size={compu ? 'sm' : undefined} leftIcon={<Icon.Refresh size={compu ? 14 : 16} />} disabled={sincronizando} onClick={actualizar}>
+                    <Button variant="secondary" size={compu ? 'sm' : undefined} leftIcon={<Icon.Refresh size={compu ? 14 : 16} />} disabled={sincronizando} onClick={actualizar}
+                        title={compu ? `${sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}. Tocá para leer de nuevo los tickets del POS` : undefined}>
                         {sincronizando ? 'Actualizando…' : 'Actualizar'}
                     </Button>
                 </div>
@@ -668,7 +693,11 @@ export default function Clientes() {
                     <ChipEstado key={h} valor={h} cantidad={resumen?.health?.[h] ?? 0} activo={health === h}
                         onClick={() => setHealth(health === h ? '' : h)} isMobile={isMobile} t={t} />
                 ))}
-                {compu && interruptores}
+                {compu && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], flexShrink: 0, marginLeft: t.space[2] }}>
+                        {interruptores}
+                    </div>
+                )}
             </div>
 
             {!compu && resumenNumeros}
@@ -678,7 +707,7 @@ export default function Clientes() {
                 marginBottom: compu ? t.space[2] : t.space[4],
                 ...(compu ? { border: 'none', background: 'transparent', boxShadow: 'none' } : null),
             }}>
-                <div style={{ flex: compu ? '1 1 170px' : '1 1 280px' }}>
+                <div style={{ flex: compu ? '1 1 150px' : '1 1 280px' }}>
                     <Input
                         leftIcon={<Icon.Search size={16} />}
                         placeholder="Buscá por nombre o teléfono…"
@@ -687,11 +716,11 @@ export default function Clientes() {
                         aria-label="Buscar cliente"
                     />
                 </div>
-                <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : compu ? 150 : 200 }} />
-                <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : compu ? 150 : 200 }} />
-                <Select value={stage} onChange={setStage} options={ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : compu ? 140 : 170 }} />
-                <Select value={importancia} onChange={setImportancia} options={IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : compu ? 170 : 200 }} />
-                <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : compu ? 180 : 210 }} />
+                <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 130 }} />
+                <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 130 }} />
+                <Select value={stage} onChange={setStage} options={compu ? ETAPAS_CORTO : ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 120 }} />
+                <Select value={importancia} onChange={setImportancia} options={compu ? IMPORTANCIA_CORTO : IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : 140 }} />
+                <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 180 }} />
                 {!compu && interruptores}
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>
