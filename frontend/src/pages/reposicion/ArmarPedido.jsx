@@ -18,7 +18,6 @@ import {
     ofertaMasBarata,
     proveedorPrincipal,
     proveedoresDelPedido,
-    recomendarDePedidos,
 } from './pedidoDestino';
 import { clienteCorto, esperasPorProducto, reponiblesDe, textoEspera } from './cotizacionesNeggo';
 
@@ -59,22 +58,14 @@ export default function ArmarPedido({
     const [elegidos, setElegidos] = useState({});
     const [qtys, setQtys] = useState({});
     const [accesos, setAccesos] = useState([]);
-    const [ordenes, setOrdenes] = useState(null);
-    const [ordenesError, setOrdenesError] = useState(null);
     const [trabajando, setTrabajando] = useState(false);
     // Qué PDF se está generando: 'tildados' | 'lista' | { n, total } (todas las listas)
     const [generandoPdf, setGenerandoPdf] = useState(null);
-    const [reponiendo, setReponiendo] = useState(null);
 
     useEffect(() => {
         let vivo = true;
         api.get('/reposicion/accesos').then(res => {
             if (vivo && res.success) setAccesos(res.data || []);
-        });
-        api.get('/reposicion/ordenes', { dias: 7 }).then(res => {
-            if (!vivo) return;
-            if (res.success) setOrdenes(res.data?.pendientes || []);
-            else setOrdenesError(res.error || 'No se pudieron leer los pedidos');
         });
         return () => { vivo = false; };
     }, []);
@@ -120,10 +111,6 @@ export default function ArmarPedido({
     const sinAsignar = delProveedor.filter(it => !estaVinculado(it)).length;
     const vinculados = delProveedor.length - sinAsignar;
     const tildados = delProveedor.filter(it => elegidos[it.id]);
-    const recomendaciones = useMemo(
-        () => recomendarDePedidos(ordenes, proveedor, items.map(it => it.odoo_id)),
-        [ordenes, proveedor, items]
-    );
 
     const marcar = (id) => setElegidos(prev => ({ ...prev, [id]: !prev[id] }));
 
@@ -222,17 +209,6 @@ export default function ArmarPedido({
             {generandoPdf?.total ? `Generando ${generandoPdf.n} de ${generandoPdf.total}…` : `Descargar todas (${listas.length})`}
         </Button>
     );
-
-    const reponer = async (p) => {
-        setReponiendo(p.odoo_id);
-        onError(null);
-        const res = await api.post('/reposicion', { odoo_id: p.odoo_id });
-        setReponiendo(null);
-        if (!res.success) { onError(res.error || 'No se pudo agregar'); return; }
-        setQtys(prev => ({ ...prev, [res.data.id]: p.qty > 0 ? Math.round(p.qty) : 1 }));
-        onAviso(`«${p.name}» entró a la cola desde un pedido.`);
-        onChanged();
-    };
 
     const linkDe = (it) => {
         const of = ofertaElegida(it, lados[it.id]);
@@ -520,41 +496,6 @@ export default function ArmarPedido({
                         </div>
                     </div>
                 )}
-
-                <div style={{ borderTop: borde, padding: '12px 16px 16px' }}>
-                    <div style={{ fontWeight: t.font.weight.semibold, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
-                        Pendientes en pedidos
-                    </div>
-                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, margin: '2px 0 8px' }}>
-                        Vendidos en órdenes de la última semana que todavía no revisaste y no están en la cola.
-                    </div>
-                    {ordenes == null && !ordenesError && (
-                        <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>Buscando pedidos…</div>
-                    )}
-                    {ordenesError && (
-                        <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>{ordenesError}</div>
-                    )}
-                    {ordenes != null && recomendaciones.length === 0 && !ordenesError && (
-                        <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
-                            No hay ventas pendientes de {proveedor} fuera de la cola.
-                        </div>
-                    )}
-                    {recomendaciones.map(p => (
-                        <div key={p.odoo_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderTop: borde }}>
-                            <Thumb it={p} onVerFoto={onVerFoto} size={36} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text, fontFamily: t.font.family }}>{p.name}</div>
-                                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                                    <span style={{ fontFamily: t.font.mono }}>{p.internal_ref || '—'}</span>
-                                    {' · '}{fmtInt(p.qty)} en {p.pedidos.join(', ')}
-                                </div>
-                            </div>
-                            <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} disabled={reponiendo === p.odoo_id} onClick={() => reponer(p)}>
-                                Reponer
-                            </Button>
-                        </div>
-                    ))}
-                </div>
             </div>
         </div>
     );
