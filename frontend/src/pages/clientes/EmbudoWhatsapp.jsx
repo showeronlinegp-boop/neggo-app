@@ -13,6 +13,22 @@ import { ETAPA_TONO, haceCuanto, codigoChat } from './etapasWhatsappUi';
 const POR_COLUMNA = 30;
 const SIN_CIUDAD = '__sin_ciudad__';
 
+// Sumar al bot de leads (nota 249): solo los que todavía no pasaron el primer contacto
+const COLUMNAS_SUMAR = ['sin_contactar', 'contactado', 'sin_respuesta'];
+const MOTIVO_NO_BOT = {
+    sin_telefono: 'Sin número: el bot no le puede escribir',
+    no_contactar: 'No quiere que le escriban',
+    ya_en_odoo: 'Ya es cliente',
+    respondio_al_bot: 'Ya le contestó al bot',
+    lo_sigue_el_equipo: 'Lo sigue el equipo (etapa del CRM)',
+};
+const ESTADO_BOT = {
+    sumado: 'Sumado al bot',
+    en_cadencia: 'El bot ya le escribe',
+    terminado: 'El bot terminó con él',
+};
+const sePuedeSumar = (l) => l.bot?.estado === 'disponible';
+
 // Clave de ciudad sin mayúsculas, tildes ni espacios de más ("Colón" y "colon " son la misma)
 const claveCiudad = (c) => String(c || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
 
@@ -58,6 +74,11 @@ export default function EmbudoWhatsapp({ onCambio }) {
     const [completas, setCompletas] = useState({});
     const [proveedores, setProveedores] = useState(null);
     const [verProveedores, setVerProveedores] = useState(false);
+    // Modo "Sumar al bot": se tildan tarjetas en vez de abrir la ficha
+    const [sumando, setSumando] = useState(false);
+    const [elegidos, setElegidos] = useState(() => new Set());
+    const [enviando, setEnviando] = useState(false);
+    const [aviso, setAviso] = useState(null);
 
     const cargarProveedores = useCallback(async () => {
         const res = await api.get('/clientes/leads/whatsapp-proveedores');
@@ -96,6 +117,31 @@ export default function EmbudoWhatsapp({ onCambio }) {
         ...g, items: soloEsperan ? g.items.filter((i) => i.espera_respuesta) : g.items,
     }));
 
+    const alternar = (id) => setElegidos((prev) => {
+        const s = new Set(prev);
+        if (s.has(id)) s.delete(id); else s.add(id);
+        return s;
+    });
+    const tildarColumna = (g, tildar) => setElegidos((prev) => {
+        const s = new Set(prev);
+        for (const l of g.items) if (sePuedeSumar(l)) { if (tildar) s.add(l.id); else s.delete(l.id); }
+        return s;
+    });
+    const salirDeSumar = () => { setSumando(false); setElegidos(new Set()); };
+    const sumarAlBot = async () => {
+        if (!elegidos.size || enviando) return;
+        setEnviando(true);
+        const res = await api.post('/clientes/leads/sumar-bot', { ids: [...elegidos] });
+        setEnviando(false);
+        if (!res.success) { setError(res.error || 'No se pudieron sumar al bot'); return; }
+        const { sumados = [], omitidos = [] } = res.data || {};
+        setAviso(`Listo: sumaste ${fmtInt(sumados.length)} al bot de leads. Van primeros en la cola de Grok (manda hasta 15 por día, de lunes a viernes de 9 a 18).`
+            + (omitidos.length ? ` ${fmtInt(omitidos.length)} no se pudieron sumar porque cambiaron mientras tanto.` : ''));
+        salirDeSumar();
+        cargar();
+        onCambio?.();
+    };
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[6], fontFamily: t.font.family }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], flexWrap: 'wrap' }}>
@@ -116,10 +162,35 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                 {`Proveedores ocultos · ${fmtInt(proveedores.length)}`}
                             </Button>
                         )}
+                        <Button size="sm" variant={sumando ? 'primary' : 'secondary'} leftIcon={<Icon.Bot size={14} />}
+                            onClick={() => (sumando ? salirDeSumar() : (setSumando(true), setAviso(null)))}>
+                            Sumar al bot
+                        </Button>
                         <Button size="sm" variant="ghost" leftIcon={<Icon.Refresh size={14} />} onClick={() => { cargar(); cargarProveedores(); }}>Actualizar</Button>
                     </div>
                 )}
             </div>
+
+            {sumando && (
+                <Card>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[4], flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, maxWidth: 680 }}>
+                            Tildá en <strong>Sin contactar</strong>, <strong>Contactado</strong> o <strong>Sin respuesta</strong> los
+                            que querés que Grok contacte. Van primeros en su cola, aunque hayan entrado por el WhatsApp del negocio
+                            o sean de afuera de la zona. Grok les escribe desde su número, no desde el del negocio.
+                            Solo se pueden los que tienen número y a los que el bot todavía no les escribió.
+                        </div>
+                        <div style={{ display: 'flex', gap: t.space[2], alignItems: 'center' }}>
+                            <span style={{ fontSize: t.font.size.sm, color: t.color.text, ...t.numericStyle }}>{`${fmtInt(elegidos.size)} tildados`}</span>
+                            <Button size="sm" variant="ghost" onClick={salirDeSumar}>Cancelar</Button>
+                            <Button size="sm" variant="primary" disabled={!elegidos.size || enviando} onClick={sumarAlBot}>
+                                {enviando ? 'Sumando…' : `Sumar ${fmtInt(elegidos.size)} al bot`}
+                            </Button>
+                        </div>
+                    </div>
+                </Card>
+            )}
+            {aviso && <div role="status" style={{ fontSize: t.font.size.sm, color: t.color.success }}>{aviso}</div>}
 
             {verProveedores && proveedores && (
                 <Card padding={false}>
@@ -169,16 +240,48 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                     {g.objetivo && (
                                         <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Objetivo: {g.objetivo}</span>
                                     )}
+                                    {sumando && COLUMNAS_SUMAR.includes(g.id) && (() => {
+                                        const posibles = g.items.filter(sePuedeSumar);
+                                        if (!posibles.length) return <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>Ninguno se puede sumar</span>;
+                                        const todos = posibles.every((l) => elegidos.has(l.id));
+                                        return (
+                                            <button type="button" onClick={() => tildarColumna(g, !todos)} style={{
+                                                alignSelf: 'flex-start', background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                                                fontFamily: t.font.family, fontSize: t.font.size.xs, color: t.color.primary, fontWeight: t.font.weight.medium,
+                                            }}>
+                                                {todos ? 'Destildar todos' : `Tildar los ${fmtInt(posibles.length)} que se pueden`}
+                                            </button>
+                                        );
+                                    })()}
                                 </div>
-                                {(completas[g.id] ? g.items : g.items.slice(0, POR_COLUMNA)).map((l) => (
-                                    <button key={l.id} type="button" onClick={() => setAbierto(l)} style={{
-                                        textAlign: 'left', cursor: 'pointer', background: t.color.surface,
-                                        border: `1px solid ${l.espera_respuesta ? t.color.accent : t.color.border}`,
+                                {(completas[g.id] ? g.items : g.items.slice(0, POR_COLUMNA)).map((l) => {
+                                    const elegible = sumando && COLUMNAS_SUMAR.includes(g.id) && sePuedeSumar(l);
+                                    const elegido = elegible && elegidos.has(l.id);
+                                    const apagado = sumando && !elegible;
+                                    const motivoNo = apagado && COLUMNAS_SUMAR.includes(g.id) && l.bot?.estado === 'no_puede' ? MOTIVO_NO_BOT[l.bot.motivo] : null;
+                                    return (
+                                    <button key={l.id} type="button" onClick={() => (sumando ? (elegible && alternar(l.id)) : setAbierto(l))}
+                                        aria-pressed={elegible ? elegido : undefined}
+                                        style={{
+                                        textAlign: 'left', cursor: apagado ? 'default' : 'pointer', background: elegido ? t.color.primarySoft : t.color.surface,
+                                        border: `1px solid ${elegido ? t.color.primary : l.espera_respuesta ? t.color.accent : t.color.border}`,
                                         borderRadius: t.radius.sm, padding: t.space[3], fontFamily: t.font.family,
-                                        display: 'flex', flexDirection: 'column', gap: 4,
+                                        display: 'flex', flexDirection: 'column', gap: 4, opacity: apagado ? 0.55 : 1,
                                     }}>
-                                        <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text }}>
-                                            {l.name || 'Sin nombre'}
+                                        <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2] }}>
+                                            {elegible && (
+                                                <span aria-hidden="true" style={{
+                                                    width: 16, height: 16, flexShrink: 0, borderRadius: 4,
+                                                    border: `1.5px solid ${elegido ? t.color.primary : t.color.textMuted}`,
+                                                    background: elegido ? t.color.primary : t.color.surface, color: t.color.surface,
+                                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                                }}>
+                                                    {elegido && <Icon.Check size={12} />}
+                                                </span>
+                                            )}
+                                            <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text }}>
+                                                {l.name || 'Sin nombre'}
+                                            </span>
                                         </span>
                                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.mono }}>
                                             {[l.phone || (codigoChat(l.chat) ? `sin número · buscá ${codigoChat(l.chat)} en WhatsApp Web` : 'sin número'), l.city].filter(Boolean).join(' · ')}
@@ -190,9 +293,12 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                             )}
                                             {l.entro_por_whatsapp && <Badge tone="muted">Nuevo por WhatsApp</Badge>}
                                             {l.manual && <Badge tone="muted">Marcada a mano</Badge>}
+                                            {ESTADO_BOT[l.bot?.estado] && <Badge tone="primary">{ESTADO_BOT[l.bot.estado]}</Badge>}
                                         </span>
+                                        {motivoNo && <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>{motivoNo}</span>}
                                     </button>
-                                ))}
+                                    );
+                                })}
                                 {g.items.length > POR_COLUMNA && !completas[g.id] && (
                                     <Button size="sm" variant="ghost" onClick={() => setCompletas((c) => ({ ...c, [g.id]: true }))}>
                                         {`Ver los ${fmtInt(g.items.length)}`}

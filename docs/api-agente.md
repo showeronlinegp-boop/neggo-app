@@ -233,6 +233,7 @@ Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos q
 - **Nunca a los de Churn** (nos bloquearon o no quieren que los contactemos). El que le pide al bot que no le escriba **pasa a Churn**.
 - NRI = no les llegan las difusiones (no agendaron el número): entran.
 - **Nunca a los que entraron por el WhatsApp del negocio** (3.10.0, `source = 'whatsapp'`): escribieron o les escribió el equipo, así que ya los sigue una persona. No aparecen en `GET /leads` y la reserva da 409 `escribio_al_negocio`. Se cuentan en `excluidos.escribio_al_negocio` del resumen.
+- **Sumados por el equipo** (nota 249): desde el tablero de WhatsApp el equipo puede sumar prospectos que no contestaron. Esos traen `sumado_por_equipo` (fecha) y van **primeros** entre las presentaciones de `GET /leads?para_hoy=true`, aunque hayan entrado por el WhatsApp del negocio o estén fuera de la zona (Churn y `no_contactar` siguen afuera). Ya les escribieron desde el número del negocio y no contestaron: presentate igual que siempre.
 - Ni a los que **ya compraron**: salen del listado y se siguen como clientes. Se cruza con la lista de Clientes en cada `GET /leads` y en vivo con Odoo (POS de Neggo) antes de cada envío. Un contacto de Odoo que nunca compró sigue como posible cliente. Tampoco a los que el equipo movió de Frío en el CRM.
 
 **Tope diario:** `AGENTE_LEADS_TOPE_DIARIO` en el `.env` (por defecto **15**; 0 apaga los envíos). Cuenta todos los mensajes de la cadencia del día, confirmados y reservas vigentes. Las respuestas de la charla no cuentan. Un pedido de más da 409 `tope_diario`.
@@ -303,3 +304,16 @@ El equipo carga en la app (Clientes › Respuestas) las preguntas que más hacen
 - Si te preguntan algo de eso, usá ese texto (podés adaptar el saludo, no los datos). Así el bot y el equipo dicen lo mismo.
 - `informar_a_todos: true` = objetivo de nutrición: a cada prospecto hay que contárselo aunque no pregunte.
 - Los textos cambian: leelos de nuevo cada día.
+
+## Ficha comercial de los posibles clientes (3.15.0)
+
+Lo que el equipo sabe de cada prospecto, de la ficha de Clientes › Chats: el resumen para vender (lo arma Claude cada noche con la charla del WhatsApp del negocio, o una persona a mano), los datos que se fueron juntando y qué objetivo de nutrición falta. Sirve para que el mensaje no repita preguntas ya contestadas y apunte a lo que le interesa. Solo lectura: se edita en la app.
+
+- `GET /leads` (cada elemento de la página) y `GET /leads/{id}` traen el bloque `ficha`, siempre con el mismo formato (nulls si no hay nada cargado):
+  - `resumen`, `resumen_at`, `resumen_por` (`claude` | `manual`).
+  - `ciudad`, `tiene_local` (`local` | `online` | `los_dos` | null), `rubro`, `intereses`, `proveedor_actual`, `trabas`, `volumen`, `compromisos`, `actualizado_at`. `ciudad` y `rubro` caen a los del alta si la ficha no los tiene.
+  - `objetivos.conocer`: `ubicacion` y `rubro`, cada uno con `hecho`, `valor` y la `pregunta` sugerida para averiguarlo.
+  - `objetivos.informar`: las preguntas frecuentes `informar_a_todos` (`id`, `pregunta`, `respuesta`, `hecho`): `hecho: false` = todavía no se le contó.
+  - `objetivos.siguiente` (`{ grupo, id, titulo }` o null) y `objetivos.listo_para_precios` (ya se conoce y se le informó todo).
+- Usalo para armar el mensaje, no lo copies textual: el resumen es una nota interna del equipo.
+- Los que escribieron al WhatsApp del negocio siguen fuera de la cadencia (`escribio_al_negocio`): ahí la ficha la usa el equipo.
