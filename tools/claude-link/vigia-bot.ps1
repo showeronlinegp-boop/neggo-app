@@ -21,6 +21,7 @@ if (-not $mutex.WaitOne(0)) {
 
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $abrir = Join-Path $PSScriptRoot 'abrir-nota.ps1'
+$pedidoWhatsapp = Join-Path $env:USERPROFILE 'neggo-whatsapp-negocio\vigia\abrir-nota.txt'
 if (-not (Test-Path $docker) -or -not (Test-Path $abrir)) {
     Log "Falta docker.exe o abrir-nota.ps1"
     exit 1
@@ -47,6 +48,18 @@ while ($true) {
                 $id = [int]$Matches[1]
                 Log "Tarea del bot #${id}: abriendo Claude"
                 & $abrir -Url "neggo-claude://nota/$id"
+            }
+        }
+        # Vigia de WhatsApp (nota 247): si freno el WhatsApp del negocio, deja aca el numero de la
+        # nota que creo. Solo se acepta un numero; el archivo se borra antes de abrir Claude.
+        if (Test-Path $pedidoWhatsapp) {
+            $txt = ([string](Get-Content -Path $pedidoWhatsapp -Raw -ErrorAction SilentlyContinue)).Trim()
+            Remove-Item -Path $pedidoWhatsapp -Force -ErrorAction SilentlyContinue
+            if ($txt -match '^\d{1,9}$') {
+                Log "Vigia de WhatsApp freno el negocio: abriendo Claude con la nota #$txt"
+                & $abrir -Url "neggo-claude://nota/$([int]$txt)"
+            } else {
+                Log "Pedido del vigia de WhatsApp rechazado: '$txt'"
             }
         }
     } catch {

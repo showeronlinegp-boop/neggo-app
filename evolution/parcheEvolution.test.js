@@ -7,14 +7,14 @@ const os = require('os');
 const path = require('path');
 const { PARCHES, parchearTexto, aplicar } = require('./parcheEvolution');
 
-const [GET_MESSAGE, REINTENTO, STATUS_OFFLINE, STATUS_ONLINE, COLA_OFFLINE, OFFLINE_SIGUE] = PARCHES;
+const [GET_MESSAGE, REINTENTO, STATUS_OFFLINE, STATUS_ONLINE, COLA_OFFLINE, OFFLINE_SIGUE, RECONEXION, ABIERTA] = PARCHES;
 
 // Arma una carpeta falsa de Evolution con los archivos originales.
 function armarRaiz({ sinMjs = false, sinBaileys = false } = {}) {
     const raiz = fs.mkdtempSync(path.join(os.tmpdir(), 'evo-'));
     const main = `x;async getMessage(e){try{return o[0].message}${GET_MESSAGE.original}){};y`;
     fs.mkdirSync(path.join(raiz, 'dist'));
-    fs.writeFileSync(path.join(raiz, 'dist/main.js'), main);
+    fs.writeFileSync(path.join(raiz, 'dist/main.js'), `${main}\n${RECONEXION.original}\n${ABIERTA.original}`);
     if (!sinMjs) fs.writeFileSync(path.join(raiz, 'dist/main.mjs'), main);
     if (!sinBaileys) {
         const dir = path.join(raiz, 'node_modules/baileys/lib/Socket');
@@ -85,6 +85,41 @@ const callado = () => {};
     const r = parchearTexto(OFFLINE_SIGUE.original, OFFLINE_SIGUE);
     assert.ok(r.texto.includes('catch (error)'));
     assert.strictEqual(parchearTexto(r.texto, OFFLINE_SIGUE).estado, 'ya');
+}
+
+// Reconexión (nota 247): un solo intento pendiente, espera creciente, a cero al conectar
+{
+    const r = parchearTexto(RECONEXION.original, RECONEXION);
+    assert.strictEqual(r.estado, 'aplicado');
+    assert.ok(!r.texto.includes('?await this.connectToWhatsapp'));
+    assert.strictEqual(parchearTexto(r.texto, RECONEXION).estado, 'ya');
+    assert.ok(parchearTexto(ABIERTA.original, ABIERTA).texto.includes('this.neggoIntentos=0;'));
+
+    // Se ejecuta la expresión parcheada con un "this" falso y timers falsos
+    const expr = r.texto.slice(r.texto.indexOf('?') + 1, -2);
+    const timers = [];
+    const fakeSetTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    const yo = { conexiones: 0, avisos: [], logger: { warn: (m) => yo.avisos.push(m), error() {} },
+        phoneNumber: undefined, async connectToWhatsapp() { yo.conexiones++; } };
+    const cerrar = new Function('setTimeout', 'i', `return ${expr}`);
+    // 50 cierres seguidos (lo que antes eran 50 reconexiones): queda UN solo reintento
+    for (let k = 0; k < 50; k++) cerrar.call(yo, fakeSetTimeout, 428);
+    assert.strictEqual(timers.length, 1);
+    assert.strictEqual(timers[0].ms, 5000);
+    assert.strictEqual(yo.conexiones, 0);
+    assert.match(yo.avisos[0], /código 428/);
+    (async () => {
+        await timers[0].fn();
+        assert.strictEqual(yo.conexiones, 1);
+        // Si ese intento también se cae, el siguiente espera más; con el tope de 5 min
+        cerrar.call(yo, fakeSetTimeout, undefined);
+        assert.strictEqual(timers.length, 2);
+        assert.ok(timers[1].ms > 5000);
+        yo.neggoReconexion = undefined;
+        yo.neggoIntentos = 100;
+        cerrar.call(yo, fakeSetTimeout, 408);
+        assert.strictEqual(timers[2].ms, 300000);
+    })().catch((e) => { console.error(e); process.exit(1); });
 }
 
 // aplicar: todo bien, después idempotente y --verificar pasa

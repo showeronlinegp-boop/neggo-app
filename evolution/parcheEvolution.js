@@ -31,12 +31,34 @@
 //    con isProcessing=true para siempre y nunca más procesaba (ni confirmaba) nodos offline:
 //    la cola quedaba trabada de nuevo. Ahora el error de un nodo se registra y se sigue.
 //
+// 6. Reconexión (Evolution, dist/main.js, connectionUpdate): al cerrarse la conexión por
+//    cualquier motivo que no sea logout, Evolution reconectaba al instante, sin pausa y sin
+//    registrar por qué se cerró. Sin red (PC suspendida o recién despierta) cada intento falla en
+//    milisegundos y dispara otro: hubo hasta 1.548 intentos por minuto (nota 247) y WhatsApp terminó
+//    desvinculando el número. Ahora queda un solo reintento pendiente a la vez, con espera
+//    creciente (5 s, 10 s, 20 s… hasta 5 min), y se registra el código del cierre.
+// 7. Al conectar (connection "open") el contador de intentos vuelve a cero.
+//
 // Se corre en el build de la imagen (evolution/Dockerfile) y otra vez en cada arranque
 // como verificación. Si algún parche no encaja (cambió la versión), sale con código 1:
 // el build falla o Evolution no arranca. Preferimos Evolution caído antes que vacíos al grupo.
 
 const fs = require('fs');
 const path = require('path');
+
+// Reintento con espera creciente (parche 6). Va en una sola línea porque reemplaza código minificado.
+const RECONEXION_NEGGO = [
+    '(()=>{',
+    'const n=(this.neggoIntentos=(this.neggoIntentos||0)+1),espera=Math.min(5e3*2**Math.min(n-1,6),3e5);',
+    'this.logger.warn(`Parche Neggo: conexión cerrada (código ${i??"sin código"}), reintento ${n} en ${espera/1e3} s`);',
+    'if(this.neggoReconexion)return;',
+    'this.neggoReconexion=setTimeout(async()=>{',
+    // Se libera antes de conectar: si este intento también se cae, agenda el siguiente
+    'this.neggoReconexion=void 0;',
+    'try{await this.connectToWhatsapp(this.phoneNumber)}catch(e){this.logger.error(e)}',
+    '},espera)',
+    '})()',
+].join('');
 
 const PARCHES = [
     {
@@ -192,6 +214,19 @@ const PARCHES = [
             '                }',
             '                isProcessing = false;',
         ].join('\n'),
+    },
+    {
+        nombre: 'reconexión → un intento a la vez con espera creciente',
+        // main.mjs no se usa (start:prod carga main.js) y está minificado con otros nombres
+        archivos: [{ ruta: 'dist/main.js', obligatorio: true }],
+        original: '![R.DisconnectReason.loggedOut,R.DisconnectReason.forbidden,402,406].includes(i)?await this.connectToWhatsapp(this.phoneNumber):(',
+        parcheado: `![R.DisconnectReason.loggedOut,R.DisconnectReason.forbidden,402,406].includes(i)?${RECONEXION_NEGGO}:(`,
+    },
+    {
+        nombre: 'reconexión → contador a cero al conectar',
+        archivos: [{ ruta: 'dist/main.js', obligatorio: true }],
+        original: 'if(t==="open"){this.instance.wuid=this.client.user.id.replace(',
+        parcheado: 'if(t==="open"){this.neggoIntentos=0;this.instance.wuid=this.client.user.id.replace(',
     },
 ];
 
