@@ -57,6 +57,22 @@ function numeroDeJid(jid) {
     return m ? `+${m[1]}` : null;
 }
 
+/**
+ * Lo que hay que poner en la lupa de WhatsApp Web para abrir un chat sin número: los dígitos antes
+ * de "@lid" (189738854133918@lid → "189738854133918"). Para los que no son @lid: null.
+ */
+function buscarEnWhatsapp(jid) {
+    const m = /^(\d+)@lid$/.exec(jid || '');
+    return m ? m[1] : null;
+}
+
+/**
+ * Cómo sale el chat en la API del agente: los @lid solo con el número (sin "@lid"); los demás, igual.
+ */
+function chatParaApi(jid) {
+    return buscarEnWhatsapp(jid) || jid;
+}
+
 /** Nombre que se puso la persona en WhatsApp; los que son solo dígitos (el lid) no sirven. */
 function nombreUtil(nombre) {
     const s = (nombre || '').trim();
@@ -178,9 +194,12 @@ function agruparConversaciones(filas, { incluirGrupos = false } = {}) {
  */
 function conIdentidad(chat, identidad, nombreAgenda) {
     const { mensajes, ...resto } = chat;
+    const numero = chat.numero || (identidad && identidad.numero) || null;
     return {
         ...resto,
-        numero: chat.numero || (identidad && identidad.numero) || null,
+        chat: chatParaApi(chat.chat),
+        numero,
+        buscar_en_whatsapp: numero ? null : buscarEnWhatsapp(chat.chat),
         nombre: (identidad && identidad.nombre) || nombreAgenda || chat.nombre,
         cliente_id: (identidad && identidad.cliente_id) || null,
         identificado_por: identidad ? { fuente: identidad.fuente, confianza: identidad.confianza } : null,
@@ -197,6 +216,8 @@ module.exports = {
     rangoDia,
     isoAr,
     numeroDeJid,
+    buscarEnWhatsapp,
+    chatParaApi,
     nombreUtil,
     textoDe,
     agruparConversaciones,

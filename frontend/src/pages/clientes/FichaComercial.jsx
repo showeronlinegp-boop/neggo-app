@@ -7,11 +7,11 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Modal from '../../components/common/Modal';
 import * as Icon from '../../components/common/icons';
-import { linkWhatsApp } from './clientesUi';
+import { linkWhatsApp, mensajePresentacion } from './clientesUi';
 import { haceCuanto } from './etapasWhatsappUi';
 
-// Ficha comercial del prospecto (067): resumen para vender, objetivos de nutrición (Conocer e
-// Informar), la charla de los últimos 7 días con buscador, lo que pidió (anotado a mano) y la
+// Ficha comercial del prospecto (067): resumen para vender, objetivos de nutrición (Presentar,
+// Conocer e Informar), la charla de los últimos 7 días con buscador, lo que pidió (anotado a mano) y la
 // cotización en borrador en Odoo. Va dentro de LeadFicha.
 
 const CAMPOS = [
@@ -30,6 +30,7 @@ const LOCAL = [
     { value: 'los_dos', label: 'Local y online' },
 ];
 const FUENTE_INFORMADO = { manual: 'lo marcó una persona', chat: 'se lo mandamos por el chat', bot: 'se lo mandó Grok' };
+const FUENTE_PRESENTACION = { app: 'se la mandamos desde la app', chat: 'se la mandamos por el chat', bot: 'se la mandó Grok' };
 
 export default function FichaComercial({ leadId, telefono, t, onCambio, sinCharla = false }) {
     const { showToast } = useToast();
@@ -116,6 +117,19 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
         else if (!(await copiar(r.respuesta, showToast, 'Respuesta copiada: pegala en el chat'))) return;
         if (!r.hecho) marcar(r, true);
     };
+    // Presentación (nota 227): abre WhatsApp con el mensaje (o lo copia) y la anota, igual que en Posibles clientes
+    const [presentando, setPresentando] = useState(false);
+    const presentar = async () => {
+        const texto = mensajePresentacion(datos.lead?.nombre_saludo);
+        const wa = telefono ? linkWhatsApp(telefono, texto) : null;
+        if (wa) window.open(wa, '_blank', 'noopener');
+        else if (!(await copiar(texto, showToast, 'Presentación copiada: pegala en el chat'))) return;
+        setPresentando(true);
+        const res = await api.post(`/clientes/seguimiento/lead/${leadId}/presentacion`, {});
+        setPresentando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo anotar la presentación', 'error'); return; }
+        onCambio();
+    };
 
     return (
         <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
@@ -127,6 +141,34 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
                     </span>
                 </span>
             )}>Objetivos de nutrición</Titulo>
+
+            <Grupo t={t} titulo="Presentar" ayuda="Lo primero: que sepa quiénes somos">
+                {(o.presentar || []).map((p) => {
+                    const actual = sig && sig.grupo === 'presentar' && sig.id === p.id;
+                    return (
+                        <Fila key={p.id} t={t} actual={actual}>
+                            <Tilde t={t} hecho={p.hecho} actual={actual} />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+                                <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{p.titulo}</span>
+                                <span style={{ color: t.color.textMuted }}>{p.ayuda}</span>
+                                {p.hecho && (
+                                    <span style={{ fontSize: t.font.size.xs, color: t.color.success }}>
+                                        Ya se presentó: {FUENTE_PRESENTACION[p.fuente] || 'anotada'}{p.fecha ? ` (${haceCuanto(p.fecha)})` : ''}
+                                    </span>
+                                )}
+                            </div>
+                            {!p.hecho && (
+                                <Button size="sm" variant={actual ? 'primary' : 'ghost'} leftIcon={<Icon.MessageCircle size={14} />} disabled={presentando} onClick={presentar}>
+                                    {telefono ? 'Mandar' : 'Copiar'}
+                                </Button>
+                            )}
+                        </Fila>
+                    );
+                })}
+                {!telefono && (o.presentar || []).some((p) => !p.hecho) && (
+                    <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Sin teléfono: “Copiar” copia la presentación para pegarla en el chat de WhatsApp Web, y la anota.</span>
+                )}
+            </Grupo>
 
             <Grupo t={t} titulo="Conocer" ayuda="Lo que tenemos que saber de él">
                 {o.conocer.map((c) => {

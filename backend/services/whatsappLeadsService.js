@@ -17,6 +17,7 @@ const { readOdooPhones } = require('./crmLeadService');
 const { linkLead } = require('./crmFollowupService');
 const { zonaDe } = require('./agenteLeads');
 const { callOdoo } = require('../config/odoo');
+const waConv = require('./agenteConversaciones');
 
 // 066 (preguntas frecuentes) y 067 (ficha del prospecto) van juntas: la ficha cuenta como uso del prospecto
 const SCHEMA = ['065_whatsapp_leads.sql', '066_crm_respuestas.sql', '067_crm_ficha_prospecto.sql']
@@ -446,7 +447,9 @@ async function chatsSinNumero({ page, limit, offset, solo_prospectos: soloProspe
         const ellos = r.ultimo_de_ellos_at ? new Date(r.ultimo_de_ellos_at).getTime() : null;
         const nuestro = r.ultimo_nuestro_at ? new Date(r.ultimo_nuestro_at).getTime() : null;
         return {
-            chat: r.chat_jid,
+            // Sin "@lid": es lo que va en la lupa de WhatsApp Web y lo que se devuelve en identidades
+            chat: waConv.chatParaApi(r.chat_jid),
+            buscar_en_whatsapp: waConv.buscarEnWhatsapp(r.chat_jid),
             nombre_whatsapp: r.nombre,
             prospecto_id: r.lead_id,
             cliente_id: r.odoo_partner_id,

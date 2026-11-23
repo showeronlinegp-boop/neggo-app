@@ -283,6 +283,8 @@ function validarQueryConversaciones(query = {}, now = new Date()) {
 }
 
 const CHAT_RE = /^\d{6,20}@(?:lid|s\.whatsapp\.net)$/;
+// El chat sin número sale de la API solo con los dígitos (sin "@lid"): así también se acepta
+const CHAT_SOLO_NUMERO_RE = /^\d{6,20}$/;
 
 /** Body de POST whatsapp/identidades: { chat, cliente_id?, numero?, nombre? }. */
 function validarIdentidadChat(body) {
@@ -290,8 +292,10 @@ function validarIdentidadChat(body) {
     if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
     errors.push(...camposDesconocidos(body, ['chat', 'cliente_id', 'numero', 'nombre']));
     const value = {};
-    if (typeof body.chat !== 'string' || !CHAT_RE.test(body.chat)) errors.push({ campo: 'chat', error: 'Tiene que ser el chat de la conversación (…@lid o …@s.whatsapp.net)' });
-    else value.chat = body.chat;
+    const chat = typeof body.chat === 'string' ? body.chat.trim() : null;
+    if (chat && CHAT_SOLO_NUMERO_RE.test(chat)) value.chat = `${chat}@lid`;
+    else if (chat && CHAT_RE.test(chat)) value.chat = chat;
+    else errors.push({ campo: 'chat', error: 'Tiene que ser el chat de la conversación, tal como sale en la API (el número, sin "@lid")' });
     if (body.cliente_id !== undefined && body.cliente_id !== null) {
         if (!Number.isInteger(body.cliente_id) || body.cliente_id < 1) errors.push({ campo: 'cliente_id', error: 'Tiene que ser el id de cliente de Odoo' });
         else value.cliente_id = body.cliente_id;
