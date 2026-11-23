@@ -7,6 +7,13 @@ const { callOdoo } = require('../config/odoo');
 const { ensureSchema } = require('./crmSchema');
 const contacts = require('./crmContacts');
 const { FollowupError } = require('./crmFollowupService');
+const { ciudadAlta } = require('./agenteLeads');
+
+/** Si no vino ciudad, la de la característica del celular (2477 → Pergamino), como en las altas por WhatsApp. */
+function ciudadOCaracteristica(city, phoneKey) {
+    const limpia = String(city || '').trim().slice(0, 120);
+    return ciudadAlta({ ciudad: limpia || null, phoneKey }).ciudad;
+}
 
 const SOURCE_STATUSES = contacts.SOURCE_STATUS_ORDER;
 const SORTS = {
@@ -85,7 +92,7 @@ async function importGoogleContacts(csvText, { userId = null, dryRun = false } =
             const batch = aCargar.slice(i, i + 200);
             const params = [];
             const values = batch.map((c) => {
-                params.push(c.name, c.phone, c.phone_key, c.email, c.city, c.source_status, c.source_list, userId);
+                params.push(c.name, c.phone, c.phone_key, c.email, ciudadOCaracteristica(c.city, c.phone_key), c.source_status, c.source_list, userId);
                 const n = params.length;
                 return `($${n - 7}, $${n - 6}, $${n - 5}, $${n - 4}, $${n - 3}, 'google_contacts', $${n - 2}, $${n - 1}, $${n})`;
             });
@@ -126,7 +133,7 @@ async function createLead({ name, phone, email, city, userId }) {
     const { rows: [row] } = await pool.query(
         `INSERT INTO crm_leads (name, phone, phone_key, email, city, source, created_by)
          VALUES ($1, $2, $3, $4, $5, 'manual', $6) RETURNING id`,
-        [nombre, contacts.phoneDisplay(key), key, mail, String(city || '').trim().slice(0, 120) || null, userId]);
+        [nombre, contacts.phoneDisplay(key), key, mail, ciudadOCaracteristica(city, key), userId]);
     return { id: row.id };
 }
 
@@ -232,6 +239,7 @@ async function getLead(id) {
 }
 
 module.exports = {
+    ciudadOCaracteristica,
     readOdooPhones,
     importGoogleContacts,
     createLead,
