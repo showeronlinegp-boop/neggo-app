@@ -28,6 +28,10 @@
 // GET    /api/clientes/contactos?grupo=activos|abiertos|dormidos|sinchat&tipo=todos|prospecto|cliente&q=&solo_esperan=&limit=&offset=
 // GET    /api/clientes/chats?filtro=todos|esperan|prospecto|cliente|dormidos&q=&limit=&offset= — lista estilo WhatsApp
 // GET    /api/clientes/chats/:chat/mensajes       — conversación de los últimos 7 días (con los otros chats del contacto)
+//
+// Grupo de avisos de la comunidad (068, nota 228). Los chats traen grupo_avisos: { estado: miembro | salio | no_esta, desde, salio_at } | null
+// GET    /api/clientes/grupo-avisos               — miembros, entradas y salidas, quiénes son
+// POST   /api/clientes/grupo-avisos/actualizar    — saca la foto de miembros ahora (solo lee WhatsApp)
 // GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
 // PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
 // PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
@@ -69,6 +73,7 @@ const botLeads = require('../services/agenteLeadsService');
 const waLeads = require('../services/whatsappLeadsService');
 const respuestas = require('../services/crmRespuestasService');
 const fichaService = require('../services/crmFichaService');
+const grupoAvisos = require('../services/grupoAvisosService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -315,7 +320,14 @@ router.get('/contactos', ...auth, async (req, res) => {
 router.get('/chats', ...auth, async (req, res) => {
     try {
         const { filtro, q, limit, offset } = req.query;
-        return ok(res, await fichaService.chats({ filtro, q, limit, offset }));
+        const datos = await fichaService.chats({ filtro, q, limit, offset });
+        // El grupo de avisos es un extra: si falla, la lista sale igual
+        try {
+            datos.items = await grupoAvisos.marcarChats(datos.items);
+        } catch (err) {
+            console.warn('⚠️ No se pudo marcar el grupo de avisos en los chats:', err.message);
+        }
+        return ok(res, datos);
     } catch (err) {
         return handleFicha(res, err, 'No se pudieron cargar los chats');
     }
@@ -326,6 +338,25 @@ router.get('/chats/:chat/mensajes', ...auth, async (req, res) => {
         return ok(res, await fichaService.mensajesDelChat(req.params.chat));
     } catch (err) {
         return handleFicha(res, err, 'No se pudo cargar la conversación');
+    }
+});
+
+router.get('/grupo-avisos', ...auth, async (req, res) => {
+    try {
+        return ok(res, await grupoAvisos.estadisticas());
+    } catch (err) {
+        return handle(res, err, 'No se pudieron cargar los números del grupo de avisos');
+    }
+});
+
+router.post('/grupo-avisos/actualizar', ...auth, async (req, res) => {
+    try {
+        const r = await grupoAvisos.tomarFoto({ origen: 'manual' });
+        console.log(`📦 Grupo de avisos (a mano): ${r.total} miembros, ${r.entraron} entraron, ${r.salieron} se fueron`);
+        return ok(res, r);
+    } catch (err) {
+        if (err instanceof grupoAvisos.GrupoAvisosError) return fail(res, err.message, err.status);
+        return handle(res, err, 'No se pudo actualizar el grupo de avisos');
     }
 });
 
