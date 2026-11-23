@@ -22,6 +22,9 @@ const MIGRACION = ['060_agente_leads.sql', '062_agente_leads_alta.sql']
 const LOCK_TOPE = 60600601;
 const TZ = 'America/Argentina/Buenos_Aires';
 const INICIO_HOY_SQL = `(date_trunc('day', NOW() AT TIME ZONE '${TZ}') AT TIME ZONE '${TZ}')`;
+// Evento del CRM que deja el equipo al sumar un prospecto al bot desde el tablero (nota 249)
+const SUMADO_BOT = 'sumado_bot';
+const MAX_SUMAR = 300;
 
 class AgenteError extends Error {
     /** extra: campos que van sueltos en el cuerpo del error (cliente_id, lead_id, data). */
@@ -83,6 +86,7 @@ const LEAD_SELECT = `
            COALESCE(s.no_contactar, false) AS no_contactar, s.no_contactar_at, s.contacto, s.revisado_hasta,
            (SELECT MIN(e.created_at) FROM crm_events e
              WHERE e.lead_id = l.id AND e.kind = 'presentacion' AND COALESCE(e.meta->>'origen', '') <> 'agente') AS presentacion_manual,
+           (SELECT MIN(e.created_at) FROM crm_events e WHERE e.lead_id = l.id AND e.kind = '${SUMADO_BOT}') AS sumado_bot_at,
            m.ultimo_envio, m.ultimo_recibido, m.ultimo_enviado,
            r.id_externo AS reserva_id_externo, r.etapa AS reserva_etapa, r.reservado_hasta AS reserva_hasta
     FROM crm_leads l
@@ -130,7 +134,7 @@ function armarLead(row, info) {
     const origen = leads.origenDe(row.source);
     const zona = leads.zonaLead({ phoneKey: row.phone_key, origen, ciudad: row.city });
     // Los que pasaron a Churn porque se lo pidieron al bot siguen visibles como no_contactar
-    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status, origen, source: row.source });
+    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status, origen, source: row.source, sumado: Boolean(row.sumado_bot_at) });
     const bloqueado = Boolean(excluido) || Boolean(row.odoo_partner_id) || row.crm_etapa !== 'frio'
         || ['ya_en_odoo', 'interesado', 'no_interesado'].includes(row.resultado);
     const ef = leads.etapaEfectiva({
@@ -164,6 +168,8 @@ function armarLead(row, info) {
         origen,
         zona: zona ? { prioridad: zona.prioridad, localidad: zona.localidad, caracteristica: zona.caracteristica } : null,
         excluido,
+        // Lo sumó el equipo desde el tablero de WhatsApp: ya le escribieron desde el negocio y no contestó
+        sumado_por_equipo: iso(row.sumado_bot_at),
         estado_agenda: row.source_status || null,
         lista_agenda: row.source_list || null,
         etapa_crm: row.crm_etapa,
@@ -477,7 +483,7 @@ async function reservarEnvio(id, value) {
     if (!lead.phone_key) throw new AgenteError(409, 'No tiene un celular válido', 'sin_telefono');
     if (lead.odoo_partner_id) throw new AgenteError(409, 'Ya es cliente en Odoo: se sigue como cliente', 'ya_en_odoo');
     // Los manuales (POST /leads) no tienen filtro de zona; Churn sí
-    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status, origen: leads.origenDe(lead.source), source: lead.source });
+    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status, origen: leads.origenDe(lead.source), source: lead.source, sumado: Boolean(lead.sumado_bot_at) });
     if (excluido === 'escribio_al_negocio') throw new AgenteError(409, 'Escribió al WhatsApp del negocio: lo sigue el equipo', 'escribio_al_negocio');
     if (excluido === 'churn') throw new AgenteError(409, 'Está en Churn: nos bloqueó o no quiere que lo contactemos', 'churn');
     if (excluido === 'fuera_de_zona') throw new AgenteError(409, 'La característica está fuera de la zona (150 km de Pergamino)', 'fuera_de_zona');
@@ -777,9 +783,67 @@ async function resumenBot() {
     };
 }
 
+/** Señales de estadoBot a partir de una fila de LEAD_SELECT. */
+function senalesBot(row) {
+    return {
+        phoneKey: row.phone_key,
+        estadoAgenda: row.source_status,
+        noContactar: row.no_contactar,
+        enOdoo: Boolean(row.odoo_partner_id),
+        crmEtapa: row.crm_etapa,
+        resultado: row.resultado,
+        etapa: row.etapa,
+        sumado: Boolean(row.sumado_bot_at),
+        respondioAlBot: Boolean(row.ultimo_recibido),
+    };
+}
+
+/** Estado frente al bot de varios posibles clientes, por id (para el tablero de WhatsApp). */
+async function estadosBot(ids, db = pool) {
+    const lista = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter((x) => x > 0))];
+    const out = new Map();
+    if (!lista.length) return out;
+    await ensureLeadsSchema();
+    const { rows } = await db.query(`${LEAD_SELECT} WHERE l.id = ANY($1::int[])`, [lista]);
+    for (const r of rows) out.set(r.id, { ...leads.estadoBot(senalesBot(r)), sumado_at: iso(r.sumado_bot_at) });
+    return out;
+}
+
+/**
+ * El equipo suma prospectos al bot de leads desde el tablero (nota 249): quedan primeros en la cola
+ * de presentaciones de Grok, aunque hayan entrado por el WhatsApp del negocio o estén fuera de la
+ * zona. No le escribe a nadie: solo deja el evento en el CRM. Los que no se pueden sumar vuelven
+ * en `omitidos` con el motivo.
+ */
+async function sumarAlBot(ids, { userId = null } = {}) {
+    const lista = [...new Set((Array.isArray(ids) ? ids : []).map((x) => parseInt(x, 10)).filter((x) => x > 0))];
+    if (!lista.length) throw new AgenteError(422, 'Elegí al menos un posible cliente', 'datos_invalidos');
+    if (lista.length > MAX_SUMAR) throw new AgenteError(422, `Se pueden sumar hasta ${MAX_SUMAR} por vez`, 'datos_invalidos');
+    await ensureLeadsSchema();
+    return enTransaccion(async (db) => {
+        const { rows } = await db.query(`${LEAD_SELECT} WHERE l.id = ANY($1::int[])`, [lista]);
+        const porId = new Map(rows.map((r) => [r.id, r]));
+        const sumados = [];
+        const omitidos = [];
+        for (const id of lista) {
+            const row = porId.get(id);
+            if (!row) { omitidos.push({ id, motivo: 'no_encontrado' }); continue; }
+            const e = leads.estadoBot(senalesBot(row));
+            if (e.estado !== 'disponible') { omitidos.push({ id, motivo: e.motivo || e.estado }); continue; }
+            await followups.insertEvent(db, { col: 'lead_id', id }, {
+                kind: SUMADO_BOT, text: 'Sumado al bot de leads desde el tablero de WhatsApp', meta: { origen: 'manual' }, userId,
+            });
+            sumados.push(id);
+        }
+        return { sumados, omitidos };
+    });
+}
+
 module.exports = {
     AgenteError,
     ensureLeadsSchema,
+    estadosBot,
+    sumarAlBot,
     listarLeads,
     obtenerLead,
     crearLead,

@@ -160,12 +160,34 @@ function quedanHoy(tope, enviadosHoy) {
  * fuera_de_zona: la característica no está en config/leadsZona.json (no aplica a los manuales).
  * churn: la agenda lo tiene como Churn (nos bloqueó o no quiere que lo contactemos).
  * escribio_al_negocio: entró por el WhatsApp del negocio (CRM WhatsApp, L1): ya habla con el equipo.
+ * sumado: el equipo lo sumó a mano desde el tablero (nota 249). Pasa por encima de la zona y de
+ * escribio_al_negocio, nunca de Churn.
  */
-function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', source = null, zona = ZONA }) {
+function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', source = null, zona = ZONA, sumado = false }) {
     if (ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return 'churn';
+    if (sumado) return null;
     if (source === SOURCE_WHATSAPP) return 'escribio_al_negocio';
     if (origen !== 'manual' && !zonaDe(phoneKey, zona)) return 'fuera_de_zona';
     return null;
+}
+
+/**
+ * Si el equipo puede sumar a este prospecto al bot de leads desde el tablero (nota 249).
+ * estado: disponible (se puede sumar) | sumado (ya lo sumaron y espera la presentación) |
+ * en_cadencia (el bot ya le escribió y sigue con los recordatorios) | terminado (hizo toda la
+ * cadencia) | no_puede (motivo dice por qué).
+ */
+function estadoBot({ phoneKey, estadoAgenda = null, noContactar = false, enOdoo = false, crmEtapa = 'frio', resultado = null, etapa = 'pendiente', sumado = false, respondioAlBot = false }) {
+    const no = (motivo) => ({ estado: 'no_puede', motivo });
+    if (noContactar || ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return no('no_contactar');
+    if (!phoneKey) return no('sin_telefono');
+    if (enOdoo || resultado === 'ya_en_odoo') return no('ya_en_odoo');
+    if (respondioAlBot || ['interesado', 'no_interesado'].includes(resultado)) return no('respondio_al_bot');
+    if ((crmEtapa || 'frio') !== 'frio') return no('lo_sigue_el_equipo');
+    if (etapa === 'finalizado') return { estado: 'terminado', motivo: null };
+    if (etapa && etapa !== 'pendiente') return { estado: 'en_cadencia', motivo: null };
+    if (sumado) return { estado: 'sumado', motivo: null };
+    return { estado: 'disponible', motivo: null };
 }
 
 /**
@@ -182,6 +204,11 @@ function compararCola(a, b) {
         const fb = b.desde || '';
         if (fa !== fb) return fa < fb ? -1 : 1;
     } else {
+        // Los que sumó el equipo desde el tablero van primero, el más viejo primero (nota 249)
+        const sa = a.sumado_por_equipo || null;
+        const sb = b.sumado_por_equipo || null;
+        if (Boolean(sa) !== Boolean(sb)) return sa ? -1 : 1;
+        if (sa && sb && sa !== sb) return sa < sb ? -1 : 1;
         const za = a.zona ? a.zona.prioridad : 9;
         const zb = b.zona ? b.zona.prioridad : 9;
         if (za !== zb) return za - zb;
@@ -227,6 +254,7 @@ module.exports = {
     origenDe,
     ciudadAlta,
     motivoExcluido,
+    estadoBot,
     topeDiario,
     ordenEtapa,
     etapaEfectiva,

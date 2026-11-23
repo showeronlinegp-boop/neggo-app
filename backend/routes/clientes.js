@@ -11,6 +11,7 @@
 // POST   /api/clientes/leads          — alta a mano { name, phone, email, city }
 // POST   /api/clientes/leads/importar — { csv, dry_run } CSV de Google Contacts (solo admin)
 // GET    /api/clientes/leads/bot      — lo que hace Grok Bot con los posibles clientes (tope del día, respuestas)
+// POST   /api/clientes/leads/sumar-bot — { ids } los suma a la cola de Grok, primeros (tablero de WhatsApp)
 // GET    /api/clientes/leads/:id
 // POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
 // GET    /api/clientes/leads/:id/whatsapp — chats del WhatsApp del negocio vinculados y candidatos para vincular a mano
@@ -146,9 +147,27 @@ router.get('/leads', ...auth, async (req, res) => {
 // Posibles clientes con chat de WhatsApp, cada uno con su etapa (embudo)
 router.get('/leads/whatsapp-embudo', ...auth, async (req, res) => {
     try {
-        return ok(res, await waLeads.embudo());
+        const data = await waLeads.embudo();
+        // Cada tarjeta dice si se puede sumar al bot de leads (nota 249)
+        const ids = data.etapas.flatMap((g) => g.items.map((i) => i.id));
+        const bot = await botLeads.estadosBot(ids);
+        for (const g of data.etapas) for (const i of g.items) i.bot = bot.get(i.id) || null;
+        return ok(res, data);
     } catch (err) {
         return handleWhatsapp(res, err, 'No se pudo armar el embudo de WhatsApp');
+    }
+});
+
+// Suma prospectos del tablero al bot de leads (Grok): quedan primeros en su cola. { ids: [] }
+router.post('/leads/sumar-bot', ...auth, async (req, res) => {
+    try {
+        const r = await botLeads.sumarAlBot((req.body || {}).ids, { userId: req.user.id });
+        console.log(`✅ CRM: ${r.sumados.length} prospectos sumados al bot por usuario ${req.user.id} (${r.omitidos.length} omitidos)`);
+        return ok(res, r);
+    } catch (err) {
+        if (err instanceof botLeads.AgenteError) return fail(res, err.message, err.status);
+        console.error('❌ No se pudieron sumar al bot:', err.message);
+        return fail(res, 'No se pudieron sumar al bot', 500);
     }
 });
 
