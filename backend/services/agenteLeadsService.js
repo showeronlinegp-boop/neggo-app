@@ -130,7 +130,7 @@ function armarLead(row, info) {
     const origen = leads.origenDe(row.source);
     const zona = leads.zonaLead({ phoneKey: row.phone_key, origen, ciudad: row.city });
     // Los que pasaron a Churn porque se lo pidieron al bot siguen visibles como no_contactar
-    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status, origen });
+    const excluido = row.no_contactar ? null : leads.motivoExcluido({ phoneKey: row.phone_key, estadoAgenda: row.source_status, origen, source: row.source });
     const bloqueado = Boolean(excluido) || Boolean(row.odoo_partner_id) || row.crm_etapa !== 'frio'
         || ['ya_en_odoo', 'interesado', 'no_interesado'].includes(row.resultado);
     const ef = leads.etapaEfectiva({
@@ -477,7 +477,8 @@ async function reservarEnvio(id, value) {
     if (!lead.phone_key) throw new AgenteError(409, 'No tiene un celular válido', 'sin_telefono');
     if (lead.odoo_partner_id) throw new AgenteError(409, 'Ya es cliente en Odoo: se sigue como cliente', 'ya_en_odoo');
     // Los manuales (POST /leads) no tienen filtro de zona; Churn sí
-    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status, origen: leads.origenDe(lead.source) });
+    const excluido = leads.motivoExcluido({ phoneKey: lead.phone_key, estadoAgenda: lead.source_status, origen: leads.origenDe(lead.source), source: lead.source });
+    if (excluido === 'escribio_al_negocio') throw new AgenteError(409, 'Escribió al WhatsApp del negocio: lo sigue el equipo', 'escribio_al_negocio');
     if (excluido === 'churn') throw new AgenteError(409, 'Está en Churn: nos bloqueó o no quiere que lo contactemos', 'churn');
     if (excluido === 'fuera_de_zona') throw new AgenteError(409, 'La característica está fuera de la zona (150 km de Pergamino)', 'fuera_de_zona');
     if (leads.topeDiario() > 0 && (await enviadosHoy()) >= leads.topeDiario()) {
@@ -761,6 +762,7 @@ async function resumenBot() {
         excluidos: {
             fuera_de_zona: todos.filter((x) => x.excluido === 'fuera_de_zona').length,
             churn: todos.filter((x) => x.excluido === 'churn').length,
+            escribio_al_negocio: todos.filter((x) => x.excluido === 'escribio_al_negocio').length,
         },
         por_localidad: contar((x) => (enOdoo.has(x.id) ? null : x.zona && x.zona.localidad)),
         por_etapa: contar((x) => x.seguimiento.etapa),

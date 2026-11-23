@@ -33,6 +33,8 @@ const ESTADOS_EXCLUIDOS = ['churn'];
 // con source = SOURCE_MANUAL_AGENTE y salen como origen "manual"; todos los demás (la agenda de
 // Google y las altas a mano desde la app) salen como "agenda" y siguen con el filtro de zona.
 const SOURCE_MANUAL_AGENTE = 'agente_manual';
+// Los que dio de alta el cruce con el WhatsApp del negocio: Grok no les escribe
+const SOURCE_WHATSAPP = 'whatsapp';
 const ORIGENES = ['manual', 'agenda'];
 // Fuera del mapa de zona, un lead manual ordena como prioridad 2 (no se excluye)
 const PRIORIDAD_FUERA_DE_MAPA = 2;
@@ -157,9 +159,11 @@ function quedanHoy(tope, enviadosHoy) {
  * Por qué el bot no le escribe nunca (aunque no haya pedido nada), o null.
  * fuera_de_zona: la característica no está en config/leadsZona.json (no aplica a los manuales).
  * churn: la agenda lo tiene como Churn (nos bloqueó o no quiere que lo contactemos).
+ * escribio_al_negocio: entró por el WhatsApp del negocio (CRM WhatsApp, L1): ya habla con el equipo.
  */
-function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', zona = ZONA }) {
+function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', source = null, zona = ZONA }) {
     if (ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return 'churn';
+    if (source === SOURCE_WHATSAPP) return 'escribio_al_negocio';
     if (origen !== 'manual' && !zonaDe(phoneKey, zona)) return 'fuera_de_zona';
     return null;
 }
@@ -213,6 +217,7 @@ module.exports = {
     PRIORIDAD_ESTADO,
     ESTADOS_EXCLUIDOS,
     SOURCE_MANUAL_AGENTE,
+    SOURCE_WHATSAPP,
     ORIGENES,
     PRIORIDAD_FUERA_DE_MAPA,
     cargarZona,

@@ -13,6 +13,30 @@
 // GET    /api/clientes/leads/bot      — lo que hace Grok Bot con los posibles clientes (tope del día, respuestas)
 // GET    /api/clientes/leads/:id
 // POST   /api/clientes/leads/:id/asignar — { partner_id }: es otro contacto de ese cliente de Odoo
+// GET    /api/clientes/leads/:id/whatsapp — chats del WhatsApp del negocio vinculados y candidatos para vincular a mano
+// POST   /api/clientes/leads/:id/whatsapp — { chat }: este chat es de este posible cliente
+// DELETE /api/clientes/leads/:id/whatsapp/:chat — saca el vínculo (no se vuelve a poner solo)
+//
+// Preguntas frecuentes y sus respuestas (066)
+// GET    /api/clientes/respuestas
+// POST   /api/clientes/respuestas            — { pregunta, respuesta?, informar_a_todos?, activa? }
+// PUT    /api/clientes/respuestas/:id        — lo mismo, solo lo que cambia
+// POST   /api/clientes/respuestas/:id/mover  — { direccion: -1 | 1 } sube o baja un lugar
+// DELETE /api/clientes/respuestas/:id
+//
+// Ficha comercial del prospecto y pantalla Contactos (067)
+// GET    /api/clientes/contactos?grupo=activos|abiertos|dormidos|sinchat&tipo=todos|prospecto|cliente&q=&solo_esperan=&limit=&offset=
+// GET    /api/clientes/chats?filtro=todos|esperan|prospecto|cliente|dormidos&q=&limit=&offset= — lista estilo WhatsApp
+// GET    /api/clientes/chats/:chat/mensajes       — conversación de los últimos 7 días (con los otros chats del contacto)
+// GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
+// PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
+// PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
+// POST   /api/clientes/leads/:id/pedido           — { texto, cantidad?, product_id?, chat?, mensaje_id? }
+// PUT    /api/clientes/leads/:id/pedido/:itemId   — lo mismo, solo lo que cambia
+// DELETE /api/clientes/leads/:id/pedido/:itemId
+// GET    /api/clientes/productos-neggo?q=         — productos activos de Neggo para elegir el del pedido
+// GET    /api/clientes/leads/:id/contactos-odoo   — contactos de Odoo parecidos (para no duplicar)
+// POST   /api/clientes/leads/:id/cotizar          — { cliente_id | crear_contacto: true } cotización en borrador en Odoo
 //
 // Seguimiento (fase 2). :tipo = cliente | lead
 // GET    /api/clientes/mi-dia?mias=1
@@ -42,6 +66,9 @@ const followups = require('../services/crmFollowupService');
 const leads = require('../services/crmLeadService');
 const botMonitor = require('../services/agenteMonitorService');
 const botLeads = require('../services/agenteLeadsService');
+const waLeads = require('../services/whatsappLeadsService');
+const respuestas = require('../services/crmRespuestasService');
+const fichaService = require('../services/crmFichaService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -105,6 +132,7 @@ router.get('/leads', ...auth, async (req, res) => {
             city: req.query.city,
             presentacion: req.query.presentacion,
             celular: req.query.celular === '1' || req.query.celular === 'true',
+            whatsapp: req.query.whatsapp,
             sort: req.query.sort,
             limit: req.query.limit,
             offset: req.query.offset,
@@ -112,6 +140,42 @@ router.get('/leads', ...auth, async (req, res) => {
         return paginated(res, rows, total, limit, offset);
     } catch (err) {
         return handle(res, err, 'No se pudo cargar la lista de posibles clientes');
+    }
+});
+
+// Posibles clientes con chat de WhatsApp, cada uno con su etapa (embudo)
+router.get('/leads/whatsapp-embudo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.embudo());
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo armar el embudo de WhatsApp');
+    }
+});
+
+// Chats ocultos como proveedores y marca a mano { es: true|false }
+router.get('/leads/whatsapp-proveedores', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.chatsProveedores());
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudieron leer los proveedores de WhatsApp');
+    }
+});
+
+router.put('/whatsapp/chats/:chat/proveedor', ...auth, async (req, res) => {
+    try {
+        const { es } = req.body || {};
+        return ok(res, await waLeads.marcarProveedorManual(req.params.chat, es !== false));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo marcar el chat');
+    }
+});
+
+router.put('/leads/:id/etapa-whatsapp', ...auth, async (req, res) => {
+    try {
+        const { etapa, motivo } = req.body || {};
+        return ok(res, await waLeads.marcarEtapa(req.params.id, etapa ?? null, { motivo, userId: req.user.id }));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo cambiar la etapa');
     }
 });
 
@@ -167,6 +231,211 @@ router.post('/leads/:id/asignar', ...auth, async (req, res) => {
         return ok(res, await followups.assignLead(req.params.id, partnerId, req.user.id));
     } catch (err) {
         return handle(res, err, 'No se pudo asignar el posible cliente');
+    }
+});
+
+// ── Chats del WhatsApp del negocio (CRM WhatsApp, L1) ────────────
+
+// Preguntas frecuentes y sus respuestas (066)
+function handleRespuesta(res, err, generic) {
+    if (err instanceof respuestas.RespuestaError) {
+        return res.status(err.status).json({ success: false, error: err.message, errors: err.errors || undefined });
+    }
+    return handle(res, err, generic);
+}
+
+function idDe(req) {
+    const id = Number(req.params.id);
+    return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+router.get('/respuestas', ...auth, async (req, res) => {
+    try {
+        return ok(res, await respuestas.listar());
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudieron cargar las preguntas frecuentes');
+    }
+});
+
+router.post('/respuestas', ...auth, async (req, res) => {
+    try {
+        return ok(res, await respuestas.crear(req.body, req.user.id), 201);
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo guardar la pregunta');
+    }
+});
+
+router.put('/respuestas/:id', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.editar(id, req.body, req.user.id));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo guardar la pregunta');
+    }
+});
+
+router.post('/respuestas/:id/mover', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.mover(id, Number((req.body || {}).direccion)));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo mover la pregunta');
+    }
+});
+
+router.delete('/respuestas/:id', ...auth, async (req, res) => {
+    const id = idDe(req);
+    if (!id) return fail(res, 'Id inválido', 422);
+    try {
+        return ok(res, await respuestas.borrar(id));
+    } catch (err) {
+        return handleRespuesta(res, err, 'No se pudo borrar la pregunta');
+    }
+});
+
+// Ficha comercial del prospecto y pantalla Contactos (067)
+function handleFicha(res, err, generic) {
+    if (err instanceof fichaService.FichaError) {
+        return res.status(err.status).json({ success: false, error: err.message, errors: err.errors || undefined });
+    }
+    return handle(res, err, generic);
+}
+
+router.get('/contactos', ...auth, async (req, res) => {
+    try {
+        const { tipo, grupo, q, solo_esperan: soloEsperan, limit, offset } = req.query;
+        return ok(res, await fichaService.contactos({ tipo, grupo, q, solo_esperan: soloEsperan === 'true' || soloEsperan === '1', limit, offset }));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron cargar los contactos');
+    }
+});
+
+router.get('/chats', ...auth, async (req, res) => {
+    try {
+        const { filtro, q, limit, offset } = req.query;
+        return ok(res, await fichaService.chats({ filtro, q, limit, offset }));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron cargar los chats');
+    }
+});
+
+router.get('/chats/:chat/mensajes', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.mensajesDelChat(req.params.chat));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cargar la conversación');
+    }
+});
+
+router.get('/productos-neggo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.buscarProductos(req.query.q));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron buscar los productos');
+    }
+});
+
+router.get('/leads/:id/ficha', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.ficha(req.params.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cargar la ficha');
+    }
+});
+
+router.put('/leads/:id/perfil', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.guardarPerfil(req.params.id, req.body, req.user.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron guardar los datos');
+    }
+});
+
+router.put('/leads/:id/informado/:respuestaId', ...auth, async (req, res) => {
+    try {
+        const hecho = (req.body || {}).hecho !== false;
+        return ok(res, await fichaService.marcarInformado(req.params.id, req.params.respuestaId, hecho, req.user.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo marcar el objetivo');
+    }
+});
+
+router.post('/leads/:id/pedido', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.crearItem(req.params.id, req.body, req.user.id), 201);
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo anotar el pedido');
+    }
+});
+
+router.put('/leads/:id/pedido/:itemId', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.editarItem(req.params.id, req.params.itemId, req.body));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cambiar el pedido');
+    }
+});
+
+router.delete('/leads/:id/pedido/:itemId', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.borrarItem(req.params.id, req.params.itemId));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo borrar el pedido');
+    }
+});
+
+router.get('/leads/:id/contactos-odoo', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.contactosParecidos(req.params.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudieron buscar los contactos de Odoo');
+    }
+});
+
+router.post('/leads/:id/cotizar', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.cotizar(req.params.id, req.body, req.user.id), 201);
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo crear la cotización en Odoo');
+    }
+});
+
+function handleWhatsapp(res, err, generic) {
+    if (err instanceof waLeads.WhatsappLeadError) return fail(res, err.message, err.status);
+    // Sin el contenedor del WhatsApp del negocio no existe evolution_negocio
+    if (err.code === '3F000' || err.code === '42P01') return fail(res, 'El WhatsApp del negocio no está disponible', 503);
+    return handle(res, err, generic);
+}
+
+router.get('/leads/:id/whatsapp', ...auth, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const vinculados = await waLeads.chatsDeLead(id);
+        const candidatos = await waLeads.candidatosParaLead(id);
+        if (!candidatos) return fail(res, 'No encontré ese posible cliente', 404);
+        const etapa = vinculados.length ? await waLeads.etapaDeLead(id) : null;
+        return ok(res, { vinculados, candidatos, etapa });
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudieron leer los chats de WhatsApp');
+    }
+});
+
+router.post('/leads/:id/whatsapp', ...auth, async (req, res) => {
+    try {
+        const { chat } = req.body || {};
+        return ok(res, await waLeads.vincularChat(parseInt(req.params.id, 10), chat, req.user.id));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo vincular el chat');
+    }
+});
+
+router.delete('/leads/:id/whatsapp/:chat', ...auth, async (req, res) => {
+    try {
+        return ok(res, await waLeads.desvincularChat(req.params.id, req.params.chat));
+    } catch (err) {
+        return handleWhatsapp(res, err, 'No se pudo desvincular el chat');
     }
 });
 

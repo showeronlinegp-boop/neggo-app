@@ -9,6 +9,12 @@
 // PATCH  /api/agente/clientes/:id/seguimiento-inactivo — { ultimo_contacto, toques_enviados, proxima_accion, cerrado }
 // GET    /api/agente/clientes/cotizaciones-web?dias=30&no_contactar=false|true|todos&compro_despues=&page=&limit=
 //                                                 — carritos de la web sin confirmar, en vivo, por cliente
+// GET    /api/agente/whatsapp/conversaciones?fecha=AAAA-MM-DD&incluir_grupos=&sin_respuesta=&page=&limit=
+//                                                 — charlas del WhatsApp del negocio de un día (por defecto ayer)
+// POST   /api/agente/whatsapp/identidades        — { chat, cliente_id? | numero? | nombre? } de quién es un chat
+// GET    /api/agente/whatsapp/chats-sin-numero?solo_prospectos=true&page=&limit=
+// GET    /api/agente/respuestas                  — preguntas frecuentes con el mensaje que va como respuesta
+//                                                 — chats @lid sin número para buscar en WhatsApp Web y devolver el número
 // GET    /api/agente/clientes/:id                — ficha en vivo, sin caché (chequear antes de mandar; incluye importante)
 // GET    /api/agente/productos?rubro=&stock=&q=&orden=vendidos|nombre&excluir_compras_de=&solo_publicados=&page=&limit=
 // POST   /api/agente/clientes/:id/envios         — { etapa | tipo_inactivo, mensaje, id_externo, productos_recomendados } RESERVA el mensaje
@@ -56,6 +62,9 @@ const agenteNotas = require('../services/agenteNotas');
 const v = require('../services/agenteValidacion');
 const agenteLeads = require('../services/agenteLeadsService');
 const vLeads = require('../services/agenteLeadsValidacion');
+const waIdentidad = require('../services/whatsappIdentidadService');
+const waLeads = require('../services/whatsappLeadsService');
+const respuestas = require('../services/crmRespuestasService');
 
 const SPEC_PATH = path.join(__dirname, '..', 'docs', 'agente-openapi.json');
 const SWAGGER_VERSION = '5.17.14';
@@ -181,6 +190,57 @@ router.get('/clientes/cotizaciones-web', async (req, res) => {
         return sendPage(res, await agente.listarCotizacionesWeb(value));
     } catch (err) {
         return handle(res, err, 'No se pudo armar la lista de cotizaciones web');
+    }
+});
+
+router.get('/whatsapp/conversaciones', async (req, res) => {
+    const { value, errors } = v.validarQueryConversaciones(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await agente.listarConversaciones(value));
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer las conversaciones de WhatsApp');
+    }
+});
+
+router.get('/whatsapp/chats-sin-numero', async (req, res) => {
+    const { value, errors } = v.validarQueryChatsSinNumero(req.query);
+    if (errors.length) return invalid(res, errors);
+    try {
+        return sendPage(res, await waLeads.chatsSinNumero(value));
+    } catch (err) {
+        if (err.code === '3F000' || err.code === '42P01') {
+            return res.status(503).json({ success: false, error: 'El WhatsApp del negocio no está disponible', codigo: 'whatsapp_no_disponible' });
+        }
+        return handle(res, err, 'No se pudo armar la lista de chats sin número');
+    }
+});
+
+// Preguntas frecuentes que cargó el equipo (solo activas y con respuesta), para responder igual que ellos
+router.get('/respuestas', async (req, res) => {
+    try {
+        const data = (await respuestas.listarUsables()).map((r) => ({
+            id: r.id, pregunta: r.pregunta, respuesta: r.respuesta, informar_a_todos: r.informar_a_todos, actualizado_at: r.actualizado_at,
+        }));
+        return res.json({ success: true, data });
+    } catch (err) {
+        return handle(res, err, 'No se pudieron cargar las preguntas frecuentes');
+    }
+});
+
+router.post('/whatsapp/identidades', async (req, res) => {
+    const { value, errors } = v.validarIdentidadChat(req.body);
+    if (errors.length) return invalid(res, errors);
+    try {
+        const data = await waIdentidad.asignar({ ...value, fuente: 'agente' });
+        if (!data) return res.status(404).json({ success: false, error: 'No existe ese cliente en Odoo', codigo: 'no_encontrado' });
+        // El nombre que vio en WhatsApp Web queda también en el prospecto de ese chat
+        data.prospecto_renombrado = value.nombre ? await waLeads.nombrarLeadDelChat(value.chat, value.nombre) : null;
+        // CRM WhatsApp: con el número o el cliente nuevo, el prospecto se completa o pasa a cliente ya
+        waLeads.vincular().catch((err) => console.error('❌ CRM WhatsApp: cruce después de identidades:', err.message));
+        return res.json({ success: true, data });
+    } catch (err) {
+        return handle(res, err, 'No se pudo guardar de quién es el chat');
     }
 });
 

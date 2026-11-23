@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { useToast } from '../../context/ToastContext';
@@ -16,8 +16,12 @@ import BarrasMensuales from './BarrasMensuales';
 import ClienteFicha from './ClienteFicha';
 import Importancia from './Importancia';
 import PosiblesClientes from './PosiblesClientes';
+import EmbudoWhatsapp from './EmbudoWhatsapp';
 import BotSeguimiento from './BotSeguimiento';
 import BotLeads from './BotLeads';
+import RespuestasFrecuentes from './RespuestasFrecuentes';
+import Contactos from './Contactos';
+import Chats from './Chats';
 import {
     HEALTH_META, HEALTH_ORDER, SORT_OPTIONS, STAGE_META, STAGE_ORDER, IMPORTANCIA_FILTRO,
     fmtHace, fmtIntervalo, fmtActualizado, fmtProxima, hoyAr, iniciales,
@@ -31,11 +35,15 @@ import {
 
 const PAGE = 50;
 // Cliente · estado · etapa · última compra · compras · 12 meses · tendencia · cotización
-const COLUMNAS = 'minmax(190px, 2fr) 118px 112px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
+const COLUMNAS = 'minmax(190px, 2fr) 118px 128px minmax(104px, 1fr) 64px 160px 72px minmax(104px, 1.1fr)';
 // Medio: sin el gráfico de barras y con la tendencia abajo del monto de 12 meses
-const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 96px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
+const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 124px minmax(92px, 1fr) 52px 104px minmax(88px, 1fr)';
 // Ancho de la tabla (con la estrella) desde el que entra cada diseño; más angosto, tarjetas
-const ANCHO_MIN = { ancho: 1110, medio: 860 };
+const ANCHO_MIN = { ancho: 1130, medio: 890 };
+// Alto mínimo de la lista con scroll propio: en pantallas muy bajas scrollea la página entera
+const ALTO_MIN_LISTA = 240;
+// Aire entre el final de la lista (o del chat) y el borde de abajo de la ventana
+const MARGEN_ABAJO = 16;
 
 // Ancho disponible de un elemento, actualizado al cambiar la ventana o el menú lateral
 function useAnchoDe(el) {
@@ -50,16 +58,23 @@ function useAnchoDe(el) {
 }
 const ETAPAS = [{ value: '', label: 'Todas las etapas' }, ...STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))];
 const SORTS = [...SORT_OPTIONS, { value: 'importancia', label: 'Más importantes' }, { value: 'accion', label: 'Próxima acción' }];
+// En compu, sin nada elegido, los selectores angostos dicen solo qué filtran (nota #223)
+const ETAPAS_CORTO = [{ value: '', label: 'Etapa' }, ...ETAPAS.slice(1)];
+const IMPORTANCIA_CORTO = [{ value: '', label: 'Importancia' }, ...IMPORTANCIA_FILTRO.slice(1)];
 
 function Etapa({ c, t }) {
     const meta = STAGE_META[c.stage] || STAGE_META.frio;
     const proxima = fmtProxima(c.next_action_date);
     const vencida = c.next_action_date && c.next_action_date < hoyAr();
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start', minWidth: 0 }}>
             <Badge tone={meta.tone}>{meta.label}</Badge>
             {proxima && (
-                <span style={{ fontSize: t.font.size.xs, color: vencida ? t.color.danger : t.color.textMuted, ...t.numericStyle }}>
+                // En un solo renglón (nota #223): partido en dos hacía la fila más alta
+                <span title={proxima} style={{
+                    fontSize: t.font.size.xs, color: vencida ? t.color.danger : t.color.textMuted, ...t.numericStyle,
+                    maxWidth: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
                     {proxima}
                 </span>
             )}
@@ -113,7 +128,7 @@ function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
 
     const nombre = (
         <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], minWidth: 0, flex: 1 }}>
-            <Avatar nombre={c.partner_name} size={isMobile ? 40 : 36} t={t} />
+            <Avatar nombre={c.partner_name} size={isMobile ? 40 : 28} t={t} />
             <div style={{ minWidth: 0 }}>
                 <div style={{
                     fontSize: t.font.size.sm, fontWeight: t.font.weight.medium, color: t.color.text,
@@ -121,14 +136,30 @@ function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
                 }} title={c.partner_name}>
                     {c.partner_name}
                 </div>
-                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', gap: '0 8px' }}>
-                    <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
-                    {c.city && <span>{c.city}</span>}
-                    {c.rubro && <span>{c.rubro}</span>}
-                </div>
-                <div style={{ marginTop: isMobile ? 6 : 4 }}>
-                    <Importancia value={c.importance} size={isMobile ? 20 : 13} onChange={(n) => onImportancia(c, n)} />
-                </div>
+                {isMobile ? (
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px' }}>
+                        <span style={{ fontFamily: t.font.mono }}>{c.phone || 'Sin teléfono'}</span>
+                        {c.city && <span>{c.city}</span>}
+                        {c.rubro && <span>{c.rubro}</span>}
+                    </div>
+                ) : (
+                    // En la tabla: importancia, teléfono, ciudad y rubro en un solo renglón, cortado con «…» (nota #223)
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflow: 'hidden' }}>
+                        <Importancia value={c.importance} size={12} onChange={(n) => onImportancia(c, n)} />
+                        <span style={{ fontFamily: t.font.mono, whiteSpace: 'nowrap', flexShrink: 0 }}>{c.phone || 'Sin teléfono'}</span>
+                        {(c.city || c.rubro) && (
+                            <span title={[c.city, c.rubro].filter(Boolean).join(' · ')}
+                                style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {[c.city, c.rubro].filter(Boolean).join(' · ')}
+                            </span>
+                        )}
+                    </div>
+                )}
+                {isMobile && (
+                    <div style={{ marginTop: 6 }}>
+                        <Importancia value={c.importance} size={20} onChange={(n) => onImportancia(c, n)} />
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -201,7 +232,7 @@ function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
     return (
         <div onClick={() => onAbrir(c)} {...hover}
             style={{
-                ...estilosBoton, padding: '10px 16px', display: 'grid', alignItems: 'center', gap: medio ? t.space[3] : t.space[4],
+                ...estilosBoton, padding: '6px 16px', display: 'grid', alignItems: 'center', gap: medio ? t.space[3] : t.space[4],
                 gridTemplateColumns: medio ? COLUMNAS_MEDIO : COLUMNAS,
             }}>
             {nombre}
@@ -288,21 +319,24 @@ function ChipEstado({ valor, cantidad, activo, onClick, isMobile, t }) {
         success: t.color.success, primary: t.color.primary, warn: t.color.warn,
         danger: t.color.danger, muted: t.color.textMuted,
     };
+    // En compu, un solo renglón (punto · estado · cantidad) para que la lista entre sin scrollear (nota #223)
     return (
         <button type="button" onClick={onClick} aria-pressed={activo} title={meta.hint}
             style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
-                padding: isMobile ? '10px 12px' : '12px 14px', minWidth: isMobile ? 0 : 128, flex: isMobile ? '1 1 40%' : '1 1 0',
+                display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'flex-start' : 'center',
+                justifyContent: 'space-between', gap: isMobile ? 4 : 6,
+                // En compu arrancan del ancho justo de su texto, así entran en la misma línea que los interruptores
+                padding: isMobile ? '10px 12px' : '5px 8px', minWidth: 0, flex: isMobile ? '1 1 40%' : '1 1 auto',
                 borderRadius: t.radius.md, cursor: 'pointer', textAlign: 'left', fontFamily: t.font.family,
                 border: `1px solid ${activo ? t.color.primary : t.color.border}`,
                 background: activo ? t.color.primarySoft : t.color.surface,
                 boxShadow: t.shadow.card,
             }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: t.font.size.xs, color: t.color.textMuted }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: t.font.size.xs, color: t.color.textMuted, whiteSpace: 'nowrap' }}>
                 <span style={{ width: 8, height: 8, borderRadius: t.radius.full, background: tones[meta.tone] }} />
                 {meta.label}
             </span>
-            <span style={{ fontSize: t.font.size.xl, fontWeight: t.font.weight.semibold, color: t.color.text, letterSpacing: '-0.02em', ...t.numericStyle }}>
+            <span style={{ fontSize: isMobile ? t.font.size.xl : t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text, letterSpacing: '-0.02em', ...t.numericStyle }}>
                 {fmtInt(cantidad)}
             </span>
         </button>
@@ -329,7 +363,7 @@ export default function Clientes() {
     const [health, setHealth] = useState('');
     const [stage, setStage] = useState('');
     const [importancia, setImportancia] = useState('');
-    const [tab, setTab] = useState('clientes');
+    const [tab, setTab] = useState('chats');
     const [leadsTotal, setLeadsTotal] = useState(null);
     const huboCambios = useRef(false);
     const [soloAbiertas, setSoloAbiertas] = useState(false);
@@ -406,10 +440,11 @@ export default function Clientes() {
 
     useEffect(() => () => clearTimeout(pollRef.current), []);
 
-    // Cantidad de posibles clientes para la pestaña
-    useEffect(() => {
-        api.get('/clientes/leads/resumen').then((res) => { if (res.success) setLeadsTotal(res.data.total); });
+    // Cantidad de prospectos con y sin chat de WhatsApp para las pestañas
+    const cargarContadoresLeads = useCallback(() => {
+        api.get('/clientes/leads/resumen').then((res) => { if (res.success) setLeadsTotal(res.data.whatsapp || null); });
     }, []);
+    useEffect(() => { cargarContadoresLeads(); }, [cargarContadoresLeads]);
 
     // Al terminar un sync que estaba corriendo, recarga la lista
     const prevSync = useRef(false);
@@ -435,9 +470,10 @@ export default function Clientes() {
         setRows((prev) => [...prev, ...(res.data || [])]);
     };
 
-    const ciudades = [{ value: '', label: 'Todas las ciudades' },
+    // En compu los selectores son angostos: sin nada elegido dicen solo qué filtran (nota #223)
+    const ciudades = [{ value: '', label: isMobile ? 'Todas las ciudades' : 'Ciudad' },
         ...(resumen?.cities || []).map((c) => ({ value: c.city, label: `${c.city} · ${c.n}` }))];
-    const rubros = [{ value: '', label: 'Todos los rubros' },
+    const rubros = [{ value: '', label: isMobile ? 'Todos los rubros' : 'Rubro' },
         ...(resumen?.rubros || []).map((r) => ({ value: r.rubro, label: `${r.rubro} · ${r.n}` }))];
 
     const variacion90 = resumen && resumen.revenue_prev_90d > 0
@@ -500,6 +536,82 @@ export default function Clientes() {
         salirDeElegir();
     };
 
+    // ── Vista compacta en compu (nota #223): todo entra en la pantalla y la lista scrollea por dentro ──
+    const compu = !isMobile;
+
+    const resumenNumeros = resumen ? (
+        <div style={{
+            display: 'flex', gap: isMobile ? t.space[3] : `0 ${t.space[6]}px`, flexWrap: 'wrap',
+            fontSize: compu ? t.font.size.xs : t.font.size.sm, color: t.color.textMuted,
+            marginBottom: compu ? 0 : t.space[4], ...t.numericStyle,
+        }}>
+            <span title={`Facturación de los últimos 90 días. Incluye las ventas a Consumidor Final${variacion90 != null ? '. El % es contra los 90 días anteriores' : ''}`}>
+                {compu ? '90 días' : 'Facturación 90 días'}: <strong style={{ color: t.color.text }}>{fmtAR(resumen.revenue_90d)}</strong>
+                {variacion90 != null && (
+                    <span style={{ color: variacion90 >= 0 ? t.color.success : t.color.danger, marginLeft: 6 }}>
+                        {variacion90 > 0 ? '+' : ''}{variacion90}%{compu ? '' : ' vs. 90 días anteriores'}
+                    </span>
+                )}
+            </span>
+            <span>{compu ? 'Nuevos del mes' : 'Nuevos este mes'}: <strong style={{ color: t.color.text }}>{fmtInt(resumen.nuevos_mes)}</strong></span>
+            <span title="Cotizaciones abiertas de los últimos 60 días: una excusa para hablarle">{compu ? 'Con cotización' : 'Con cotización reciente'}: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
+        </div>
+    ) : null;
+
+    const estiloInterruptor = { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer', whiteSpace: 'nowrap' };
+    const interruptores = (
+        <>
+            <label style={estiloInterruptor} title="Solo los clientes con una cotización abierta de los últimos 60 días">
+                <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
+                {compu ? 'Cotización' : 'Solo con cotización reciente'}
+            </label>
+            <label style={estiloInterruptor} title="Solo los clientes en seguimiento cercano (los que marcaste con la estrella)">
+                <Toggle checked={soloCercanos} onChange={setSoloCercanos} />
+                <Icon.Star size={14} filled color={t.color.warn} />
+                <span style={t.numericStyle}>{compu ? '' : 'Seguimiento cercano · '}{fmtInt(resumen?.cercanos ?? 0)}</span>
+            </label>
+        </>
+    );
+
+    const botonElegir = !eligiendo ? (
+        <Button variant="secondary" size="sm" leftIcon={<Icon.Check size={14} />} onClick={() => setEligiendo(true)}
+            title="Elegí varios clientes para ponerles la misma importancia">
+            Elegir varios
+        </Button>
+    ) : null;
+
+    // El <main> deja 48 px de aire abajo: en compu la pantalla se come parte con un margen negativo
+    // para que la lista llegue hasta MARGEN_ABAJO del borde de la ventana sin que aparezca scroll
+    const [raizEl, setRaizEl] = useState(null);
+    const [recorte, setRecorte] = useState(0);
+    useLayoutEffect(() => {
+        const main = raizEl?.closest('[data-app-main]');
+        const padAbajo = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
+        setRecorte(compu ? Math.max(0, padAbajo - MARGEN_ABAJO) : 0);
+    }, [raizEl, compu]);
+
+    // Alto de la lista: lo que queda de la VENTANA debajo de los filtros, menos el pie de la tabla.
+    // Se mide contra la ventana (no contra el <main>, que crece con el contenido: eso hacía un
+    // círculo de renders, error #185). Se mide en cada render y al cambiar la ventana.
+    const [listaEl, setListaEl] = useState(null);
+    const pieRef = useRef(null);
+    const [altoLista, setAltoLista] = useState(null);
+    const medirLista = useCallback(() => {
+        if (!compu || !listaEl) { setAltoLista(null); return; }
+        const main = listaEl.closest('[data-app-main]');
+        const top = listaEl.getBoundingClientRect().top + window.scrollY + (main?.scrollTop || 0);
+        const pie = pieRef.current?.offsetHeight || 0;
+        // 2 px: borde de la tarjeta
+        const alto = Math.max(ALTO_MIN_LISTA, Math.floor(window.innerHeight - top - pie - 2 - MARGEN_ABAJO));
+        // Con 1 px de tolerancia, para que un redondeo no dispare otro render
+        setAltoLista((prev) => (prev != null && Math.abs(prev - alto) <= 1 ? prev : alto));
+    }, [listaEl, compu]);
+    useLayoutEffect(() => { medirLista(); });
+    useEffect(() => {
+        window.addEventListener('resize', medirLista);
+        return () => window.removeEventListener('resize', medirLista);
+    }, [medirLista]);
+
     // Lo que se cambia en la ficha (etapa, acciones) se ve en la lista al cerrarla
     const cerrarFicha = () => {
         setAbierto(null);
@@ -507,40 +619,67 @@ export default function Clientes() {
     };
 
     return (
-        <div style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-                <div style={{ minWidth: 0 }}>
-                    <h1 style={{ margin: 0, fontSize: isMobile ? 22 : t.font.size['2xl'], fontWeight: t.font.weight.semibold, color: t.color.text, letterSpacing: '-0.02em' }}>
+        // En compu el <main> del layout ya da el margen: sin padding propio, para ganar alto (nota #223)
+        <div ref={setRaizEl} style={{
+            padding: isMobile ? 12 : 0, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family,
+            // Clientes y Chats llenan la ventana justo (nota #223); las otras pestañas scrollean como siempre
+            marginBottom: tab === 'clientes' || tab === 'chats' ? -recorte : undefined,
+        }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: compu ? t.space[2] : 12, marginBottom: compu ? t.space[2] : 16 }}>
+                <div style={{ minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: compu ? `0 ${t.space[6]}px` : 0 }}>
+                    <h1 title="Cada cliente medido contra su propio ritmo de compra en el punto de venta de Neggo"
+                        style={{ margin: 0, fontSize: isMobile ? 22 : t.font.size.xl, fontWeight: t.font.weight.semibold, color: t.color.text, letterSpacing: '-0.02em' }}>
                         Clientes
                     </h1>
-                    <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4 }}>
-                        Cada cliente medido contra su propio ritmo de compra en el punto de venta de Neggo.
-                    </div>
+                    {isMobile && (
+                        <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, width: '100%' }}>
+                            Cada cliente medido contra su propio ritmo de compra en el punto de venta de Neggo.
+                        </div>
+                    )}
+                    {compu && resumenNumeros}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
-                        {sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}
-                    </span>
-                    <Button variant="secondary" leftIcon={<Icon.Refresh size={16} />} disabled={sincronizando} onClick={actualizar}>
+                    {/* En compu «Actualizado hace…» va en el cartelito del botón, para no ocupar otro renglón */}
+                    {!compu && (
+                        <span style={{ fontSize: t.font.size.xs, color: t.color.textFaint }}>
+                            {sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}
+                        </span>
+                    )}
+                    {compu && tab === 'clientes' && botonElegir}
+                    <Button variant="secondary" size={compu ? 'sm' : undefined} leftIcon={<Icon.Refresh size={compu ? 14 : 16} />} disabled={sincronizando} onClick={actualizar}
+                        title={compu ? `${sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}. Tocá para leer de nuevo los tickets del POS` : undefined}>
                         {sincronizando ? 'Actualizando…' : 'Actualizar'}
                     </Button>
                 </div>
             </div>
 
             <Tabs
+                scrollable
                 value={tab}
                 onChange={setTab}
-                style={{ marginBottom: t.space[6] }}
+                style={{ marginBottom: compu ? t.space[3] : t.space[6] }}
                 tabs={[
+                    { value: 'chats', label: 'Chats', icon: <Icon.MessageCircle size={16} /> },
                     { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
-                    { value: 'leads', label: 'Posibles clientes', icon: <Icon.Plus size={16} />, count: leadsTotal },
+                    { value: 'contactos', label: 'Contactos', icon: <Icon.MessageCircle size={16} /> },
+                    { value: 'leads_chat', label: 'Prospectos con WhatsApp', icon: <Icon.MessageCircle size={16} />, count: leadsTotal?.con_whatsapp ?? null },
+                    { value: 'leads', label: 'Prospectos sin chat', icon: <Icon.Plus size={16} />, count: leadsTotal?.sin_whatsapp ?? null },
+                    { value: 'respuestas', label: 'Preguntas frecuentes', icon: <Icon.BookOpen size={16} /> },
                     { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
                     { value: 'bot_leads', label: 'Bot de leads', icon: <Icon.MessageCircle size={16} /> },
                 ]}
             />
 
-            {tab === 'leads' ? (
-                <PosiblesClientes onResumen={(r) => setLeadsTotal(r.total)} />
+            {tab === 'chats' ? (
+                <Chats />
+            ) : tab === 'contactos' ? (
+                <Contactos onCambio={cargarContadoresLeads} />
+            ) : tab === 'leads_chat' ? (
+                <EmbudoWhatsapp onCambio={cargarContadoresLeads} />
+            ) : tab === 'leads' ? (
+                <PosiblesClientes whatsapp="sin" onResumen={(r) => setLeadsTotal(r.whatsapp || null)} />
+            ) : tab === 'respuestas' ? (
+                <RespuestasFrecuentes />
             ) : tab === 'bot_leads' ? (
                 <BotLeads />
             ) : tab === 'bot' ? (
@@ -548,33 +687,28 @@ export default function Clientes() {
             ) : (
             <>
 
-            <div style={{ display: 'flex', gap: t.space[3], flexWrap: 'wrap', marginBottom: t.space[4] }}>
+            {/* En compu: estados en una tira de una línea, con los dos interruptores al final (nota #223) */}
+            <div style={{ display: 'flex', gap: compu ? t.space[2] : t.space[3], flexWrap: 'wrap', alignItems: 'center', marginBottom: compu ? t.space[2] : t.space[4] }}>
                 {HEALTH_ORDER.map((h) => (
                     <ChipEstado key={h} valor={h} cantidad={resumen?.health?.[h] ?? 0} activo={health === h}
                         onClick={() => setHealth(health === h ? '' : h)} isMobile={isMobile} t={t} />
                 ))}
+                {compu && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[4], flexShrink: 0, marginLeft: t.space[2] }}>
+                        {interruptores}
+                    </div>
+                )}
             </div>
 
-            {resumen && (
-                <div style={{
-                    display: 'flex', gap: isMobile ? t.space[3] : t.space[10], flexWrap: 'wrap',
-                    fontSize: t.font.size.sm, color: t.color.textMuted, marginBottom: t.space[4], ...t.numericStyle,
-                }}>
-                    <span title="Incluye las ventas a Consumidor Final">
-                        Facturación 90 días: <strong style={{ color: t.color.text }}>{fmtAR(resumen.revenue_90d)}</strong>
-                        {variacion90 != null && (
-                            <span style={{ color: variacion90 >= 0 ? t.color.success : t.color.danger, marginLeft: 6 }}>
-                                {variacion90 > 0 ? '+' : ''}{variacion90}% vs. 90 días anteriores
-                            </span>
-                        )}
-                    </span>
-                    <span>Nuevos este mes: <strong style={{ color: t.color.text }}>{fmtInt(resumen.nuevos_mes)}</strong></span>
-                    <span title="Cotizaciones abiertas de los últimos 60 días: una excusa para hablarle">Con cotización reciente: <strong style={{ color: t.color.text }}>{fmtInt(resumen.con_cotizacion)}</strong></span>
-                </div>
-            )}
+            {!compu && resumenNumeros}
 
-            <Card padding={false} style={{ padding: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: t.space[4] }}>
-                <div style={{ flex: '1 1 280px' }}>
+            <Card padding={false} style={{
+                padding: compu ? 0 : 14, display: 'flex', gap: compu ? t.space[2] : 10, flexWrap: 'wrap', alignItems: 'center',
+                marginBottom: compu ? t.space[2] : t.space[4],
+                ...(compu ? { border: 'none', background: 'transparent', boxShadow: 'none' } : null),
+            }}>
+                {/* minWidth 0: si no, el ancho propio del campo de texto empuja el último selector a otro renglón */}
+                <div style={{ flex: compu ? '1 1 150px' : '1 1 280px', minWidth: 0 }}>
                     <Input
                         leftIcon={<Icon.Search size={16} />}
                         placeholder="Buscá por nombre o teléfono…"
@@ -583,30 +717,16 @@ export default function Clientes() {
                         aria-label="Buscar cliente"
                     />
                 </div>
-                <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 200 }} />
-                <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 200 }} />
-                <Select value={stage} onChange={setStage} options={ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 170 }} />
-                <Select value={importancia} onChange={setImportancia} options={IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : 200 }} />
-                <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 210 }} />
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}>
-                    <Toggle checked={soloAbiertas} onChange={setSoloAbiertas} />
-                    Solo con cotización reciente
-                </label>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: t.font.size.sm, color: t.color.text, cursor: 'pointer' }}
-                    title="Los clientes que marcaste con la estrella">
-                    <Toggle checked={soloCercanos} onChange={setSoloCercanos} />
-                    <Icon.Star size={14} filled color={t.color.warn} />
-                    <span style={t.numericStyle}>Seguimiento cercano · {fmtInt(resumen?.cercanos ?? 0)}</span>
-                </label>
+                <Select value={city} onChange={setCity} options={ciudades} placeholder="Ciudad" style={{ width: isMobile ? '100%' : 130 }} />
+                <Select value={rubro} onChange={setRubro} options={rubros} placeholder="Rubro" style={{ width: isMobile ? '100%' : 130 }} />
+                <Select value={stage} onChange={setStage} options={compu ? ETAPAS_CORTO : ETAPAS} placeholder="Etapa" style={{ width: isMobile ? '100%' : 120 }} />
+                <Select value={importancia} onChange={setImportancia} options={compu ? IMPORTANCIA_CORTO : IMPORTANCIA_FILTRO} placeholder="Importancia" style={{ width: isMobile ? '100%' : 140 }} />
+                <Select value={sort} onChange={setSort} options={SORTS} style={{ width: isMobile ? '100%' : 180 }} />
+                {!compu && interruptores}
                 {filtrosActivos && (
                     <Button variant="ghost" size="sm" leftIcon={<Icon.X size={14} />} onClick={limpiar}>Limpiar filtros</Button>
                 )}
-                {!eligiendo && (
-                    <Button variant="secondary" size="sm" leftIcon={<Icon.Check size={14} />} onClick={() => setEligiendo(true)}
-                        title="Elegí varios clientes para ponerles la misma importancia">
-                        Elegir varios
-                    </Button>
-                )}
+                {!compu && botonElegir}
             </Card>
 
             {eligiendo && (
@@ -648,9 +768,12 @@ export default function Clientes() {
 
             <div ref={setTablaEl}>
             <Card padding={false} style={{ overflow: 'hidden' }}>
+                {/* En compu la lista scrollea por dentro con el encabezado fijo arriba (nota #223) */}
+                <div ref={setListaEl} style={altoLista ? { maxHeight: altoLista, overflowY: 'auto' } : undefined}>
                 {modo !== 'tarjeta' && (
                     <div style={{
-                        display: 'grid', gap: modo === 'medio' ? t.space[3] : t.space[4], padding: '10px 16px 10px 56px', background: t.color.surface2,
+                        position: 'sticky', top: 0, zIndex: 1,
+                        display: 'grid', gap: modo === 'medio' ? t.space[3] : t.space[4], padding: '8px 16px 8px 56px', background: t.color.surface2,
                         gridTemplateColumns: modo === 'medio' ? COLUMNAS_MEDIO : COLUMNAS,
                         fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
                         textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -710,11 +833,12 @@ export default function Clientes() {
                         );
                     })
                 )}
+                </div>
 
                 {!loading && rows.length > 0 && (
-                    <div style={{
+                    <div ref={pieRef} style={{
                         display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[3], flexWrap: 'wrap',
-                        padding: '10px 16px', borderTop: `1px solid ${t.color.border}`, background: t.color.surface2,
+                        padding: compu ? '6px 16px' : '10px 16px', borderTop: `1px solid ${t.color.border}`, background: t.color.surface2,
                         fontSize: t.font.size.xs, color: t.color.textMuted, ...t.numericStyle,
                     }}>
                         <span>Mostrando {fmtInt(rows.length)} de {fmtInt(total)}</span>

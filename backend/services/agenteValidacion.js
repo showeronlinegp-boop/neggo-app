@@ -6,6 +6,8 @@ const { ETAPAS, CADENCIA, DIAS_DEFAULT, DIAS_MAX } = require('./agenteNuevos');
 const { DIAS_DEFAULT: COTIZACIONES_DIAS_DEFAULT } = require('./agenteCotizacionesWeb');
 const importantes = require('./agenteImportantes');
 const inactivos = require('./agenteInactivos');
+const conversaciones = require('./agenteConversaciones');
+const { phoneKey, phoneDisplay } = require('./crmContacts');
 
 const ETAPAS_ENVIO = CADENCIA.map((p) => p.etapa);
 const ID_EXTERNO_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -252,6 +254,75 @@ function validarQueryCotizacionesWeb(query = {}) {
         else value.compro_despues = b;
     }
     return { value, errors };
+}
+
+/** Query de GET whatsapp/conversaciones: fecha (por defecto ayer, en Argentina), grupos y paginación por chat. */
+function validarQueryConversaciones(query = {}, now = new Date()) {
+    const pag = validarPaginacion(query);
+    const errors = [...pag.errors];
+    const hoy = conversaciones.fechaAr(now.getTime());
+    let fecha = conversaciones.ayerAr(now);
+    if (query.fecha !== undefined && query.fecha !== '') {
+        if (!esFechaSimple(query.fecha)) errors.push({ campo: 'fecha', error: 'Tiene que ser una fecha YYYY-MM-DD' });
+        else if (query.fecha > hoy) errors.push({ campo: 'fecha', error: 'No puede ser una fecha futura' });
+        else fecha = query.fecha;
+    }
+    let incluirGrupos = false;
+    if (query.incluir_grupos !== undefined) {
+        const b = booleanoQuery(query.incluir_grupos);
+        if (b === undefined) errors.push({ campo: 'incluir_grupos', error: 'Tiene que ser true o false' });
+        else incluirGrupos = b;
+    }
+    let sinRespuesta;
+    if (query.sin_respuesta !== undefined) {
+        const b = booleanoQuery(query.sin_respuesta);
+        if (b === undefined) errors.push({ campo: 'sin_respuesta', error: 'Tiene que ser true o false' });
+        else sinRespuesta = b;
+    }
+    return { value: { fecha, hoy, incluir_grupos: incluirGrupos, sin_respuesta: sinRespuesta, ...pag.value }, errors };
+}
+
+const CHAT_RE = /^\d{6,20}@(?:lid|s\.whatsapp\.net)$/;
+
+/** Body de POST whatsapp/identidades: { chat, cliente_id?, numero?, nombre? }. */
+function validarIdentidadChat(body) {
+    const errors = [];
+    if (!esObjeto(body)) return { value: null, errors: [{ campo: 'body', error: 'Tiene que ser un objeto JSON' }] };
+    errors.push(...camposDesconocidos(body, ['chat', 'cliente_id', 'numero', 'nombre']));
+    const value = {};
+    if (typeof body.chat !== 'string' || !CHAT_RE.test(body.chat)) errors.push({ campo: 'chat', error: 'Tiene que ser el chat de la conversación (…@lid o …@s.whatsapp.net)' });
+    else value.chat = body.chat;
+    if (body.cliente_id !== undefined && body.cliente_id !== null) {
+        if (!Number.isInteger(body.cliente_id) || body.cliente_id < 1) errors.push({ campo: 'cliente_id', error: 'Tiene que ser el id de cliente de Odoo' });
+        else value.cliente_id = body.cliente_id;
+    }
+    if (body.numero !== undefined && body.numero !== null) {
+        const key = typeof body.numero === 'string' ? phoneKey(body.numero) : null;
+        if (!key) errors.push({ campo: 'numero', error: 'Tiene que ser un celular argentino' });
+        else value.numero = phoneDisplay(key);
+    }
+    if (body.nombre !== undefined && body.nombre !== null) {
+        validarTexto('nombre', body.nombre, { obligatorio: false }, errors);
+        if (typeof body.nombre === 'string' && body.nombre.trim().length > CONTACTO_MAX) errors.push({ campo: 'nombre', error: `Máximo ${CONTACTO_MAX} caracteres` });
+        else if (typeof body.nombre === 'string' && body.nombre.trim()) value.nombre = body.nombre.trim();
+    }
+    if (!value.cliente_id && !value.numero && !value.nombre && !errors.some((e) => e.campo !== 'chat')) {
+        errors.push({ campo: 'body', error: 'Mandá cliente_id, numero o nombre' });
+    }
+    return { value, errors };
+}
+
+/** Query de GET whatsapp/chats-sin-numero: page, limit, solo_prospectos (por defecto true). */
+function validarQueryChatsSinNumero(query = {}) {
+    const pag = validarPaginacion(query);
+    const errors = [...pag.errors];
+    let soloProspectos = true;
+    if (query.solo_prospectos !== undefined && query.solo_prospectos !== '') {
+        const b = booleanoQuery(query.solo_prospectos);
+        if (b === undefined) errors.push({ campo: 'solo_prospectos', error: 'Tiene que ser true o false' });
+        else soloProspectos = b;
+    }
+    return { value: { ...pag.value, solo_prospectos: soloProspectos }, errors };
 }
 
 /** Query de GET productos. */
@@ -667,6 +738,7 @@ function validarQueryTareas(query = {}) {
 }
 
 module.exports = {
+    validarQueryChatsSinNumero,
     LIMIT_DEFAULT,
     LIMIT_MAX,
     TEXTO_MAX,
@@ -680,6 +752,8 @@ module.exports = {
     validarQueryImportantes,
     validarQueryCotizacionesWeb,
     validarQueryProductos,
+    validarQueryConversaciones,
+    validarIdentidadChat,
     validarQueryReposicion,
     validarId,
     validarSeguimiento,
