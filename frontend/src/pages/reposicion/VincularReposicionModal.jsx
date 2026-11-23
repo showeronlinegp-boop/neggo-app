@@ -8,6 +8,7 @@ import useIsMobile from '../../hooks/useIsMobile';
 import Modal from '../../components/common/Modal';
 import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
+import Select from '../../components/common/Select';
 import Badge from '../../components/common/Badge';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
@@ -49,6 +50,9 @@ export default function VincularReposicionModal({ producto, onClose, onCambio })
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
     const [q, setQ] = useState('');
+    // Proveedor elegido ('' = todos). Con proveedor y sin texto se lista su catálogo web.
+    const [proveedor, setProveedor] = useState('');
+    const [proveedores, setProveedores] = useState([]);
     const [sugeridos, setSugeridos] = useState([]);
     const [confirmados, setConfirmados] = useState([]);
     const [resultados, setResultados] = useState([]);
@@ -59,6 +63,15 @@ export default function VincularReposicionModal({ producto, onClose, onCambio })
     const [aviso, setAviso] = useState(null);
 
     const odooId = producto?.odoo_id;
+
+    // Proveedores con catálogo web, para el filtro
+    useEffect(() => {
+        let vivo = true;
+        api.get('/suppliers', { active: 'true', catalogo: 'web' })
+            .then(r => { if (vivo && r.success) setProveedores(r.data || []); })
+            .catch(() => {});
+        return () => { vivo = false; };
+    }, []);
 
     const cargarVinculos = useCallback(async () => {
         if (!odooId) return;
@@ -88,18 +101,22 @@ export default function VincularReposicionModal({ producto, onClose, onCambio })
 
     useEffect(() => {
         const term = q.trim();
-        if (!producto || term.length < 2) { setResultados([]); return; }
+        const conTexto = term.length >= 2;
+        if (!producto || (!conTexto && !proveedor)) { setResultados([]); return; }
         let vivo = true;
         const timer = setTimeout(async () => {
             setBuscando(true);
-            const res = await api.get('/products/supplier', { search: term, match: 'words', source: 'web', limit: 15 });
+            const params = { source: 'web', limit: conTexto ? 15 : 50 };
+            if (conTexto) { params.search = term; params.match = 'words'; }
+            if (proveedor) params.supplierId = proveedor;
+            const res = await api.get('/products/supplier', params);
             if (!vivo) return;
             setBuscando(false);
             if (res.success) setResultados(res.data || []);
             else setError(res.error || 'No se pudo buscar');
         }, 300);
         return () => { vivo = false; clearTimeout(timer); };
-    }, [q, producto]);
+    }, [q, proveedor, producto]);
 
     if (!producto) return null;
 
@@ -167,14 +184,28 @@ export default function VincularReposicionModal({ producto, onClose, onCambio })
                     <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, marginBottom: 8 }}>
                         Buscar en catálogos
                     </div>
-                    <Input
-                        value={q}
-                        onChange={e => setQ(e.target.value)}
-                        placeholder="Nombre o código del proveedor"
-                        leftIcon={<Icon.Search size={14} />}
-                        autoFocus
-                    />
-                    {(ref || porNombre) && (
+                    <div style={{ display: 'flex', gap: 8, flexDirection: isMobile ? 'column' : 'row' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <Input
+                                value={q}
+                                onChange={e => setQ(e.target.value)}
+                                placeholder={proveedor ? 'Filtrá dentro del proveedor (opcional)' : 'Nombre o código del proveedor'}
+                                leftIcon={<Icon.Search size={14} />}
+                                autoFocus
+                            />
+                        </div>
+                        <Select
+                            value={proveedor}
+                            // Al elegir un proveedor se ve su catálogo entero; el texto se vuelve a poner con los botones
+                            onChange={v => { setProveedor(v); if (v) setQ(''); }}
+                            options={[
+                                { value: '', label: 'Todos los proveedores' },
+                                ...proveedores.map(s => ({ value: String(s.id), label: s.name })),
+                            ]}
+                            style={{ width: isMobile ? '100%' : 220 }}
+                        />
+                    </div>
+                    {(ref || porNombre || (proveedor && q)) && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                             {ref && (
                                 <Button size="sm" variant={q === ref ? 'secondary' : 'ghost'} onClick={() => setQ(ref)}>
@@ -186,14 +217,24 @@ export default function VincularReposicionModal({ producto, onClose, onCambio })
                                     {porNombre}
                                 </Button>
                             )}
+                            {proveedor && q && (
+                                <Button size="sm" variant="ghost" onClick={() => setQ('')}>
+                                    Todo el proveedor
+                                </Button>
+                            )}
                         </div>
                     )}
                     {buscando && (
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 8 }}>Buscando…</div>
                     )}
-                    {!buscando && q.trim().length >= 2 && resultados.length === 0 && (
+                    {!buscando && (q.trim().length >= 2 || proveedor) && resultados.length === 0 && (
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 8 }}>
-                            No hay ofertas web con esas palabras.
+                            {q.trim().length >= 2 ? 'No hay ofertas web con esas palabras.' : 'Ese proveedor no tiene ofertas web cargadas.'}
+                        </div>
+                    )}
+                    {!buscando && proveedor && q.trim().length < 2 && resultados.length >= 50 && (
+                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 8 }}>
+                            Se muestran las primeras 50. Escribí algo para achicar la lista.
                         </div>
                     )}
                     {resultados.map(p => {
