@@ -30,7 +30,7 @@ const LOCAL = [
     { value: 'los_dos', label: 'Local y online' },
 ];
 const FUENTE_INFORMADO = { manual: 'lo marcó una persona', chat: 'se lo mandamos por el chat', bot: 'se lo mandó Grok' };
-const FUENTE_PRESENTACION = { app: 'se la mandamos desde la app', chat: 'se la mandamos por el chat', bot: 'se la mandó Grok' };
+const FUENTE_PRESENTACION = { app: 'se la mandamos desde la app', chat: 'se la mandamos por el chat', bot: 'se la mandó Grok', manual: 'lo marcó una persona' };
 
 export default function FichaComercial({ leadId, telefono, t, onCambio, sinCharla = false }) {
     const { showToast } = useToast();
@@ -130,6 +130,15 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
         if (!res.success) { showToast(res.error || 'No se pudo anotar la presentación', 'error'); return; }
         onCambio();
     };
+    // Tilde a mano (nota 233): ya tiene la presentación sin mandarla desde la app. Solo se destilda
+    // lo que marcó una persona; lo que mandó Grok o se vio en el chat queda.
+    const tildarPresentacion = async (p) => {
+        setPresentando(true);
+        const res = await api.put(`/clientes/leads/${leadId}/presentacion`, { hecho: !p.hecho });
+        setPresentando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo marcar la presentación', 'error'); return; }
+        onCambio();
+    };
 
     return (
         <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
@@ -145,9 +154,17 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
             <Grupo t={t} titulo="Presentar" ayuda="Lo primero: que sepa quiénes somos">
                 {(o.presentar || []).map((p) => {
                     const actual = sig && sig.grupo === 'presentar' && sig.id === p.id;
+                    const tildable = !p.hecho || p.fuente === 'manual';
                     return (
                         <Fila key={p.id} t={t} actual={actual}>
-                            <Tilde t={t} hecho={p.hecho} actual={actual} />
+                            {tildable ? (
+                                <button type="button" onClick={() => tildarPresentacion(p)} disabled={presentando}
+                                    aria-label={p.hecho ? `Destildar ${p.titulo}` : `Tildar ${p.titulo}: ya la tiene`}
+                                    title={p.hecho ? 'Destildar' : 'Ya la tiene: tildar sin mandarla'}
+                                    style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'flex' }}>
+                                    <Tilde t={t} hecho={p.hecho} actual={actual} />
+                                </button>
+                            ) : <Tilde t={t} hecho={p.hecho} actual={actual} />}
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
                                 <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{p.titulo}</span>
                                 <span style={{ color: t.color.textMuted }}>{p.ayuda}</span>
@@ -167,6 +184,9 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
                 })}
                 {!telefono && (o.presentar || []).some((p) => !p.hecho) && (
                     <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Sin teléfono: “Copiar” copia la presentación para pegarla en el chat de WhatsApp Web, y la anota.</span>
+                )}
+                {(o.presentar || []).some((p) => !p.hecho) && (
+                    <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>¿Ya la tiene? Tocá el círculo para tildarla sin mandársela. Así Grok tampoco se la manda.</span>
                 )}
             </Grupo>
 

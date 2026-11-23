@@ -31,6 +31,7 @@
 // GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
 // PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
 // PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
+// PUT    /api/clientes/leads/:id/presentacion     — { hecho } objetivo Presentar a mano (nota 233)
 // POST   /api/clientes/leads/:id/pedido           — { texto, cantidad?, product_id?, chat?, mensaje_id? }
 // PUT    /api/clientes/leads/:id/pedido/:itemId   — lo mismo, solo lo que cambia
 // DELETE /api/clientes/leads/:id/pedido/:itemId
@@ -359,6 +360,15 @@ router.put('/leads/:id/informado/:respuestaId', ...auth, async (req, res) => {
         return ok(res, await fichaService.marcarInformado(req.params.id, req.params.respuestaId, hecho, req.user.id));
     } catch (err) {
         return handleFicha(res, err, 'No se pudo marcar el objetivo');
+    }
+});
+
+router.put('/leads/:id/presentacion', ...auth, async (req, res) => {
+    try {
+        const hecho = (req.body || {}).hecho !== false;
+        return ok(res, await fichaService.marcarPresentacion(req.params.id, hecho, req.user.id));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo marcar la presentación');
     }
 });
 
