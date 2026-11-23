@@ -8,7 +8,7 @@ import Select from '../../components/common/Select';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
-import { defaultSchedule, odooImageUrl } from './whatsappUtils';
+import { defaultSchedule, odooImageUrl, textoReparto } from './whatsappUtils';
 import { usePropuestaClaude, BotonesPropuesta, RecuadroPropuesta, MotivoClaude } from './PropuestaClaude';
 
 // Sorteo de N fotos por categoría: se revisan, se cambian o archivan, y se programan.
@@ -122,7 +122,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         setBusy('');
         onNotice(esEstado
             ? `«${product.name}» se sube a los estados. Lo ves en la cola.`
-            : `«${product.name}» sale ahora al grupo. Lo ves en la cola.`);
+            : `«${product.name}» entra al reparto del día. ${textoReparto([res.data.plan])}`);
         onScheduled();
     }
 
@@ -142,7 +142,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         const total = res.data.reduce((acc, b) => acc + b.total, 0);
         onNotice(esEstado
             ? `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} de estados con ${total} fotos.`
-            : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos.`);
+            : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos. ${textoReparto(res.data.map((b) => b.plan))}`);
         setPicks([]);
         if (prop.cargadaId) {
             // Lo programado ya no vuelve en la propuesta; si quedó algo sin usar, se vuelve a ofrecer

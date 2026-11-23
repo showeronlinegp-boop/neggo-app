@@ -10,7 +10,7 @@ import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
 import WhatsAppRandomPicker from './WhatsAppRandomPicker';
 import WhatsAppQueue from './WhatsAppQueue';
-import { defaultSchedule, fmtWhen } from './whatsappUtils';
+import { defaultSchedule, fmtWhen, textoReparto } from './whatsappUtils';
 
 const STATUS_TONE = {
     programada: 'muted',
@@ -22,7 +22,11 @@ const STATUS_TONE = {
     enviando: 'primary',
     enviado: 'success',
     error: 'danger',
+    omitido: 'warn',
 };
+
+// Cómo se lee cada estado en la tabla (omitido = no entró hasta las 18)
+const STATUS_LABEL = { omitido: 'no entró', en_curso: 'en curso' };
 
 // WhatsApp rota el QR cada ~45 s y Evolution reinicia la conexión cada ~3,5 min (eso invalida
 // el QR anterior). Mientras el QR está a la vista se vuelve a pedir para no mostrar uno vencido.
@@ -184,7 +188,7 @@ export default function WhatsAppPublish() {
         setBusy('');
         if (!res.success) { setError(res.error); return; }
         const donde = destino === 'estado' ? 'en los estados' : 'en el grupo';
-        setNotice(`Tanda #${res.data.id} programada ${donde} con ${res.data.total} productos.`);
+        setNotice(`Tanda #${res.data.id} programada ${donde} con ${res.data.total} productos. ${textoReparto([res.data.plan])}`);
         setOpenId(res.data.id);
         loadBatches();
         setQueueKey((k) => k + 1);
@@ -270,7 +274,7 @@ export default function WhatsAppPublish() {
                         />
                     </div>
                     <div style={{ width: 140 }}>
-                        <div style={label}>Segundos entre mensajes (promedio, varía ±35 %)</div>
+                        <div style={label} title="Las fotos del grupo se reparten de lunes a sábado de 9 a 18. Este es el mínimo entre dos publicaciones (nunca menos de 90 s).">Mínimo de segundos entre fotos (90 o más)</div>
                         <Input type="number" min="10" max="3600" value={intervalSeconds} onChange={(e) => setIntervalSeconds(e.target.value)} />
                     </div>
                     <Button onClick={loadGroups} disabled={busy === 'groups'}>Listar grupos</Button>
@@ -382,8 +386,8 @@ export default function WhatsAppPublish() {
                                     <td style={{ padding: '10px 14px' }}>{b.destino === 'estado' ? 'Estados' : (b.group_subject || 'Grupo')}</td>
                                     <td style={{ padding: '10px 14px', textTransform: 'capitalize' }}>{b.company}</td>
                                     <td style={{ padding: '10px 14px', ...t.numericStyle }}>{fmtWhen(b.scheduled_at)}</td>
-                                    <td style={{ padding: '10px 14px', ...t.numericStyle }}>{b.enviados}/{b.total}{b.errores ? ` · ${b.errores} error` : ''}</td>
-                                    <td style={{ padding: '10px 14px' }}><Badge tone={STATUS_TONE[b.status] || 'muted'}>{b.status}</Badge></td>
+                                    <td style={{ padding: '10px 14px', ...t.numericStyle }}>{b.enviados}/{b.total}{b.errores ? ` · ${b.errores} error` : ''}{b.omitidos ? ` · ${b.omitidos} no entraron` : ''}</td>
+                                    <td style={{ padding: '10px 14px' }}><Badge tone={STATUS_TONE[b.status] || 'muted'}>{STATUS_LABEL[b.status] || b.status}</Badge></td>
                                     <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
                                         <Button size="sm" variant="ghost" onClick={() => setOpenId(b.id)}>Ver</Button>
                                         {(b.status === 'programada' || b.status === 'en_curso') && (
@@ -404,13 +408,23 @@ export default function WhatsAppPublish() {
                 {detail && (
                     <div style={{ padding: t.space[5], borderTop: `1px solid ${t.color.border}` }}>
                         <strong>Tanda #{detail.id}</strong>
-                        <span style={{ color: t.color.textMuted }}> · {detail.group_subject || detail.group_jid} · cada {detail.interval_seconds} s en promedio</span>
+                        <span style={{ color: t.color.textMuted }}> · {detail.destino === 'estado'
+                            ? `Estados · cada ${detail.interval_seconds} s en promedio`
+                            : `${detail.group_subject || detail.group_jid} · repartida de lunes a sábado de 9 a 18`}</span>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: t.space[4], marginTop: t.space[3] }}>
                             <div>
-                                {(detail.messages || []).slice(0, 12).map((m) => (
+                                {(detail.messages || []).slice(0, 40).map((m) => (
                                     <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: `1px solid ${t.color.border}` }}>
                                         <span>{m.product_name} · {m.price_label}</span>
-                                        <Badge tone={STATUS_TONE[m.status] || 'muted'}>{m.status}</Badge>
+                                        <span style={{ display: 'flex', gap: 8, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                                            {m.status === 'pendiente' && (
+                                                <span style={{ ...t.numericStyle, color: t.color.textMuted, fontSize: t.font.size.xs }}>{fmtWhen(m.scheduled_at)}</span>
+                                            )}
+                                            {m.status === 'enviado' && m.sent_at && (
+                                                <span style={{ ...t.numericStyle, color: t.color.textMuted, fontSize: t.font.size.xs }}>{fmtWhen(m.sent_at)}</span>
+                                            )}
+                                            <Badge tone={STATUS_TONE[m.status] || 'muted'}>{STATUS_LABEL[m.status] || m.status}</Badge>
+                                        </span>
                                     </div>
                                 ))}
                             </div>
