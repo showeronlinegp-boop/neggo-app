@@ -6,6 +6,7 @@ import Button from '../../components/common/Button';
 import Modal from '../../components/common/Modal';
 import * as Icon from '../../components/common/icons';
 import { LoQuePidio } from './FichaComercial';
+import EncarguesChat from './EncarguesChat';
 
 // Pedidos en Chats (nota 229): etiquetas «Pedido activo» / «Cotización abierta» en la lista y en la
 // cabecera de la conversación, y el botón «Pedidos» de arriba a la derecha con el detalle.
@@ -146,6 +147,7 @@ export function PedidosModal({ t, contacto, open, onClose, onCambio, onVerFicha 
                                         badge={<Badge tone="warn">{ESTADO_COTIZ[c.estado] || 'Abierta'}</Badge>} />
                                 ))}
                         </section>
+                        <EncarguesChat t={t} contacto={contacto} Titulo={Titulo} />
                         <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
                             {esProspecto
                                 ? <LoQuePidio leadId={id} t={t} onCambio={cambio} />
