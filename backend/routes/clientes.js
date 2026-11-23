@@ -34,6 +34,7 @@
 // POST   /api/clientes/grupo-avisos/actualizar    — saca la foto de miembros ahora (solo lee WhatsApp)
 // GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
 // PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
+// PUT    /api/clientes/leads/:id/nombre           — { nombre } a mano; vacío = vuelve el de WhatsApp
 // PUT    /api/clientes/leads/:id/informado/:respuestaId — { hecho } objetivo Informar a mano
 // POST   /api/clientes/leads/:id/pedido           — { texto, cantidad?, product_id?, chat?, mensaje_id? }
 // PUT    /api/clientes/leads/:id/pedido/:itemId   — lo mismo, solo lo que cambia
@@ -381,6 +382,14 @@ router.put('/leads/:id/perfil', ...auth, async (req, res) => {
         return ok(res, await fichaService.guardarPerfil(req.params.id, req.body, req.user.id));
     } catch (err) {
         return handleFicha(res, err, 'No se pudieron guardar los datos');
+    }
+});
+
+router.put('/leads/:id/nombre', ...auth, async (req, res) => {
+    try {
+        return ok(res, await fichaService.renombrar(req.params.id, (req.body || {}).nombre));
+    } catch (err) {
+        return handleFicha(res, err, 'No se pudo cambiar el nombre');
     }
 });
 

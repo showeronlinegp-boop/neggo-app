@@ -154,7 +154,12 @@ export default function Chats() {
             {verPanelFicha && (
                 <PanelFicha t={t} showToast={showToast} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
                     onCerrar={() => (isMobile ? setPanel('chat') : setVerFicha(false))}
-                    onCompleta={() => setFichaCompleta(abierto)} onCambio={() => cargar(0, true)} />
+                    onCompleta={() => setFichaCompleta(abierto)} onCambio={() => cargar(0, true)}
+                    onRenombrado={(r) => {
+                        const cambio = (c) => (c && c.clave === abierto.clave ? { ...c, nombre: r.nombre, nombre_whatsapp: r.nombre_whatsapp } : c);
+                        setAbierto(cambio);
+                        setItems((prev) => prev.map(cambio));
+                    }} />
             )}
             {fichaCompleta?.tipo === 'prospecto' && (
                 <LeadFicha leadId={fichaCompleta.id} resumen={{ id: fichaCompleta.id, name: fichaCompleta.nombre, phone: fichaCompleta.numero }}
@@ -477,7 +482,59 @@ function Resaltado({ texto, q, t }) {
 
 // ── Ficha del contacto (panel de la derecha) ───────────────────────────────────────────────
 
-function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio }) {
+// Nombre del prospecto con lápiz para cambiarlo (nota 230). Arranca con el que se ve, que por
+// defecto es el de WhatsApp; vacío = vuelve al de WhatsApp. Los clientes no: su nombre es el de Odoo.
+function NombreEditable({ t, showToast, contacto, onRenombrado }) {
+    const [editando, setEditando] = useState(false);
+    const [valor, setValor] = useState('');
+    const [guardando, setGuardando] = useState(false);
+    const deWhatsapp = contacto.nombre_whatsapp || null;
+
+    const empezar = () => { setValor(contacto.nombre || deWhatsapp || ''); setEditando(true); };
+    const guardar = async () => {
+        const limpio = valor.replace(/\s+/g, ' ').trim();
+        if (limpio === (contacto.nombre || '')) { setEditando(false); return; }
+        setGuardando(true);
+        const res = await api.put(`/clientes/leads/${contacto.id}/nombre`, { nombre: limpio });
+        setGuardando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo cambiar el nombre', 'error'); return; }
+        setEditando(false);
+        onRenombrado?.(res.data);
+        showToast(limpio ? 'Nombre cambiado' : 'Vuelve a mostrarse el nombre de WhatsApp', 'success');
+    };
+
+    if (!editando) {
+        return (
+            <span style={{ display: 'flex', alignItems: 'center', gap: t.space[2], maxWidth: '100%' }}>
+                <span style={{ fontWeight: t.font.weight.bold, fontSize: t.font.size.lg, overflowWrap: 'anywhere' }}>{contacto.nombre || 'Sin nombre'}</span>
+                <button type="button" onClick={empezar} aria-label="Cambiar el nombre" title="Cambiar el nombre"
+                    style={{ ...botonIcono(t), width: 30, height: 30 }}><Icon.Edit2 size={14} /></button>
+            </span>
+        );
+    }
+    return (
+        <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: t.space[2], width: '100%' }}>
+            <input type="text" value={valor} autoFocus maxLength={200} aria-label="Nombre del contacto" placeholder={deWhatsapp || 'Nombre'}
+                onChange={(e) => setValor(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') guardar(); if (e.key === 'Escape') setEditando(false); }}
+                style={{
+                    height: 36, padding: '0 10px', borderRadius: t.radius.md, border: `1px solid ${t.color.borderStrong}`,
+                    background: t.color.surface, color: t.color.text, fontFamily: t.font.family, fontSize: t.font.size.base, textAlign: 'center',
+                }} />
+            {deWhatsapp && valor.trim() !== deWhatsapp && (
+                <button type="button" onClick={() => setValor(deWhatsapp)} style={{
+                    border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: t.color.primary, fontSize: t.font.size.xs, fontFamily: t.font.family,
+                }}>Usar el de WhatsApp: {deWhatsapp}</button>
+            )}
+            <span style={{ display: 'flex', gap: t.space[2], justifyContent: 'center' }}>
+                <Button variant="primary" size="sm" onClick={guardar} disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</Button>
+                <Button variant="ghost" size="sm" onClick={() => setEditando(false)} disabled={guardando}>Cancelar</Button>
+            </span>
+        </span>
+    );
+}
+
+function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio, onRenombrado }) {
     const esProspecto = contacto.tipo === 'prospecto';
     const clave = useMemo(() => `${contacto.clave}-${version}`, [contacto.clave, version]);
     return (
@@ -495,7 +552,9 @@ function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerra
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[2], padding: t.space[8], borderBottom: `1px solid ${t.color.border}`, textAlign: 'center' }}>
                 <Avatar t={t} c={contacto} tam={72} />
-                <span style={{ fontWeight: t.font.weight.bold, fontSize: t.font.size.lg }}>{contacto.nombre || 'Sin nombre'}</span>
+                {esProspecto
+                    ? <NombreEditable key={contacto.clave} t={t} showToast={showToast} contacto={contacto} onRenombrado={onRenombrado} />
+                    : <span style={{ fontWeight: t.font.weight.bold, fontSize: t.font.size.lg }}>{contacto.nombre || 'Sin nombre'}</span>}
                 <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{contacto.numero || codigoLid(contacto) || contacto.chat}</span>
                 {codigoLid(contacto) && (
                     <button type="button" onClick={async () => {
