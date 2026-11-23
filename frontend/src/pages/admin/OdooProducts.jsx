@@ -14,6 +14,7 @@ import ConfirmDialog from '../../components/common/ConfirmDialog';
 import FotoAmpliada from '../../components/common/FotoAmpliada';
 import MiniaturaFoto from '../../components/common/MiniaturaFoto';
 import * as Icon from '../../components/common/icons';
+import PublicarWhatsApp from '../../components/whatsapp/PublicarWhatsApp';
 
 const fmtDate = (iso) => {
     if (!iso) return '—';
@@ -43,6 +44,7 @@ export default function OdooProducts() {
     const [confirmar, setConfirmar] = useState(null);
     const [foto, setFoto] = useState(null);
     const [subiendoFoto, setSubiendoFoto] = useState(null);
+    const [publicando, setPublicando] = useState(null);
     const cerrarFoto = useCallback(() => setFoto(null), []);
 
     const load = useCallback(async () => {
@@ -91,6 +93,8 @@ export default function OdooProducts() {
 
     // Cargar foto escribe en Odoo: solo admin y solo Neggo (el endpoint no sabe escribir en Preventas)
     const puedeSubirFoto = user?.role === 'admin' && company === 'neggo';
+    // WhatsApp es solo para admin (igual que Admin → WhatsApp); sin foto o archivado el mensaje no sale
+    const puedePublicar = (p) => user?.role === 'admin' && p.active && !p.locally_archived && !!p.image_url;
 
     const confirmarOdoo = async () => {
         const { tipo, p } = confirmar || {};
@@ -154,6 +158,13 @@ export default function OdooProducts() {
                     <Button size="sm" variant="primary" leftIcon={<Icon.Plus size={13} />} style={ancho}
                         disabled={trabajando === p.odoo_id} onClick={() => reponer(p)}>
                         Reponer
+                    </Button>
+                )}
+                {puedePublicar(p) && (
+                    <Button size="sm" variant="secondary" leftIcon={<Icon.MessageCircle size={13} />} style={ancho}
+                        disabled={trabajando === p.odoo_id} title="Sumar a la cola de WhatsApp"
+                        onClick={() => { setError(null); setAviso(null); setPublicando(p); }}>
+                        WhatsApp
                     </Button>
                 )}
                 {p.active ? (
@@ -348,6 +359,14 @@ export default function OdooProducts() {
                 nombre={foto?.name}
                 detalle={foto ? (foto.internal_ref || foto.barcode) : null}
                 onClose={cerrarFoto}
+            />
+
+            <PublicarWhatsApp
+                producto={publicando}
+                company={company}
+                onClose={() => setPublicando(null)}
+                onPublicado={(msg) => { setPublicando(null); setAviso(msg); }}
+                t={t}
             />
 
             <ConfirmDialog
