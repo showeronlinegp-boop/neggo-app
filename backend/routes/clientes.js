@@ -33,6 +33,8 @@
 // Grupo de avisos de la comunidad (068, nota 228). Los chats traen grupo_avisos: { estado: miembro | salio | no_esta, desde, salio_at } | null
 // GET    /api/clientes/grupo-avisos               — miembros, entradas y salidas, quiénes son
 // POST   /api/clientes/grupo-avisos/actualizar    — saca la foto de miembros ahora (solo lee WhatsApp)
+// GET    /api/clientes/chats-pedidos?claves=cliente:1,prospecto:2 — pedidos activos y cotizaciones abiertas (nota 229)
+// GET    /api/clientes/chats-pedidos/:tipo/:id    — detalle de esos pedidos para el botón «Pedidos»
 // GET    /api/clientes/leads/:id/ficha            — charla de 7 días, resumen, objetivos, lo que pidió y cotizaciones
 // PUT    /api/clientes/leads/:id/perfil           — { ciudad, tiene_local, rubro, intereses, …, resumen }
 // PUT    /api/clientes/leads/:id/nombre           — { nombre } a mano; vacío = vuelve el de WhatsApp
@@ -77,6 +79,7 @@ const waLeads = require('../services/whatsappLeadsService');
 const respuestas = require('../services/crmRespuestasService');
 const fichaService = require('../services/crmFichaService');
 const grupoAvisos = require('../services/grupoAvisosService');
+const chatPedidos = require('../services/chatPedidosService');
 
 const ROLES = ['admin', 'vendedor'];
 const auth = [authenticate, requireRole(...ROLES)];
@@ -382,6 +385,33 @@ router.post('/grupo-avisos/actualizar', ...auth, async (req, res) => {
     } catch (err) {
         if (err instanceof grupoAvisos.GrupoAvisosError) return fail(res, err.message, err.status);
         return handle(res, err, 'No se pudo actualizar el grupo de avisos');
+    }
+});
+
+// Pedidos activos y cotizaciones abiertas de los chats (nota 229).
+// GET /api/clientes/chats-pedidos?claves=cliente:12,prospecto:34 — cantidades por contacto (etiquetas)
+router.get('/chats-pedidos', ...auth, async (req, res) => {
+    try {
+        const claves = String(req.query.claves || '').split(',').slice(0, 300)
+            .map((k) => k.trim().match(/^(cliente|prospecto):(\d{1,9})$/)).filter(Boolean)
+            .map((m) => ({ clave: `${m[1]}:${m[2]}`, tipo: m[1], id: Number(m[2]) }));
+        const marcados = await chatPedidos.marcarChats(claves);
+        const out = {};
+        for (const c of marcados) if (c.pedidos) out[c.clave] = c.pedidos;
+        return ok(res, out);
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer los pedidos de los chats');
+    }
+});
+
+// GET /api/clientes/chats-pedidos/:tipo/:id — detalle para el botón «Pedidos» de la conversación
+router.get('/chats-pedidos/:tipo/:id', ...auth, async (req, res) => {
+    try {
+        const datos = await chatPedidos.deContacto(req.params.tipo, req.params.id);
+        if (!datos) return fail(res, 'Contacto inválido', 422);
+        return ok(res, datos);
+    } catch (err) {
+        return handle(res, err, 'No se pudieron leer los pedidos del contacto');
     }
 });
 

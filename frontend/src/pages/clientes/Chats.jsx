@@ -14,6 +14,7 @@ import AsignarCliente from './AsignarCliente';
 import { ETAPA_TONO } from './etapasWhatsappUi';
 import { HEALTH_META, iniciales } from './clientesUi';
 import GrupoAvisosModal, { BadgeGrupoAvisos, textoGrupoAvisos } from './GrupoAvisos';
+import { leerPedidosDeChats, EtiquetasPedidos, BotonPedidos, PedidosModal } from './ChatPedidos';
 
 // Chats del WhatsApp del negocio como en WhatsApp: a la izquierda la lista (el más reciente arriba),
 // al tocar uno la conversación de los últimos 7 días, y tocando el nombre se despliega la ficha.
@@ -87,6 +88,15 @@ export default function Chats() {
     const [fichaCompleta, setFichaCompleta] = useState(null);
     const [version, setVersion] = useState(0);
     const [verGrupoAvisos, setVerGrupoAvisos] = useState(false);
+    // Pedidos activos y cotizaciones abiertas por chat (nota 229): se leen aparte para no frenar la lista
+    const [pedidos, setPedidos] = useState({});
+    const [pedidosVersion, setPedidosVersion] = useState(0);
+    const [verPedidos, setVerPedidos] = useState(false);
+    useEffect(() => {
+        let vivo = true;
+        leerPedidosDeChats(items).then((p) => { if (vivo) setPedidos(p); });
+        return () => { vivo = false; };
+    }, [items, pedidosVersion]);
 
     const cargar = useCallback(async (offset = 0, silencio = false) => {
         if (!silencio) setCargando(true);
@@ -144,16 +154,17 @@ export default function Chats() {
         }}>
             {verLista && (
                 <Lista t={t} isMobile={isMobile} filtro={filtro} setFiltro={setFiltro} q={q} setQ={setQ}
-                    datos={datos} items={items} error={error} cargando={cargando} abierto={abierto}
+                    datos={datos} items={items} pedidos={pedidos} error={error} cargando={cargando} abierto={abierto}
                     onAbrir={abrir} onMas={() => cargar(items.length)} onGrupoAvisos={() => setVerGrupoAvisos(true)} />
             )}
             {verChat && (
                 <Conversacion t={t} isMobile={isMobile} compacto={compacto} contacto={abierto} showToast={showToast}
                     onVolver={() => setPanel('lista')} onNombre={tocarNombre} fichaAbierta={verPanelFicha}
-                    onAnotado={() => setVersion((v) => v + 1)} />
+                    onAnotado={() => { setVersion((v) => v + 1); setPedidosVersion((v) => v + 1); }}
+                    pedidos={abierto ? pedidos[abierto.clave] : null} onPedidos={() => setVerPedidos(true)} />
             )}
             {verPanelFicha && (
-                <PanelFicha t={t} showToast={showToast} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
+                <PanelFicha t={t} showToast={showToast} pedidos={pedidos[abierto.clave]} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
                     onCerrar={() => (isMobile ? setPanel('chat') : setVerFicha(false))}
                     onCompleta={() => setFichaCompleta(abierto)} onCambio={() => cargar(0, true)}
                     onFuera={() => { setAbierto(null); setVerFicha(false); if (isMobile) setPanel('lista'); cargar(0, true); }}
@@ -173,6 +184,9 @@ export default function Chats() {
             )}
             <GrupoAvisosModal t={t} open={verGrupoAvisos} onClose={() => setVerGrupoAvisos(false)} showToast={showToast}
                 onActualizado={() => cargar(0, true)} />
+            <PedidosModal t={t} contacto={abierto} open={verPedidos && !!abierto} onClose={() => setVerPedidos(false)}
+                onCambio={() => { setVersion((v) => v + 1); setPedidosVersion((v) => v + 1); }}
+                onVerFicha={() => { setVerPedidos(false); setFichaCompleta(abierto); }} />
         </div>
     );
 }
@@ -189,7 +203,7 @@ function Avatar({ t, c, tam = 46 }) {
     );
 }
 
-function Etiquetas({ t, c }) {
+function Etiquetas({ t, c, p }) {
     const cliente = c.tipo === 'cliente';
     const salud = cliente && c.health ? HEALTH_META[c.health] : null;
     return (
@@ -198,13 +212,14 @@ function Etiquetas({ t, c }) {
             {!cliente && c.etapa && <Badge tone={ETAPA_TONO[c.etapa.id] || 'muted'}>{c.etapa.label}</Badge>}
             {salud && <Badge tone={salud.tone}>{salud.label}</Badge>}
             <BadgeGrupoAvisos ga={c.grupo_avisos} />
+            <EtiquetasPedidos p={p} />
         </span>
     );
 }
 
 // ── Lista de chats ─────────────────────────────────────────────────────────────────────────
 
-function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, cargando, abierto, onAbrir, onMas, onGrupoAvisos }) {
+function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, pedidos, error, cargando, abierto, onAbrir, onMas, onGrupoAvisos }) {
     return (
         <aside aria-label="Chats" style={{
             flex: isMobile ? '1 1 auto' : '0 0 360px', minWidth: 0, display: 'flex', flexDirection: 'column',
@@ -264,7 +279,7 @@ function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, c
                                         }}>{c.sin_leer}</span>
                                     )}
                                 </span>
-                                <Etiquetas t={t} c={c} />
+                                <Etiquetas t={t} c={c} p={pedidos[c.clave]} />
                             </span>
                         </button>
                     );
@@ -288,7 +303,7 @@ function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, c
 
 // ── Conversación ───────────────────────────────────────────────────────────────────────────
 
-function Conversacion({ t, isMobile, compacto, contacto, showToast, onVolver, onNombre, fichaAbierta, onAnotado }) {
+function Conversacion({ t, isMobile, compacto, contacto, showToast, onVolver, onNombre, fichaAbierta, onAnotado, pedidos, onPedidos }) {
     const [datos, setDatos] = useState(null);
     const [error, setError] = useState(null);
     const [buscando, setBuscando] = useState(false);
@@ -381,12 +396,16 @@ function Conversacion({ t, isMobile, compacto, contacto, showToast, onVolver, on
                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {[contacto.numero || (codigoLid(contacto) && `sin número: buscá ${codigoLid(contacto)} en WhatsApp Web`), 'tocá para ver la ficha'].filter(Boolean).join(' · ')}
                         </span>
+                        {(pedidos?.activos > 0 || pedidos?.cotizaciones > 0) && (
+                            <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><EtiquetasPedidos p={pedidos} /></span>
+                        )}
                     </span>
                 </button>
                 <button type="button" onClick={() => { setBuscando((b) => !b); setQChat(''); }} aria-label="Buscar en la charla" aria-pressed={buscando}
                     style={{ ...botonIcono(t), background: buscando ? t.color.primarySoft : t.color.surface, color: buscando ? t.color.primary : t.color.textMuted }}>
                     <Icon.Search size={18} />
                 </button>
+                <BotonPedidos t={t} compacto={compacto} p={pedidos} onClick={onPedidos} />
                 {compacto
                     ? <button type="button" onClick={responder} aria-label="Responder en WhatsApp Web" style={{ ...botonIcono(t), background: t.color.primary, color: '#fff', border: 'none' }}><Icon.MessageCircle size={18} /></button>
                     : <Button size="sm" variant="primary" leftIcon={<Icon.MessageCircle size={14} />} onClick={responder}>Responder en WhatsApp Web</Button>}
@@ -597,7 +616,7 @@ function TipoContacto({ t, showToast, contacto, onFuera }) {
     );
 }
 
-function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio, onRenombrado, onFuera }) {
+function PanelFicha({ t, pedidos, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio, onRenombrado, onFuera }) {
     const esProspecto = contacto.tipo === 'prospecto';
     const clave = useMemo(() => `${contacto.clave}-${version}`, [contacto.clave, version]);
     return (
@@ -626,7 +645,7 @@ function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerra
                         Sin número · copiar para buscar en WhatsApp
                     </button>
                 )}
-                <Etiquetas t={t} c={contacto} />
+                <Etiquetas t={t} c={contacto} p={pedidos} />
                 {textoGrupoAvisos(contacto.grupo_avisos) && (
                     <span style={{ fontSize: t.font.size.xs, color: contacto.grupo_avisos.estado === 'salio' ? t.color.danger : t.color.textMuted }}>
                         {textoGrupoAvisos(contacto.grupo_avisos)}
