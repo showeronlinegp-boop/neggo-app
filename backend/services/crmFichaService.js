@@ -211,6 +211,28 @@ async function guardarPerfil(leadIdRaw, body, userId, db = pool, { por = 'manual
     return formatearPerfil(p);
 }
 
+const { nombreParaMostrar } = require('./whatsappLeads');
+
+/**
+ * Cambia a mano el nombre del prospecto (nota 230). Vacío = sin nombre propio: vuelve a mostrarse
+ * el de WhatsApp. Devuelve el nombre guardado, el que se muestra y el de WhatsApp.
+ */
+async function renombrar(leadIdRaw, nombre, db = pool) {
+    const leadId = idValido(leadIdRaw);
+    const limpio = String(nombre ?? '').replace(/\s+/g, ' ').trim();
+    if (limpio.length > 200) throw new FichaError('El nombre puede tener hasta 200 letras', 422);
+    await ensureSchema(db);
+    const { rows: [l] } = await db.query(
+        'UPDATE crm_leads SET name = $2 WHERE id = $1 RETURNING id, name', [leadId, limpio || null]);
+    if (!l) throw new FichaError('No encontré ese posible cliente', 404);
+    baseCache = { at: 0, datos: null };
+    const { rows: [w] } = await db.query(
+        `SELECT MAX(nombre) AS nombre FROM whatsapp_chat_identidad
+          WHERE lead_id = $1 AND tipo IS DISTINCT FROM 'proveedor'`, [leadId]);
+    const deWhatsapp = nombreParaMostrar(w && w.nombre);
+    return { id: l.id, name: l.name, nombre: nombreParaMostrar(l.name, deWhatsapp), nombre_whatsapp: deWhatsapp };
+}
+
 /** Tilda (o destilda) a mano un objetivo Informar. */
 async function marcarInformado(leadIdRaw, respuestaIdRaw, hecho, userId, db = pool) {
     const leadId = idValido(leadIdRaw);
@@ -455,7 +477,7 @@ async function objetivosEnLote(leads, db) {
 async function todosLosContactos(db, ahora = new Date()) {
     const { etapas: grupos } = await waLeads.embudo(db);
     const prospectos = grupos.flatMap((g) => g.items.map((it) => ({
-        tipo: 'prospecto', id: it.id, nombre: it.name, numero: it.phone, chat: it.chat,
+        tipo: 'prospecto', id: it.id, nombre: it.name, nombre_whatsapp: it.nombre_whatsapp || null, numero: it.phone, chat: it.chat,
         ultimo_mensaje_at: it.ultimo_mensaje_at, espera_respuesta: it.espera_respuesta,
         etapa: { id: it.etapa, label: g.label, objetivo: g.objetivo },
     })));
@@ -660,7 +682,7 @@ async function chats(f = {}, db = pool) {
         if (filtro === 'esperan' && !espera) continue;
         if (filtro === 'dormidos') { if (grupo !== 'dormidos') continue; } else if (!q && grupo !== 'activos' && grupo !== 'abiertos') continue;
         lista.push({
-            clave: `${c.tipo}:${c.id}`, tipo: c.tipo, id: c.id, nombre: c.nombre, numero: c.numero,
+            clave: `${c.tipo}:${c.id}`, tipo: c.tipo, id: c.id, nombre: c.nombre, nombre_whatsapp: c.nombre_whatsapp || null, numero: c.numero,
             chat: mejor ? mejor.j : c.chat, chats: propios, grupo,
             ultimo_mensaje_at: ultimo ? ultimo.toISOString() : null,
             espera_respuesta: espera, sin_leer: sinLeer, preview,
@@ -700,6 +722,7 @@ module.exports = {
     mensajesDeChats,
     ficha,
     guardarPerfil,
+    renombrar,
     marcarInformado,
     crearItem,
     editarItem,
