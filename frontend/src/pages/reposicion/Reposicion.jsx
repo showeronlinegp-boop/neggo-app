@@ -872,7 +872,7 @@ export default function Reposicion() {
                 </div>
             )}
 
-            {pendiente && <BuscadorReponeronAgregado={alAgregar} onQuitado={alQuitar} onError={mostrarError} isMobile={isMobile} />}
+            {pendiente && <BuscadorReponer onAgregado={alAgregar} onQuitado={alQuitar} onError={mostrarError} isMobile={isMobile} />}
 
             {(pendiente || encargado) && <ReposicionPrecios isMobile={isMobile} onActualizado={refrescarCola} onError={mostrarError} />}
 
