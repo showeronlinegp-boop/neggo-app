@@ -140,7 +140,7 @@ function FilaCliente({ c, onAbrir, onImportancia, modo, t }) {
                     </div>
                 ) : (
                     // En la tabla: importancia, teléfono, ciudad y rubro en un solo renglón, cortado con «…» (nota #223)
-                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflow: 'hidden' }}>
                         <Importancia value={c.importance} size={12} onChange={(n) => onImportancia(c, n)} />
                         <span style={{ fontFamily: t.font.mono, whiteSpace: 'nowrap', flexShrink: 0 }}>{c.phone || 'Sin teléfono'}</span>
                         {(c.city || c.rubro) && (
@@ -689,7 +689,8 @@ export default function Clientes() {
                 marginBottom: compu ? t.space[2] : t.space[4],
                 ...(compu ? { border: 'none', background: 'transparent', boxShadow: 'none' } : null),
             }}>
-                <div style={{ flex: compu ? '1 1 150px' : '1 1 280px' }}>
+                {/* minWidth 0: si no, el ancho propio del campo de texto empuja el último selector a otro renglón */}
+                <div style={{ flex: compu ? '1 1 150px' : '1 1 280px', minWidth: 0 }}>
                     <Input
                         leftIcon={<Icon.Search size={16} />}
                         placeholder="Buscá por nombre o teléfono…"
