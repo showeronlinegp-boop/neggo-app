@@ -11,6 +11,8 @@ import {
     accesoDe,
     armarReparto,
     candidatosDe,
+    coincideBusqueda,
+    coincidenciasPorProveedor,
     estaRepartido,
     estaVinculado,
     filtrarSolapa,
@@ -66,6 +68,9 @@ export default function ArmarPedido({
     const [trabajando, setTrabajando] = useState(false);
     // Qué PDF se está generando: 'tildados' | 'lista' | { n, total } (todas las listas)
     const [generandoPdf, setGenerandoPdf] = useState(null);
+    // Buscador en todos los proveedores (nota 188)
+    const [busqueda, setBusqueda] = useState('');
+    const buscando = busqueda.trim().length > 0;
 
     useEffect(() => {
         let vivo = true;
@@ -86,6 +91,22 @@ export default function ArmarPedido({
     }, [items]);
 
     const grupos = useMemo(() => proveedoresDelPedido(items, asignaciones), [items, asignaciones]);
+    const coincidencias = useMemo(
+        () => (buscando ? coincidenciasPorProveedor(items, busqueda, asignaciones) : null),
+        [items, busqueda, buscando, asignaciones]
+    );
+    const gruposVisibles = useMemo(
+        () => (coincidencias ? grupos.filter(g => coincidencias.has(g.nombre)) : grupos),
+        [grupos, coincidencias]
+    );
+    // Productos distintos (uno repartido cuenta una sola vez)
+    const totalCoincidencias = buscando ? items.filter(it => coincideBusqueda(it, busqueda)).length : 0;
+
+    // Al buscar, si el proveedor abierto no tiene nada que coincida, salta al primero que sí
+    useEffect(() => {
+        if (!coincidencias || !gruposVisibles.length) return;
+        if (!coincidencias.has(proveedor)) setProveedor(gruposVisibles[0].nombre);
+    }, [coincidencias, gruposVisibles, proveedor]);
 
     useEffect(() => {
         if (!grupos.length) return;
@@ -111,7 +132,7 @@ export default function ArmarPedido({
     const qtyAca = (it) => qtyEn(it, proveedor, asignaciones[it.id], qtys[it.id]);
     // Primero lo que tiene un cliente esperando
     const visibles = filtrarSolapa(delProveedor, solapa)
-        .slice()
+        .filter(it => coincideBusqueda(it, busqueda))
         .sort((a, b) => Number(esperas.has(b.odoo_id)) - Number(esperas.has(a.odoo_id))
             || Number(estaVinculado(a)) - Number(estaVinculado(b))
             || String(a.name).localeCompare(String(b.name), 'es'));
@@ -268,6 +289,35 @@ export default function ArmarPedido({
     // La oferta del proveedor que se está mirando
     const candidatoAca = (it) => candidatosDe(it).find(c => c.nombre === proveedor) || null;
 
+    const buscador = (
+        <div style={{ position: 'relative', marginTop: isMobile ? 0 : 10, width: isMobile ? 200 : undefined }}>
+            <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: t.color.textMuted, lineHeight: 0, pointerEvents: 'none' }}>
+                <Icon.Search size={13} />
+            </span>
+            <input
+                type="search"
+                value={busqueda}
+                onChange={e => setBusqueda(e.target.value)}
+                placeholder="Buscar en todos los proveedores"
+                aria-label="Buscar un producto en todos los proveedores"
+                style={{
+                    width: '100%', boxSizing: 'border-box', padding: '6px 8px 6px 28px',
+                    border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm,
+                    fontFamily: t.font.family, fontSize: t.font.size.sm,
+                    background: t.color.surface, color: t.color.text,
+                }}
+            />
+            {buscando && (
+                <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginTop: 4, ...t.numericStyle }}>
+                    {totalCoincidencias === 0
+                        ? 'No está en la cola de ningún proveedor.'
+                        : `${totalCoincidencias} producto${totalCoincidencias === 1 ? '' : 's'} en ${gruposVisibles.length} proveedor${gruposVisibles.length === 1 ? '' : 'es'}`}
+                </div>
+            )}
+        </div>
+    );
+
+
     const linkDe = (it) => candidatoAca(it)?.url || acceso.sitio || null;
 
     const borde = `1px solid ${t.color.border}`;
@@ -301,17 +351,19 @@ export default function ArmarPedido({
                 maxHeight: isMobile ? undefined : 'calc(100vh - 120px)',
             }}>
                 {isMobile ? (
-                    <div style={{ padding: '10px 12px', borderRight: borde, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                    <div style={{ padding: '10px 12px', borderRight: borde, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                         {botonTodas}
+                        {buscador}
                     </div>
                 ) : (
                     <div style={{ padding: '12px 14px', borderBottom: borde }}>
                         <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>A quién se le pide</div>
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 8 }}>Más barato, el principal o el que elijas</div>
                         {botonTodas}
+                        {buscador}
                     </div>
                 )}
-                {grupos.map(g => {
+                {gruposVisibles.map(g => {
                     const activo = g.nombre === proveedor;
                     const acc = accesoDe(g.nombre, accesos);
                     const nClientes = esperas.size
@@ -338,7 +390,9 @@ export default function ArmarPedido({
                         >
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <span style={{ fontWeight: activo ? t.font.weight.semibold : t.font.weight.medium, color: t.color.text, fontSize: t.font.size.sm }}>{g.nombre}</span>
-                                <Badge tone="muted">{g.n}</Badge>
+                                {coincidencias
+                                    ? <Badge tone="primary">{coincidencias.get(g.nombre)} de {g.n}</Badge>
+                                    : <Badge tone="muted">{g.n}</Badge>}
                             </div>
                             <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginTop: 2 }}>
                                 {ETIQUETA_ACCESO[acc.tipo]}{g.sin > 0 ? ` · ${g.sin} sin asignar` : ''}
@@ -398,7 +452,12 @@ export default function ArmarPedido({
                 </div>
 
                 <div>
-                    {visibles.length === 0 && (
+                    {visibles.length === 0 && buscando && (
+                        <div style={{ padding: 16, fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
+                            {`Nada de ${proveedor} coincide con «${busqueda.trim()}»${solapa !== 'todos' ? ' en esta solapa' : ''}.`}
+                        </div>
+                    )}
+                    {visibles.length === 0 && !buscando && (
                         <div style={{ padding: 16, fontSize: t.font.size.sm, color: t.color.textMuted, fontFamily: t.font.family }}>
                             {solapa === 'sin' && 'Este proveedor no tiene productos sin vincular.'}
                             {solapa === 'vinculados' && 'Este proveedor no tiene productos vinculados.'}
