@@ -12,6 +12,7 @@ import LeadFicha from './LeadFicha';
 import ClienteFicha from './ClienteFicha';
 import { ETAPA_TONO } from './etapasWhatsappUi';
 import { HEALTH_META, iniciales } from './clientesUi';
+import GrupoAvisosModal, { BadgeGrupoAvisos, textoGrupoAvisos } from './GrupoAvisos';
 
 // Chats del WhatsApp del negocio como en WhatsApp: a la izquierda la lista (el más reciente arriba),
 // al tocar uno la conversación de los últimos 7 días, y tocando el nombre se despliega la ficha.
@@ -80,6 +81,7 @@ export default function Chats() {
     const [panel, setPanel] = useState('lista');
     const [fichaCompleta, setFichaCompleta] = useState(null);
     const [version, setVersion] = useState(0);
+    const [verGrupoAvisos, setVerGrupoAvisos] = useState(false);
 
     const cargar = useCallback(async (offset = 0, silencio = false) => {
         if (!silencio) setCargando(true);
@@ -122,7 +124,7 @@ export default function Chats() {
             {verLista && (
                 <Lista t={t} isMobile={isMobile} filtro={filtro} setFiltro={setFiltro} q={q} setQ={setQ}
                     datos={datos} items={items} error={error} cargando={cargando} abierto={abierto}
-                    onAbrir={abrir} onMas={() => cargar(items.length)} />
+                    onAbrir={abrir} onMas={() => cargar(items.length)} onGrupoAvisos={() => setVerGrupoAvisos(true)} />
             )}
             {verChat && (
                 <Conversacion t={t} isMobile={isMobile} compacto={compacto} contacto={abierto} showToast={showToast}
@@ -142,6 +144,8 @@ export default function Chats() {
                 <ClienteFicha partnerId={fichaCompleta.id} resumen={{ odoo_partner_id: fichaCompleta.id, partner_name: fichaCompleta.nombre }}
                     onClose={() => setFichaCompleta(null)} onCambio={() => {}} />
             )}
+            <GrupoAvisosModal t={t} open={verGrupoAvisos} onClose={() => setVerGrupoAvisos(false)} showToast={showToast}
+                onActualizado={() => cargar(0, true)} />
         </div>
     );
 }
@@ -166,13 +170,14 @@ function Etiquetas({ t, c }) {
             <Badge tone={cliente ? 'success' : 'primary'}>{cliente ? 'Cliente' : 'Prospecto'}</Badge>
             {!cliente && c.etapa && <Badge tone={ETAPA_TONO[c.etapa.id] || 'muted'}>{c.etapa.label}</Badge>}
             {salud && <Badge tone={salud.tone}>{salud.label}</Badge>}
+            <BadgeGrupoAvisos ga={c.grupo_avisos} />
         </span>
     );
 }
 
 // ── Lista de chats ─────────────────────────────────────────────────────────────────────────
 
-function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, cargando, abierto, onAbrir, onMas }) {
+function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, cargando, abierto, onAbrir, onMas, onGrupoAvisos }) {
     return (
         <aside aria-label="Chats" style={{
             flex: isMobile ? '1 1 auto' : '0 0 360px', minWidth: 0, display: 'flex', flexDirection: 'column',
@@ -243,8 +248,12 @@ function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, c
                     </div>
                 )}
             </div>
-            <div style={{ padding: `${t.space[3]}px ${t.space[6]}px`, borderTop: `1px solid ${t.color.border}`, fontSize: t.font.size.xs, color: t.color.textMuted }}>
-                {datos ? `${fmtInt(datos.total)} chats · ${fmtInt(datos.esperan)} esperan respuesta` : 'Cargando…'}
+            <div style={{ padding: `${t.space[3]}px ${t.space[6]}px`, borderTop: `1px solid ${t.color.border}`, fontSize: t.font.size.xs, color: t.color.textMuted, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[2] }}>
+                <span>{datos ? `${fmtInt(datos.total)} chats · ${fmtInt(datos.esperan)} esperan respuesta` : 'Cargando…'}</span>
+                <button type="button" onClick={onGrupoAvisos} style={{
+                    flex: 'none', border: `1px solid ${t.color.border}`, background: t.color.surface, color: t.color.primary, borderRadius: t.radius.full,
+                    padding: '3px 10px', fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, fontFamily: t.font.family, cursor: 'pointer',
+                }}>Grupo de avisos</button>
             </div>
         </aside>
     );
@@ -476,6 +485,11 @@ function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerra
                     </button>
                 )}
                 <Etiquetas t={t} c={contacto} />
+                {textoGrupoAvisos(contacto.grupo_avisos) && (
+                    <span style={{ fontSize: t.font.size.xs, color: contacto.grupo_avisos.estado === 'salio' ? t.color.danger : t.color.textMuted }}>
+                        {textoGrupoAvisos(contacto.grupo_avisos)}
+                    </span>
+                )}
                 {contacto.etapa?.objetivo && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Objetivo de la etapa: {contacto.etapa.objetivo}</span>}
             </div>
             <div style={{ padding: t.space[6], display: 'flex', flexDirection: 'column', gap: t.space[6] }}>

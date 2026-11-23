@@ -3,6 +3,7 @@ const odooSync = require('./odooSync');
 const { syncSalesWeekly } = require('./salesWeeklySync');
 const whatsappIdentidad = require('../services/whatsappIdentidadService');
 const whatsappLeads = require('../services/whatsappLeadsService');
+const grupoAvisos = require('../services/grupoAvisosService');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -68,6 +69,20 @@ async function initScheduler(pool) {
     };
     scheduledTasks.push(cron.schedule('*/15 * * * *', cruzarWhatsappLeads, TZ));
     setTimeout(cruzarWhatsappLeads, 3 * 60 * 1000).unref();
+
+    // Grupo de avisos de la comunidad (nota 228): una foto de los miembros por día, solo leyendo el
+    // WhatsApp del negocio. Al arrancar, si la última tiene más de 20 h (la PC estuvo apagada).
+    const fotoGrupoAvisos = async (soloSiHaceFalta) => {
+        try {
+            const r = soloSiHaceFalta ? await grupoAvisos.tomarFotoSiHaceFalta(20) : await grupoAvisos.tomarFoto({ origen: 'cron' });
+            if (r) console.log(`✅ Grupo de avisos: ${r.total} miembros, ${r.entraron} entraron, ${r.salieron} se fueron${r.inicial ? ' (primera foto)' : ''}`);
+        } catch (err) {
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error sacando la foto del grupo de avisos:', err.message);
+        }
+    };
+    scheduledTasks.push(cron.schedule('30 8 * * *', () => fotoGrupoAvisos(false), TZ));
+    setTimeout(() => fotoGrupoAvisos(true), 4 * 60 * 1000).unref();
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {
