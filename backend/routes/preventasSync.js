@@ -237,18 +237,15 @@ router.get('/recompute/status', authenticate, (req, res) => {
     return ok(res, { running: isRecomputing() });
 });
 
-// POST /api/preventas-sync/recompute — dispara matching completo
-router.post('/recompute', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const summary = await recomputeAll(pool);
-        return ok(res, summary);
-    } catch (err) {
-        if (err.message.includes('en progreso')) {
-            return fail(res, err.message, 409);
-        }
-        console.error('❌ recompute preventas-sync:', err.message);
-        return fail(res, err.message, 500);
-    }
+// POST /api/preventas-sync/recompute — dispara matching completo en segundo plano.
+// Tarda más de 2 min (más que el timeout de nginx → 504, nota 202): se responde enseguida y la
+// pantalla se entera de que terminó con GET /recompute/status.
+router.post('/recompute', authenticate, requireRole('admin'), (req, res) => {
+    if (isRecomputing()) return fail(res, 'Ya hay un recomputo en progreso', 409);
+    recomputeAll(pool).catch(err => {
+        if (!err.message.includes('en progreso')) console.error('❌ recompute preventas-sync:', err.message);
+    });
+    return ok(res, { started: true });
 });
 
 module.exports = router;
