@@ -1,6 +1,7 @@
 // CRM de clientes, fase 1: métricas por cliente desde Odoo → client_metrics_cache.
 // Compra = ticket del POS de Neggo (decisión D2). Las cotizaciones abiertas de Neggo
 // y Preventas de los últimos 60 días se muestran como motivo para hablarle (D1, D19).
+// Quien compró en Precompras también entra a la lista, aunque sus compras no sumen (nota #237).
 // Ver docs/plan-crm-clientes.md.
 
 const pool = require('../config/database');
@@ -138,6 +139,25 @@ async function readOpenQuotations(companies) {
     return byPartner;
 }
 
+/**
+ * Clientes con ventas confirmadas en Precompras (nota #237): entran a la lista y al buscador
+ * aunque nunca hayan pasado por el POS de Neggo. Sus ventas no suman a las métricas (D2).
+ */
+async function readPrecomprasBuyers(companies) {
+    const companyId = companies.preventas;
+    if (!companyId) return new Set();
+    try {
+        const rows = await readAll('sale.order',
+            [['company_id', '=', companyId], ['state', 'in', ['sale', 'done']]],
+            ['id', 'partner_id'],
+            { allowed_company_ids: [companyId] });
+        return new Set(rows.map((o) => m2oId(o.partner_id)).filter(Boolean));
+    } catch (err) {
+        console.warn(`⚠️ CRM: no pude leer las ventas de Precompras: ${err.message}`);
+        return new Set();
+    }
+}
+
 async function readPartners(ids) {
     const out = new Map();
     const list = [...ids];
@@ -161,13 +181,13 @@ async function readPartners(ids) {
 /**
  * Junta las fichas duplicadas de Odoo (ver clientDuplicates.js): los tickets y cotizaciones de
  * cada una pasan a la ficha que representa al grupo. Sin I/O: se testea aparte.
- * @returns {{ orders: object[], quotations: Map, partners: Map, groups: Map<number, number[]> }}
+ * @returns {{ orders: object[], quotations: Map, partners: Map, extraIds: Set<number>, groups: Map<number, number[]> }}
  */
-function mergeDuplicates({ orders, quotations, partners }) {
+function mergeDuplicates({ orders, quotations, partners, extraIds = new Set() }) {
     const { repOf, groups } = duplicates.groupDuplicates(partners, {
         skipNames: [...EXCLUDED_NAMES, ...GENERIC_NAMES],
     });
-    if (!groups.size) return { orders, quotations, partners, groups };
+    if (!groups.size) return { orders, quotations, partners, extraIds, groups };
     const rep = (id) => repOf.get(id) || id;
 
     const tickets = new Map();
@@ -190,7 +210,8 @@ function mergeDuplicates({ orders, quotations, partners }) {
         mergedQuotes.set(key, [...(mergedQuotes.get(key) || []), ...list]);
     }
     for (const list of mergedQuotes.values()) list.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-    return { orders: mergedOrders, quotations: mergedQuotes, partners: mergedPartners, groups };
+    const mergedExtra = new Set([...extraIds].map(rep));
+    return { orders: mergedOrders, quotations: mergedQuotes, partners: mergedPartners, extraIds: mergedExtra, groups };
 }
 
 /**
@@ -236,7 +257,8 @@ async function moveFollowupsToRep(groups) {
  * Arma las filas de métricas a partir de lo leído de Odoo. Sin I/O: se testea aparte.
  * @param {{ orders: object[], lines: object[], quotations: Map, partners: Map, categories?: Map, today: string }} input
  */
-function buildRows({ orders, lines, quotations, partners, categories = new Map(), today }) {
+// extraIds: clientes que entran sin tickets del POS (compraron en Precompras, nota #237)
+function buildRows({ orders, lines, quotations, partners, categories = new Map(), extraIds = new Set(), today }) {
     const since12m = health.addDays(today, -365);
     // Solo las cotizaciones recientes: sirven de excusa para hablarle, las viejas no (D19)
     const sinceQuotes = health.addDays(today, -health.QUOTATION_DAYS);
@@ -276,7 +298,7 @@ function buildRows({ orders, lines, quotations, partners, categories = new Map()
     }
 
     const rows = [];
-    const ids = new Set([...purchasesByPartner.keys(), ...recentQuotes.keys()]);
+    const ids = new Set([...purchasesByPartner.keys(), ...recentQuotes.keys(), ...extraIds]);
     for (const pid of ids) {
         const partner = partners.get(pid) || {};
         const name = partner.name || `Cliente ${pid}`;
@@ -358,18 +380,20 @@ async function runSync() {
     const recentIds = orders.filter((o) => (health.toArDate(o.date_order) || '') > since12m).map((o) => o.id);
     const lines = await readPosLines(recentIds, context);
     const quotations = await readOpenQuotations(companies);
+    const precompras = await readPrecomprasBuyers(companies);
     const categories = await readProductCategories(new Set(lines.map((l) => m2oId(l.product_id)).filter(Boolean)), context);
 
     const partnerIds = new Set([
         ...orders.map((o) => m2oId(o.partner_id)).filter(Boolean),
         ...quotations.keys(),
+        ...precompras,
     ]);
     const partners = await readPartners(partnerIds);
     // Los contactos hijos suman a su cliente principal: hay que tenerlo aunque no haya comprado
     const mainIds = new Set([...partners.values()]
         .map((p) => m2oId(p.commercial_partner_id)).filter((id) => id && !partners.has(id)));
     for (const [id, p] of await readPartners(mainIds)) partners.set(id, p);
-    const merged = mergeDuplicates({ orders, quotations, partners });
+    const merged = mergeDuplicates({ orders, quotations, partners, extraIds: precompras });
     const rows = buildRows({ ...merged, lines, categories, today });
     await persist(rows);
     await moveFollowupsToRep(merged.groups);
