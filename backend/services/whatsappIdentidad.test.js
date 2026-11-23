@@ -56,6 +56,9 @@ v = validarIdentidadChat({ chat: '197731805085715@lid', numero: '2477 15-41-0163
 assert.deepStrictEqual(v.errors, []);
 assert.strictEqual(v.value.numero, '+5492477410163');
 assert.strictEqual(v.value.nombre, 'Lu');
+v = validarIdentidadChat({ chat: '197731805085715', nombre: 'Lu' });
+assert.deepStrictEqual(v.errors, []);
+assert.strictEqual(v.value.chat, '197731805085715@lid');
 v = validarIdentidadChat({ chat: '120363@g.us', cliente_id: '9', numero: '123', extra: 1 });
 assert.deepStrictEqual(v.errors.map((e) => e.campo).sort(), ['chat', 'cliente_id', 'extra', 'numero']);
 v = validarIdentidadChat({ chat: '197731805085715@lid' });

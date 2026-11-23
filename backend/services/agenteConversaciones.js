@@ -66,6 +66,13 @@ function buscarEnWhatsapp(jid) {
     return m ? m[1] : null;
 }
 
+/**
+ * Cómo sale el chat en la API del agente: los @lid solo con el número (sin "@lid"); los demás, igual.
+ */
+function chatParaApi(jid) {
+    return buscarEnWhatsapp(jid) || jid;
+}
+
 /** Nombre que se puso la persona en WhatsApp; los que son solo dígitos (el lid) no sirven. */
 function nombreUtil(nombre) {
     const s = (nombre || '').trim();
@@ -190,6 +197,7 @@ function conIdentidad(chat, identidad, nombreAgenda) {
     const numero = chat.numero || (identidad && identidad.numero) || null;
     return {
         ...resto,
+        chat: chatParaApi(chat.chat),
         numero,
         buscar_en_whatsapp: numero ? null : buscarEnWhatsapp(chat.chat),
         nombre: (identidad && identidad.nombre) || nombreAgenda || chat.nombre,
@@ -209,6 +217,7 @@ module.exports = {
     isoAr,
     numeroDeJid,
     buscarEnWhatsapp,
+    chatParaApi,
     nombreUtil,
     textoDe,
     agruparConversaciones,
