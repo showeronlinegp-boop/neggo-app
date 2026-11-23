@@ -5,7 +5,7 @@ import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
 import Input from '../../components/common/Input';
 import { fmtFechaHora } from './clientesUi';
-import { ETAPA_TONO, haceCuanto } from './etapasWhatsappUi';
+import { ETAPA_TONO, haceCuanto, codigoChat } from './etapasWhatsappUi';
 
 // Cómo se vinculó cada chat (CRM WhatsApp, L1)
 const VINCULO = {
@@ -125,6 +125,16 @@ export default function ChatsWhatsapp({ leadId, t, onCambio, onSacado }) {
         onSacado?.();
     };
 
+    // Chat sin número: copia el código para pegarlo en la lupa de WhatsApp Web
+    const [copiado, setCopiado] = useState(null);
+    const copiar = async (chat, codigo) => {
+        try {
+            await navigator.clipboard.writeText(codigo);
+            setCopiado(chat);
+            setTimeout(() => setCopiado((c) => (c === chat ? null : c)), 2000);
+        } catch { /* sin portapapeles (http): el código queda a la vista para copiarlo a mano */ }
+    };
+
     const texto = { fontSize: t.font.size.sm, color: t.color.text };
     const suave = { fontSize: t.font.size.xs, color: t.color.textMuted };
     const fila = {
@@ -154,12 +164,24 @@ export default function ChatsWhatsapp({ leadId, t, onCambio, onSacado }) {
                                 <span style={{ ...texto, fontFamily: c.numero ? t.font.mono : t.font.family }}>
                                     {c.numero || 'Chat sin número'}
                                 </span>
+                                {codigoChat(c.chat, c.numero) && (
+                                    <span style={{ ...suave, display: 'flex', alignItems: 'center', gap: t.space[2], flexWrap: 'wrap' }}>
+                                        Para buscarlo en WhatsApp Web:
+                                        <span style={{ fontFamily: t.font.mono, color: t.color.text, userSelect: 'all' }}>{codigoChat(c.chat, c.numero)}</span>
+                                    </span>
+                                )}
+
                                 <span style={suave}>
                                     {VINCULO[c.vinculado_por] || c.vinculado_por}
                                     {c.ultimo_mensaje_at ? ` · último mensaje ${fmtFechaHora(c.ultimo_mensaje_at)}` : ''}
                                 </span>
                             </div>
                             <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                                {codigoChat(c.chat, c.numero) && (
+                                    <Button size="sm" variant="secondary" leftIcon={copiado === c.chat ? <Icon.Check size={14} /> : null} onClick={() => copiar(c.chat, codigoChat(c.chat, c.numero))}>
+                                        {copiado === c.chat ? 'Copiado' : 'Copiar código'}
+                                    </Button>
+                                )}
                                 <Button size="sm" disabled={Boolean(guardando)} onClick={() => esProveedor(c.chat)}>Es proveedor</Button>
                                 {c.vinculado_por !== 'chat_sin_numero' && (
                                     <Button size="sm" variant="ghost" disabled={guardando === c.chat} onClick={() => desvincular(c.chat)}>

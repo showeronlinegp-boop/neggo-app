@@ -8,7 +8,7 @@ import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
 import Select from '../../components/common/Select';
 import LeadFicha from './LeadFicha';
-import { ETAPA_TONO, haceCuanto } from './etapasWhatsappUi';
+import { ETAPA_TONO, haceCuanto, codigoChat } from './etapasWhatsappUi';
 
 const POR_COLUMNA = 30;
 const SIN_CIUDAD = '__sin_ciudad__';
@@ -181,7 +181,7 @@ export default function EmbudoWhatsapp({ onCambio }) {
                                             {l.name || 'Sin nombre'}
                                         </span>
                                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.mono }}>
-                                            {[l.phone || 'sin número', l.city].filter(Boolean).join(' · ')}
+                                            {[l.phone || (codigoChat(l.chat) ? `sin número · buscá ${codigoChat(l.chat)} en WhatsApp Web` : 'sin número'), l.city].filter(Boolean).join(' · ')}
                                         </span>
                                         <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                             {l.espera_respuesta && <Badge tone="accent">{`Te escribió ${haceCuanto(l.ultimo_mensaje_at)}`}</Badge>}

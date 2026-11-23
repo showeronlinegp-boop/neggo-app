@@ -20,3 +20,13 @@ export function haceCuanto(iso) {
     if (h < 24) return `hace ${h} h`;
     return `hace ${Math.round(h / 24)} d`;
 }
+
+/**
+ * Chat sin teléfono (…@lid): los dígitos antes de "@lid" son lo que se pone en la lupa de WhatsApp Web
+ * para encontrarlo. Con número, o con un chat que no es @lid, devuelve null.
+ */
+export function codigoChat(chat, numero) {
+    if (numero) return null;
+    const m = /^(\d+)@lid$/.exec(String(chat || ''));
+    return m ? m[1] : null;
+}

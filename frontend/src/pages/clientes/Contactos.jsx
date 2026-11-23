@@ -10,7 +10,7 @@ import * as Icon from '../../components/common/icons';
 import LeadFicha from './LeadFicha';
 import ClienteFicha from './ClienteFicha';
 import PosiblesClientes from './PosiblesClientes';
-import { ETAPA_TONO, haceCuanto } from './etapasWhatsappUi';
+import { ETAPA_TONO, haceCuanto, codigoChat } from './etapasWhatsappUi';
 import { HEALTH_META } from './clientesUi';
 
 // Contactos del WhatsApp del negocio en cuatro grupos según cómo está la charla:
@@ -171,7 +171,7 @@ function FilaContacto({ c, t, onAbrir }) {
         }}>
             <span style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: '2 1 220px', minWidth: 0 }}>
                 <span style={{ fontWeight: t.font.weight.semibold, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nombre || 'Sin nombre'}</span>
-                <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{c.numero || c.chat}</span>
+                <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{c.numero || (codigoChat(c.chat) ? `sin número · buscá ${codigoChat(c.chat)} en WhatsApp Web` : c.chat)}</span>
             </span>
             <span style={{ flex: '0 0 96px' }}>
                 <Badge tone={esCliente ? 'success' : 'primary'}>{esCliente ? 'Cliente' : 'Prospecto'}</Badge>
