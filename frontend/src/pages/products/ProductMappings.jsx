@@ -36,6 +36,24 @@ const MATCH_TONE = {
     manual:     'success',
 };
 
+// El backend devuelve como mucho 500 filas por pedido: para recargar en silencio una lista
+// larga (más de 500 ya cargadas) se piden tandas seguidas hasta juntar las que había.
+// Devuelve la última respuesta con data = todas las filas juntas.
+const TANDA_MAX = 500;
+async function traerEnTandas(pedir, cuantos, quedanMas) {
+    const objetivo = Math.max(cuantos, UNMAPPED_PAGE);
+    const filas = [];
+    let res;
+    do {
+        res = await pedir(Math.min(objetivo - filas.length, TANDA_MAX), filas.length);
+        if (!res.success) return res;
+        const tanda = res.data || [];
+        filas.push(...tanda);
+        if (tanda.length === 0) break;
+    } while (filas.length < objetivo && quedanMas(res, filas.length));
+    return { ...res, data: filas };
+}
+
 export default function ProductMappings() {
     const { tokens: t } = useTheme();
     const { showToast } = useToast();
@@ -114,14 +132,17 @@ export default function ProductMappings() {
         const pedido = ++pedidoSinVincular.current;
         if (!append && !silencioso) setUnmapped([]);
         if (!silencioso) setUnmappedLoading(true);
-        const res = await api.get('/mappings', {
+        const pedir = (limit, desde) => api.get('/mappings', {
             ...(selectedSupplier ? { supplierId: selectedSupplier } : {}),
             unmapped: true,
             source: 'web',
             search: unmappedQuery,
-            limit: silencioso ? Math.min(Math.max(cuantos, UNMAPPED_PAGE), 500) : UNMAPPED_PAGE,
-            offset,
+            limit,
+            offset: desde,
         });
+        const res = silencioso
+            ? await traerEnTandas(pedir, cuantos, r => !!r.hasMore)
+            : await pedir(UNMAPPED_PAGE, offset);
         if (pedido !== pedidoSinVincular.current) return;
         setUnmappedLoading(false);
         if (!res.success) return;
@@ -150,15 +171,18 @@ export default function ProductMappings() {
         const pedido = ++pedidoVinculos.current;
         if (!append && !silencioso) setMappings([]);
         if (!silencioso) setMappingsLoading(true);
-        const res = await api.get('/mappings', {
+        const pedir = (limit, desde) => api.get('/mappings', {
             supplierId: selectedSupplier,
             status: 'confirmado',
             company: 'neggo',
             source: 'web',
             search: mappingsQuery,
-            limit: silencioso ? Math.min(Math.max(cuantos, UNMAPPED_PAGE), 500) : UNMAPPED_PAGE,
-            offset,
+            limit,
+            offset: desde,
         });
+        const res = silencioso
+            ? await traerEnTandas(pedir, cuantos, (r, traidos) => traidos < (r.pagination?.total ?? 0))
+            : await pedir(UNMAPPED_PAGE, offset);
         if (pedido !== pedidoVinculos.current) return;
         setMappingsLoading(false);
         if (!res.success) return;
