@@ -139,6 +139,8 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
         if (!res.success) { showToast(res.error || 'No se pudo marcar la presentación', 'error'); return; }
         onCambio();
     };
+    // Conocer a mano (nota 234): el círculo abre el dato para completarlo; se tilda recién al guardarlo
+    const [completando, setCompletando] = useState(null);
 
     return (
         <section style={{ display: 'flex', flexDirection: 'column', gap: t.space[4] }}>
@@ -193,22 +195,35 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
             <Grupo t={t} titulo="Conocer" ayuda="Lo que tenemos que saber de él">
                 {o.conocer.map((c) => {
                     const actual = sig && sig.grupo === 'conocer' && sig.id === c.id;
+                    const abierto = completando === c.id;
                     return (
-                        <Fila key={c.id} t={t} actual={actual}>
-                            <Tilde t={t} hecho={c.hecho} actual={actual} />
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
-                                <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{c.titulo}</span>
-                                {c.hecho
-                                    ? <span style={{ color: t.color.text }}>{c.valor}</span>
-                                    : <span style={{ color: t.color.textMuted }}>Preguntale: “{c.pregunta}”</span>}
-                            </div>
-                            {!c.hecho && (
-                                <Button size="sm" variant="ghost" onClick={() => copiar(c.pregunta, showToast, 'Pregunta copiada')}>Copiar</Button>
+                        <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: t.space[2] }}>
+                            <Fila t={t} actual={actual}>
+                                <button type="button" onClick={() => setCompletando(abierto ? null : c.id)}
+                                    aria-label={c.hecho ? `Corregir ${c.titulo}` : `Tildar ${c.titulo}: completar el dato`}
+                                    title={c.hecho ? 'Corregir el dato' : 'Para tildarlo completá el dato'}
+                                    style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'flex' }}>
+                                    <Tilde t={t} hecho={c.hecho} actual={actual} />
+                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+                                    <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{c.titulo}</span>
+                                    {c.hecho
+                                        ? <span style={{ color: t.color.text }}>{c.valor}</span>
+                                        : <span style={{ color: t.color.textMuted }}>Preguntale: “{c.pregunta}”</span>}
+                                </div>
+                                {!c.hecho && !abierto && (
+                                    <Button size="sm" variant="ghost" onClick={() => copiar(c.pregunta, showToast, 'Pregunta copiada')}>Copiar</Button>
+                                )}
+                            </Fila>
+                            {abierto && (
+                                <CompletarConocer objetivo={c} datos={datos} leadId={leadId} t={t} showToast={showToast}
+                                    onCancelar={() => setCompletando(null)}
+                                    onGuardado={() => { setCompletando(null); onCambio(); }} />
                             )}
-                        </Fila>
+                        </div>
                     );
                 })}
-                <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Se completan con los datos del resumen (abajo): cargalos a mano o los deja Claude cada noche.</span>
+                <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Tocá el círculo para tildarlo: te pide el dato (no se tilda vacío). También salen del resumen (abajo), que deja Claude cada noche.</span>
             </Grupo>
 
             <Grupo t={t} titulo="Informar" ayuda="Lo que tiene que saber de nosotros (Preguntas frecuentes marcadas “Contárselo a todos”)">
@@ -245,6 +260,73 @@ function Objetivos({ datos, leadId, telefono, t, showToast, onCambio }) {
                 )}
             </Grupo>
         </section>
+    );
+}
+
+// Dato que pide cada objetivo Conocer para tildarse (nota 234). Obligatorios: ciudad y local/online
+// para «dónde está»; el rubro para «rubro e interés» (lo que le interesa es opcional).
+const COMPLETAR = {
+    ubicacion: [
+        { id: 'ciudad', label: 'Ciudad', max: 120, obligatorio: true },
+        { id: 'tiene_local', label: '¿Tiene local o vende online?', opciones: LOCAL.filter((l) => l.value), obligatorio: true },
+    ],
+    rubro: [
+        { id: 'rubro', label: 'Rubro (tipo de negocio)', max: 120, obligatorio: true },
+        { id: 'intereses', label: 'Le interesa', max: 300 },
+    ],
+};
+
+function CompletarConocer({ objetivo, datos, leadId, t, showToast, onCancelar, onGuardado }) {
+    const campos = COMPLETAR[objetivo.id] || [];
+    const p = datos.perfil || {};
+    const lead = datos.lead || {};
+    const [form, setForm] = useState(() => Object.fromEntries(campos.map((c) => [
+        c.id, p[c.id] || (c.id === 'ciudad' ? lead.ciudad || '' : c.id === 'rubro' ? lead.rubro || '' : ''),
+    ])));
+    const [guardando, setGuardando] = useState(false);
+    const faltan = campos.filter((c) => c.obligatorio && !String(form[c.id] || '').trim());
+    const guardar = async () => {
+        if (faltan.length) return;
+        setGuardando(true);
+        const body = Object.fromEntries(campos.map((c) => [c.id, String(form[c.id] || '').trim() || null]));
+        const res = await api.put(`/clientes/leads/${leadId}/perfil`, body);
+        setGuardando(false);
+        if (!res.success) { showToast(res.error || 'No se pudo guardar', 'error'); return; }
+        showToast(`${objetivo.titulo}: listo`, 'success');
+        onGuardado();
+    };
+    const control = { height: t.layout.inputHeight, borderRadius: t.radius.sm, border: `1px solid ${t.color.borderStrong}`, background: t.color.surface, color: t.color.text, fontFamily: t.font.family, fontSize: t.font.size.base, padding: '0 8px' };
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[4], marginLeft: 20 + t.space[4], padding: t.space[4], border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, background: t.color.surface }}>
+            <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Para tildarlo completá lo que sepas de él:</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: t.space[4] }}>
+                {campos.map((c) => (
+                    <label key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: t.space[2] }}>
+                        <span style={etiqueta(t)}>{c.label}{c.obligatorio ? ' *' : ''}</span>
+                        {c.opciones ? (
+                            <select value={form[c.id]} onChange={(e) => setForm((f) => ({ ...f, [c.id]: e.target.value }))} style={control}>
+                                <option value="">Elegí…</option>
+                                {c.opciones.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                        ) : (
+                            <Input value={form[c.id]} maxLength={c.max} autoFocus={c === campos[0]}
+                                onChange={(e) => setForm((f) => ({ ...f, [c.id]: e.target.value }))} />
+                        )}
+                    </label>
+                ))}
+            </div>
+            <div style={{ display: 'flex', gap: t.space[2], justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
+                {faltan.length > 0 && (
+                    <span style={{ fontSize: t.font.size.xs, color: t.color.warn, marginRight: 'auto' }}>
+                        Falta: {faltan.map((c) => c.label.replace(/^¿|\?$/g, '')).join(' y ')}
+                    </span>
+                )}
+                <Button size="sm" variant="ghost" onClick={onCancelar}>Cancelar</Button>
+                <Button size="sm" variant="primary" disabled={guardando || faltan.length > 0} onClick={guardar}>
+                    {guardando ? 'Guardando…' : 'Guardar y tildar'}
+                </Button>
+            </div>
+        </div>
     );
 }
 
