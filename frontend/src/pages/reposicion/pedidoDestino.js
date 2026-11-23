@@ -29,10 +29,27 @@ function ofertaPrincipal(it) {
     return ofs.find(o => o.disponible !== false) || ofs[0] || null;
 }
 
+/** El proveedor principal tiene alguna oferta vinculada (nota 218). */
+export function principalConOferta(it) {
+    return (it.ofertas?.ofertas || []).some(o => o.es_principal);
+}
+
+/**
+ * Mejor oferta de otro proveedor cuando el principal no tiene ninguna vinculada (nota 218).
+ * Ya vienen ordenadas: disponibles primero y de menor a mayor precio.
+ */
+export function ofertaSinPrincipal(it) {
+    if (!estaVinculado(it) || principalConOferta(it)) return null;
+    const principal = claveNombre(proveedorPrincipal(it));
+    return it.ofertas.ofertas.find(o =>
+        Number(o.precio) > 0 && claveNombre(o.proveedor_odoo || o.proveedor) !== principal) || null;
+}
+
 /**
  * A quién se le puede pedir el producto (nota 187): el principal de Odoo y cada proveedor
  * con una oferta vinculada, aunque no sea más barato. Uno por proveedor, con su mejor oferta.
- * @returns {Array<{ nombre, precio, url, disponible, es_principal, mas_barato }>}
+ * sin_oferta: el principal no tiene oferta vinculada pero otros sí (nota 218).
+ * @returns {Array<{ nombre, precio, url, disponible, es_principal, mas_barato, sin_oferta }>}
  */
 export function candidatosDe(it) {
     const nombrePrincipal = proveedorPrincipal(it);
@@ -45,6 +62,7 @@ export function candidatosDe(it) {
         disponible: op ? op.disponible !== false : true,
         es_principal: true,
         mas_barato: false,
+        sin_oferta: estaVinculado(it) && !principalConOferta(it),
     };
     const lista = [principal];
     const vistos = new Set([claveNombre(nombrePrincipal)]);
@@ -61,15 +79,19 @@ export function candidatosDe(it) {
             disponible: o.disponible !== false,
             es_principal: false,
             mas_barato: !!barata && claveNombre(barata.proveedor_odoo || barata.proveedor) === claveNombre(nombre),
+            sin_oferta: false,
         });
     }
     return lista;
 }
 
-/** Sin tocar nada: al más económico si conviene, si no al principal. */
+/**
+ * Sin tocar nada: al más económico si conviene; si el principal no tiene oferta vinculada,
+ * al mejor que sí la tenga (nota 218); si no, al principal.
+ */
 export function destinoPorDefecto(it) {
-    const barata = ofertaMasBarata(it);
-    return barata ? (barata.proveedor_odoo || barata.proveedor) : proveedorPrincipal(it);
+    const elegida = ofertaMasBarata(it) || ofertaSinPrincipal(it);
+    return elegida ? (elegida.proveedor_odoo || elegida.proveedor) : proveedorPrincipal(it);
 }
 
 /**
@@ -138,7 +160,7 @@ export function proveedoresDelPedido(items, asignaciones = {}) {
             g.n += 1;
             if (!estaVinculado(it)) g.sin += 1;
         }
-        if (ofertaMasBarata(it)) asegurar(proveedorPrincipal(it));
+        if (ofertaMasBarata(it) || ofertaSinPrincipal(it)) asegurar(proveedorPrincipal(it));
     }
     return [...grupos.values()].sort((a, b) => b.n - a.n || a.nombre.localeCompare(b.nombre, 'es'));
 }
