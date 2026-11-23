@@ -681,10 +681,10 @@ export default function Clientes() {
             marginBottom: tab === 'clientes' || tab === 'chats' ? -recorte : undefined,
         }}>
             {arribaMin ? (
-                // Franja fina: el nombre de la pantalla, la pestaña en un desplegable y la flechita para volver
+                // Franja fina: la pestaña en un desplegable y la flechita para volver (el nombre de la
+                // pantalla ya está en la barra de arriba, que se minimiza junto con esto)
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[2], marginBottom: t.space[2] }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], minWidth: 0 }}>
-                        <span style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.textMuted }}>Clientes</span>
                         <select value={tab} onChange={(e) => setTab(e.target.value)} aria-label="Pestaña"
                             style={{
                                 height: 28, padding: '0 8px', fontSize: t.font.size.sm, fontFamily: t.font.family,
