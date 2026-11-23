@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
@@ -58,6 +58,19 @@ const VACIO = {
     pendientes: ['No hay pendientes', 'Cuando cierres un control con productos que no salieron, el pedido de pendientes aparece acá.'],
 };
 
+// Lo que se recuerda al entrar a un pedido y volver (vive mientras no recargues la página):
+// filtros, solapa, la lista ya cargada y hasta dónde habías bajado
+const memoria = {
+    filtros: { solapa: 'pedidos', company: 'ambas', estado: 'todos', q: '', dias: '', orden: 'viejos', pagados: false },
+    data: null,          // última respuesta mostrada
+    clave: null,         // params con los que se trajo esa respuesta
+    masCargados: false,  // si habías tocado «Cargar más»
+    scroll: 0,
+    ultimoSync: null,
+    ultimoSyncMs: 0,
+};
+const scrollRoot = () => document.querySelector('[data-app-main]') || document.scrollingElement;
+
 const fmtHora = (iso) => (iso
     ? new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
     : '—');
@@ -100,25 +113,54 @@ export default function PedidoEnvios() {
     const { tokens: t } = useTheme();
     const isMobile = useIsMobile();
     const navigate = useNavigate();
-    const [solapa, setSolapa] = useState('pedidos');
-    const [company, setCompany] = useState('ambas');
-    const [estado, setEstado] = useState('todos');
-    const [q, setQ] = useState('');
-    const [qDebounced, setQDebounced] = useState('');
-    const [dias, setDias] = useState('');
-    const [orden, setOrden] = useState('viejos');
-    const [pagados, setPagados] = useState(false);
-    const [data, setData] = useState({ items: [], conteos: {}, total: 0, solapas: {} });
-    const [loading, setLoading] = useState(true);
+    const f0 = memoria.filtros;
+    const [solapa, setSolapa] = useState(f0.solapa);
+    const [company, setCompany] = useState(f0.company);
+    const [estado, setEstado] = useState(f0.estado);
+    const [q, setQ] = useState(f0.q);
+    const [qDebounced, setQDebounced] = useState(f0.q);
+    const [dias, setDias] = useState(f0.dias);
+    const [orden, setOrden] = useState(f0.orden);
+    const [pagados, setPagados] = useState(f0.pagados);
+    const [data, setData] = useState(() => memoria.data || { items: [], conteos: {}, total: 0, solapas: {} });
+    const [loading, setLoading] = useState(!memoria.data);
     const [cargandoMas, setCargandoMas] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const [marcando, setMarcando] = useState(null);
     const [sel, setSel] = useState(() => new Set());
     const [error, setError] = useState(null);
     const [aviso, setAviso] = useState(null);
-    const [ultimoSync, setUltimoSync] = useState(null);
+    const [ultimoSync, setUltimoSync] = useState(memoria.ultimoSync);
     const syncEnCurso = useRef(false);
-    const masCargados = useRef(false);
+    const masCargados = useRef(memoria.masCargados);
+    const raizRef = useRef(null);
+
+    // Recordar filtros y lista para cuando vuelvas de un pedido
+    useEffect(() => {
+        memoria.filtros = { solapa, company, estado, q, dias, orden, pagados };
+    }, [solapa, company, estado, q, dias, orden, pagados]);
+    useEffect(() => {
+        memoria.data = data;
+        memoria.masCargados = masCargados.current;
+    }, [data]);
+    useEffect(() => { memoria.ultimoSync = ultimoSync; }, [ultimoSync]);
+
+    // Scroll: se anota mientras bajás y se vuelve a ese punto al regresar
+    useEffect(() => {
+        const root = scrollRoot();
+        if (!root) return undefined;
+        const anotar = () => {
+            // Ya saliste de la pantalla: el scroll que se mueve es el del pedido
+            if (!raizRef.current || !document.contains(raizRef.current)) return;
+            memoria.scroll = root.scrollTop;
+        };
+        root.addEventListener('scroll', anotar, { passive: true });
+        return () => root.removeEventListener('scroll', anotar);
+    }, []);
+    useLayoutEffect(() => {
+        const root = scrollRoot();
+        if (root) root.scrollTop = memoria.data ? memoria.scroll : 0;
+    }, []);
 
     useEffect(() => {
         const id = setTimeout(() => setQDebounced(q), 250);
@@ -148,6 +190,7 @@ export default function PedidoEnvios() {
             return;
         }
         masCargados.current = false;
+        memoria.clave = JSON.stringify(params);
         setData(res.data);
         if (silencioso) {
             const ids = new Set((res.data.items || []).map((it) => it.id));
@@ -157,7 +200,15 @@ export default function PedidoEnvios() {
         }
     }, [params]);
 
-    useEffect(() => { cargar(); }, [cargar]);
+    // Al volver de un pedido con la misma lista en pantalla: se refresca en silencio (sin perder
+    // el scroll). Si habías tocado «Cargar más» queda como estaba para no recortarla.
+    const primeraCarga = useRef(true);
+    useEffect(() => {
+        const volviendo = primeraCarga.current && memoria.data && memoria.clave === JSON.stringify(params);
+        primeraCarga.current = false;
+        if (!volviendo) cargar();
+        else if (!masCargados.current) cargar({ silencioso: true });
+    }, [cargar, params]);
 
     const cargarMas = async () => {
         setCargandoMas(true);
@@ -168,6 +219,7 @@ export default function PedidoEnvios() {
             return;
         }
         masCargados.current = true;
+        memoria.masCargados = true;
         setData((prev) => ({ ...res.data, items: [...prev.items, ...res.data.items] }));
     };
 
@@ -215,12 +267,13 @@ export default function PedidoEnvios() {
     // Al abrir la pantalla, cada 2 min y al volver a la pestaña: la lista sigue a Odoo sola
     const syncRef = useRef(sync);
     syncRef.current = sync;
-    const ultimoSyncMs = useRef(0);
+    // El último sync se recuerda entre visitas: entrar y salir de un pedido no vuelve a llamar a Odoo
+    // si pasó menos de un minuto
     useEffect(() => {
         const correr = () => {
             if (document.visibilityState !== 'visible') return;
-            if (Date.now() - ultimoSyncMs.current < SYNC_MIN_MS) return;
-            ultimoSyncMs.current = Date.now();
+            if (Date.now() - memoria.ultimoSyncMs < SYNC_MIN_MS) return;
+            memoria.ultimoSyncMs = Date.now();
             syncRef.current({ auto: true });
         };
         correr();
@@ -616,7 +669,7 @@ export default function PedidoEnvios() {
     };
 
     return (
-        <div style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1180, margin: '0 auto' }}>
+        <div ref={raizRef} style={{ padding: isMobile ? 12 : `${t.layout.cardPadY}px ${t.layout.cardPadX}px`, maxWidth: 1180, margin: '0 auto' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
                 <div style={{ minWidth: 0 }}>
                     <h1 style={{ margin: 0, fontSize: isMobile ? 22 : t.font.size['2xl'], fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>

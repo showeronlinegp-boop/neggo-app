@@ -93,6 +93,9 @@ app.use('/api/estados-imagenes', require('./routes/estadosImagenes'));
 // Cola de reposición de Neggo (archivados y "queda poco")
 app.use('/api/reposicion', require('./routes/reposicion'));
 
+// Encargues a cotizar: lo que no tenemos y un contacto de Chats pidió averiguar (nota 248)
+app.use('/api/encargues-cotizar', require('./routes/encarguesCotizar'));
+
 // Armado y control de pedidos (2-step en la app; Odoo al saldar)
 app.use('/api/pedido-envios', require('./routes/pedidoEnvios'));
 

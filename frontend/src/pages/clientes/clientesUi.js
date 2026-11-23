@@ -118,6 +118,7 @@ export const EVENT_META = {
     etapa:     { label: 'Cambio de etapa' },
     compra:    { label: 'Compra' },
     respuesta: { label: 'Respuesta' },
+    sumado_bot: { label: 'Sumado al bot de leads' },
     ...Object.fromEntries(Object.entries(ACTION_META).map(([k, v]) => [k, { label: v.verbo }])),
 };
 

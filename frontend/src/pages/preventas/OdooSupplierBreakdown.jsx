@@ -67,7 +67,7 @@ function downloadCSV(data, supplierNameFilter = null) {
     const suppliers = supplierNameFilter ? data.filter(s => s.supplier_name === supplierNameFilter) : data;
     for (const supplier of suppliers) {
         for (const product of supplier.products) {
-            const quotationsStr = product.quotations.map(q => `${q.quotation_name}(${q.qty})`).join('; ');
+            const quotationsStr = product.quotations.map(q => `${q.client || 'Sin cliente'}: ${q.qty} (${q.quotation_name})`).join('; ');
             const totalCost = product.unit_cost != null ? (product.unit_cost * product.total_qty).toFixed(2) : '';
             rows.push([supplier.supplier_name, product.product_name, product.external_id || '', product.unit_cost != null ? Number(product.unit_cost).toFixed(2) : '', product.total_qty, totalCost, quotationsStr, product.image_url ? `${origin}${product.image_url}` : '']);
         }
@@ -293,8 +293,11 @@ export default function OdooSupplierBreakdown() {
                                                             <td style={tdStyle}>
                                                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                                                     {product.quotations.map((q, qi) => (
-                                                                        <Badge key={qi} tone={q.es_pendiente ? 'warn' : 'primary'} title={`${q.client || 'Sin cliente'} — ${fmtDate(q.date)}`}>
-                                                                            {q.es_pendiente ? 'Pendiente · ' : ''}{q.quotation_name} × {q.qty}
+                                                                        <Badge key={qi} tone={q.es_pendiente ? 'warn' : 'primary'} title={`${q.quotation_name} — ${fmtDate(q.date)}`}>
+                                                                            {q.es_pendiente ? 'Pendiente · ' : ''}
+                                                                            <span style={{ fontWeight: t.font.weight.semibold }}>{q.client || 'Sin cliente'}</span>
+                                                                            {' · '}<span style={t.numericStyle}>{Number(q.qty).toLocaleString('es-AR')} u.</span>
+                                                                            <span style={{ fontFamily: t.font.mono, opacity: 0.7, marginLeft: 6 }}>{q.quotation_name}</span>
                                                                         </Badge>
                                                                     ))}
                                                                 </div>

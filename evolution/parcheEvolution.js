@@ -13,12 +13,52 @@
 //    Con cientos de pedidos eso es tráfico raro hacia WhatsApp. Ahora, si no tiene ninguno
 //    de los mensajes pedidos, ignora el pedido sin tocar nada.
 //
+// 3. Estados de WhatsApp (Baileys, messages-recv.js): WhatsApp manda los estados (historias)
+//    de los contactos como stanza <status> de primer nivel. Baileys rc.9 no tiene handler y
+//    nunca la confirma: el servidor retiene todo lo demás detrás de ella y cada ~50 min corta
+//    el stream con <ack class="status">. Ahora se responde con sendMessageAck (ack simple, sin
+//    código de error, sin recibo de lectura) online y offline, como el backport de
+//    evolution-api PR #2785 / Baileys #2858. No marca los estados como vistos.
+//
+// 4. Cola offline (Baileys, socket.js): tras <offline_preview> Baileys pide UN solo
+//    <offline_batch count=100> y nunca el siguiente. Con más de 100 pendientes el servidor no
+//    manda <offline> y retiene también los mensajes en vivo detrás de la cola (WAHA #2349).
+//    Ahora, mientras no llegue <offline>, se pide el lote siguiente cada 5 s (tope 720 pedidos,
+//    ~1 h) y se corta al llegar <offline> o al cerrarse el socket.
+//
+// 5. Procesador offline (Baileys, messages-recv.js): si un nodo offline tira error (p. ej. el
+//    JSON.parse de GROUP_PARTICIPANT_CHANGE_NUMBER en process-message.js), el bucle se cortaba
+//    con isProcessing=true para siempre y nunca más procesaba (ni confirmaba) nodos offline:
+//    la cola quedaba trabada de nuevo. Ahora el error de un nodo se registra y se sigue.
+//
+// 6. Reconexión (Evolution, dist/main.js, connectionUpdate): al cerrarse la conexión por
+//    cualquier motivo que no sea logout, Evolution reconectaba al instante, sin pausa y sin
+//    registrar por qué se cerró. Sin red (PC suspendida o recién despierta) cada intento falla en
+//    milisegundos y dispara otro: hubo hasta 1.548 intentos por minuto (nota 247) y WhatsApp terminó
+//    desvinculando el número. Ahora queda un solo reintento pendiente a la vez, con espera
+//    creciente (5 s, 10 s, 20 s… hasta 5 min), y se registra el código del cierre.
+// 7. Al conectar (connection "open") el contador de intentos vuelve a cero.
+//
 // Se corre en el build de la imagen (evolution/Dockerfile) y otra vez en cada arranque
 // como verificación. Si algún parche no encaja (cambió la versión), sale con código 1:
 // el build falla o Evolution no arranca. Preferimos Evolution caído antes que vacíos al grupo.
 
 const fs = require('fs');
 const path = require('path');
+
+// Reintento con espera creciente (parche 6). Va en una sola línea porque reemplaza código minificado.
+const RECONEXION_NEGGO = [
+    '(()=>{',
+    'const n=(this.neggoIntentos=(this.neggoIntentos||0)+1),espera=Math.min(5e3*2**Math.min(n-1,6),3e5);',
+    'this.logger.warn(`Parche Neggo: conexión cerrada (código ${i??"sin código"}), reintento ${n} en ${espera/1e3} s`);',
+    'if(this.neggoReconexion)return;',
+    'this.neggoReconexion=setTimeout(async()=>{',
+    // Se libera antes de conectar: si este intento también se cae, agenda el siguiente
+    'this.neggoReconexion=void 0;',
+    'try{await this.connectToWhatsapp(this.phoneNumber)}catch(e){this.logger.error(e)}',
+    '},espera)',
+    '})()',
+].join('');
 
 const PARCHES = [
     {
@@ -51,6 +91,142 @@ const PARCHES = [
             '        }',
             "        // if it's the primary jid sending the request",
         ].join('\n'),
+    },
+    {
+        nombre: 'estados <status> offline → ack simple',
+        archivos: [
+            { ruta: 'node_modules/baileys/lib/Socket/messages-recv.js', obligatorio: true },
+        ],
+        original: [
+            '    const makeOfflineNodeProcessor = () => {',
+            '        const nodeProcessorMap = new Map([',
+            "            ['message', handleMessage],",
+            "            ['call', handleCall],",
+            "            ['receipt', handleReceipt],",
+            "            ['notification', handleNotification]",
+            '        ]);',
+        ].join('\n'),
+        parcheado: [
+            '    // Parche Neggo: los estados (<status>) solo se confirman con un ack simple',
+            '    // (sin error ni recibo de lectura) para que el servidor no retenga la cola',
+            '    // (evolution/parcheEvolution.js, evolution-api PR #2785).',
+            '    const handleStatusNeggo = async (node) => {',
+            '        await sendMessageAck(node);',
+            '    };',
+            '    const makeOfflineNodeProcessor = () => {',
+            '        const nodeProcessorMap = new Map([',
+            "            ['message', handleMessage],",
+            "            ['call', handleCall],",
+            "            ['receipt', handleReceipt],",
+            "            ['notification', handleNotification],",
+            "            ['status', handleStatusNeggo]",
+            '        ]);',
+        ].join('\n'),
+    },
+    {
+        nombre: 'estados <status> online → ack simple',
+        archivos: [
+            { ruta: 'node_modules/baileys/lib/Socket/messages-recv.js', obligatorio: true },
+        ],
+        original: [
+            "    ws.on('CB:notification', async (node) => {",
+            "        await processNode('notification', node, 'handling notification', handleNotification);",
+            '    });',
+            "    ws.on('CB:ack,class:message', (node) => {",
+        ].join('\n'),
+        parcheado: [
+            "    ws.on('CB:notification', async (node) => {",
+            "        await processNode('notification', node, 'handling notification', handleNotification);",
+            '    });',
+            '    // Parche Neggo: ack simple de los estados (ver handleStatusNeggo).',
+            "    ws.on('CB:status', async (node) => {",
+            "        await processNode('status', node, 'handling status', handleStatusNeggo);",
+            '    });',
+            "    ws.on('CB:ack,class:message', (node) => {",
+        ].join('\n'),
+    },
+    {
+        nombre: 'cola offline → pide lotes hasta <offline>',
+        archivos: [
+            { ruta: 'node_modules/baileys/lib/Socket/socket.js', obligatorio: true },
+        ],
+        original: [
+            "    ws.on('CB:ib,,offline_preview', async (node) => {",
+            "        logger.info('offline preview received', JSON.stringify(node));",
+            '        await sendNode({',
+            "            tag: 'ib',",
+            '            attrs: {},',
+            "            content: [{ tag: 'offline_batch', attrs: { count: '100' } }]",
+            '        });',
+            '    });',
+        ].join('\n'),
+        parcheado: [
+            '    // Parche Neggo: pedir lotes offline hasta que llegue <offline> (evolution/parcheEvolution.js).',
+            '    let vigiaOfflineNeggo;',
+            '    const pararOfflineNeggo = () => {',
+            '        if (vigiaOfflineNeggo) {',
+            '            clearInterval(vigiaOfflineNeggo);',
+            '            vigiaOfflineNeggo = undefined;',
+            '        }',
+            '    };',
+            "    ws.on('CB:ib,,offline', () => pararOfflineNeggo());",
+            "    ws.on('close', () => pararOfflineNeggo());",
+            "    ws.on('CB:ib,,offline_preview', async (node) => {",
+            "        logger.info('offline preview received', JSON.stringify(node));",
+            '        await sendNode({',
+            "            tag: 'ib',",
+            '            attrs: {},',
+            "            content: [{ tag: 'offline_batch', attrs: { count: '100' } }]",
+            '        });',
+            '        pararOfflineNeggo();',
+            '        let pedidosNeggo = 1;',
+            '        vigiaOfflineNeggo = setInterval(() => {',
+            '            if (!ws.isOpen || pedidosNeggo >= 720) {',
+            '                pararOfflineNeggo();',
+            '                return;',
+            '            }',
+            '            pedidosNeggo++;',
+            "            logger.info({ pedido: pedidosNeggo }, 'offline queue still open, requesting next offline batch');",
+            "            sendNode({ tag: 'ib', attrs: {}, content: [{ tag: 'offline_batch', attrs: { count: '100' } }] })",
+            "                .catch(err => logger.warn({ err }, 'failed to request next offline batch'));",
+            '        }, 5000);',
+            '    });',
+        ].join('\n'),
+    },
+    {
+        nombre: 'procesador offline → un error no lo frena',
+        archivos: [
+            { ruta: 'node_modules/baileys/lib/Socket/messages-recv.js', obligatorio: true },
+        ],
+        original: [
+            '                    await nodeProcessor(node);',
+            '                }',
+            '                isProcessing = false;',
+        ].join('\n'),
+        parcheado: [
+            '                    // Parche Neggo: un nodo con error no frena la cola offline (evolution/parcheEvolution.js).',
+            '                    try {',
+            '                        await nodeProcessor(node);',
+            '                    }',
+            '                    catch (error) {',
+            "                        onUnexpectedError(error, `processing offline ${type}`);",
+            '                    }',
+            '                }',
+            '                isProcessing = false;',
+        ].join('\n'),
+    },
+    {
+        nombre: 'reconexión → un intento a la vez con espera creciente',
+        // main.mjs no se usa (start:prod carga main.js) y está minificado con otros nombres
+        archivos: [{ ruta: 'dist/main.js', obligatorio: true }],
+        original: '![R.DisconnectReason.loggedOut,R.DisconnectReason.forbidden,402,406].includes(i)?await this.connectToWhatsapp(this.phoneNumber):(',
+        parcheado: `![R.DisconnectReason.loggedOut,R.DisconnectReason.forbidden,402,406].includes(i)?${RECONEXION_NEGGO}:(`,
+    },
+    {
+        nombre: 'reconexión → contador a cero al conectar',
+        archivos: [{ ruta: 'dist/main.js', obligatorio: true }],
+        original: 'if(t==="open"){this.instance.wuid=this.client.user.id.replace(',
+        parcheado: 'if(t==="open"){this.neggoIntentos=0;this.instance.wuid=this.client.user.id.replace(',
     },
 ];
 

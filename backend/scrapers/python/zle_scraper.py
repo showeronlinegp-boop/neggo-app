@@ -2,7 +2,11 @@
 zle_scraper.py — ZLE Store (zlestore.com)
 La web es una SPA que lee todo de una API RPC propia (POST https://api.zlestore.com/<caso de uso>):
   - getVariantSearchResult {keyword:""} → el listado completo de /search (una variante por producto)
-  - findProductByIdUsers {slug}          → el detalle ("Ver detalles"): todas las variantes, SKU y categoría
+  - getVariantsByProductId {productId}   → todas las variantes del producto con el stock real, SKU y categoría
+    (productId = el "id" de cualquier variante del producto, como viene en cada item del listado).
+    El stock se calcula en el momento sumando los depósitos, igual que en el listado, las categorías y el
+    carrito de la web. findProductByIdUsers NO sirve para el stock: devuelve el guardado en la variante,
+    que está viejo (en 150 productos al azar, 85 daban distinto agotado/disponible que la web, nota 200).
   - login {email, password}               → sesión por cookie; sin ella unitPrice/bulkPrice vienen null
 JSON sin navegador. Credenciales de cliente en ZLE_EMAIL / ZLE_PASSWORD (sin ellas corre igual, sin precios).
 Salida NDJSON por stdout: cada variante es una línea {"type":"product",...}
@@ -99,11 +103,18 @@ def to_price(value):
     except (TypeError, ValueError):
         return None
 
+def to_stock(value):
+    """Stock como número (la API a veces lo manda como texto). Vacío o inválido = 0."""
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
 def agotado(v):
-    """Misma regla que la web (badge "Agotado"): mira el stock de la forma en que se vende.
-    El campo 'stock' no sirve: no coincide con lo que muestra la tienda."""
-    paquete = max(0, v.get('unitStock') or 0)
-    bulto = max(0, v.get('bulkStock') or 0)
+    """Misma regla que la web ("Sin stock"): mira el stock de la forma en que se vende la variante.
+    unitStock / bulkStock tienen que ser los de getVariantsByProductId (stock real)."""
+    paquete = to_stock(v.get('unitStock'))
+    bulto = to_stock(v.get('bulkStock'))
     condicion = v.get('saleCondition')
     if condicion == 'unit':
         return paquete == 0
@@ -120,7 +131,8 @@ def first_image(*listas):
     return None
 
 def to_products(detalle, item_listado):
-    """Convierte el detalle de un producto en una fila por variante (formato de upsertProducts)."""
+    """Convierte las variantes de un producto (getVariantsByProductId) en una fila por variante
+    (formato de upsertProducts). Las ocultas se guardan como no disponibles, no se omiten."""
     variantes = [v for v in (detalle.get('variants') or []) if not v.get('trash')]
     imgs_producto = detalle.get('images') or item_listado.get('images')
     url = f'{SITE_URL}/productos/{detalle.get("slug") or item_listado.get("productSlug")}'
@@ -138,10 +150,10 @@ def to_products(detalle, item_listado):
             'product_url': url,
             'source_category': categoria,
             'barcode': None,
-            # Disponible = la web no lo muestra agotado y está publicado en la tienda
+            # Disponible = la web no la muestra "Sin stock" y está publicada en la tienda
             'available': not agotado(v) and v.get('isVisible', True) is not False,
             # Código interno de ZLE (detail-product/<id>); upsertProducts no lo guarda
-            'supplier_code': str(detalle.get('id') or item_listado.get('productId') or ''),
+            'supplier_code': str(detalle.get('id') or v.get('productId') or item_listado.get('productId') or ''),
         })
     return [p for p in productos if p['sku'] and p['name']]
 
@@ -172,7 +184,7 @@ def scrape():
 
             print(f'📦 {nombre} de {len(listado)}', file=sys.stderr)
             try:
-                detalles = list(pool.map(lambda i: call('findProductByIdUsers', {'slug': i['productSlug']}), lote))
+                detalles = list(pool.map(lambda i: call('getVariantsByProductId', {'productId': i['id']}), lote))
             except RuntimeError as e:
                 # Sin category_done: al reanudar se vuelve a intentar la tanda
                 print(f'❌ Tanda "{nombre}" incompleta: {e}', file=sys.stderr)

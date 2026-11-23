@@ -11,11 +11,24 @@
 //   fuzzy_name   (var) — similitud trigrama ≥ 0.75 (requiere pg_trgm)
 //   bracket_code (87)  — código entre {} o () del nombre scraper vs nombre Odoo
 //   vinculo_neggo(89)  — oferta web vinculada a un producto de Neggo cuya oferta "neggo" ya está en Preventas
+//   vinculo_web  (89)  — al revés: oferta "neggo" cuya oferta web vinculada ya está en Preventas
+//   codigo_web   (84)  — oferta "neggo" con el código de la web (sin PRE+prefijo+NEG ni el prefijo repetido)
+
+const { CATEGORIA_PROVEEDOR_SQL } = require('./preventasSyncGuards');
 
 const LOCK_KEY = 987654321; // pg advisory lock
 const PRICE_TOL = 0.0001;
 
 // ─── SQL fragments ─────────────────────────────────────────────────────────────
+
+// Producto de Odoo sin categoría interna ("All" es la de Odoo por defecto: no cuenta)
+const SIN_CATEGORIA_INTERNA_SQL = `(NULLIF(TRIM(opc.categ_name), '') IS NULL OR opc.categ_name ~* '^all(\\s*/|$)')`;
+// El proveedor tiene regla con categoría de Preventas para la categoría de la oferta
+const TIENE_REGLA_PREVENTAS_SQL = `EXISTS (
+                 SELECT 1 FROM supplier_category_rules rc
+                 WHERE rc.supplier_id = sp.supplier_id AND rc.active = true
+                   AND rc.source_category = ${CATEGORIA_PROVEEDOR_SQL}
+                   AND rc.odoo_categ_id_preventas IS NOT NULL)`;
 
 // Proveedor con "Va a Preventas" apagado: no se propone nada salvo archivar lo que sigue activo
 const ESTADO_CASE = `
@@ -34,6 +47,13 @@ const ESTADO_CASE = `
              AND opc.standard_price > 0
              AND ABS(p.costo - opc.standard_price) / opc.standard_price > ${PRICE_TOL}
              AND p.costo < opc.standard_price  THEN 'precio_baja'
+        -- Activo y con stock pero no se ve en la web de Precompras (nota 200)
+        WHEN opc.active = true AND sp.available = true AND opc.is_published IS NOT TRUE THEN 'publicar'
+        -- Publicado sin categoría interna o sin categoría web, y hay de dónde sacarla: la regla del
+        -- proveedor o la categoría interna que ya tiene (nota 200)
+        WHEN opc.active = true AND sp.available = true
+             AND (${SIN_CATEGORIA_INTERNA_SQL} OR opc.web_categ_id IS NULL)
+             AND (NOT ${SIN_CATEGORIA_INTERNA_SQL} OR ${TIENE_REGLA_PREVENTAS_SQL}) THEN 'categoria'
         ELSE 'sin_cambios'
     END`;
 
@@ -76,10 +96,51 @@ const sinRechazo = (spCol, odooCol) => `NOT EXISTS (
             AND pmr.odoo_company = 'preventas' AND pmr.estado = 'rechazado'
       )`;
 
+// ─── Productos que vinieron de Odoo Neggo en un proveedor de catálogo (nota 200) ──────────────
+// Si el catálogo del proveedor es su web o su lista, lo de Preventas que se cargó desde Neggo
+// (código PRE + prefijo + NEG...) no sigue por defecto: solo se queda, con el costo del catálogo,
+// si coincide con una oferta por código o por nombre casi exacto. Si no, no se vincula: el de Odoo
+// queda para archivar ("No está en el proveedor") y la oferta para crear y publicar.
+const SIMILITUD_CASI_EXACTA = 0.9;
+
+const esNeggoEnCatalogo = (opc, s) => `(
+        ${s}.scraper_key IS DISTINCT FROM 'neggo_scraper'
+        AND ${s}.preventas_fuente IS DISTINCT FROM 'neggo'
+        AND (UPPER(REGEXP_REPLACE(COALESCE(${opc}.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'
+             OR UPPER(REGEXP_REPLACE(COALESCE(${opc}.external_id, ''), '[^A-Za-z0-9]', '', 'g')) LIKE 'PRE' || UPPER(${s}.prefix) || 'NEG%'))`;
+
+// El código de la oferta (su código de proveedor, o un número de 3+ cifras del nombre que no sea una
+// medida como "500ML") aparece suelto en el nombre o la referencia del producto de Odoo:
+// "ABROCHADOR" (2753) ↔ "[PL2753] Abrochadora" · "PORTA CINTA 1401" ↔ "Porta Cintas Art. 1401"
+const coincideCodigo = (sp, opc) => `EXISTS (
+        SELECT 1
+        FROM regexp_matches(COALESCE(${sp}.codigo_proveedor, '') || ' ' || ${sp}.name,
+                            '([0-9]{3,})(?![0-9])(?!\\s*(ml|cm|mm|gr|grs|kg|lt|lts|w|v|mah|u|un|unid)([^a-z]|$))', 'gi') AS m(t)
+        WHERE (${opc}.name || ' ' || COALESCE(${opc}.internal_ref, '')) ~ ('(^|[^0-9])' || m.t[1] || '($|[^0-9])')
+    )`;
+
+// El vínculo vale: no es un producto de Neggo en un proveedor de catálogo, o coincide por código o
+// por nombre casi exacto
+const vinculoValido = (sp, opc, s, matchType) => `(
+        NOT ${esNeggoEnCatalogo(opc, s)}
+        OR ${matchType} IN ('exact_sku', 'internal_ref', 'bracket_code')
+        OR similarity(LOWER(${sp}.name), LOWER(${opc}.name)) >= ${SIMILITUD_CASI_EXACTA}
+        OR ${coincideCodigo(sp, opc)})`;
+
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
 const MATCH_SQL = `
-WITH candidates AS (
+-- Códigos de Preventas (ID externo y ref. interna normalizada) calculados una sola vez:
+-- las estrategias 10 y 11 cruzan por igualdad en vez de pasar la expresión regular fila por fila
+WITH codigos_preventas AS MATERIALIZED (
+    SELECT odoo_id, UPPER(external_id) AS codigo
+    FROM odoo_products_cache WHERE company = 'preventas' AND external_id IS NOT NULL
+    UNION
+    SELECT odoo_id, UPPER(REGEXP_REPLACE(internal_ref, '[^A-Za-z0-9]', '', 'g'))
+    FROM odoo_products_cache WHERE company = 'preventas' AND internal_ref IS NOT NULL
+),
+
+candidates AS (
 
     -- 1. SKU exacto (100)
     SELECT sp.id AS sp_id, opc.odoo_id, 'exact_sku'::VARCHAR AS match_type, 100::NUMERIC AS score
@@ -190,6 +251,43 @@ WITH candidates AS (
              OR UPPER(REGEXP_REPLACE(COALESCE(opc.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) = UPPER(sn.sku))
     WHERE sp.source = 'web'
 
+    UNION ALL
+
+    -- 10. Al revés del 9 (89, nota 219): oferta "neggo" → vínculo confirmado de una oferta
+    --     web del mismo proveedor con ese producto de Neggo → el producto de Preventas que ya
+    --     se creó desde la web. Con "Preventas desde Neggo", lo que estaba cargado con el código
+    --     de la web (PREZLBBS1202) no se propone crear otra vez como PREZLNEGZLEBBS1202.
+    SELECT sn.id, opc.odoo_id, 'vinculo_web', 89
+    FROM supplier_products sn
+    JOIN product_mappings pm
+        ON  pm.odoo_product_id = sn.neggo_odoo_id
+        AND pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
+    JOIN supplier_products sw
+        ON  sw.id = pm.supplier_product_id
+        AND sw.supplier_id = sn.supplier_id AND sw.source <> 'neggo'
+    JOIN codigos_preventas opc ON opc.codigo = UPPER(sw.sku)
+    WHERE sn.source = 'neggo' AND sn.neggo_odoo_id IS NOT NULL
+
+    UNION ALL
+
+    -- 11. Oferta "neggo" por código de la web (84, nota 219): se saca PRE+prefijo+NEG y el
+    --     prefijo o nombre del proveedor que Neggo repite adelante del código
+    --     (PREZLNEGZLZLELPG07CA → PREZLLPG07CA). Puntaje bajo: Neggo a veces reusa un código
+    --     para otro artículo, así que si hay vínculo confirmado (10) gana ese.
+    SELECT sp.id, opc.odoo_id, 'codigo_web', 84
+    FROM supplier_products sp
+    JOIN suppliers sx ON sx.id = sp.supplier_id
+    CROSS JOIN LATERAL (SELECT
+        'PRE' || UPPER(sx.prefix) || REGEXP_REPLACE(
+            SUBSTRING(UPPER(sp.sku) FROM LENGTH('PRE' || sx.prefix || 'NEG') + 1),
+            '^(' || UPPER(sx.prefix) || '|' || REGEXP_REPLACE(UPPER(sx.name), '[^A-Z0-9]', '', 'g') || ')+',
+            '') AS clave
+    ) k
+    JOIN codigos_preventas opc ON opc.codigo = k.clave
+    WHERE sp.source = 'neggo'
+      AND UPPER(sp.sku) LIKE 'PRE' || UPPER(sx.prefix) || 'NEG%'
+      AND LENGTH(k.clave) > LENGTH('PRE' || sx.prefix) + 2
+
 ),
 
 -- Mejor match por producto scraper (puntaje más alto gana)
@@ -198,8 +296,10 @@ best_by_sp AS (
     FROM candidates c
     JOIN supplier_products sp ON sp.id = c.sp_id
     JOIN suppliers s ON s.id = sp.supplier_id
+    JOIN odoo_products_cache opcv ON opcv.odoo_id = c.odoo_id AND opcv.company = 'preventas'
     WHERE ${FUENTE_PREVENTAS}
       AND ${sinRechazo('c.sp_id', 'c.odoo_id')}
+      AND ${vinculoValido('sp', 'opcv', 's', 'c.match_type')}
     ORDER BY c.sp_id, c.score DESC, c.match_type
 ),
 
@@ -268,6 +368,7 @@ LEFT JOIN LATERAL (
       -- Un vínculo rechazado en la tabla maestra no se vuelve a proponer (nota 143)
       AND ${sinRechazo('sp.id', 'opc2.odoo_id')}
       AND similarity(LOWER(sp.name), LOWER(opc2.name)) >= 0.75
+      AND ${vinculoValido('sp', 'opc2', 's', "'fuzzy_name'")}
     ORDER BY sim DESC
     LIMIT 1
 ) best ON true
@@ -343,7 +444,8 @@ ON CONFLICT DO NOTHING
 // Cada producto de Preventas se atribuye a un proveedor por su código: PRE + prefijo + resto.
 // Solo se propone inactivar ('solo_odoo') si ese proveedor tiene el scraping habilitado,
 // una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días
-// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien).
+// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien;
+// con "Preventas desde Neggo", con que haya productos de Neggo leídos, nota 219).
 // En cualquier otro caso queda 'sin_fuente' y nunca se aplica nada en Odoo.
 
 const SOLO_ODOO_SQL = `
@@ -353,6 +455,15 @@ SELECT
     sx.id,
     CASE
         WHEN sx.id IS NOT NULL AND sx.va_a_preventas = false THEN 'fuera_preventas'
+        -- "Preventas desde Neggo" (nota 219): lo que vale es Neggo, no cómo terminó el scraping
+        -- de la web. Alcanza con tener productos de Neggo leídos (0 = falló Odoo: no se archiva).
+        WHEN sx.id IS NOT NULL
+             AND sx.preventas_fuente = 'neggo'
+             AND sx.scraper_key IS DISTINCT FROM 'neggo_scraper'
+             AND sx.scrape_enabled = true
+             AND EXISTS (SELECT 1 FROM supplier_products sn
+                         WHERE sn.supplier_id = sx.id AND sn.source = 'neggo')
+        THEN 'solo_odoo'
         WHEN sx.id IS NOT NULL
              AND sx.scrape_enabled = true
              AND sx.scraper_key IS NOT NULL
@@ -366,7 +477,7 @@ SELECT
     NOW()
 FROM odoo_products_cache opc
 LEFT JOIN LATERAL (
-    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas
+    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas, s.preventas_fuente
     FROM suppliers s
     WHERE UPPER(REGEXP_REPLACE(COALESCE(NULLIF(opc.internal_ref, ''), opc.ext_id_clean, ''), '[^A-Za-z0-9]', '', 'g'))
           LIKE 'PRE' || UPPER(s.prefix) || '%'
@@ -395,6 +506,42 @@ async function getMaxDiasInactivar(client) {
     const dias = parseInt(rows[0]?.value, 10);
     return Number.isFinite(dias) && dias > 0 ? dias : 7;
 }
+
+// ─── Sin foto en ningún lado (nota 203) ───────────────────────────────────────
+// Vinculado a un producto de Preventas sin foto en Odoo, y ni el proveedor ni el producto de Neggo
+// vinculado tienen una: si está activo se propone archivarlo ('sin_foto'); si está archivado no se
+// propone activarlo. Lo que se archiva por falta de stock ('inactivar') no cambia.
+// Una sola pasada con anti-joins (no subconsultas por fila): el recálculo ya es pesado.
+const SIN_FOTO_PASO_SQL = `
+WITH neggo_sin_foto AS (
+    SELECT template_id FROM odoo_products_cache
+    WHERE company = 'neggo' AND template_id IS NOT NULL
+    GROUP BY template_id HAVING NOT bool_or(has_image)
+)
+UPDATE preventas_sync_state pss
+SET estado = CASE WHEN opc.active THEN 'sin_foto' ELSE 'sin_cambios' END
+FROM supplier_products sp, suppliers s, odoo_products_cache opc
+WHERE sp.id = pss.supplier_product_id
+  AND s.id = sp.supplier_id AND s.va_a_preventas = true
+  AND opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+  AND opc.has_image = false
+  AND ((opc.active = true AND pss.estado = ANY(ARRAY['publicar', 'categoria', 'sin_cambios', 'precio_sube', 'precio_baja']))
+       OR (opc.active = false AND pss.estado = 'activar'))
+  -- El proveedor no tiene foto: vacía, el cartel "sin foto" de su web, o la de Odoo Neggo que
+  -- allá tampoco existe (nota 201; si la caché no conoce el producto, cuenta como foto)
+  AND NOT (COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
+           AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$'
+                    AND EXISTS (SELECT 1 FROM neggo_sin_foto nf
+                                WHERE nf.template_id = substring(sp.image_url from '([0-9]+)$')::int)))
+  -- Ni un producto de Neggo con foto vinculado (confirmado) a la oferta
+  AND NOT EXISTS (
+      SELECT 1 FROM product_mappings pn
+      JOIN odoo_products_cache n ON n.odoo_id = pn.odoo_product_id AND n.company = 'neggo'
+      WHERE pn.supplier_product_id = pss.supplier_product_id
+        AND pn.odoo_company = 'neggo' AND pn.estado = 'confirmado'
+        AND n.has_image = true AND n.template_id IS NOT NULL
+  )
+`;
 
 // ─── Step 4: solo en scraper ──────────────────────────────────────────────────
 
@@ -508,6 +655,9 @@ async function recomputeAll(pool) {
 
         // Paso 3: código en {} / () — ÚLTIMO método, solo sobrantes
         await pasoOpcional('Bracket code matching', b(BRACKET_CODE_SQL));
+
+        // Sin foto en ningún lado: archivar en vez de activar o publicar (nota 203)
+        await client.query(b(SIN_FOTO_PASO_SQL));
 
         // Paso 4-5: solo_odoo y solo_scraper
         await client.query(b(SOLO_ODOO_SQL), [await getMaxDiasInactivar(client)]);

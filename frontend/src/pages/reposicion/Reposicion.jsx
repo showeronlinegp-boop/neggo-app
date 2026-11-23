@@ -19,6 +19,7 @@ import ReposicionOrdenes from './ReposicionOrdenes';
 import ReposicionCotizaciones from './ReposicionCotizaciones';
 import ReposicionPrecios from './ReposicionPrecios';
 import ReposicionPropuestas from './ReposicionPropuestas';
+import ReposicionACotizar from './ReposicionACotizar';
 import VincularReposicionModal from './VincularReposicionModal';
 import ArmarPedido from './ArmarPedido';
 import BloqueCotizaciones from './BloqueCotizaciones';
@@ -604,14 +605,23 @@ export default function Reposicion() {
     const ordenes = tab === 'ordenes';
     const cotizaciones = tab === 'cotizaciones';
     const propuestas = tab === 'propuestas';
+    const aCotizar = tab === 'a_cotizar';
+
+    // Encargues a cotizar (nota 248): cuántos hay para la pestaña y el aviso de Pendientes
+    const [nEncargues, setNEncargues] = useState(null);
+    const cargarEncargues = useCallback(async () => {
+        const res = await api.get('/encargues-cotizar/conteo');
+        if (res.success) setNEncargues(res.data);
+    }, []);
+    useEffect(() => { cargarEncargues(); }, [cargarEncargues, tab]);
 
     // Solo vale la última lectura de la cola: sin «Cargando…» se puede reponer varios seguidos
     const lecturaCola = useRef(0);
 
     const cargarCola = useCallback(async (opts = {}) => {
         const lectura = ++lecturaCola.current;
-        // Las pestañas Órdenes, Cotizaciones y Propuestas cargan lo suyo
-        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') { setLoading(false); return; }
+        // Las pestañas Órdenes, Cotizaciones, Propuestas y A cotizar cargan lo suyo
+        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas' || tab === 'a_cotizar') { setLoading(false); return; }
         if (!opts.silencioso) {
             setLoading(true);
             setError(null);
@@ -646,10 +656,11 @@ export default function Reposicion() {
     }, []);
 
     const cargar = useCallback(async () => {
-        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas') setRecargarVista(n => n + 1);
+        if (tab === 'ordenes' || tab === 'cotizaciones' || tab === 'propuestas' || tab === 'a_cotizar') setRecargarVista(n => n + 1);
+        cargarEncargues();
         const extra = tab === 'pendiente' ? [cargarCotiz(true)] : [];
         await Promise.all([cargarCola(), cargarProveedores(), ...extra]);
-    }, [tab, cargarCola, cargarProveedores, cargarCotiz]);
+    }, [tab, cargarCola, cargarProveedores, cargarCotiz, cargarEncargues]);
 
     // Después de una acción: «Cargando…» desarmaría Armar pedido y se perderían el proveedor
     // elegido, los tildes y el lugar de la pantalla (nota 152)
@@ -789,7 +800,7 @@ export default function Reposicion() {
                         <>
                             <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text }}>{items.length}</span> encargados
                         </>
-                    ) : ordenes ? 'Ventas y POS de la última semana' : cotizaciones ? 'Cotizaciones pendientes en Odoo' : propuestas ? 'Pedidos propuestos por proveedor' : 'Últimos 200 resueltos'}
+                    ) : ordenes ? 'Ventas y POS de la última semana' : cotizaciones ? 'Cotizaciones pendientes en Odoo' : propuestas ? 'Pedidos propuestos por proveedor' : aCotizar ? 'Encargues de clientes para averiguar' : 'Últimos 200 resueltos'}
                 </div>
                 <div style={{ display: 'flex', gap: t.space[2] }}>
                     <Link to="/reposicion/recorrida" style={{ textDecoration: 'none' }}>
@@ -817,6 +828,7 @@ export default function Reposicion() {
                     { value: 'ordenes', label: 'Órdenes', icon: isMobile ? null : <Icon.ClipboardList size={14} /> },
                     { value: 'cotizaciones', label: isMobile ? 'Cotiz.' : 'Cotizaciones', icon: isMobile ? null : <Icon.Tag size={14} /> },
                     { value: 'propuestas', label: isMobile ? 'Propuest.' : 'Propuestas', icon: isMobile ? null : <Icon.ShoppingBag size={14} /> },
+                    { value: 'a_cotizar', label: 'A cotizar', count: nEncargues ? (nEncargues.pendiente + nEncargues.cotizado) || undefined : undefined, icon: isMobile ? null : <Icon.Search size={14} /> },
                 ]}
                 value={tab}
                 onChange={(v) => { setTab(v); setAviso(null); setFiltroCotiz(null); setArmarProveedor(null); }}
@@ -842,6 +854,21 @@ export default function Reposicion() {
                     marginTop: -4, padding: isMobile ? '0 12px' : undefined,
                 }}>
                     Pedidos que hiciste y todavía no cerraste. Si un ingreso lo trae activo para Neggo, sale solo y queda en Resueltos con el link al ingreso. Si no llega, volvelo a pendientes.
+                </div>
+            )}
+
+            {pendiente && nEncargues?.pendiente > 0 && (
+                <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: t.space[3],
+                    border: `1px solid ${t.color.border}`, borderLeft: `3px solid ${t.color.warn}`, borderRadius: t.radius.lg,
+                    background: t.color.surface, padding: isMobile ? '12px' : '12px 16px', margin: isMobile ? '0 12px' : undefined,
+                    fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.textMuted,
+                }}>
+                    <span>
+                        <span style={{ fontWeight: t.font.weight.semibold, color: t.color.text, ...t.numericStyle }}>{fmtInt(nEncargues.pendiente)}</span>
+                        {nEncargues.pendiente === 1 ? ' encargue de un cliente para averiguar' : ' encargues de clientes para averiguar'}: mercadería que no tenés. Preguntala al armar los pedidos.
+                    </span>
+                    <Button size="sm" variant="secondary" onClick={() => { setTab('a_cotizar'); setAviso(null); }}>Ver A cotizar</Button>
                 </div>
             )}
 
@@ -883,6 +910,15 @@ export default function Reposicion() {
                 <ReposicionPropuestas
                     recargar={recargarVista}
                     onCambioCola={cargarProveedores}
+                    onAviso={(msg) => { setError(null); setAviso(msg); }}
+                    onError={mostrarError}
+                    isMobile={isMobile}
+                />
+            ) : aCotizar ? (
+                <ReposicionACotizar
+                    recargar={recargarVista}
+                    proveedores={proveedores}
+                    onCambio={cargarEncargues}
                     onAviso={(msg) => { setError(null); setAviso(msg); }}
                     onError={mostrarError}
                     isMobile={isMobile}

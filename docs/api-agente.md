@@ -232,6 +232,8 @@ Seguimiento por WhatsApp de los **posibles clientes** (`crm_leads`): contactos q
 - Solo a los celulares de la **zona**: `backend/config/leadsZona.json` (150 km de Pergamino). Va primero `prioridad_1` (Pergamino, Rojas, Junín, San Nicolás, Colón, Arrecifes y Venado Tuerto) y después `prioridad_2`. Para sumar una característica, se agrega ahí y se reinicia el backend.
 - **Nunca a los de Churn** (nos bloquearon o no quieren que los contactemos). El que le pide al bot que no le escriba **pasa a Churn**.
 - NRI = no les llegan las difusiones (no agendaron el número): entran.
+- **Nunca a los que entraron por el WhatsApp del negocio** (3.10.0, `source = 'whatsapp'`): escribieron o les escribió el equipo, así que ya los sigue una persona. No aparecen en `GET /leads` y la reserva da 409 `escribio_al_negocio`. Se cuentan en `excluidos.escribio_al_negocio` del resumen.
+- **Sumados por el equipo** (nota 249): desde el tablero de WhatsApp el equipo puede sumar prospectos que no contestaron. Esos traen `sumado_por_equipo` (fecha) y van **primeros** entre las presentaciones de `GET /leads?para_hoy=true`, aunque hayan entrado por el WhatsApp del negocio o estén fuera de la zona (Churn y `no_contactar` siguen afuera). Ya les escribieron desde el número del negocio y no contestaron: presentate igual que siempre.
 - Ni a los que **ya compraron**: salen del listado y se siguen como clientes. Se cruza con la lista de Clientes en cada `GET /leads` y en vivo con Odoo (POS de Neggo) antes de cada envío. Un contacto de Odoo que nunca compró sigue como posible cliente. Tampoco a los que el equipo movió de Frío en el CRM.
 
 **Tope diario:** `AGENTE_LEADS_TOPE_DIARIO` en el `.env` (por defecto **15**; 0 apaga los envíos). Cuenta todos los mensajes de la cadencia del día, confirmados y reservas vigentes. Las respuestas de la charla no cuentan. Un pedido de más da 409 `tope_diario`.
@@ -282,3 +284,36 @@ Códigos 409 propios: `tope_diario`, `ya_en_odoo`, `fuera_de_zona`, `churn`, `se
 ```bash
 curl -s -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"contacto":"Lucía Fernández","nombre":"Bazar Lucía","telefono":"02477 15-632211","direccion":"Alem 1200","rubro":"Bazar"}'   "$API/leads"
 ```
+
+## Chats sin número del WhatsApp del negocio (3.11.0)
+
+WhatsApp manda casi todos los chats viejos con un código (`…@lid`) y sin el teléfono. Por privacidad no hay forma de pedirle el número a partir del código: hay que mirarlo en WhatsApp Web del negocio.
+
+- `GET /whatsapp/chats-sin-numero?solo_prospectos=true&page=&limit=` lista esos chats, primero los más recientes. Por defecto sin los que ya se sabe que son clientes de Odoo (`solo_prospectos=false` los incluye). Nunca trae proveedores.
+- Cada elemento: `chat` (el código, solo el número: desde 3.14.0 sale sin `@lid`), `buscar_en_whatsapp` (igual a `chat`), `nombre_whatsapp` (el nombre que se puso; puede ser null), `prospecto_id`, `cliente_id`, `primer_mensaje_at`, `ultimo_mensaje_at`, `escribio_ultimo` (`contacto` | `neggo`), `solo_escribimos_nosotros` y `en_conversaciones` (si es true, la charla de esos días está en `GET /whatsapp/conversaciones`).
+- Para encontrarlo en WhatsApp Web **del negocio**: poné en la lupa el `chat` (ej. `190525437137127`) y se abre ese chat. `GET /whatsapp/conversaciones` también da los chats sin número así. Chequeá con la fecha del último mensaje. Abrí la info del contacto: si muestra el teléfono, devolvelo. Casi ninguno tiene `nombre_whatsapp`: el id es la forma de buscarlo.
+- Devolver: `POST /whatsapp/identidades` con `{ "chat": "190525437137127", "numero": "+5492477…", "nombre": "Fernanda (despensa)" }` (o `cliente_id` si sabés qué cliente de Odoo es). Mandá lo que veas: si WhatsApp Web no muestra el teléfono, alcanza con el `nombre` (el del encabezado del chat o el de la info del contacto). Solo cambia lo que mandás: no borra el nombre ni el cliente que ya tenía. El `nombre` pasa también al prospecto de ese chat (la respuesta trae `prospecto_renombrado` con su id, o null). Enseguida corre el cruce: si el número es de un cliente de Odoo, el prospecto pasa a cliente; si no, el prospecto queda con su teléfono.
+- No hay que mandarle nada al contacto para esto.
+- En `POST /whatsapp/identidades` el `chat` va tal como salió (solo el número). Con `@lid` al final también se acepta.
+
+## Preguntas frecuentes (3.12.0)
+
+El equipo carga en la app (Clientes › Respuestas) las preguntas que más hacen los clientes y el mensaje que va como respuesta: mínimo de compra, horario, dónde estamos, envíos, formas de pago, etc.
+
+- `GET /respuestas` las devuelve en el orden que eligió el equipo: `id`, `pregunta`, `respuesta` (el mensaje tal cual, con sus renglones), `informar_a_todos` y `actualizado_at`. Solo las activas y con texto. Solo lectura.
+- Si te preguntan algo de eso, usá ese texto (podés adaptar el saludo, no los datos). Así el bot y el equipo dicen lo mismo.
+- `informar_a_todos: true` = objetivo de nutrición: a cada prospecto hay que contárselo aunque no pregunte.
+- Los textos cambian: leelos de nuevo cada día.
+
+## Ficha comercial de los posibles clientes (3.15.0)
+
+Lo que el equipo sabe de cada prospecto, de la ficha de Clientes › Chats: el resumen para vender (lo arma Claude cada noche con la charla del WhatsApp del negocio, o una persona a mano), los datos que se fueron juntando y qué objetivo de nutrición falta. Sirve para que el mensaje no repita preguntas ya contestadas y apunte a lo que le interesa. Solo lectura: se edita en la app.
+
+- `GET /leads` (cada elemento de la página) y `GET /leads/{id}` traen el bloque `ficha`, siempre con el mismo formato (nulls si no hay nada cargado):
+  - `resumen`, `resumen_at`, `resumen_por` (`claude` | `manual`).
+  - `ciudad`, `tiene_local` (`local` | `online` | `los_dos` | null), `rubro`, `intereses`, `proveedor_actual`, `trabas`, `volumen`, `compromisos`, `actualizado_at`. `ciudad` y `rubro` caen a los del alta si la ficha no los tiene.
+  - `objetivos.conocer`: `ubicacion` y `rubro`, cada uno con `hecho`, `valor` y la `pregunta` sugerida para averiguarlo.
+  - `objetivos.informar`: las preguntas frecuentes `informar_a_todos` (`id`, `pregunta`, `respuesta`, `hecho`): `hecho: false` = todavía no se le contó.
+  - `objetivos.siguiente` (`{ grupo, id, titulo }` o null) y `objetivos.listo_para_precios` (ya se conoce y se le informó todo).
+- Usalo para armar el mensaje, no lo copies textual: el resumen es una nota interna del equipo.
+- Los que escribieron al WhatsApp del negocio siguen fuera de la cadencia (`escribio_al_negocio`): ahí la ficha la usa el equipo.

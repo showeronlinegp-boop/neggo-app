@@ -115,6 +115,13 @@ function leerCompacto() {
     try { return localStorage.getItem(NAV_COMPACTO_KEY) === '1'; } catch { return false; }
 }
 
+// Barra de arriba minimizada (franja fina con el título chico): también se recuerda
+const BARRA_MINIMIZADA_KEY = 'neggo.topbar.minimizada';
+
+function leerBarraMinimizada() {
+    try { return localStorage.getItem(BARRA_MINIMIZADA_KEY) === '1'; } catch { return false; }
+}
+
 function isPathActive(item, currentPath) {
     if (currentPath === item.path) return true;
     if (item.exact || item.path === '/') return false;
@@ -195,8 +202,29 @@ function ScrapingTerminal() {
 }
 
 // ─── Topbar (exportado para uso en páginas) ─────────────────────────────────────
-export function Topbar({ title, subtitle, actions, onMenuClick }) {
+export function Topbar({ title, subtitle, actions, onMenuClick, minimizada = false, onToggleMinimizar }) {
     const { tokens: t } = useTheme();
+
+    // Minimizada: una franja fina con el título chico, para ganar alto en pantallas bajas
+    if (minimizada) {
+        return (
+            <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: `2px ${t.layout.cardPadX}px`,
+                borderBottom: `1px solid ${t.color.border}`,
+                background: t.color.surface,
+                gap: 12, flexShrink: 0, minHeight: 28,
+            }}>
+                <span style={{
+                    fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.textMuted,
+                    fontFamily: t.font.family, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                    {title}
+                </span>
+                {onToggleMinimizar && <BotonMinimizar minimizada onToggle={onToggleMinimizar} tokens={t} />}
+            </div>
+        );
+    }
 
     return (
         <div style={{
@@ -244,9 +272,10 @@ export function Topbar({ title, subtitle, actions, onMenuClick }) {
                     )}
                 </div>
             </div>
-            {actions && (
+            {(actions || onToggleMinimizar) && (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                     {actions}
+                    {onToggleMinimizar && <BotonMinimizar minimizada={false} onToggle={onToggleMinimizar} tokens={t} />}
                 </div>
             )}
         </div>
@@ -270,6 +299,33 @@ export default function Layout() {
     const [slotNotas, setSlotNotas] = useState(null);
     // En el celular el menú se abre entero sobre la pantalla: nunca va comprimido
     const compacto = compactoGuardado && !isMobile;
+    // Barra de arriba minimizada: solo en la compu (en el celular lleva el menú y las notas)
+    const [barraMinGuardada, setBarraMinGuardada] = useState(leerBarraMinimizada);
+    const barraMinimizada = barraMinGuardada && !isMobile;
+
+    const toggleBarra = useCallback(() => {
+        setBarraMinGuardada(prev => {
+            try { localStorage.setItem(BARRA_MINIMIZADA_KEY, prev ? '0' : '1'); } catch { /* sin storage: queda en memoria */ }
+            return !prev;
+        });
+    }, []);
+
+    // Clientes minimiza todo lo de arriba de un toque (nota #235): pide minimizar o mostrar la barra
+    useEffect(() => {
+        const alPedir = (e) => {
+            const min = !!e.detail;
+            try { localStorage.setItem(BARRA_MINIMIZADA_KEY, min ? '1' : '0'); } catch { /* sin storage: queda en memoria */ }
+            setBarraMinGuardada(min);
+        };
+        window.addEventListener('neggo:barra-minimizada', alPedir);
+        return () => window.removeEventListener('neggo:barra-minimizada', alPedir);
+    }, []);
+
+    // Clientes y Chats miden su alto contra la ventana y escuchan 'resize': que vuelvan a medir
+    useEffect(() => {
+        const id = requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+        return () => cancelAnimationFrame(id);
+    }, [barraMinimizada]);
 
     const toggleCompacto = useCallback(() => {
         setCompactoGuardado(prev => {
@@ -438,6 +494,8 @@ export default function Layout() {
                     title={pageTitle}
                     onMenuClick={isMobile ? toggleSidebar : undefined}
                     actions={user?.role === 'admin' && isMobile ? <div ref={setSlotNotas} style={{ display: 'flex' }} /> : undefined}
+                    minimizada={barraMinimizada}
+                    onToggleMinimizar={isMobile ? undefined : toggleBarra}
                 />
                 {/* data-app-main: contenedor que scrollea (lo usan los pines de las notas de prueba) */}
                 <main data-app-main="" style={{
@@ -617,6 +675,35 @@ function NavItem({ item, alertCount = 0, unmappedCount = 0, currentPath, onNavig
                 )}
             </div>
         </NavLink>
+    );
+}
+
+function BotonMinimizar({ minimizada, onToggle, tokens: t }) {
+    const [hovered, setHovered] = useState(false);
+    const texto = minimizada ? 'Mostrar la barra' : 'Minimizar la barra';
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            title={texto}
+            aria-label={texto}
+            aria-pressed={minimizada}
+            style={{
+                width: minimizada ? 24 : 28, height: minimizada ? 24 : 28, borderRadius: t.radius.sm, flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: hovered ? t.color.text : t.color.textMuted,
+                background: hovered ? t.color.surface2 : 'transparent',
+                border: 'none', cursor: 'pointer', padding: 0,
+                transition: 'background 120ms',
+            }}
+        >
+            {/* Flecha para arriba = minimizar; para abajo = volver a mostrar */}
+            <span style={{ display: 'flex', transform: minimizada ? 'none' : 'rotate(180deg)' }}>
+                <Icon.ChevronDown size={16} />
+            </span>
+        </button>
     );
 }
 

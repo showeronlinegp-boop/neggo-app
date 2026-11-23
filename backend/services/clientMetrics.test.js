@@ -71,5 +71,26 @@ function testBuildRows() {
     assert.strictEqual(prospecto.rubro, null);
 }
 
+// Nota #237: quien compró en Precompras entra a la lista sin sumar compras
+function testPrecompras() {
+    const partners = new Map([
+        [10, { id: 10, name: 'Polirrubro El Trébol', tags: [] }],
+        [40, { id: 40, name: 'Clienta de Precompras', city: 'Rojas', tags: [] }],
+    ]);
+    const orders = [{ id: 1, partner_id: [10, 'x'], date_order: '2026-10-01 15:00:00', amount_total: 1000 }];
+    const rows = buildRows({
+        orders, lines: [], quotations: new Map(), partners, extraIds: new Set([40, 10]), today: TODAY,
+    });
+    assert.strictEqual(rows.length, 2);
+    const byId = new Map(rows.map((r) => [r.odoo_partner_id, r]));
+    assert.strictEqual(byId.get(40).purchase_count, 0);
+    assert.strictEqual(byId.get(40).health, 'sin_compras');
+    assert.strictEqual(byId.get(40).city, 'Rojas');
+    // Si también compró en el POS, sus métricas no cambian
+    assert.strictEqual(byId.get(10).purchase_count, 1);
+    assert.strictEqual(byId.get(10).total_revenue, 1000);
+}
+
 testBuildRows();
+testPrecompras();
 console.log('ok clientMetrics.test.js');

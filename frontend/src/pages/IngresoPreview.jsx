@@ -6,6 +6,7 @@ import { getTokens } from '../theme/tokens';
 import { useDraggable } from '../hooks/useDraggable';
 import useIsMobile from '../hooks/useIsMobile';
 import { useAuth } from '../context/AuthContext';
+import { textoReparto } from './admin/whatsappUtils';
 
 // Mapeamos todos los colores del sistema viejo a tokens del nuevo sistema.
 // Usamos getTokens a nivel de módulo para que las constantes de componente
@@ -2691,7 +2692,7 @@ function WhatsAppIngresoModal({ ingresoId, item, onClose, onScheduled }) {
                 setError('Este producto no se puede publicar: le falta la foto o el precio en Odoo');
                 return;
             }
-            onScheduled(`📣 ${item.odoo_product_name} quedó en la cola de WhatsApp. Lo ves en Admin → WhatsApp.`);
+            onScheduled(`📣 ${item.odoo_product_name} quedó en la cola de WhatsApp. ${textoReparto([result.data.plan])} Lo ves en Admin → WhatsApp.`);
         } catch (err) {
             setError(err.message || 'Error de conexión');
         } finally {
@@ -2721,8 +2722,9 @@ function WhatsAppIngresoModal({ ingresoId, item, onClose, onScheduled }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '12px', fontSize: '13px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
                         <input type="checkbox" checked={ahora} onChange={(e) => setAhora(e.target.checked)} />
-                        Publicar ya
+                        Sumar a lo de hoy
                     </label>
+                    <span style={{ color: C.gray, fontSize: '12px' }}>Se reparte con el resto de lunes a sábado de 9 a 18.</span>
                     {!ahora && (
                         <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             Fecha y hora

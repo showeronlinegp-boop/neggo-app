@@ -40,6 +40,11 @@ const {
     conservarArmadoDeApp,
     planReabrirArmado,
     entregasAbiertas,
+    entregaParaCerrar,
+    envio1HechoAnterior,
+    envio1Validado,
+    validarSalidaAlSaldar,
+    validarEnvio1AlTerminar,
     condicionesListado,
     ordenListado,
     ETIQUETA_PENDIENTES,
@@ -142,10 +147,10 @@ function testFaseQty() {
     assert.strictEqual(qtyCampoDeFase('controlando'), 'qty_controlada');
     // Con el envío 1 validado, en el control el tope es lo armado
     const it = { qty_pedida: 3, qty_armada: 1 };
-    assert.strictEqual(topeDeFase(it, 'controlando', 'done'), 1);
-    assert.strictEqual(topeDeFase({ qty_pedida: 1, qty_armada: 0 }, 'controlando', 'done'), 0);
-    assert.strictEqual(topeDeFase(it, 'controlando', 'assigned'), 3);
-    assert.strictEqual(topeDeFase(it, 'armando', 'done'), 3);
+    assert.strictEqual(topeDeFase(it, 'controlando', true), 1);
+    assert.strictEqual(topeDeFase({ qty_pedida: 1, qty_armada: 0 }, 'controlando', true), 0);
+    assert.strictEqual(topeDeFase(it, 'controlando', false), 3);
+    assert.strictEqual(topeDeFase(it, 'armando', true), 3);
 }
 
 function item(over = {}) {
@@ -373,7 +378,7 @@ function testEtapaDesdeEnviosOdoo() {
         { id: 6333, state: 'done', picking_type_code: 'internal' },
         { id: 6334, state: 'done', picking_type_code: 'outgoing' },
     ]);
-    assert.deepStrictEqual(nahue, { para_armar: false, reabierto: false, envio1_done: true, envio2_done: true });
+    assert.deepStrictEqual(nahue, { para_armar: false, reabierto: false, envio1_done: true, envio1_hecho: true, envio2_done: true });
     assert.strictEqual(etapaDesdeOdoo({ pickings: [
         { id: 6333, state: 'done', picking_type_code: 'internal' },
         { id: 6334, state: 'done', picking_type_code: 'outgoing' },
@@ -1030,6 +1035,118 @@ async function testSyncEnviadasSinTopeDeFecha() {
     }
 }
 
+// Nota 191 (S04349): «Seguir armando» ata el pedido al Recolectar nuevo, que queda abierto.
+// El control y el cierre tienen que seguir viendo el envío 1 ya validado.
+const PICK_HECHO = { id: 6793, name: 'WH/PICK/02772', state: 'done', picking_type_code: 'internal' };
+const PICK_REABIERTO = { id: 6798, name: 'WH/PICK/02774', state: 'assigned', picking_type_code: 'internal' };
+const OUT_ABIERTA = { id: 6797, name: 'WH/OUT/02912', state: 'assigned', picking_type_code: 'outgoing' };
+
+function testNota191Unitarios() {
+    // El atado es el reabierto, pero ya hay un envío hecho: el control es sobre lo armado
+    const envio = { odoo_picking_state: 'assigned', odoo_picking_done_count: 1 };
+    assert.strictEqual(envio1Validado(envio), true);
+    assert.strictEqual(envio1Validado({ odoo_picking_state: 'assigned', odoo_picking_done_count: 0 }), false);
+    assert.strictEqual(envio1Validado({ odoo_picking_state: 'done' }), true);
+    const alargue = { qty_pedida: 2, qty_armada: 1 };
+    assert.strictEqual(topeDeFase(alargue, 'controlando', envio1Validado(envio)), 1);
+
+    assert.strictEqual(clasificarEnvios([PICK_HECHO, PICK_REABIERTO, OUT_ABIERTA]).envio1_hecho, true);
+    assert.strictEqual(clasificarEnvios([PICK_REABIERTO]).envio1_hecho, false);
+
+    // La entrega sale de los envíos de la orden
+    assert.deepStrictEqual(entregaParaCerrar([PICK_HECHO, PICK_REABIERTO, OUT_ABIERTA]),
+        { tipo: 'abierta', picking: OUT_ABIERTA });
+    assert.strictEqual(entregaParaCerrar([PICK_HECHO]).tipo, 'ninguna');
+    assert.strictEqual(entregaParaCerrar([{ ...OUT_ABIERTA, state: 'done' }]).tipo, 'un_paso');
+    assert.strictEqual(entregaParaCerrar([PICK_HECHO, { ...OUT_ABIERTA, state: 'done' }]).tipo, 'hecha');
+    assert.strictEqual(entregaParaCerrar([PICK_HECHO, OUT_ABIERTA, { ...OUT_ABIERTA, id: 7000 }]).tipo, 'varias');
+    // Una entrega cancelada no cuenta
+    assert.strictEqual(entregaParaCerrar([PICK_HECHO, { ...OUT_ABIERTA, state: 'cancel' }]).tipo, 'ninguna');
+
+    // El validado anterior al reabierto
+    assert.strictEqual(envio1HechoAnterior([PICK_HECHO, PICK_REABIERTO, OUT_ABIERTA], 6798).id, 6793);
+    assert.strictEqual(envio1HechoAnterior([PICK_REABIERTO, OUT_ABIERTA], 6798), null);
+
+    // Igualar: sólo las subidas piden no abastecer
+    const plan = planIgualar({ lines: [
+        { id: 1, product_id: 10, quantity: 2, qty_delivered: 1 },
+        { id: 2, product_id: 11, quantity: 3, qty_delivered: 4 },
+    ] });
+    assert.deepStrictEqual(plan.writes.map((w) => [w.odoo_line_id, w.qty, !!w.sube]), [[1, 1, false], [2, 4, true]]);
+}
+
+// Al cerrar se valida WH/OUT aunque el envío atado sea el Recolectar reabierto
+async function testSaldarTrasSeguirArmando() {
+    const odooService = require('./odooService');
+    const originales = { ...odooService };
+    const escritas = [];
+    let validada = null;
+    odooService.getSaleOrderHeader = async () => ({ pickings: [
+        { ...PICK_HECHO, moves: [{ sale_line_id: 7, product_id: 70, quantity: 1, state: 'done' }] },
+        { ...PICK_REABIERTO, moves: [] },
+        { ...OUT_ABIERTA, moves: [] },
+    ] });
+    odooService.getPickingMoves = async (id) => {
+        assert.strictEqual(id, 6797);
+        return [{ id: 88129, sale_line_id: 7, product_id: 70, product_uom_qty: 1, quantity: 1, state: 'assigned' }];
+    };
+    odooService.writePickingMoveQuantities = async (w) => { escritas.push(...w); };
+    odooService.validateSalePicking = async (id) => { validada = id; return { picking: { ...OUT_ABIERTA, state: 'done' } }; };
+    try {
+        const envio = {
+            odoo_sale_order_id: 4349, company_key: 'neggo', odoo_order_name: 'S04349',
+            odoo_picking_id: 6798, odoo_picking_state: 'assigned', odoo_picking_done_count: 1,
+            items: [{ id: 1, odoo_line_id: 7, odoo_product_id: 70, qty_pedida: 2, qty_armada: 1, qty_controlada: 1 }],
+        };
+        const header = await odooService.getSaleOrderHeader();
+        const r = await validarSalidaAlSaldar(envio, header);
+        assert.strictEqual(validada, 6797);
+        assert.strictEqual(r.picking.state, 'done');
+        assert.strictEqual(escritas.length, 1);
+
+        // Sin entrega en Odoo no se cierra a ciegas
+        await assert.rejects(
+            validarSalidaAlSaldar(envio, { pickings: [PICK_HECHO] }),
+            /No encontré la entrega/
+        );
+    } finally {
+        Object.assign(odooService, originales);
+    }
+}
+
+// Terminar sin nada nuevo en el reabierto: se cancela y vuelve al validado
+async function testTerminarSinNadaCancelaReabierto() {
+    const odooService = require('./odooService');
+    const originales = { ...odooService };
+    const logOriginal = console.log;
+    let cancelado = null;
+    odooService.getPicking = async () => ({ ...PICK_REABIERTO });
+    odooService.getPickingMoves = async () => [
+        { id: 88137, sale_line_id: 7, product_id: 70, product_uom_qty: 1, quantity: 0, state: 'assigned' },
+    ];
+    odooService.getSaleOrderHeader = async () => ({ pickings: [
+        { ...PICK_HECHO, moves: [{ sale_line_id: 7, product_id: 70, quantity: 1, state: 'done' }] },
+        { ...PICK_REABIERTO, moves: [] },
+        { ...OUT_ABIERTA, moves: [] },
+    ] });
+    odooService.cancelPicking = async (id) => { cancelado = id; return { ...PICK_REABIERTO, state: 'cancel' }; };
+    odooService.validateSalePicking = async () => { throw new Error('no tiene que validar'); };
+    console.log = () => {};
+    try {
+        const r = await validarEnvio1AlTerminar({
+            id: 890, estado: 'armando', odoo_state: 'sale', odoo_sale_order_id: 4349, company_key: 'neggo', odoo_order_name: 'S04349',
+            odoo_picking_id: 6798, odoo_picking_name: 'WH/PICK/02774', odoo_picking_state: 'assigned',
+            items: [{ id: 1, odoo_line_id: 7, odoo_product_id: 70, qty_pedida: 2, qty_armada: 1 }],
+        });
+        assert.strictEqual(cancelado, 6798);
+        assert.strictEqual(r.picking.id, 6793);
+        assert.strictEqual(r.cancelado, 'WH/PICK/02774');
+    } finally {
+        Object.assign(odooService, originales);
+        console.log = logOriginal;
+    }
+}
+
 testClamp();
 testTabs();
 testListado();
@@ -1069,8 +1186,11 @@ testAuditarCancelarOrden();
 testOrdenesBorradasEnOdoo();
 testSeguirArmandoSobreviveAlSync();
 testReabrirArmado();
+testNota191Unitarios();
 testEtiquetaPendientes()
     .then(testSyncCancelaOrdenBorrada)
     .then(testSyncEnviadasSinTopeDeFecha)
+    .then(testSaldarTrasSeguirArmando)
+    .then(testTerminarSinNadaCancelaReabierto)
     .then(() => console.log('ok pedidoEnvio.test.js'))
     .catch((err) => { console.error(err); process.exit(1); });

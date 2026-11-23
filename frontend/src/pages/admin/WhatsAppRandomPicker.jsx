@@ -8,7 +8,8 @@ import Select from '../../components/common/Select';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
-import { defaultSchedule, odooImageUrl } from './whatsappUtils';
+import { defaultSchedule, odooImageUrl, textoReparto } from './whatsappUtils';
+import { usePropuestaClaude, BotonesPropuesta, RecuadroPropuesta, MotivoClaude } from './PropuestaClaude';
 
 // Sorteo de N fotos por categoría: se revisan, se cambian o archivan, y se programan.
 // destino: 'grupo' (default) o 'estado' — misma UI, otro número de WhatsApp.
@@ -23,6 +24,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
     const [picks, setPicks] = useState([]);
     const [busy, setBusy] = useState('');
     const [toArchive, setToArchive] = useState(null);
+    const prop = usePropuestaClaude({ company, para: 'whatsapp', onError, onNotice });
 
     useEffect(() => {
         api.get('/whatsapp/random-categories', { company }).then((res) => {
@@ -46,6 +48,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         setBusy('');
         if (!res.success) { onError(res.error); return; }
         setPicks(res.data);
+        prop.setCargadaId(null);
         const short = res.data.filter((c) => c.products.length < Number(count));
         if (short.length) {
             onNotice(`No alcanzaron los productos nuevos en: ${short.map((c) => `${c.category} (${c.products.length})`).join(', ')}. Lo publicado en los últimos 7 días no se repite.`);
@@ -119,7 +122,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         setBusy('');
         onNotice(esEstado
             ? `«${product.name}» se sube a los estados. Lo ves en la cola.`
-            : `«${product.name}» sale ahora al grupo. Lo ves en la cola.`);
+            : `«${product.name}» entra al reparto del día. ${textoReparto([res.data.plan])}`);
         onScheduled();
     }
 
@@ -139,8 +142,13 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
         const total = res.data.reduce((acc, b) => acc + b.total, 0);
         onNotice(esEstado
             ? `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} de estados con ${total} fotos.`
-            : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos.`);
+            : `Programaste ${res.data.length} tanda${res.data.length === 1 ? '' : 's'} con ${total} fotos. ${textoReparto(res.data.map((b) => b.plan))}`);
         setPicks([]);
+        if (prop.cargadaId) {
+            // Lo programado ya no vuelve en la propuesta; si quedó algo sin usar, se vuelve a ofrecer
+            prop.setCargadaId(null);
+            prop.buscar({ silencioso: true });
+        }
         onScheduled();
     }
 
@@ -203,6 +211,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                 <Button variant="primary" leftIcon={<Icon.Refresh size={16} />} onClick={generate} disabled={busy === 'generate' || !selected.length}>
                     {busy === 'generate' ? 'Sorteando…' : 'Generar imágenes'}
                 </Button>
+                <BotonesPropuesta prop={prop} />
                 {total > 0 && (
                     <Button
                         variant="success"
@@ -214,6 +223,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                     </Button>
                 )}
             </div>
+            <RecuadroPropuesta prop={prop} onCargar={setPicks} onDescartada={() => setPicks([])} />
 
             {picks.map((c) => (
                 <div key={c.category} style={{ marginTop: t.space[8] }}>
@@ -244,6 +254,7 @@ export default function WhatsAppRandomPicker({ destino = 'grupo', groupJid, grou
                                 }}>
                                     <ProductThumb imageUrl={odooImageUrl(company, p.template_id)} emoji={p.name?.[0]} size={146} style={{ alignSelf: 'center' }} />
                                     <div style={{ fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.3, minHeight: 34 }}>{p.name}</div>
+                                    <MotivoClaude motivo={p.motivo} />
                                     <div style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{p.odoo_id}</div>
                                     <div style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text, ...t.numericStyle }}>{p.price_label}</div>
                                     {p.url ? (

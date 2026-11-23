@@ -11,6 +11,41 @@ const pool = require('../config/database');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ok, fail, paginated } = require('../utils/response');
 const { approveAlert, dismissAlert, getAlertSummary } = require('../services/priceAlertService');
+const { calculatePrices } = require('../services/rulesEngine');
+
+const redondear = (n) => Math.round(n * 100) / 100;
+
+// Agrega a la alerta el costo propio (lista del proveedor menos descuento, nota 215) y,
+// para cada producto de Odoo vinculado, el costo y la venta que escribiría "Aprobar".
+function conCostoPropio(row) {
+    const {
+        source, default_discount, markup_neggo, markup_preventas,
+        discount_override, markup_neggo_override, markup_preventas_override,
+        linked_odoo_products, ...alerta
+    } = row;
+    const linked = Array.isArray(linked_odoo_products) ? linked_odoo_products : [];
+    if (alerta.old_price == null || alerta.new_price == null) {
+        return { ...alerta, linked_products: linked };
+    }
+
+    const regla = { discount_override, markup_neggo_override, markup_preventas_override };
+    const proveedor = { default_discount, markup_neggo, markup_preventas };
+    const company = alerta.company === 'preventas' ? 'preventas' : 'neggo';
+    const nuevo = calculatePrices({ raw_price: alerta.new_price, source }, proveedor, regla, company);
+    const factor = 1 - nuevo.discount_pct / 100;
+
+    return {
+        ...alerta,
+        discount_pct: nuevo.discount_pct,
+        old_cost: redondear(Number(alerta.old_price) * factor),
+        new_cost: redondear(Number(alerta.new_price) * factor),
+        linked_products: linked.map(l => ({
+            ...l,
+            approve_cost: nuevo.cost,
+            approve_price: nuevo.sale_price,
+        })),
+    };
+}
 
 // =============================================
 // GET /api/alerts/summary
@@ -99,6 +134,7 @@ router.get('/', authenticate, async (req, res) => {
                 pa.reviewed_at,
                 pa.notes,
                 pa.created_at,
+                pa.linked_odoo_products,
                 -- Revisor
                 u.display_name AS reviewed_by_name,
                 -- Producto proveedor
@@ -109,14 +145,30 @@ router.get('/', authenticate, async (req, res) => {
                 sp.available,
                 sp.image_url,
                 sp.product_url,
+                sp.source,
                 -- Proveedor
                 s.id            AS supplier_id,
                 s.name          AS supplier_name,
-                s.prefix        AS supplier_prefix
+                s.prefix        AS supplier_prefix,
+                s.default_discount,
+                s.markup_neggo,
+                s.markup_preventas,
+                -- Regla de categoría (pisa descuento y markup, igual que al aprobar)
+                scr.discount_override,
+                scr.markup_neggo_override,
+                scr.markup_preventas_override
              FROM price_alerts pa
              JOIN supplier_products sp ON pa.supplier_product_id = sp.id
              JOIN suppliers s ON sp.supplier_id = s.id
              LEFT JOIN users u ON pa.reviewed_by = u.id
+             LEFT JOIN LATERAL (
+                SELECT r.discount_override, r.markup_neggo_override, r.markup_preventas_override
+                FROM supplier_category_rules r
+                WHERE r.supplier_id = sp.supplier_id
+                  AND r.source_category = sp.source_category
+                  AND r.active = true AND r.ignored = false
+                LIMIT 1
+             ) scr ON true
              ${where}
              ORDER BY pa.created_at DESC
              LIMIT $${idx} OFFSET $${idx + 1}`,
@@ -131,7 +183,7 @@ router.get('/', authenticate, async (req, res) => {
             params
         );
 
-        return paginated(res, rows, countRows[0].total, limit, offset);
+        return paginated(res, rows.map(conCostoPropio), countRows[0].total, limit, offset);
 
     } catch (err) {
         console.error('❌ Error al listar alertas:', err.message);

@@ -11,7 +11,9 @@ function XIcon() {
 
 // Panel lateral derecho para editar un registro sin perder de vista la lista.
 // Misma API que Modal: isOpen, onClose, title, subtitle, footer.
-export default function Drawer({ isOpen, onClose, title, subtitle, children, footer, width = 520 }) {
+// titleContent (opcional) reemplaza lo que se ve como título (ej. un nombre editable); title
+// sigue siendo el texto para lectores de pantalla.
+export default function Drawer({ isOpen, onClose, title, titleContent, subtitle, children, footer, width = 520 }) {
   const { tokens: t } = useTheme();
 
   useEffect(() => {
@@ -62,9 +64,9 @@ export default function Drawer({ isOpen, onClose, title, subtitle, children, foo
           gap: 16,
           flexShrink: 0,
         }}>
-          <div style={{ minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: titleContent ? 1 : undefined }}>
             <div style={{ fontSize: t.font.size.lg, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>
-              {title}
+              {titleContent || title}
             </div>
             {subtitle && (
               <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted, marginTop: 4, fontFamily: t.font.family }}>

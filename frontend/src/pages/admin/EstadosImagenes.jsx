@@ -9,6 +9,7 @@ import ConfirmDialog from '../../components/common/ConfirmDialog';
 import * as Icon from '../../components/common/icons';
 import { odooImageUrl } from './whatsappUtils';
 import { buildZip } from './zipStore';
+import { usePropuestaClaude, BotonesPropuesta, RecuadroPropuesta, MotivoClaude } from './PropuestaClaude';
 import {
     FORMATOS, LOGO_URL, cargarImagen, prepararFuentes, dibujarEstado,
     canvasABlob, nombreArchivo, guardarArchivo,
@@ -69,6 +70,12 @@ export default function EstadosImagenes() {
     const [error, setError] = useState(null);
     const [notice, setNotice] = useState(null);
     const [toArchive, setToArchive] = useState(null);
+    const prop = usePropuestaClaude({ company, para: 'imagenes', onError: setError, onNotice: setNotice });
+
+    function cargarPropuesta(grupos) {
+        setPicks(grupos);
+        setDescargadas(new Set());
+    }
 
     useEffect(() => {
         api.get('/estados-imagenes/categorias', { company }).then((res) => {
@@ -95,6 +102,7 @@ export default function EstadosImagenes() {
         if (!res.success) { setError(res.error); return; }
         setPicks(res.data);
         setDescargadas(new Set());
+        prop.setCargadaId(null);
         const short = res.data.filter((c) => c.products.length < Number(count));
         if (short.length) {
             setNotice(`No alcanzaron los productos nuevos en: ${short.map((c) => `${c.category} (${c.products.length})`).join(', ')}. Lo descargado o publicado en los últimos 7 días no se repite.`);
@@ -264,12 +272,14 @@ export default function EstadosImagenes() {
                     <Button variant="primary" leftIcon={<Icon.Refresh size={16} />} onClick={sortear} disabled={busy === 'sortear' || !selected.length}>
                         {busy === 'sortear' ? 'Sorteando…' : 'Generar imágenes'}
                     </Button>
+                    <BotonesPropuesta prop={prop} />
                     {total > 0 && (
                         <Button variant="success" leftIcon={<Icon.Download size={16} />} onClick={descargarTodas} disabled={!!busy}>
                             {busy === 'zip' ? 'Armando el .zip…' : `Descargar todas (${total})`}
                         </Button>
                     )}
                 </div>
+                <RecuadroPropuesta prop={prop} onCargar={cargarPropuesta} onDescartada={() => cargarPropuesta([])} />
             </Card>
 
             {picks.map((c) => (
@@ -302,6 +312,7 @@ export default function EstadosImagenes() {
                                 }}>
                                     <EstadoPreview product={p} company={company} formato={formato} />
                                     <div style={{ fontSize: t.font.size.xs, color: t.color.text, lineHeight: 1.3 }}>{p.name}</div>
+                                    <MotivoClaude motivo={p.motivo} />
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: t.space[2] }}>
                                         <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textFaint }}>{p.odoo_id}</span>
                                         {bajada && (

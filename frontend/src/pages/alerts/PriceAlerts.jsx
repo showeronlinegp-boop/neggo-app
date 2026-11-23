@@ -187,6 +187,7 @@ function AlertCard({ alert, tab, tokens: t, onApprove, onDismiss }) {
     const up    = pct > 0;
     const tone  = isOoS ? 'danger' : (up ? 'danger' : 'success');
     const linked = alert.linked_products || alert.products || [];
+    const hasCost = alert.old_cost != null && alert.new_cost != null;
 
     return (
         <Card padding={false} style={{ display: 'flex', flexDirection: 'column' }}>
@@ -240,24 +241,35 @@ function AlertCard({ alert, tab, tokens: t, onApprove, onDismiss }) {
 
             {/* Comparativa de precios */}
             {!isOoS && alert.old_price != null && alert.new_price != null && (
-                <div style={{ padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 2, fontFamily: t.font.family }}>Antes</div>
-                        <div style={{ fontSize: 17, fontWeight: t.font.weight.medium, color: t.color.textMuted, textDecoration: 'line-through', ...t.numericStyle }}>
-                            {fmtAR(alert.old_price)}
+                <div style={{ padding: '14px 16px' }}>
+                    <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 6, fontFamily: t.font.family }}>
+                        {hasCost ? `Tu costo (lista −${Number(alert.discount_pct)}%)` : 'Precio del proveedor'}
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 2, fontFamily: t.font.family }}>Antes</div>
+                            <div style={{ fontSize: 17, fontWeight: t.font.weight.medium, color: t.color.textMuted, textDecoration: 'line-through', ...t.numericStyle }}>
+                                {fmtAR(hasCost ? alert.old_cost : alert.old_price)}
+                            </div>
+                        </div>
+                        <Icon.ArrowRight size={16} color={t.color.textFaint} />
+                        <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 2, fontFamily: t.font.family }}>Ahora</div>
+                            <div style={{
+                                fontSize: 17, fontWeight: t.font.weight.semibold,
+                                color: up ? t.color.danger : t.color.success,
+                                ...t.numericStyle,
+                            }}>
+                                {fmtAR(hasCost ? alert.new_cost : alert.new_price)}
+                            </div>
                         </div>
                     </div>
-                    <Icon.ArrowRight size={16} color={t.color.textFaint} />
-                    <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, marginBottom: 2, fontFamily: t.font.family }}>Ahora</div>
-                        <div style={{
-                            fontSize: 17, fontWeight: t.font.weight.semibold,
-                            color: up ? t.color.danger : t.color.success,
-                            ...t.numericStyle,
-                        }}>
-                            {fmtAR(alert.new_price)}
+                    {hasCost && Number(alert.discount_pct) !== 0 && (
+                        <div style={{ fontSize: t.font.size.xs, color: t.color.textFaint, marginTop: 6, fontFamily: t.font.family }}>
+                            Lista del proveedor:{' '}
+                            <span style={t.numericStyle}>{fmtAR(alert.old_price)} → {fmtAR(alert.new_price)}</span>
                         </div>
-                    </div>
+                    )}
                 </div>
             )}
 
@@ -291,7 +303,17 @@ function AlertCard({ alert, tab, tokens: t, onApprove, onDismiss }) {
                             <span style={{ flex: 1, fontSize: t.font.size.sm, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.color.text, fontFamily: t.font.family }}>
                                 {l.name || l.odoo_product_name}
                             </span>
-                            {(l.currentCost ?? l.current_cost) != null && (
+                            {tab === 'pending' && l.approve_cost != null ? (
+                                <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, textAlign: 'right', lineHeight: 1.5, ...t.numericStyle }}>
+                                    {l.current_cost != null && <>costo {fmtAR(l.current_cost)} → </>}
+                                    {l.current_cost == null && 'costo '}
+                                    <span style={{ color: t.color.text, fontWeight: t.font.weight.semibold }}>{fmtAR(l.approve_cost)}</span>
+                                    <br />
+                                    {l.current_price != null && <>venta {fmtAR(l.current_price)} → </>}
+                                    {l.current_price == null && 'venta '}
+                                    <span style={{ color: t.color.text, fontWeight: t.font.weight.semibold }}>{fmtAR(l.approve_price)}</span>
+                                </span>
+                            ) : (l.currentCost ?? l.current_cost) != null && (
                                 <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, ...t.numericStyle }}>
                                     costo {fmtAR(l.currentCost ?? l.current_cost)}
                                 </span>

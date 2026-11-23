@@ -31,6 +31,9 @@ test('excluidos: churn siempre, y los de fuera de zona', () => {
     assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'churn' }), 'churn');
     assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: 'nri' }), 'fuera_de_zona');
     assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'nri' }), null);
+    // Entró por el WhatsApp del negocio: lo sigue el equipo, aunque esté en zona (Churn gana)
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: null, source: 'whatsapp' }), 'escribio_al_negocio');
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'churn', source: 'whatsapp' }), 'churn');
 });
 
 // ── Cadencia ─────────────────────────────────────────────────
@@ -200,6 +203,65 @@ test('validación: si_existe y origen en los query', () => {
     assert.strictEqual(V.validarQueryAlta({ si_existe: 'pisar' }).errors[0].campo, 'si_existe');
     assert.strictEqual(V.validarQueryLeads({ origen: 'manual' }).value.origen, 'manual');
     assert.strictEqual(V.validarQueryLeads({ origen: 'web' }).errors[0].campo, 'origen');
+});
+
+// ── Sumados desde el tablero (nota 249) ──────────────────────
+test('sumado: pasa la zona y escribio_al_negocio, nunca Churn', () => {
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '3815123456', estadoAgenda: null, sumado: true }), null);
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: null, source: 'whatsapp', sumado: true }), null);
+    assert.strictEqual(L.motivoExcluido({ phoneKey: '2477519062', estadoAgenda: 'churn', sumado: true }), 'churn');
+});
+
+test('sumado: va primero entre las presentaciones, después de los seguimientos', () => {
+    const z1 = { prioridad: 1 };
+    const z2 = { prioridad: 2 };
+    const cola = [
+        { id: 1, toca_hoy: 'presentacion', zona: z1, estado_agenda: 'lead', nombre: 'A' },
+        { id: 2, toca_hoy: 'presentacion', zona: z2, nombre: null, sumado_por_equipo: '2026-11-23T13:00:00.000Z' },
+        { id: 3, toca_hoy: 'presentacion', zona: null, nombre: null, sumado_por_equipo: '2026-11-23T12:00:00.000Z' },
+        { id: 4, toca_hoy: 'recordatorio', desde: '2026-11-02', zona: z2 },
+    ].sort(L.compararCola);
+    assert.deepStrictEqual(cola.map((x) => x.id), [4, 3, 2, 1]);
+});
+
+test('estadoBot: quién se puede sumar al bot', () => {
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062' }).estado, 'disponible');
+    assert.deepStrictEqual(L.estadoBot({ phoneKey: null }), { estado: 'no_puede', motivo: 'sin_telefono' });
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', noContactar: true }).motivo, 'no_contactar');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', estadoAgenda: 'churn' }).motivo, 'no_contactar');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', crmEtapa: 'templado' }).motivo, 'lo_sigue_el_equipo');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', respondioAlBot: true }).motivo, 'respondio_al_bot');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', etapa: 'presentacion' }).estado, 'en_cadencia');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', etapa: 'finalizado' }).estado, 'terminado');
+    assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', sumado: true }).estado, 'sumado');
+});
+
+test('ficha comercial: sin perfil da nulls y la primera pregunta de Conocer', () => {
+    const f = L.fichaComercial(null, { city: null, rubro: null }, [{ id: 1, pregunta: '¿Mínimo?', respuesta: '$50.000' }]);
+    assert.strictEqual(f.resumen, null);
+    assert.strictEqual(f.resumen_por, null);
+    assert.strictEqual(f.ciudad, null);
+    assert.strictEqual(f.objetivos.siguiente.id, 'ubicacion');
+    assert.strictEqual(f.objetivos.conocer[0].pregunta.startsWith('¿De qué ciudad'), true);
+    assert.deepStrictEqual(f.objetivos.informar, [{ id: 1, pregunta: '¿Mínimo?', respuesta: '$50.000', hecho: false }]);
+    assert.strictEqual(f.objetivos.listo_para_precios, false);
+});
+
+test('ficha comercial: resumen vacío es null, el perfil pisa al lead y lo informado cuenta', () => {
+    const perfil = { resumen: '   ', resumen_por: 'manual', resumen_at: '2026-11-23T12:43:18Z', ciudad: 'Pergamino', tiene_local: 'local', intereses: 'bazar' };
+    const f = L.fichaComercial(perfil, { city: 'Rojas', rubro: 'Ferretería' },
+        [{ id: 7, pregunta: '¿Mínimo?', respuesta: '$50.000' }], new Map([[7, { fuente: 'bot', fecha: '2026-11-20' }]]));
+    assert.strictEqual(f.resumen, null);
+    assert.strictEqual(f.resumen_at, null);
+    assert.strictEqual(f.ciudad, 'Pergamino');
+    assert.strictEqual(f.rubro, 'Ferretería');
+    assert.strictEqual(f.objetivos.conocer[0].valor, 'Pergamino · tiene local');
+    assert.strictEqual(f.objetivos.informar[0].hecho, true);
+    assert.strictEqual(f.objetivos.siguiente, null);
+    assert.strictEqual(f.objetivos.listo_para_precios, true);
+    const conResumen = L.fichaComercial({ resumen: 'Tiene ferretería', resumen_por: 'claude', resumen_at: '2026-11-22T21:50:35Z' }, {});
+    assert.strictEqual(conResumen.resumen, 'Tiene ferretería');
+    assert.strictEqual(conResumen.resumen_at, '2026-11-22T21:50:35.000Z');
 });
 
 console.log(`\n✅ ${n} tests de leads OK`);

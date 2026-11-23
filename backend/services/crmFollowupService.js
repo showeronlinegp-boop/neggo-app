@@ -436,6 +436,14 @@ async function linkLead(leadId, partnerId, { note = null, userId = null, db: out
         const { rows: [own] } = await db.query('SELECT 1 FROM crm_followups WHERE odoo_partner_id = $1', [partnerId]);
         if (own) await db.query('DELETE FROM crm_followups WHERE lead_id = $1', [leadId]);
         else await db.query('UPDATE crm_followups SET odoo_partner_id = $2, lead_id = NULL WHERE lead_id = $1', [leadId, partnerId]);
+        // Sus chats del WhatsApp del negocio pasan al cliente: si no, salen de Chats (ya no es
+        // prospecto y el chat no figura como de un cliente) hasta que el cruce los encuentre (nota 232)
+        const { rows: [wa] } = await db.query(`SELECT to_regclass('public.whatsapp_chat_identidad') AS t`);
+        if (wa && wa.t) {
+            await db.query(
+                `UPDATE whatsapp_chat_identidad SET odoo_partner_id = COALESCE(odoo_partner_id, $2), updated_at = NOW()
+                  WHERE lead_id = $1`, [leadId, partnerId]);
+        }
         await insertEvent(db, { col: 'odoo_partner_id', id: partnerId }, {
             kind: 'nota', text: note || 'Apareció en Odoo con el mismo teléfono: pasa de posible cliente a cliente',
             meta: note ? { lead_id: leadId, manual: true } : { lead_id: leadId, auto: true },

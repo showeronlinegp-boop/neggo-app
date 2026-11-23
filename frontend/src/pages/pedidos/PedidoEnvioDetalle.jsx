@@ -31,12 +31,18 @@ function qtyDe(item, estado) {
         : Number(item.qty_armada) || 0;
 }
 
+// ¿Hay un envío 1 validado? El atado puede ser el que abrió «Seguir armando» (abierto)
+// con el primero ya validado: eso lo dice el conteo de envíos hechos (nota 191).
+function envio1Validado(envio) {
+    return envio.odoo_picking_state === 'done' || (Number(envio.odoo_picking_done_count) || 0) >= 1;
+}
+
 // Hasta cuánto se cuenta. Con el envío 1 validado, el control es sobre lo armado:
 // el resto quedó en el backorder del envío 1, pendiente de armar.
 function topeDe(item, envio) {
     const pedida = Number(item.qty_pedida) || 0;
     const controlEnvio1 = (envio.estado === 'controlando' || envio.estado === 'saldado')
-        && envio.odoo_picking_state === 'done';
+        && envio1Validado(envio);
     return controlEnvio1 ? Math.min(pedida, Number(item.qty_armada) || 0) : pedida;
 }
 
@@ -190,7 +196,9 @@ export default function PedidoEnvioDetalle() {
             okMsg = `Atado al envío 1: ${res.data.odoo_picking_name}. Queda abierto en Odoo.`;
         }
         if (res.success && estado === 'armado' && res.data?.odoo_picking_name) {
-            if (res.data.odoo_picking_backorder_name) {
+            if (res.data.envio_cancelado) {
+                okMsg = `No armaste nada nuevo: cancelé ${res.data.envio_cancelado} en Odoo. Seguís con ${res.data.odoo_picking_name}, ya validado.`;
+            } else if (res.data.odoo_picking_backorder_name) {
                 okMsg = `Validé ${res.data.odoo_picking_name}. Lo que faltó quedó en ${res.data.odoo_picking_backorder_name}.`;
             } else if (res.data.odoo_picking_state === 'done') {
                 okMsg = `Validé el envío 1: ${res.data.odoo_picking_name}.`;
@@ -625,7 +633,7 @@ export default function PedidoEnvioDetalle() {
 
             {(() => {
                 const pendArmar = (envio.estado === 'controlando' || envio.estado === 'saldado')
-                    && envio.odoo_picking_state === 'done'
+                    && envio1Validado(envio)
                     ? (envio.items || []).filter((it) => topeDe(it, envio) < (Number(it.qty_pedida) || 0))
                     : [];
                 if (!pendArmar.length) return null;
@@ -670,7 +678,7 @@ export default function PedidoEnvioDetalle() {
             >
                 <div style={{ fontFamily: t.font.family, fontSize: t.font.size.sm, color: t.color.text }}>
                     <p style={{ marginTop: 0 }}>
-                        {envio.odoo_picking_state === 'done'
+                        {envio1Validado(envio)
                             ? 'Esto valida la entrega en Odoo con lo que controlaste y deja la orden igual a lo entregado. Lo que falta va a un pedido de pendientes aparte (lo ves en la solapa Pendientes).'
                             : 'Esto escribe la orden en Odoo. Lo que no controlaste se va a un pedido nuevo en borrador.'}
                     </p>

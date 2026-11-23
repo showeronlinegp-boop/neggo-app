@@ -1,6 +1,9 @@
 const cron = require('node-cron');
 const odooSync = require('./odooSync');
 const { syncSalesWeekly } = require('./salesWeeklySync');
+const whatsappIdentidad = require('../services/whatsappIdentidadService');
+const whatsappLeads = require('../services/whatsappLeadsService');
+const grupoAvisos = require('../services/grupoAvisosService');
 
 // Tareas cron registradas, para poder detenerlas en el shutdown
 const scheduledTasks = [];
@@ -30,6 +33,56 @@ async function initScheduler(pool) {
     }, TZ));
 
     console.log('✅ Cron de sync Odoo registrado (cada 1 hora).');
+
+    // WhatsApp del negocio: identificar chats por las cotizaciones nombradas en la charla.
+    // Todos los días a las 19 y una vez al arrancar (la PC no siempre está prendida a esa hora)
+    const identificarWhatsapp = async () => {
+        try {
+            const r = await whatsappIdentidad.identificarRecientes({ dias: 8 });
+            console.log(`✅ WhatsApp del negocio: ${r.identificados} chats identificados por cotización (${r.guardados} guardados)`);
+        } catch (err) {
+            // Sin el contenedor del negocio no existe evolution_negocio: no es un error de la app
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error identificando chats de WhatsApp:', err.message);
+        }
+    };
+    scheduledTasks.push(cron.schedule('0 19 * * *', identificarWhatsapp, TZ));
+    setTimeout(identificarWhatsapp, 2 * 60 * 1000).unref();
+
+    // CRM WhatsApp (L1): cruzar los chats del negocio con posibles clientes y clientes cada 15 minutos.
+    // Solo lee evolution_negocio; una vuelta por vez.
+    let cruzandoWhatsapp = false;
+    const cruzarWhatsappLeads = async () => {
+        if (cruzandoWhatsapp) return;
+        cruzandoWhatsapp = true;
+        try {
+            const r = await whatsappLeads.cruzar();
+            if (r.clientes || r.leads || r.leads_nuevos || r.leads_a_cliente) {
+                console.log(`✅ CRM WhatsApp: ${r.leads} chat(s) con posible cliente, ${r.leads_nuevos} posible(s) cliente(s) nuevo(s), ${r.clientes} con cliente de Odoo, ${r.leads_a_cliente} posible(s) cliente(s) pasados a cliente`);
+            }
+        } catch (err) {
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error cruzando chats de WhatsApp con posibles clientes:', err.message);
+        } finally {
+            cruzandoWhatsapp = false;
+        }
+    };
+    scheduledTasks.push(cron.schedule('*/15 * * * *', cruzarWhatsappLeads, TZ));
+    setTimeout(cruzarWhatsappLeads, 3 * 60 * 1000).unref();
+
+    // Grupo de avisos de la comunidad (nota 228): una foto de los miembros por día, solo leyendo el
+    // WhatsApp del negocio. Al arrancar, si la última tiene más de 20 h (la PC estuvo apagada).
+    const fotoGrupoAvisos = async (soloSiHaceFalta) => {
+        try {
+            const r = soloSiHaceFalta ? await grupoAvisos.tomarFotoSiHaceFalta(20) : await grupoAvisos.tomarFoto({ origen: 'cron' });
+            if (r) console.log(`✅ Grupo de avisos: ${r.total} miembros, ${r.entraron} entraron, ${r.salieron} se fueron${r.inicial ? ' (primera foto)' : ''}`);
+        } catch (err) {
+            if (err.code === '42P01' || err.code === '3F000') return;
+            console.error('❌ Error sacando la foto del grupo de avisos:', err.message);
+        }
+    };
+    scheduledTasks.push(cron.schedule('30 8 * * *', () => fotoGrupoAvisos(false), TZ));
+    setTimeout(() => fotoGrupoAvisos(true), 4 * 60 * 1000).unref();
 
     // Verificación diaria de proveedores sin scraping reciente (>= 7 días)
     scheduledTasks.push(cron.schedule('0 9 * * *', async () => {

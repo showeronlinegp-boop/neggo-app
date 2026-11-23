@@ -7,6 +7,7 @@ const { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizar
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
 const { iniciarFotos, frenarFotos, getEstadoFotos } = require('../services/preventasFotosService');
+const { ESTADOS_ARCHIVAN } = require('../services/preventasSyncGuards');
 
 // Estado del apply masivo en background
 let bulkApplyJob = { running: false, result: null, error: null, startedAt: null, finishedAt: null };
@@ -59,11 +60,8 @@ router.post('/apply', authenticate, requireRole('admin'), async (req, res) => {
         const esBulk = ids.length === 0 && odoo_ids.length === 0;
 
         if (esBulk) {
-            // Inactivar en bloque solo por proveedor (se valida acá para responder antes del background)
-            const pideInactivar = grupo === 'inactivar' || ['inactivar', 'solo_odoo', 'fuera_preventas'].includes(estado);
-            if (pideInactivar && !supplierId) {
-                return fail(res, 'Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
-            }
+            // Desde la vista "Archivar" se puede archivar sin elegir proveedor (nota 185);
+            // "Aplicar todo" sin proveedor sigue sin archivar (lo filtra applyChanges)
             if (bulkApplyJob.running) {
                 return fail(res, 'Ya hay un apply masivo en progreso', 409);
             }
@@ -240,18 +238,15 @@ router.get('/recompute/status', authenticate, (req, res) => {
     return ok(res, { running: isRecomputing() });
 });
 
-// POST /api/preventas-sync/recompute — dispara matching completo
-router.post('/recompute', authenticate, requireRole('admin'), async (req, res) => {
-    try {
-        const summary = await recomputeAll(pool);
-        return ok(res, summary);
-    } catch (err) {
-        if (err.message.includes('en progreso')) {
-            return fail(res, err.message, 409);
-        }
-        console.error('❌ recompute preventas-sync:', err.message);
-        return fail(res, err.message, 500);
-    }
+// POST /api/preventas-sync/recompute — dispara matching completo en segundo plano.
+// Tarda más de 2 min (más que el timeout de nginx → 504, nota 202): se responde enseguida y la
+// pantalla se entera de que terminó con GET /recompute/status.
+router.post('/recompute', authenticate, requireRole('admin'), (req, res) => {
+    if (isRecomputing()) return fail(res, 'Ya hay un recomputo en progreso', 409);
+    recomputeAll(pool).catch(err => {
+        if (!err.message.includes('en progreso')) console.error('❌ recompute preventas-sync:', err.message);
+    });
+    return ok(res, { started: true });
 });
 
 module.exports = router;

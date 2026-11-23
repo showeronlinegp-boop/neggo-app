@@ -7,6 +7,13 @@ const { callOdoo } = require('../config/odoo');
 const { ensureSchema } = require('./crmSchema');
 const contacts = require('./crmContacts');
 const { FollowupError } = require('./crmFollowupService');
+const { ciudadAlta } = require('./agenteLeads');
+
+/** Si no vino ciudad, la de la característica del celular (2477 → Pergamino), como en las altas por WhatsApp. */
+function ciudadOCaracteristica(city, phoneKey) {
+    const limpia = String(city || '').trim().slice(0, 120);
+    return ciudadAlta({ ciudad: limpia || null, phoneKey }).ciudad;
+}
 
 const SOURCE_STATUSES = contacts.SOURCE_STATUS_ORDER;
 const SORTS = {
@@ -85,7 +92,7 @@ async function importGoogleContacts(csvText, { userId = null, dryRun = false } =
             const batch = aCargar.slice(i, i + 200);
             const params = [];
             const values = batch.map((c) => {
-                params.push(c.name, c.phone, c.phone_key, c.email, c.city, c.source_status, c.source_list, userId);
+                params.push(c.name, c.phone, c.phone_key, c.email, ciudadOCaracteristica(c.city, c.phone_key), c.source_status, c.source_list, userId);
                 const n = params.length;
                 return `($${n - 7}, $${n - 6}, $${n - 5}, $${n - 4}, $${n - 3}, 'google_contacts', $${n - 2}, $${n - 1}, $${n})`;
             });
@@ -126,7 +133,7 @@ async function createLead({ name, phone, email, city, userId }) {
     const { rows: [row] } = await pool.query(
         `INSERT INTO crm_leads (name, phone, phone_key, email, city, source, created_by)
          VALUES ($1, $2, $3, $4, $5, 'manual', $6) RETURNING id`,
-        [nombre, contacts.phoneDisplay(key), key, mail, String(city || '').trim().slice(0, 120) || null, userId]);
+        [nombre, contacts.phoneDisplay(key), key, mail, ciudadOCaracteristica(city, key), userId]);
     return { id: row.id };
 }
 
@@ -170,6 +177,11 @@ async function listLeads(f = {}) {
     if (f.presentacion === 'sin') where.push(`NOT ${PRESENTACION_EXISTS}`);
     else if (f.presentacion === 'con') where.push(PRESENTACION_EXISTS);
     if (f.celular) where.push('l.phone IS NOT NULL');
+    // CRM WhatsApp: con o sin chat con el WhatsApp del negocio
+    if (f.whatsapp === 'sin' || f.whatsapp === 'con') {
+        await require('./whatsappLeadsService').ensureSchema();
+        where.push(`${f.whatsapp === 'sin' ? 'NOT ' : ''}EXISTS (SELECT 1 FROM whatsapp_chat_identidad w WHERE w.lead_id = l.id)`);
+    }
 
     const whereSql = where.join(' AND ');
     const limit = Math.min(Math.max(parseInt(f.limit, 10) || 50, 1), 200);
@@ -203,7 +215,14 @@ async function leadsSummary() {
         `SELECT COUNT(*) FILTER (WHERE ${PRESENTACION_EXISTS})::int AS con,
                 COUNT(*) FILTER (WHERE NOT ${PRESENTACION_EXISTS})::int AS sin
          FROM crm_leads l WHERE l.odoo_partner_id IS NULL`);
+    // CRM WhatsApp: prospectos con y sin chat con el WhatsApp del negocio
+    await require('./whatsappLeadsService').ensureSchema();
+    const CON_CHAT = 'EXISTS (SELECT 1 FROM whatsapp_chat_identidad w WHERE w.lead_id = l.id)';
+    const { rows: [wa] } = await pool.query(
+        `SELECT COUNT(*) FILTER (WHERE ${CON_CHAT})::int AS con, COUNT(*) FILTER (WHERE NOT ${CON_CHAT})::int AS sin
+         FROM crm_leads l WHERE l.odoo_partner_id IS NULL`);
     return {
+        whatsapp: { con_whatsapp: wa.con, sin_whatsapp: wa.sin },
         presentacion: { con: pres.con, sin: pres.sin },
         total: byStatus.reduce((s, r) => s + r.n, 0),
         status: Object.fromEntries(byStatus.map((r) => [r.status, r.n])),
@@ -220,6 +239,7 @@ async function getLead(id) {
 }
 
 module.exports = {
+    ciudadOCaracteristica,
     readOdooPhones,
     importGoogleContacts,
     createLead,

@@ -4,35 +4,62 @@
 const { callOdoo, getCompanyIds } = require('../config/odoo');
 const { COSTO_EXPR, PRECIO_EXPR, isRecomputing } = require('./preventasMatchService');
 const { esFotoStorage, leerFotoStorage, urlDescargable } = require('./fotoStorage');
-const { motivoSinPrecio, motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, ESTADOS_ODOO } = require('./preventasSyncGuards');
+const {
+    motivoSinPrecio, motivoSinCategoria, motivoBloqueo, categoriaPublicacion, claveCategoria,
+    motivoOmitir, motivoRevision, tipoRevision, motivoOdoo, motivoSinFoto, ESTADOS_ODOO, ESTADOS_ARCHIVAN,
+    CATEGORIA_PROVEEDOR_SQL, FOTO_PROVEEDOR_SQL, SIN_FOTO_DISPONIBLE_SQL, neggoFotoSubq,
+} = require('./preventasSyncGuards');
 
 // =============================================
 // getProductsToSync — lectura paginada (rápida)
 // =============================================
 const GRUPO_ESTADOS = {
     nuevos:     ['solo_scraper'],
-    matcheados: ['activar', 'sin_cambios', 'precio_sube', 'precio_baja'],
+    matcheados: ['activar', 'publicar', 'categoria', 'sin_cambios', 'precio_sube', 'precio_baja'],
+    // Activos en Odoo con stock en el proveedor que no se ven en la web (nota 200)
+    publicar:   ['publicar'],
+    // Publicados sin categoría interna o web, que se puede completar con la regla (nota 200)
+    categoria:  ['categoria'],
     // Vinculados cuyo precio cambió (sube o baja): la vista "Cambiar precio" de la pantalla
     precio:     ['precio_sube', 'precio_baja'],
-    inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
+    // sin_foto: activos sin foto en Odoo, en el proveedor ni en Neggo (nota 203)
+    inactivar:  ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'],
     // Productos de Preventas sin proveedor con fuente activa: solo consulta, nunca se aplican
     sin_fuente: ['sin_fuente'],
     // Lo que no necesita ninguna acción: la vista "Al día" de la pantalla
     al_dia:     ['sin_cambios', 'sin_fuente'],
 };
 
+// Regla de categoría del proveedor para la categoría de la oferta: de ahí sale la categoría de
+// Preventas con la que se crea y se publica (nota 200). Las ofertas sin categoría buscan la regla
+// "(Sin categoría)" del proveedor. Alias propio (scc): el "scr" de los precios no cambia.
+const REGLA_CATEGORIA_JOIN = `
+        LEFT JOIN supplier_category_rules scc
+            ON scc.supplier_id = pss.supplier_id
+            AND scc.source_category = ${CATEGORIA_PROVEEDOR_SQL}
+            AND scc.active = true`;
+const REGLA_CATEGORIA_COLS = `
+            scc.odoo_categ_id_preventas,
+            scc.dest_category_preventas AS regla_categoria_preventas`;
+
 // Estados que nunca generan una acción en Odoo
 const ESTADOS_SIN_ACCION = ['sin_cambios', 'sin_fuente'];
 // Estados que archivan productos en Odoo: en bulk exigen elegir un proveedor
-const ESTADOS_INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
+const ESTADOS_INACTIVACION = ESTADOS_ARCHIVAN;
 
-// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor sí tiene una
-// (no el cartel "sin foto" de su web). Fuera de Preventas o por archivar no cuentan (nota 182).
+// Template del producto de Neggo con foto vinculado a la oferta de la fila (nota 203). Necesita pss.
+const NEGGO_FOTO_SUBQ = neggoFotoSubq('pss.supplier_product_id');
+
+// Vinculado a un producto activo de Odoo Preventas que no tiene foto, y el proveedor o el producto
+// de Neggo vinculado sí tienen una. Fuera de Preventas o por archivar no cuentan (notas 182 y 203).
 // Necesita pss, sp y opc en el FROM.
 const SIN_FOTO_SQL = `(pss.supplier_product_id IS NOT NULL AND pss.odoo_product_id IS NOT NULL
     AND opc.active = true AND opc.has_image = false
-    AND pss.estado <> ALL(ARRAY['inactivar', 'solo_odoo', 'fuera_preventas'])
-    AND COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo')`;
+    AND pss.estado <> ALL(ARRAY['${ESTADOS_ARCHIVAN.join("', '")}'])
+    AND (${FOTO_PROVEEDOR_SQL} OR EXISTS (${NEGGO_FOTO_SUBQ})))`;
+
+// Crear sin foto se bloquea (nota 203): solo se calcula para las filas a crear
+const SIN_FOTO_DISPONIBLE_COL = `CASE WHEN pss.estado = 'solo_scraper' THEN ${SIN_FOTO_DISPONIBLE_SQL} END AS sin_foto_disponible`;
 
 // El par proveedor ↔ producto de Preventas está confirmado en la tabla maestra de vínculos:
 // ya se revisó que es el mismo producto (nota 143)
@@ -146,19 +173,29 @@ async function getProductsToSync(pool, filters = {}) {
             opc.vendor_name AS odoo_vendor_name,
             opc.template_id AS odoo_template_id,
             opc.has_image   AS odoo_has_image,
-            ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+            opc.is_published AS odoo_is_published,
+            opc.web_categ_name AS odoo_categoria_web,
+            ${REGLA_CATEGORIA_COLS},
+            ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+            -- Sin foto en Odoo (o todavía no está) y el proveedor no tiene: la de Neggo (nota 203)
+            CASE WHEN opc.has_image IS NOT TRUE AND pss.supplier_product_id IS NOT NULL AND NOT ${FOTO_PROVEEDOR_SQL}
+                 THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id,
+            ${SIN_FOTO_DISPONIBLE_COL}
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
         LEFT JOIN odoo_products_cache opc
             ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+        ${REGLA_CATEGORIA_JOIN}
         ${whereClause}
         ORDER BY
             CASE pss.estado
                 WHEN 'activar'      THEN 1
+                WHEN 'publicar'     THEN 1
                 WHEN 'precio_sube'  THEN 2
                 WHEN 'precio_baja'  THEN 3
                 WHEN 'inactivar'    THEN 4
+                WHEN 'sin_foto'     THEN 4
                 WHEN 'solo_scraper' THEN 5
                 WHEN 'solo_odoo'    THEN 6
                 WHEN 'fuera_preventas' THEN 6
@@ -172,37 +209,52 @@ async function getProductsToSync(pool, filters = {}) {
     // bloqueo_motivo: nunca se aplica (ni confirmando) · revision_motivo: hay que confirmarlo
     // revision_tipo: 'vinculo' (de a uno) | 'costo' (se puede aceptar en bloque a propósito)
     for (const row of rows) {
-        row.bloqueo_motivo = motivoSinPrecio(row);
+        row.bloqueo_motivo = motivoBloqueo(row);
+        row.categoria_publicacion = categoriaPublicacion(row);
         row.revision_motivo = row.bloqueo_motivo ? null : motivoRevision(row);
         row.revision_tipo = row.bloqueo_motivo ? null : tipoRevision(row);
     }
 
     // Qué haría el "Aplicar" en bloque con estos mismos filtros
-    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
+    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, bloqueArchiva({ supplierId, grupo, estado }));
 
     return { rows, total: countRows[0]?.total || 0, aplicables };
 }
 
+// El bloque archiva si se eligió un proveedor o si la vista pide archivar a propósito
+// (tarjeta "Archivar" o una de sus pestañas). "Aplicar todo" sin proveedor nunca archiva (nota 185).
+function bloqueArchiva({ supplierId, grupo, estado }) {
+    if (supplierId) return true;
+    if (estado && estado !== 'todos') return ESTADOS_INACTIVACION.includes(estado);
+    if (grupo && grupo !== 'todos' && GRUPO_ESTADOS[grupo]) return GRUPO_ESTADOS[grupo].some(e => ESTADOS_INACTIVACION.includes(e));
+    return false;
+}
+
 // Cuenta, dentro de la vista filtrada, cuántos cambios aplicaría el bloque y cuántos piden revisión.
-// Mismas reglas que applyChanges: sin proveedor elegido no se archiva en bloque.
-async function contarAplicables(pool, whereClause, params, supplierId) {
+// Mismas reglas que applyChanges: archiva solo si bloqueArchiva lo permite.
+async function contarAplicables(pool, whereClause, params, archiva) {
     const extra = [`pss.estado != ALL($${params.length + 1}::text[])`];
-    const p = [...params, supplierId ? ESTADOS_SIN_ACCION : [...ESTADOS_SIN_ACCION, ...ESTADOS_INACTIVACION]];
+    const p = [...params, archiva ? ESTADOS_SIN_ACCION : [...ESTADOS_SIN_ACCION, ...ESTADOS_INACTIVACION]];
     const where = whereClause ? `${whereClause} AND ${extra.join(' AND ')}` : `WHERE ${extra.join(' AND ')}`;
     const { rows } = await pool.query(`
         SELECT pss.estado, pss.match_type, pss.match_score, pss.costo, pss.precio_preventas,
                sp.name AS scraper_name, opc.name AS odoo_nombre, opc.standard_price AS odoo_standard_price,
-               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+               opc.categ_name AS odoo_categoria, ${REGLA_CATEGORIA_COLS},
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+               ${SIN_FOTO_DISPONIBLE_COL}
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp  ON sp.id  = pss.supplier_product_id
         LEFT JOIN suppliers s           ON s.id   = COALESCE(sp.supplier_id, pss.supplier_id)
         LEFT JOIN odoo_products_cache opc
             ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+        ${REGLA_CATEGORIA_JOIN}
         ${where}
     `, p);
-    const r = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 };
+    const r = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0 };
     for (const row of rows) {
         if (motivoSinPrecio(row)) { r.sin_precio++; continue; }
+        if (motivoSinCategoria(row)) { r.sin_categoria++; continue; }
+        if (motivoSinFoto(row)) { r.sin_foto++; continue; }
         const tipo = tipoRevision(row);
         if (tipo === 'vinculo') r.revision_vinculo++;
         else if (tipo === 'costo') r.revision_costo++;
@@ -373,7 +425,10 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                opc.template_id AS odoo_template_id,
                opc.has_image AS odoo_has_image,
                opc.active AS odoo_active, opc.standard_price AS odoo_standard_price,
-               scr.odoo_categ_id_preventas,
+               ${REGLA_CATEGORIA_COLS},
+               opc.categ_name AS odoo_categoria,
+               opc.is_published AS odoo_is_published,
+               opc.web_categ_id AS odoo_web_categ_id,
                (sp.id IS NOT NULL) AS sp_existe,
                -- Costo y precio con el precio scrapeado de AHORA (detecta cálculos viejos)
                ${COSTO_EXPR} AS costo_actual,
@@ -382,7 +437,11 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                    SELECT 1 FROM scraping_runs r
                    WHERE r.supplier_id = pss.supplier_id AND r.status IN ('running', 'queued')
                ) AS proveedor_scrapeando,
-               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado
+               ${VINCULO_CONFIRMADO_EXPR} AS vinculo_confirmado,
+               ${SIN_FOTO_DISPONIBLE_COL},
+               -- Al crear sin foto del proveedor se usa la del producto de Neggo vinculado (nota 203)
+               CASE WHEN pss.estado = 'solo_scraper' AND NOT ${FOTO_PROVEEDOR_SQL}
+                    THEN (${NEGGO_FOTO_SUBQ}) END AS neggo_foto_template_id
         FROM preventas_sync_state pss
         LEFT JOIN supplier_products sp ON sp.id = pss.supplier_product_id
         LEFT JOIN suppliers s ON s.id = sp.supplier_id
@@ -391,6 +450,7 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
             ON scr.supplier_id = pss.supplier_id
             AND scr.source_category = sp.source_category
             AND scr.active = true
+        ${REGLA_CATEGORIA_JOIN}
     `;
 
     let targets;
@@ -421,12 +481,9 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
             estadosPedidos = GRUPO_ESTADOS[grupo];
         }
 
-        // Seguridad: nunca archivar en bulk productos de todos los proveedores a la vez
-        if (!supplierId) {
-            if (estadosPedidos && estadosPedidos.some(e => ESTADOS_INACTIVACION.includes(e))) {
-                throw new Error('Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
-            }
-            // "Aplicar todo" sin proveedor: se aplica todo menos las inactivaciones
+        // "Aplicar todo" sin proveedor: se aplica todo menos las inactivaciones. Desde la vista
+        // "Archivar" sí se archiva de todos los proveedores juntos (nota 185)
+        if (!bloqueArchiva({ supplierId, grupo, estado })) {
             conditions.push(`pss.estado != ALL($${idx++}::text[])`);
             params.push(ESTADOS_INACTIVACION);
         }
@@ -463,6 +520,8 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
         targets.filter(p => p.odoo_product_id && ESTADOS_ODOO.includes(p.estado)).map(p => p.odoo_product_id),
         ctx
     );
+    // Archivar por falta de foto: antes se pregunta a Odoo si ya tiene una (nota 203)
+    await marcarFotoEnOdoo(odooActual, targets.filter(p => p.estado === 'sin_foto' && p.odoo_template_id), ctx, pool);
 
     for (const prod of targets) {
         if (ESTADOS_SIN_ACCION.includes(prod.estado)) { resultados.skipped++; continue; }
@@ -484,13 +543,15 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
                 continue;
             }
 
-            await ejecutarAccion(prod, preventasCompanyId, pool);
+            // aviso: se aplicó, pero algo quedó a medias (ej. publicado sin categoría web)
+            const aviso = await ejecutarAccion(prod, preventasCompanyId, pool);
             resultados.ok++;
             resultados.detalles.push({
                 sku:       prod.scraper_sku || prod.odoo_ref,
                 nombre:    prod.scraper_name || prod.odoo_nombre,
                 estado:    prod.estado,
                 resultado: 'ok',
+                ...(aviso ? { aviso } : {}),
             });
         } catch (err) {
             console.error(`❌ Error en ${prod.scraper_sku || prod.odoo_ref}:`, err.message);
@@ -523,10 +584,36 @@ async function leerEstadoOdoo(odooIds, ctx) {
     for (let i = 0; i < ids.length; i += LOTE) {
         const filas = await callOdoo('product.product', 'search_read',
             [[['id', 'in', ids.slice(i, i + LOTE)]]],
-            { fields: ['id', 'standard_price', 'active'], context: { ...ctx, active_test: false } });
-        for (const f of filas) mapa.set(f.id, { standard_price: f.standard_price, active: f.active });
+            { fields: ['id', 'standard_price', 'active', 'is_published'], context: { ...ctx, active_test: false } });
+        for (const f of filas) mapa.set(f.id, { standard_price: f.standard_price, active: f.active, is_published: f.is_published });
     }
     return mapa;
+}
+
+/**
+ * A los productos por archivar sin foto (nota 203) les marca tiene_foto en el mapa de leerEstadoOdoo
+ * si en Odoo ya tienen foto, y corrige la caché para que dejen de figurar. Si Odoo no responde se
+ * corta el apply: sin saberlo no se archiva nada.
+ */
+async function marcarFotoEnOdoo(odooActual, prods, ctx, pool) {
+    const templateIds = [...new Set(prods.map(p => p.odoo_template_id))];
+    const conFoto = new Set();
+    const LOTE = 50;
+    for (let i = 0; i < templateIds.length; i += LOTE) {
+        const filas = await callOdoo('product.template', 'read', [templateIds.slice(i, i + LOTE), ['image_128']],
+            { context: { ...ctx, active_test: false } });
+        for (const f of filas || []) if (f.image_128) conFoto.add(f.id);
+    }
+    for (const p of prods) {
+        const odoo = odooActual.get(p.odoo_product_id);
+        if (odoo && conFoto.has(p.odoo_template_id)) odoo.tiene_foto = true;
+    }
+    if (conFoto.size) {
+        await pool.query(
+            `UPDATE odoo_products_cache SET has_image = true WHERE template_id = ANY($1::int[]) AND company = 'preventas'`,
+            [[...conFoto]]
+        );
+    }
 }
 
 // Referencia interna que se le pone en Odoo a un producto creado desde el scraper
@@ -568,9 +655,28 @@ async function buscarDuplicadoEnOdoo(prod, ctx, pool) {
 async function ejecutarAccion(prod, preventasCompanyId, pool) {
     const ctx = { allowed_company_ids: [preventasCompanyId] };
 
+    // Crear y publicar (nota 200): se crea y queda publicado en la web con su categoría
     if (prod.estado === 'solo_scraper') {
-        await crearEnOdoo(prod, preventasCompanyId, pool);
-        return;
+        const { templateId, variantId } = await crearEnOdoo(prod, preventasCompanyId, pool);
+        return publicarEnWeb({ ...prod, odoo_product_id: variantId, odoo_web_categ_id: null }, templateId, ctx, pool);
+    }
+
+    // Publicar (nota 200): activo en Odoo y con stock en el proveedor, pero no se veía en la web
+    if (prod.estado === 'publicar') {
+        const templateId = prod.odoo_template_id || await templateDeVariante(prod.odoo_product_id);
+        if (!templateId) throw new Error(`Producto ${prod.odoo_ref || prod.odoo_product_id} sin template en Odoo`);
+        const aviso = await publicarEnWeb(prod, templateId, ctx, pool);
+        await pool.query(`UPDATE preventas_sync_state SET estado = 'sin_cambios' WHERE id = $1`, [prod.id]);
+        return aviso;
+    }
+
+    // Completar categoría (nota 200): ya publicado, le falta la categoría interna o la web
+    if (prod.estado === 'categoria') {
+        const templateId = prod.odoo_template_id || await templateDeVariante(prod.odoo_product_id);
+        if (!templateId) throw new Error(`Producto ${prod.odoo_ref || prod.odoo_product_id} sin template en Odoo`);
+        const aviso = await completarCategoria(prod, templateId, ctx, pool);
+        await pool.query(`UPDATE preventas_sync_state SET estado = 'sin_cambios' WHERE id = $1`, [prod.id]);
+        return aviso;
     }
 
     // ─── Archivar / desarchivar — usa action_archive/unarchive en product.template
@@ -613,10 +719,12 @@ async function ejecutarAccion(prod, preventasCompanyId, pool) {
                 [prod.odoo_product_id]
             );
         }
+        // Activar y publicar (nota 200)
+        const aviso = await publicarEnWeb(prod, templateId || await templateDeVariante(prod.odoo_product_id), ctx, pool);
         await pool.query(
             `UPDATE preventas_sync_state SET estado = 'sin_cambios' WHERE id = $1`, [prod.id]
         );
-        return;
+        return aviso;
     }
 
     // Construir los cambios a enviar a Odoo (precio + categ + ref)
@@ -758,8 +866,120 @@ async function crearEnOdoo(prod, preventasCompanyId, pool) {
     `, [variantId, prod.scraper_name, internalRef,
         Number(prod.precio_preventas) || 0, Number(prod.costo) || 0, prod.scraper_sku, templateId]);
 
-    if (prod.image_url) await syncImage(templateId, prod.image_url, ctx, pool, variantId);
+    // Sin foto del proveedor, la del producto de Neggo vinculado (nota 203)
+    const foto = prod.neggo_foto_template_id ? `/api/products/odoo-image/neggo/${prod.neggo_foto_template_id}` : prod.image_url;
+    if (foto) await syncImage(templateId, foto, ctx, pool, variantId);
     console.log(`✅ Creado en Odoo Preventas: ${prod.scraper_sku} (variant: ${variantId})`);
+    return { templateId, variantId };
+}
+
+// ─── Publicar en la web de Precompras (nota 200) ──────────────────────────────
+// La regla de categoría vale para la categoría interna y para la web: las dos se llaman igual en
+// Odoo (product.category y product.public.category, con ids distintos), así que la web se busca
+// por nombre. Si no hay una categoría web con ese nombre, se publica igual y se avisa.
+
+const CATEGORIAS_WEB_TTL_MS = 10 * 60 * 1000;
+let categoriasWebCache = { at: 0, lista: null };
+
+/** Categorías web que puede usar Precompras: las de todas las tiendas o las de la suya */
+async function categoriasWeb(ctx) {
+    if (categoriasWebCache.lista && Date.now() - categoriasWebCache.at < CATEGORIAS_WEB_TTL_MS) {
+        return categoriasWebCache.lista;
+    }
+    const [publicas, webs] = await Promise.all([
+        callOdoo('product.public.category', 'search_read', [[]], { fields: ['id', 'name', 'website_id'], context: ctx }),
+        callOdoo('website', 'search_read', [[['company_id', 'in', ctx.allowed_company_ids]]], { fields: ['id'], context: ctx }),
+    ]);
+    const propias = new Set(webs.map(w => w.id));
+    const lista = publicas
+        .filter(c => !c.website_id || propias.has(Array.isArray(c.website_id) ? c.website_id[0] : c.website_id))
+        // Primero las de todas las tiendas (ej. "Navidad" está repetida en la de Neggo)
+        .sort((a, b) => Number(!!a.website_id) - Number(!!b.website_id));
+    categoriasWebCache = { at: Date.now(), lista };
+    return lista;
+}
+
+/** Categoría web con el mismo nombre que la de Preventas, o null */
+async function categoriaWebPara(nombre, ctx) {
+    const clave = claveCategoria(nombre);
+    if (!clave) return null;
+    return (await categoriasWeb(ctx)).find(c => claveCategoria(c.name) === clave) || null;
+}
+
+/**
+ * Publica el producto en la web de Precompras con la categoría de la regla (o la que ya tenía).
+ * Devuelve un aviso si quedó publicado sin categoría web, o null.
+ */
+async function publicarEnWeb(prod, templateId, ctx, pool) {
+    if (!templateId) throw new Error(`Producto ${prod.odoo_ref || prod.scraper_sku} sin template: no se pudo publicar`);
+    const categoria = categoriaPublicacion(prod);
+    const valores = { website_published: true };
+    // La categoría interna de la regla pisa la de Odoo (igual que al actualizar precio)
+    if (prod.odoo_categ_id_preventas) valores.categ_id = prod.odoo_categ_id_preventas;
+
+    let web = null;
+    if (!prod.odoo_web_categ_id) {
+        web = await categoriaWebPara(categoria, ctx);
+        // [4, id] agrega sin borrar otras: [6, 0, ...] falla si alguna está en uso (ver Ingreso)
+        if (web) valores.public_categ_ids = [[4, web.id]];
+    }
+
+    await callOdoo('product.template', 'write', [[templateId], valores], { context: ctx });
+    await pool.query(
+        `UPDATE odoo_products_cache
+         SET is_published = true,
+             web_categ_id   = COALESCE($2, web_categ_id),
+             web_categ_name = COALESCE($3, web_categ_name)
+         WHERE template_id = $1 AND company = 'preventas'`,
+        [templateId, web?.id || null, web?.name || null]
+    );
+    console.log(`✅ Publicado en la web: ${prod.scraper_sku || prod.odoo_ref} (template ${templateId})${web ? ` en "${web.name}"` : ''}`);
+
+    if (!prod.odoo_web_categ_id && !web) {
+        return `Publicado sin categoría web: en Odoo no hay una categoría web "${String(categoria).split('/').pop().trim()}"`;
+    }
+    return null;
+}
+
+// Producto de Odoo sin categoría interna ("All" es la de Odoo por defecto: no cuenta)
+const sinCategoriaInterna = nombre => !String(nombre || '').trim() || /^all(\s*\/|$)/i.test(String(nombre).trim());
+
+/**
+ * Completa lo que le falta a un producto ya publicado: la categoría interna (de la regla) y la web
+ * (la que se llama igual). No cambia una categoría que ya tenga. Devuelve un aviso o null.
+ */
+async function completarCategoria(prod, templateId, ctx, pool) {
+    const categoria = categoriaPublicacion(prod);
+    const valores = {};
+    const faltaInterna = sinCategoriaInterna(prod.odoo_categoria);
+    if (faltaInterna && prod.odoo_categ_id_preventas) valores.categ_id = prod.odoo_categ_id_preventas;
+
+    let web = null;
+    if (!prod.odoo_web_categ_id) {
+        web = await categoriaWebPara(categoria, ctx);
+        if (web) valores.public_categ_ids = [[4, web.id]];
+    }
+
+    if (Object.keys(valores).length > 0) {
+        await callOdoo('product.template', 'write', [[templateId], valores], { context: ctx });
+        await pool.query(
+            `UPDATE odoo_products_cache
+             SET categ_id_odoo  = COALESCE($2, categ_id_odoo),
+                 categ_name     = COALESCE($3, categ_name),
+                 web_categ_id   = COALESCE($4, web_categ_id),
+                 web_categ_name = COALESCE($5, web_categ_name)
+             WHERE template_id = $1 AND company = 'preventas'`,
+            [templateId, valores.categ_id || null, valores.categ_id ? (prod.regla_categoria_preventas || null) : null,
+             web?.id || null, web?.name || null]
+        );
+        console.log(`✅ Categoría completada: ${prod.scraper_sku || prod.odoo_ref} (template ${templateId})`
+            + `${valores.categ_id ? ` interna "${prod.regla_categoria_preventas}"` : ''}${web ? ` web "${web.name}"` : ''}`);
+    }
+
+    if (!prod.odoo_web_categ_id && !web) {
+        return `Sin categoría web: en Odoo no hay una categoría web "${String(categoria).split('/').pop().trim()}"`;
+    }
+    return null;
 }
 
 // Imagen de un producto de Neggo: se copia directo desde Odoo (la URL local es un proxy relativo)
@@ -870,4 +1090,4 @@ async function actualizarFotoOdoo(pool, { supplierProductId }) {
     return { template_id: fila.template_id };
 }
 
-module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL };
+module.exports = { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizarFotoOdoo, getImageBase64, SIN_FOTO_SQL, FOTO_PROVEEDOR_SQL, NEGGO_FOTO_SUBQ };

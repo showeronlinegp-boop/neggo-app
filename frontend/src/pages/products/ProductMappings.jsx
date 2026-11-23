@@ -36,6 +36,24 @@ const MATCH_TONE = {
     manual:     'success',
 };
 
+// El backend devuelve como mucho 500 filas por pedido: para recargar en silencio una lista
+// larga (más de 500 ya cargadas) se piden tandas seguidas hasta juntar las que había.
+// Devuelve la última respuesta con data = todas las filas juntas.
+const TANDA_MAX = 500;
+async function traerEnTandas(pedir, cuantos, quedanMas) {
+    const objetivo = Math.max(cuantos, UNMAPPED_PAGE);
+    const filas = [];
+    let res;
+    do {
+        res = await pedir(Math.min(objetivo - filas.length, TANDA_MAX), filas.length);
+        if (!res.success) return res;
+        const tanda = res.data || [];
+        filas.push(...tanda);
+        if (tanda.length === 0) break;
+    } while (filas.length < objetivo && quedanMas(res, filas.length));
+    return { ...res, data: filas };
+}
+
 export default function ProductMappings() {
     const { tokens: t } = useTheme();
     const { showToast } = useToast();
@@ -108,18 +126,23 @@ export default function ProductMappings() {
     }, [unmappedSearch]);
 
     const pedidoSinVincular = useRef(0);
-    const cargarSinVincular = useCallback(async (offset = 0, append = false) => {
+    // silencioso: recarga sin vaciar la lista ni mostrar el spinner, trayendo lo que ya
+    // estaba cargado (cuantos), así no se pierde la posición del scroll tras vincular
+    const cargarSinVincular = useCallback(async (offset = 0, append = false, { silencioso = false, cuantos = 0 } = {}) => {
         const pedido = ++pedidoSinVincular.current;
-        if (!append) setUnmapped([]);
-        setUnmappedLoading(true);
-        const res = await api.get('/mappings', {
+        if (!append && !silencioso) setUnmapped([]);
+        if (!silencioso) setUnmappedLoading(true);
+        const pedir = (limit, desde) => api.get('/mappings', {
             ...(selectedSupplier ? { supplierId: selectedSupplier } : {}),
             unmapped: true,
             source: 'web',
             search: unmappedQuery,
-            limit: UNMAPPED_PAGE,
-            offset,
+            limit,
+            offset: desde,
         });
+        const res = silencioso
+            ? await traerEnTandas(pedir, cuantos, r => !!r.hasMore)
+            : await pedir(UNMAPPED_PAGE, offset);
         if (pedido !== pedidoSinVincular.current) return;
         setUnmappedLoading(false);
         if (!res.success) return;
@@ -139,24 +162,27 @@ export default function ProductMappings() {
     }, [mappingsSearch]);
 
     const pedidoVinculos = useRef(0);
-    const cargarVinculos = useCallback(async (offset = 0, append = false) => {
+    const cargarVinculos = useCallback(async (offset = 0, append = false, { silencioso = false, cuantos = 0 } = {}) => {
         if (!selectedSupplier) {
             setMappings([]);
             setMappingsTotal(0);
             return;
         }
         const pedido = ++pedidoVinculos.current;
-        if (!append) setMappings([]);
-        setMappingsLoading(true);
-        const res = await api.get('/mappings', {
+        if (!append && !silencioso) setMappings([]);
+        if (!silencioso) setMappingsLoading(true);
+        const pedir = (limit, desde) => api.get('/mappings', {
             supplierId: selectedSupplier,
             status: 'confirmado',
             company: 'neggo',
             source: 'web',
             search: mappingsQuery,
-            limit: UNMAPPED_PAGE,
-            offset,
+            limit,
+            offset: desde,
         });
+        const res = silencioso
+            ? await traerEnTandas(pedir, cuantos, (r, traidos) => traidos < (r.pagination?.total ?? 0))
+            : await pedir(UNMAPPED_PAGE, offset);
         if (pedido !== pedidoVinculos.current) return;
         setMappingsLoading(false);
         if (!res.success) return;
@@ -211,13 +237,27 @@ export default function ProductMappings() {
     async function handleLink() {
         if (!selectedLeft || !selectedRight) return;
         const res = await api.post('/mappings', { supplierProductId: selectedLeft.supplier_product_id || selectedLeft.id, odooProductId: selectedRight.odoo_id, odooCompany });
-        if (res.success) { showToast('Vínculo creado', 'success'); setSelectedLeft(null); setSelectedRight(null); cargarSinVincular(0, false); cargarVinculos(0, false); fetchResumen(); }
+        if (res.success) {
+            showToast('Vínculo creado', 'success');
+            // Sacarlo de la lista al toque y recargar en silencio: la pantalla queda donde estaba
+            const vinculado = selectedLeft;
+            setUnmapped(prev => prev.filter(p => p !== vinculado));
+            setSelectedLeft(null); setSelectedRight(null);
+            cargarSinVincular(0, false, { silencioso: true, cuantos: unmapped.length });
+            cargarVinculos(0, false, { silencioso: true, cuantos: mappings.length + 1 });
+            fetchResumen();
+        }
         else showToast(res.error || 'Error al crear vínculo', 'error');
     }
 
     async function handleUnlink(id) {
         const res = await api.del(`/mappings/${id}`);
-        if (res.success) { showToast('Vínculo eliminado', 'success'); cargarSinVincular(0, false); cargarVinculos(0, false); fetchResumen(); }
+        if (res.success) {
+            showToast('Vínculo eliminado', 'success');
+            cargarSinVincular(0, false, { silencioso: true, cuantos: unmapped.length + 1 });
+            cargarVinculos(0, false, { silencioso: true, cuantos: mappings.length });
+            fetchResumen();
+        }
         else showToast(res.error || 'Error al desvincular', 'error');
         setConfirmUnlink(null);
     }

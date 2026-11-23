@@ -8,6 +8,7 @@
 // Una presentación mandada a mano desde la app (nota #81) cuenta como la presentación.
 
 const health = require('./clientHealth');
+const { objetivos: objetivosLead } = require('./leadObjetivos');
 
 const ETAPAS = ['pendiente', 'presentacion', 'recordatorio', 'cierre', 'finalizado'];
 const CADENCIA = [
@@ -33,6 +34,8 @@ const ESTADOS_EXCLUIDOS = ['churn'];
 // con source = SOURCE_MANUAL_AGENTE y salen como origen "manual"; todos los demás (la agenda de
 // Google y las altas a mano desde la app) salen como "agenda" y siguen con el filtro de zona.
 const SOURCE_MANUAL_AGENTE = 'agente_manual';
+// Los que dio de alta el cruce con el WhatsApp del negocio: Grok no les escribe
+const SOURCE_WHATSAPP = 'whatsapp';
 const ORIGENES = ['manual', 'agenda'];
 // Fuera del mapa de zona, un lead manual ordena como prioridad 2 (no se excluye)
 const PRIORIDAD_FUERA_DE_MAPA = 2;
@@ -157,11 +160,35 @@ function quedanHoy(tope, enviadosHoy) {
  * Por qué el bot no le escribe nunca (aunque no haya pedido nada), o null.
  * fuera_de_zona: la característica no está en config/leadsZona.json (no aplica a los manuales).
  * churn: la agenda lo tiene como Churn (nos bloqueó o no quiere que lo contactemos).
+ * escribio_al_negocio: entró por el WhatsApp del negocio (CRM WhatsApp, L1): ya habla con el equipo.
+ * sumado: el equipo lo sumó a mano desde el tablero (nota 249). Pasa por encima de la zona y de
+ * escribio_al_negocio, nunca de Churn.
  */
-function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', zona = ZONA }) {
+function motivoExcluido({ phoneKey, estadoAgenda, origen = 'agenda', source = null, zona = ZONA, sumado = false }) {
     if (ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return 'churn';
+    if (sumado) return null;
+    if (source === SOURCE_WHATSAPP) return 'escribio_al_negocio';
     if (origen !== 'manual' && !zonaDe(phoneKey, zona)) return 'fuera_de_zona';
     return null;
+}
+
+/**
+ * Si el equipo puede sumar a este prospecto al bot de leads desde el tablero (nota 249).
+ * estado: disponible (se puede sumar) | sumado (ya lo sumaron y espera la presentación) |
+ * en_cadencia (el bot ya le escribió y sigue con los recordatorios) | terminado (hizo toda la
+ * cadencia) | no_puede (motivo dice por qué).
+ */
+function estadoBot({ phoneKey, estadoAgenda = null, noContactar = false, enOdoo = false, crmEtapa = 'frio', resultado = null, etapa = 'pendiente', sumado = false, respondioAlBot = false }) {
+    const no = (motivo) => ({ estado: 'no_puede', motivo });
+    if (noContactar || ESTADOS_EXCLUIDOS.includes(estadoAgenda)) return no('no_contactar');
+    if (!phoneKey) return no('sin_telefono');
+    if (enOdoo || resultado === 'ya_en_odoo') return no('ya_en_odoo');
+    if (respondioAlBot || ['interesado', 'no_interesado'].includes(resultado)) return no('respondio_al_bot');
+    if ((crmEtapa || 'frio') !== 'frio') return no('lo_sigue_el_equipo');
+    if (etapa === 'finalizado') return { estado: 'terminado', motivo: null };
+    if (etapa && etapa !== 'pendiente') return { estado: 'en_cadencia', motivo: null };
+    if (sumado) return { estado: 'sumado', motivo: null };
+    return { estado: 'disponible', motivo: null };
 }
 
 /**
@@ -178,6 +205,11 @@ function compararCola(a, b) {
         const fb = b.desde || '';
         if (fa !== fb) return fa < fb ? -1 : 1;
     } else {
+        // Los que sumó el equipo desde el tablero van primero, el más viejo primero (nota 249)
+        const sa = a.sumado_por_equipo || null;
+        const sb = b.sumado_por_equipo || null;
+        if (Boolean(sa) !== Boolean(sb)) return sa ? -1 : 1;
+        if (sa && sb && sa !== sb) return sa < sb ? -1 : 1;
         const za = a.zona ? a.zona.prioridad : 9;
         const zb = b.zona ? b.zona.prioridad : 9;
         if (za !== zb) return za - zb;
@@ -202,6 +234,54 @@ function errorResultado(actual, nuevo) {
     return null;
 }
 
+function textoONull(v) {
+    const s = typeof v === 'string' ? v.trim() : v;
+    return s || null;
+}
+
+/**
+ * Lo que sabe el equipo del prospecto (ficha comercial de Chats, 067) para que el agente arme
+ * mejor el mensaje: resumen para vender, datos y qué objetivo de nutrición falta.
+ * Sin perfil cargado devuelve el mismo formato con nulls.
+ * @param {object|null} perfil fila de crm_lead_perfil
+ * @param {{ city?: string, rubro?: string }} lead
+ * @param {Array<{ id, pregunta, respuesta }>} respuestas "Contárselo a todos" activas
+ * @param {Map<number, { fuente, fecha }>} informados
+ */
+function fichaComercial(perfil, lead, respuestas = [], informados = new Map()) {
+    const p = perfil || {};
+    const o = objetivosLead({ perfil: p, lead, respuestas, informados });
+    const fecha = (v) => (v ? new Date(v).toISOString() : null);
+    const resumen = textoONull(p.resumen);
+    // Solo Conocer e Informar: la presentación del bot ya está en seguimiento (y si la nota 227
+    // agrega el objetivo Presentar, acá no cuenta)
+    const pendientes = [
+        ...o.conocer.map((c) => ({ grupo: 'conocer', id: c.id, titulo: c.titulo, hecho: c.hecho })),
+        ...o.informar.map((i) => ({ grupo: 'informar', id: i.id, titulo: i.titulo, hecho: i.hecho })),
+    ];
+    const falta = pendientes.find((x) => !x.hecho) || null;
+    return {
+        resumen,
+        resumen_at: resumen ? fecha(p.resumen_at) : null,
+        resumen_por: resumen ? p.resumen_por || null : null,
+        ciudad: textoONull(p.ciudad) || textoONull(lead && lead.city),
+        tiene_local: p.tiene_local || null,
+        rubro: textoONull(p.rubro) || textoONull(lead && lead.rubro),
+        intereses: textoONull(p.intereses),
+        proveedor_actual: textoONull(p.proveedor_actual),
+        trabas: textoONull(p.trabas),
+        volumen: textoONull(p.volumen),
+        compromisos: textoONull(p.compromisos),
+        actualizado_at: fecha(p.updated_at),
+        objetivos: {
+            conocer: o.conocer.map((c) => ({ id: c.id, titulo: c.titulo, hecho: c.hecho, valor: c.valor, pregunta: c.pregunta })),
+            informar: o.informar.map((i) => ({ id: i.id, pregunta: i.titulo, respuesta: i.respuesta, hecho: i.hecho })),
+            siguiente: falta ? { grupo: falta.grupo, id: falta.id, titulo: falta.titulo } : null,
+            listo_para_precios: pendientes.length > 0 && !falta,
+        },
+    };
+}
+
 module.exports = {
     ETAPAS,
     CADENCIA,
@@ -213,6 +293,7 @@ module.exports = {
     PRIORIDAD_ESTADO,
     ESTADOS_EXCLUIDOS,
     SOURCE_MANUAL_AGENTE,
+    SOURCE_WHATSAPP,
     ORIGENES,
     PRIORIDAD_FUERA_DE_MAPA,
     cargarZona,
@@ -222,6 +303,7 @@ module.exports = {
     origenDe,
     ciudadAlta,
     motivoExcluido,
+    estadoBot,
     topeDiario,
     ordenEtapa,
     etapaEfectiva,
@@ -230,4 +312,5 @@ module.exports = {
     quedanHoy,
     compararCola,
     errorResultado,
+    fichaComercial,
 };

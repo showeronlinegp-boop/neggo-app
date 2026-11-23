@@ -14,6 +14,7 @@ import Select from '../../components/common/Select';
 import Toggle from '../../components/common/Toggle';
 import ProductThumb from '../../components/common/ProductThumb';
 import * as Icon from '../../components/common/icons';
+import VincularOdooDetalle from './VincularOdooDetalle';
 
 const fmt = v => v != null && v !== '' ? fmtAR(v) : '—';
 
@@ -33,7 +34,6 @@ export default function SupplierProducts() {
     const [total, setTotal] = useState(0);
     const [detail, setDetail] = useState(null);
     const [history, setHistory] = useState([]);
-    const [mappings, setMappings] = useState([]);
     const autoRefreshRef = useRef(null);
 
     const activeSupplierIds = Object.keys(activeRuns).map(Number);
@@ -70,14 +70,9 @@ export default function SupplierProducts() {
 
     async function openDetail(row) {
         setDetail(row);
-        setHistory([]); setMappings([]);
-        const [hRes, mRes] = await Promise.all([
-            api.get(`/products/supplier/${row.id}/price-history`),
-            // Solo los vínculos activos: los sugeridos de la tabla maestra no cuentan como vinculados
-            api.get('/mappings', { supplierId: row.supplier_id, search: row.sku, status: 'active' }),
-        ]);
+        setHistory([]);
+        const hRes = await api.get(`/products/supplier/${row.id}/price-history`);
         if (hRes.success) setHistory(hRes.data || []);
-        if (mRes.success) setMappings(mRes.data || []);
     }
 
     // Cantidad por proveedor: con "solo disponibles" cuenta los que tienen stock
@@ -329,35 +324,8 @@ export default function SupplierProducts() {
                             </div>
                         )}
 
-                        {/* Vinculados a Odoo */}
-                        {mappings.length > 0 && (
-                            <div>
-                                <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, marginBottom: t.space[3], color: t.color.text, fontFamily: t.font.family }}>
-                                    Vinculados a Odoo · {mappings.length}
-                                </div>
-                                <div style={{ background: t.color.surface2, borderRadius: t.radius.sm, border: `1px solid ${t.color.border}`, overflow: 'hidden' }}>
-                                    {mappings.map((m, i) => (
-                                        <div key={m.id} style={{
-                                            display: 'flex', alignItems: 'center', gap: t.space[3],
-                                            padding: `${t.space[3]}px ${t.space[5]}px`,
-                                            borderTop: i > 0 ? `1px solid ${t.color.border}` : 'none',
-                                        }}>
-                                            <Badge tone={m.odoo_company === 'neggo' ? 'primary' : 'accent'} style={{ minWidth: 74, justifyContent: 'center' }}>
-                                                {m.odoo_company || '—'}
-                                            </Badge>
-                                            <span style={{ flex: 1, fontSize: t.font.size.sm, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: t.color.text, fontFamily: t.font.family }}>
-                                                {m.odoo_product_name}
-                                            </span>
-                                            {m.odoo_internal_ref && (
-                                                <span style={{ fontSize: t.font.size.xs, fontFamily: t.font.mono, color: t.color.textFaint }}>
-                                                    {m.odoo_internal_ref}
-                                                </span>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+                        {/* Vinculados a Odoo, con buscador para vincular desde acá (nota 212) */}
+                        <VincularOdooDetalle key={detail.id} product={detail} companyInicial={company} />
                     </div>
                 )}
             </Modal>
