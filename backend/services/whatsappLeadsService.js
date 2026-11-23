@@ -63,7 +63,8 @@ async function chatsRecientes(desde, db = pool) {
         `SELECT m."key"->>'remoteJid' AS chat,
                 MAX(m."key"->>'remoteJidAlt') AS alt,
                 to_timestamp(MIN(m."messageTimestamp")) AS primero,
-                to_timestamp(MAX(m."messageTimestamp")) AS ultimo,
+                -- La respuesta automática de fuera de horario no cuenta como último mensaje (nota 231)
+                to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE NOT (COALESCE((m."key"->>'fromMe')::boolean, false) AND ${SQL_AUTOMATICO}))) AS ultimo,
                 to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE NOT COALESCE((m."key"->>'fromMe')::boolean, false))) AS ultimo_de_ellos,
                 to_timestamp(MAX(m."messageTimestamp") FILTER (WHERE COALESCE((m."key"->>'fromMe')::boolean, false) AND NOT ${SQL_AUTOMATICO})) AS ultimo_nuestro,
                 (ARRAY_AGG(NULLIF(m."pushName", '') ORDER BY m."messageTimestamp" DESC)
