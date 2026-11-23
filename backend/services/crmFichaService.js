@@ -134,10 +134,15 @@ async function detectarInformados(leadId, respuestas, mensajes, informados, db) 
     return informados;
 }
 
-/** Fuente de una presentación anotada en crm_events: la mandó Grok, se vio en el chat o desde la app. */
+/**
+ * Fuente de una presentación anotada en crm_events: la mandó Grok, se vio en el chat, se mandó
+ * desde la app o una persona tildó que ya la tiene (nota 233).
+ */
 function fuenteDePresentacion(meta) {
     const origen = meta && meta.origen;
-    return origen === 'agente' ? 'bot' : origen === 'chat' ? 'chat' : 'app';
+    if (origen === 'agente') return 'bot';
+    if (origen === 'chat' || origen === 'manual') return origen;
+    return 'app';
 }
 
 /** Primera presentación anotada de cada prospecto → Map lead_id → { fecha, fuente }. */
@@ -289,6 +294,27 @@ async function marcarInformado(leadIdRaw, respuestaIdRaw, hecho, userId, db = po
         [leadId, respuestaId, userId || null],
     );
     return { respuesta_id: respuestaId, hecho: true };
+}
+
+/**
+ * Tilde a mano de «Mandarle la presentación» (nota 233): ya la tiene aunque no se la mandamos
+ * desde la app. Se anota en crm_events con origen 'manual', así Grok tampoco se la manda.
+ * Destildar solo borra las marcas a mano: las que mandó Grok, desde la app o por el chat quedan.
+ */
+async function marcarPresentacion(leadIdRaw, hecho, userId, db = pool) {
+    const leadId = idValido(leadIdRaw);
+    await ensureSchema(db);
+    await leerLead(leadId, db);
+    if (hecho === false) {
+        await db.query(
+            `DELETE FROM crm_events WHERE lead_id = $1 AND kind = 'presentacion' AND meta->>'origen' = 'manual'`, [leadId]);
+    } else if (!(await leerPresentaciones([leadId], db)).has(leadId)) {
+        await db.query(
+            `INSERT INTO crm_events (lead_id, kind, meta, user_id) VALUES ($1, 'presentacion', $2, $3)`,
+            [leadId, JSON.stringify({ via: 'manual', origen: 'manual' }), userId || null]);
+    }
+    const presentacion = (await leerPresentaciones([leadId], db)).get(leadId) || null;
+    return { hecho: Boolean(presentacion), presentacion };
 }
 
 // ── Lo que pidió ──────────────────────────────────────────────────────────────────────────
@@ -775,6 +801,7 @@ module.exports = {
     guardarPerfil,
     renombrar,
     marcarInformado,
+    marcarPresentacion,
     crearItem,
     editarItem,
     borrarItem,
