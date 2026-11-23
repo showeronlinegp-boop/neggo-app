@@ -491,7 +491,9 @@ export default function ArmarPedido({
                         const barata = ofertaMasBarata(it);
                         const candidatos = candidatosDe(it);
                         const aca = candidatoAca(it);
-                        const precio = aca?.precio ?? it.standard_price;
+                        // Precio del proveedor (si lo tiene) y, aparte, el costo que figura hoy en Odoo
+                        const precio = aca?.precio ?? null;
+                        const costoOdoo = Number(it.standard_price) > 0 ? Number(it.standard_price) : null;
                         const etiqueta = !aca || aca.es_principal
                             ? (barata ? 'principal' : 'principal, sin más barato')
                             : aca.mas_barato ? 'más económico' : 'otro proveedor';
@@ -545,6 +547,10 @@ export default function ArmarPedido({
                                         {' · '}
                                         {etiqueta}
                                         {precio != null && <span style={t.numericStyle}> · {fmtAR(precio)}</span>}
+                                        {' · '}
+                                        <span title="Costo que tiene cargado hoy el producto en Odoo" style={t.numericStyle}>
+                                            {costoOdoo != null ? `Costo Odoo ${fmtAR(costoOdoo)}` : 'Sin costo en Odoo'}
+                                        </span>
                                     </div>
                                     {repartido && !enReparto && (
                                         <div style={{ fontSize: t.font.size.xs, color: t.color.text, fontFamily: t.font.family, marginTop: 2, ...t.numericStyle }}>
