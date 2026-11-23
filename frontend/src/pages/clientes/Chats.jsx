@@ -31,6 +31,8 @@ const REFRESCO_LISTA_MS = 60 * 1000;
 const REFRESCO_CHAT_MS = 30 * 1000;
 // Alto mínimo en compu: en pantallas más bajas scrollea la página entera
 const ALTO_MIN_PX = 320;
+// Aire entre el chat y el borde de abajo de la ventana (el mismo que usa la lista de Clientes)
+const MARGEN_ABAJO = 16;
 
 function horaLista(iso) {
     if (!iso) return '';
@@ -104,16 +106,16 @@ export default function Chats() {
         else setVerFicha((v) => !v);
     };
 
-    // En compu ocupa justo lo que queda del <main> debajo de las pestañas, así no scrollea la página
-    // (nota #223). Se mide en cada render y al cambiar la ventana.
+    // En compu ocupa todo lo que queda de la ventana debajo de las pestañas, hasta MARGEN_ABAJO del
+    // borde, así no scrollea la página (nota #223; Clientes recorta el aire de abajo del <main>).
+    // Se mide contra la ventana: el <main> crece con el contenido y medir contra él hacía un círculo.
     const [altoPx, setAltoPx] = useState(null);
     const medirAlto = useCallback(() => {
-        const main = caja.current?.closest('[data-app-main]');
-        if (isMobile || !main) { setAltoPx(null); return; }
-        const top = caja.current.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
-        const padAbajo = parseFloat(getComputedStyle(main).paddingBottom) || 0;
-        const px = Math.max(ALTO_MIN_PX, Math.floor(main.clientHeight - top - padAbajo));
-        setAltoPx((prev) => (prev === px ? prev : px));
+        if (isMobile || !caja.current) { setAltoPx(null); return; }
+        const main = caja.current.closest('[data-app-main]');
+        const top = caja.current.getBoundingClientRect().top + window.scrollY + (main?.scrollTop || 0);
+        const px = Math.max(ALTO_MIN_PX, Math.floor(window.innerHeight - top - MARGEN_ABAJO));
+        setAltoPx((prev) => (prev != null && Math.abs(prev - px) <= 1 ? prev : px));
     }, [isMobile]);
     useLayoutEffect(() => { medirAlto(); });
     useEffect(() => {
