@@ -2,8 +2,8 @@
 // - Charla de los últimos 7 días (se lee de evolution_negocio; el texto NO se guarda).
 // - Resumen para vender y datos del prospecto (Claude cada noche con scripts/resumenProspectos.js,
 //   o una persona a mano).
-// - Objetivos de nutrición: Conocer (dónde está, rubro e interés) e Informar (preguntas frecuentes
-//   "Contárselo a todos"). Reglas en leadObjetivos.js.
+// - Objetivos de nutrición: Presentar (el mensaje de presentación), Conocer (dónde está, rubro e
+//   interés) e Informar (preguntas frecuentes "Contárselo a todos"). Reglas en leadObjetivos.js.
 // - Lo que pidió (anotado a mano) → cotización en borrador en Odoo (Neggo). Es lo único que escribe
 //   en Odoo, y solo cuando una persona toca el botón.
 
@@ -12,6 +12,7 @@ const { callOdoo, getCompanyIds } = require('../config/odoo');
 const reglas = require('./leadObjetivos');
 const etapas = require('./leadEtapas');
 const waLeads = require('./whatsappLeadsService');
+const { esNombreDeRelleno } = require('./whatsappLeads');
 const respuestasService = require('./crmRespuestasService');
 const { agruparConversaciones, textoDe } = require('./agenteConversaciones');
 const contacts = require('./crmContacts');
@@ -133,6 +134,38 @@ async function detectarInformados(leadId, respuestas, mensajes, informados, db) 
     return informados;
 }
 
+/** Fuente de una presentación anotada en crm_events: la mandó Grok, se vio en el chat o desde la app. */
+function fuenteDePresentacion(meta) {
+    const origen = meta && meta.origen;
+    return origen === 'agente' ? 'bot' : origen === 'chat' ? 'chat' : 'app';
+}
+
+/** Primera presentación anotada de cada prospecto → Map lead_id → { fecha, fuente }. */
+async function leerPresentaciones(ids, db) {
+    const { rows } = await db.query(
+        `SELECT DISTINCT ON (lead_id) lead_id, created_at, meta FROM crm_events
+          WHERE lead_id = ANY($1::int[]) AND kind = 'presentacion'
+          ORDER BY lead_id, created_at`, [ids]);
+    return new Map(rows.map((r) => [r.lead_id, { fecha: r.created_at, fuente: fuenteDePresentacion(r.meta) }]));
+}
+
+/**
+ * La presentación del prospecto. Si no está anotada pero aparece en el chat del negocio (se la
+ * mandaron por WhatsApp sin la app), se anota: así queda aunque la depuración borre el chat y Grok
+ * no se la vuelve a mandar.
+ */
+async function detectarPresentacion(leadId, mensajes, db) {
+    const anotada = (await leerPresentaciones([leadId], db)).get(leadId);
+    if (anotada) return anotada;
+    const m = reglas.presentacionEnMensajes(mensajes.filter((x) => x.de === 'neggo' && x.texto));
+    if (!m) return null;
+    const fecha = m.fecha ? new Date(m.fecha) : new Date();
+    await db.query(
+        `INSERT INTO crm_events (lead_id, kind, meta, created_at) VALUES ($1, 'presentacion', $2, $3)`,
+        [leadId, JSON.stringify({ via: 'whatsapp', origen: 'chat' }), fecha]);
+    return { fecha, fuente: 'chat' };
+}
+
 async function leerItems(leadId, db) {
     const { rows } = await db.query(
         `SELECT i.*, c.odoo_order_name
@@ -170,11 +203,16 @@ async function ficha(leadIdRaw, db = pool) {
         leerItems(leadId, db), leerCotizaciones(leadId, db),
     ]);
     const informados = await detectarInformados(leadId, respuestas, mensajes, await leerInformados(leadId, db), db);
+    const presentacion = await detectarPresentacion(leadId, mensajes, db);
     return {
-        lead: { id: lead.id, nombre: lead.name, telefono: lead.phone, ciudad: lead.city, rubro: lead.rubro, cliente_id: lead.odoo_partner_id },
+        lead: {
+            id: lead.id, nombre: lead.name, telefono: lead.phone, ciudad: lead.city, rubro: lead.rubro, cliente_id: lead.odoo_partner_id,
+            // Para saludar en la presentación: un relleno como "(a completar)" no va
+            nombre_saludo: esNombreDeRelleno(lead.name) ? null : lead.name,
+        },
         chats,
         perfil: formatearPerfil(perfil),
-        objetivos: reglas.objetivos({ perfil, lead, respuestas, informados }),
+        objetivos: reglas.objetivos({ perfil, lead, respuestas, informados, presentacion }),
         charla: { dias: reglas.DIAS_ACTIVO, mensajes },
         items,
         cotizaciones,
@@ -430,11 +468,12 @@ async function clientesConChat(db) {
 async function objetivosEnLote(leads, db) {
     const ids = leads.map((l) => l.id);
     if (!ids.length) return new Map();
-    const [respuestas, { rows: perfiles }, { rows: infs }, { rows: datos }] = await Promise.all([
+    const [respuestas, { rows: perfiles }, { rows: infs }, { rows: datos }, presentaciones] = await Promise.all([
         respuestasParaInformar(db),
         db.query('SELECT * FROM crm_lead_perfil WHERE lead_id = ANY($1::int[])', [ids]),
         db.query('SELECT lead_id, respuesta_id, fuente, informado_at FROM crm_lead_informado WHERE lead_id = ANY($1::int[])', [ids]),
         db.query('SELECT id, city, rubro FROM crm_leads WHERE id = ANY($1::int[])', [ids]),
+        leerPresentaciones(ids, db),
     ]);
     const perfil = new Map(perfiles.map((p) => [p.lead_id, p]));
     const lead = new Map(datos.map((d) => [d.id, d]));
@@ -445,7 +484,10 @@ async function objetivosEnLote(leads, db) {
     }
     const out = new Map();
     for (const id of ids) {
-        const o = reglas.objetivos({ perfil: perfil.get(id), lead: lead.get(id), respuestas, informados: inf.get(id) || new Map() });
+        const o = reglas.objetivos({
+            perfil: perfil.get(id), lead: lead.get(id), respuestas, informados: inf.get(id) || new Map(),
+            presentacion: presentaciones.get(id) || null,
+        });
         out.set(id, { hechos: o.hechos, total: o.total, siguiente: o.siguiente, listo_para_precios: o.listo_para_precios, tiene_resumen: Boolean(perfil.get(id)?.resumen) });
     }
     return out;

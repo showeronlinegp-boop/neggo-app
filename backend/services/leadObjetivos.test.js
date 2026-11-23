@@ -38,18 +38,35 @@ assert.deepStrictEqual(ob.conocer.map((c) => c.hecho), [true, false]);
 assert.strictEqual(ob.conocer[0].valor, 'Pergamino');
 assert.deepStrictEqual(ob.informar.map((i) => i.hecho), [true, false]);
 assert.strictEqual(ob.hechos, 2);
-assert.strictEqual(ob.total, 4);
+assert.strictEqual(ob.total, 5);
 assert.strictEqual(ob.listo_para_precios, false);
+// Nota 227: el primer objetivo es mandarle la presentación
+assert.strictEqual(ob.presentar[0].hecho, false);
+assert.deepStrictEqual(ob.siguiente, { grupo: 'presentar', id: 'presentacion', titulo: 'Mandarle la presentación' });
+ob = o.objetivos({ perfil: null, lead: { city: 'Pergamino' }, respuestas, informados: new Map(), presentacion: { fecha: 'f', fuente: 'bot' } });
+assert.deepStrictEqual([ob.presentar[0].hecho, ob.presentar[0].fuente], [true, 'bot']);
 assert.deepStrictEqual(ob.siguiente, { grupo: 'conocer', id: 'rubro', titulo: 'Saber su rubro e interés' });
 
 ob = o.objetivos({
     perfil: { ciudad: 'Rojas', tiene_local: 'local', intereses: 'termos' }, lead: { rubro: 'Kiosco' }, respuestas,
     informados: new Map([[1, { fuente: 'bot' }], [3, { fuente: 'manual' }]]),
 });
+assert.strictEqual(ob.listo_para_precios, false);
+ob = o.objetivos({
+    perfil: { ciudad: 'Rojas', tiene_local: 'local', intereses: 'termos' }, lead: { rubro: 'Kiosco' }, respuestas,
+    informados: new Map([[1, { fuente: 'bot' }], [3, { fuente: 'manual' }]]), presentacion: { fecha: 'f', fuente: 'app' },
+});
 assert.strictEqual(ob.conocer[0].valor, 'Rojas · tiene local');
 assert.strictEqual(ob.conocer[1].valor, 'Kiosco · termos');
 assert.strictEqual(ob.listo_para_precios, true);
 assert.strictEqual(ob.siguiente, null);
+
+// La presentación mandada por el chat del negocio (aunque cambie el saludo)
+const presMsj = 'Buenas Ana, ¿todo bien?\nSoy Mariano de Neggo Mayorista, polirrubros de Pergamino. Te dejo nuestro contacto por si algún día precisás algo:\nhttps://neggo.odoo.com';
+assert.strictEqual(o.presentacionEnMensajes([{ texto: 'hola', fecha: '2026-11-20' }]), null);
+assert.strictEqual(o.presentacionEnMensajes([
+    { texto: presMsj, fecha: '2026-11-21T10:00:00Z' }, { texto: presMsj, fecha: '2026-11-20T10:00:00Z' },
+]).fecha, '2026-11-20T10:00:00Z');
 
 // Validación del perfil
 let v = o.validarPerfil({ ciudad: '  Junín ', tiene_local: 'online', resumen: 'Busca termos.\r\nTiene kiosco.', rubro: '' });

@@ -2,11 +2,13 @@
 // Tests en leadObjetivos.test.js. La lectura y el guardado están en crmFichaService.js.
 //
 // Objetivos de nutrición (decisión de Mariano, 2026-11-22):
+// - Presentar (nota 227, va primero): mandarle el mensaje de presentación. Cuenta la que se anota
+//   desde la app, la que manda Grok y la que aparece en el chat del negocio.
 // - Conocer: lo que tenemos que saber de él → dónde está (ciudad) y su rubro o interés.
 // - Informar: lo que tiene que saber de nosotros → cada pregunta frecuente marcada "Contárselo a
 //   todos" (mínimo de compra, horario, ubicación del local…). Se tilda a mano, o sola cuando el
 //   texto aparece en algo que le mandamos (el chat del negocio o un mensaje de Grok).
-// Con los dos grupos completos está listo para recibir precios.
+// Con todo completo está listo para recibir precios.
 
 const DIA_MS = 86400000;
 // Grupos de la pantalla Contactos, según el último mensaje del chat
@@ -59,6 +61,17 @@ function informadosEnMensajes(respuestas, enviados) {
     return out;
 }
 
+// Frase fija del mensaje de presentación (frontend clientesUi.js → mensajePresentacion): si aparece
+// en algo que le mandamos por el chat del negocio, ya se presentó.
+const FRASE_PRESENTACION = 'Soy Mariano de Neggo Mayorista, polirrubros de Pergamino. Te dejo nuestro contacto por si algún día precisás algo';
+
+/** El primer mensaje que le mandamos que es la presentación (o null). */
+function presentacionEnMensajes(enviados) {
+    const lista = (enviados || []).filter((e) => cuentaLaRespuesta(FRASE_PRESENTACION, e.texto));
+    if (!lista.length) return null;
+    return lista.reduce((a, b) => (new Date(b.fecha) < new Date(a.fecha) ? b : a));
+}
+
 const CONOCER = [
     { id: 'ubicacion', titulo: 'Saber dónde está', ayuda: 'Ciudad, y si tiene local o vende online',
       pregunta: '¿De qué ciudad sos? ¿Tenés local o vendés online?' },
@@ -69,10 +82,12 @@ const CONOCER = [
 /**
  * Objetivos de nutrición de un prospecto.
  * @param {{ perfil?: object|null, lead?: object|null, respuestas: Array<{ id, pregunta, respuesta }>,
- *           informados: Map<number, { fuente: string, fecha: any }> }} datos
+ *           informados: Map<number, { fuente: string, fecha: any }>,
+ *           presentacion?: { fecha: any, fuente: 'app'|'bot'|'chat' }|null }} datos
  *   respuestas = solo las "Contárselo a todos" activas y con texto.
+ *   presentacion = cuándo se le mandó el mensaje de presentación (null si todavía no).
  */
-function objetivos({ perfil, lead, respuestas, informados }) {
+function objetivos({ perfil, lead, respuestas, informados, presentacion = null }) {
     const p = perfil || {};
     const l = lead || {};
     const ciudad = p.ciudad || l.city || null;
@@ -91,9 +106,18 @@ function objetivos({ perfil, lead, respuestas, informados }) {
             fuente: inf ? inf.fuente : null, fecha: inf ? inf.fecha : null,
         };
     });
-    const todos = [...conocer.map((o) => ({ grupo: 'conocer', ...o })), ...informar.map((o) => ({ grupo: 'informar', ...o }))];
+    const presentar = [{
+        id: 'presentacion', titulo: 'Mandarle la presentación', ayuda: 'Quiénes somos, la web, el mínimo de compra y el horario',
+        hecho: Boolean(presentacion), fuente: presentacion ? presentacion.fuente : null, fecha: presentacion ? presentacion.fecha : null,
+    }];
+    const todos = [
+        ...presentar.map((o) => ({ grupo: 'presentar', ...o })),
+        ...conocer.map((o) => ({ grupo: 'conocer', ...o })),
+        ...informar.map((o) => ({ grupo: 'informar', ...o })),
+    ];
     const pendiente = todos.find((o) => !o.hecho) || null;
     return {
+        presentar,
         conocer,
         informar,
         hechos: todos.filter((o) => o.hecho).length,
@@ -209,6 +233,8 @@ module.exports = {
     DIAS_ABIERTA,
     GRUPOS,
     CONOCER,
+    FRASE_PRESENTACION,
+    presentacionEnMensajes,
     grupoDeCharla,
     normalizar,
     cuentaLaRespuesta,
