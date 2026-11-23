@@ -42,6 +42,8 @@ const COLUMNAS_MEDIO = 'minmax(170px, 2fr) 112px 96px minmax(92px, 1fr) 52px 104
 const ANCHO_MIN = { ancho: 1110, medio: 860 };
 // Alto mínimo de la lista con scroll propio: en pantallas muy bajas scrollea la página entera
 const ALTO_MIN_LISTA = 240;
+// Aire entre el final de la lista (o del chat) y el borde de abajo de la ventana
+const MARGEN_ABAJO = 16;
 
 // Ancho disponible de un elemento, actualizado al cambiar la ventana o el menú lateral
 function useAnchoDe(el) {
@@ -557,20 +559,31 @@ export default function Clientes() {
         </Button>
     ) : null;
 
-    // Alto de la lista: lo que queda del <main> debajo de los filtros, menos el pie de la tabla.
-    // Se mide en cada render (cambian filtros, avisos, la barra de Elegir varios) y al cambiar la ventana.
+    // El <main> deja 48 px de aire abajo: en compu la pantalla se come parte con un margen negativo
+    // para que la lista llegue hasta MARGEN_ABAJO del borde de la ventana sin que aparezca scroll
+    const [raizEl, setRaizEl] = useState(null);
+    const [recorte, setRecorte] = useState(0);
+    useLayoutEffect(() => {
+        const main = raizEl?.closest('[data-app-main]');
+        const padAbajo = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
+        setRecorte(compu ? Math.max(0, padAbajo - MARGEN_ABAJO) : 0);
+    }, [raizEl, compu]);
+
+    // Alto de la lista: lo que queda de la VENTANA debajo de los filtros, menos el pie de la tabla.
+    // Se mide contra la ventana (no contra el <main>, que crece con el contenido: eso hacía un
+    // círculo de renders, error #185). Se mide en cada render y al cambiar la ventana.
     const [listaEl, setListaEl] = useState(null);
     const pieRef = useRef(null);
     const [altoLista, setAltoLista] = useState(null);
     const medirLista = useCallback(() => {
-        const main = listaEl?.closest('[data-app-main]');
-        if (!compu || !main) { setAltoLista(null); return; }
-        const top = listaEl.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
-        const padAbajo = parseFloat(getComputedStyle(main).paddingBottom) || 0;
+        if (!compu || !listaEl) { setAltoLista(null); return; }
+        const main = listaEl.closest('[data-app-main]');
+        const top = listaEl.getBoundingClientRect().top + window.scrollY + (main?.scrollTop || 0);
         const pie = pieRef.current?.offsetHeight || 0;
         // 2 px: borde de la tarjeta
-        const alto = Math.max(ALTO_MIN_LISTA, Math.floor(main.clientHeight - top - pie - padAbajo - 2));
-        setAltoLista((prev) => (prev === alto ? prev : alto));
+        const alto = Math.max(ALTO_MIN_LISTA, Math.floor(window.innerHeight - top - pie - 2 - MARGEN_ABAJO));
+        // Con 1 px de tolerancia, para que un redondeo no dispare otro render
+        setAltoLista((prev) => (prev != null && Math.abs(prev - alto) <= 1 ? prev : alto));
     }, [listaEl, compu]);
     useLayoutEffect(() => { medirLista(); });
     useEffect(() => {
@@ -586,7 +599,11 @@ export default function Clientes() {
 
     return (
         // En compu el <main> del layout ya da el margen: sin padding propio, para ganar alto (nota #223)
-        <div style={{ padding: isMobile ? 12 : 0, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family }}>
+        <div ref={setRaizEl} style={{
+            padding: isMobile ? 12 : 0, maxWidth: 1240, margin: '0 auto', fontFamily: t.font.family,
+            // Clientes y Chats llenan la ventana justo (nota #223); las otras pestañas scrollean como siempre
+            marginBottom: tab === 'clientes' || tab === 'chats' ? -recorte : undefined,
+        }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: compu ? t.space[2] : 12, marginBottom: compu ? t.space[2] : 16 }}>
                 <div style={{ minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: compu ? `0 ${t.space[6]}px` : 0 }}>
                     <h1 title="Cada cliente medido contra su propio ritmo de compra en el punto de venta de Neggo"
