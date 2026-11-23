@@ -6,6 +6,7 @@ const evolution = require('../services/evolutionClient');
 const { listFilters, findPublishable } = require('../services/whatsappProducts');
 const { listCategories, pickRandom, findByIds } = require('../services/whatsappRandom');
 const queue = require('../services/whatsappQueue');
+const propuestas = require('../services/whatsappPropuestas');
 
 const router = express.Router();
 router.use(authenticate, requireRole('admin'));
@@ -298,5 +299,26 @@ async function action(req, res, fn) {
 router.post('/batches/:id/pause', (req, res) => action(req, res, queue.pauseBatch));
 router.post('/batches/:id/resume', (req, res) => action(req, res, queue.resumeBatch));
 router.post('/batches/:id/cancel', (req, res) => action(req, res, queue.cancelBatch));
+
+// Propuesta de Claude por temporada (nota 204, solo Neggo): la última pendiente, ya revalidada
+// y agrupada por categoría como el sorteo. null si no hay.
+// ?para=whatsapp (default) | imagenes (Imágenes para estados: también saca lo descargado)
+router.get('/propuestas/ultima', async (req, res) => {
+    try {
+        const para = req.query.para === 'imagenes' ? 'imagenes' : 'whatsapp';
+        return ok(res, await propuestas.ultimaPendiente(pool, { para }));
+    } catch (err) {
+        return fail(res, err.message, 500);
+    }
+});
+
+// estado: 'usada' o 'descartada' (las pantallas solo descartan)
+router.post('/propuestas/:id/estado', async (req, res) => {
+    try {
+        return ok(res, await propuestas.marcar(pool, req.params.id, req.body.estado));
+    } catch (err) {
+        return fail(res, err.message, 400);
+    }
+});
 
 module.exports = router;
