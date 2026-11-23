@@ -9,15 +9,18 @@ import * as Icon from '../../components/common/icons';
 import { descargarListasPDF, descargarPedidoPDF } from './pedidoPdf';
 import {
     accesoDe,
-    destinoDe,
+    armarReparto,
+    candidatosDe,
+    estaRepartido,
     estaVinculado,
     filtrarSolapa,
     listaDelProveedor,
     listasParaPdf,
-    ofertaElegida,
     ofertaMasBarata,
-    proveedorPrincipal,
+    partesDe,
     proveedoresDelPedido,
+    qtyEn,
+    vaA,
 } from './pedidoDestino';
 import { clienteCorto, esperasPorProducto, reponiblesDe, textoEspera } from './cotizacionesNeggo';
 
@@ -53,7 +56,9 @@ export default function ArmarPedido({
 }) {
     const { tokens: t } = useTheme();
     const [proveedor, setProveedor] = useState(proveedorInicial?.nombre ?? null);
-    const [lados, setLados] = useState({});
+    // A quién va cada producto, si se cambió a mano: { [id]: [{ destino, qty }] } (nota 187)
+    const [asignaciones, setAsignaciones] = useState({});
+    const [repartiendo, setRepartiendo] = useState(null);
     const [solapa, setSolapa] = useState('todos');
     const [elegidos, setElegidos] = useState({});
     const [qtys, setQtys] = useState({});
@@ -80,7 +85,7 @@ export default function ArmarPedido({
         });
     }, [items]);
 
-    const grupos = useMemo(() => proveedoresDelPedido(items, lados), [items, lados]);
+    const grupos = useMemo(() => proveedoresDelPedido(items, asignaciones), [items, asignaciones]);
 
     useEffect(() => {
         if (!grupos.length) return;
@@ -101,7 +106,9 @@ export default function ArmarPedido({
     const deCotizaciones = useMemo(() => reponiblesDe(cotizaciones, proveedor), [cotizaciones, proveedor]);
 
     const acceso = accesoDe(proveedor, accesos);
-    const delProveedor = items.filter(it => destinoDe(it, lados[it.id]) === proveedor);
+    const delProveedor = items.filter(it => vaA(it, proveedor, asignaciones[it.id]));
+    // Lo que se le pide a este proveedor de cada producto (si está repartido, solo su parte)
+    const qtyAca = (it) => qtyEn(it, proveedor, asignaciones[it.id], qtys[it.id]);
     // Primero lo que tiene un cliente esperando
     const visibles = filtrarSolapa(delProveedor, solapa)
         .slice()
@@ -114,18 +121,65 @@ export default function ArmarPedido({
 
     const marcar = (id) => setElegidos(prev => ({ ...prev, [id]: !prev[id] }));
 
-    const mover = (it) => {
-        const actual = lados[it.id] === 'principal' ? 'principal' : 'economico';
-        const siguiente = actual === 'principal' ? 'economico' : 'principal';
-        setLados(prev => ({ ...prev, [it.id]: siguiente }));
-        setProveedor(destinoDe(it, siguiente));
+    // Todo el producto a otro proveedor (nota 187): cualquiera vinculado, aunque no sea más barato
+    const mandarA = (it, destino) => {
+        setAsignaciones(prev => ({ ...prev, [it.id]: [{ destino, qty: null }] }));
+        setRepartiendo(null);
+        if (destino !== proveedor) onAviso(`«${it.name}» ahora se le pide a ${destino}.`);
     };
 
-    const guardarQty = async (it) => {
-        const qty = Number(qtys[it.id]);
+    // Cantidad total del producto: si está repartido, la suma de las partes
+    const totalDe = (it) => partesDe(it, asignaciones[it.id], qtys[it.id])
+        .reduce((s, p) => s + (Number.isFinite(p.qty) ? p.qty : 0), 0);
+
+    const guardarQty = async (it, total = Number(qtys[it.id])) => {
+        const qty = Number(total);
         if (!Number.isInteger(qty) || qty < 0 || qty === Number(it.qty_decidida)) return;
         const res = await api.patch(`/reposicion/${it.id}`, { estado: 'pendiente', qty_decidida: qty });
         if (!res.success) onError(res.error || 'No se pudo guardar la cantidad');
+    };
+
+    // En un producto repartido, el campo de cantidad cambia solo la parte de este proveedor
+    const cambiarQty = (it, valor) => {
+        const asig = asignaciones[it.id];
+        if (!estaRepartido(asig)) {
+            setQtys(prev => ({ ...prev, [it.id]: valor }));
+            return;
+        }
+        const nueva = asig.map(p => (p.destino === proveedor ? { ...p, qty: valor } : p));
+        setAsignaciones(prev => ({ ...prev, [it.id]: nueva }));
+    };
+
+    const salirDeQty = (it) => {
+        const asig = asignaciones[it.id];
+        if (!estaRepartido(asig)) { guardarQty(it); return; }
+        const total = totalDe(it);
+        setQtys(prev => ({ ...prev, [it.id]: total }));
+        guardarQty(it, total);
+    };
+
+    // «Repartir»: una cantidad por proveedor, se aplica con «Listo»
+    const abrirReparto = (it) => {
+        const cantidades = {};
+        for (const c of candidatosDe(it)) cantidades[c.nombre] = '';
+        for (const p of partesDe(it, asignaciones[it.id], qtys[it.id])) {
+            cantidades[p.destino] = Number.isFinite(p.qty) ? String(p.qty) : '';
+        }
+        setRepartiendo({ id: it.id, cantidades });
+    };
+
+    const aplicarReparto = (it) => {
+        const armado = armarReparto(repartiendo?.cantidades);
+        if (!armado) { onError('Poné al menos una cantidad'); return; }
+        onError(null);
+        setAsignaciones(prev => ({ ...prev, [it.id]: armado.asignacion }));
+        setQtys(prev => ({ ...prev, [it.id]: armado.total }));
+        guardarQty(it, armado.total);
+        setRepartiendo(null);
+        const partes = armado.asignacion.length > 1
+            ? armado.asignacion.map(p => `${p.destino} × ${fmtInt(p.qty)}`).join(' · ')
+            : `todo a ${armado.asignacion[0].destino}`;
+        onAviso(`«${it.name}»: ${partes}.`);
     };
 
     const pasarAEncargados = async () => {
@@ -134,7 +188,8 @@ export default function ArmarPedido({
         onError(null);
         let ok = 0;
         for (const it of tildados) {
-            const qty = Number(qtys[it.id]);
+            // El encargado lleva la cantidad total, aunque esté repartida entre proveedores
+            const qty = totalDe(it);
             const res = await api.patch(`/reposicion/${it.id}`, {
                 estado: 'encargado',
                 qty_decidida: Number.isInteger(qty) && qty >= 0 ? qty : undefined,
@@ -155,7 +210,7 @@ export default function ArmarPedido({
 
     const pdf = async () => {
         const lista = tildados
-            .map(it => ({ ...it, qty: Number(qtys[it.id]) }))
+            .map(it => ({ ...it, qty: qtyAca(it) }))
             .filter(it => it.qty > 0);
         if (!lista.length) { onError('Tildá al menos un producto con cantidad'); return; }
         setGenerandoPdf('tildados');
@@ -170,8 +225,8 @@ export default function ArmarPedido({
     };
 
     // Las listas no dependen de lo tildado: van con la cantidad que se ve en pantalla (nota 161)
-    const listas = useMemo(() => listasParaPdf(items, lados, qtys), [items, lados, qtys]);
-    const listaAbierta = useMemo(() => listaDelProveedor(items, proveedor, lados, qtys), [items, proveedor, lados, qtys]);
+    const listas = useMemo(() => listasParaPdf(items, asignaciones, qtys), [items, asignaciones, qtys]);
+    const listaAbierta = useMemo(() => listaDelProveedor(items, proveedor, asignaciones, qtys), [items, proveedor, asignaciones, qtys]);
 
     const pdfLista = async () => {
         setGenerandoPdf('lista');
@@ -210,10 +265,10 @@ export default function ArmarPedido({
         </Button>
     );
 
-    const linkDe = (it) => {
-        const of = ofertaElegida(it, lados[it.id]);
-        return of?.url || acceso.sitio || null;
-    };
+    // La oferta del proveedor que se está mirando
+    const candidatoAca = (it) => candidatosDe(it).find(c => c.nombre === proveedor) || null;
+
+    const linkDe = (it) => candidatoAca(it)?.url || acceso.sitio || null;
 
     const borde = `1px solid ${t.color.border}`;
     const solapas = [
@@ -252,7 +307,7 @@ export default function ArmarPedido({
                 ) : (
                     <div style={{ padding: '12px 14px', borderBottom: borde }}>
                         <div style={{ fontSize: t.font.size.sm, fontWeight: t.font.weight.semibold, color: t.color.text, fontFamily: t.font.family }}>A quién se le pide</div>
-                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 8 }}>Más barato, o el principal</div>
+                        <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 8 }}>Más barato, el principal o el que elijas</div>
                         {botonTodas}
                     </div>
                 )}
@@ -260,7 +315,7 @@ export default function ArmarPedido({
                     const activo = g.nombre === proveedor;
                     const acc = accesoDe(g.nombre, accesos);
                     const nClientes = esperas.size
-                        ? items.filter(it => esperas.has(it.odoo_id) && destinoDe(it, lados[it.id]) === g.nombre).length
+                        ? items.filter(it => esperas.has(it.odoo_id) && vaA(it, g.nombre, asignaciones[it.id])).length
                         : 0;
                     return (
                         <button
@@ -353,12 +408,29 @@ export default function ArmarPedido({
                     {visibles.map(it => {
                         const asignado = estaVinculado(it);
                         const barata = ofertaMasBarata(it);
-                        const enPrincipal = !barata || lados[it.id] === 'principal';
-                        const of = ofertaElegida(it, lados[it.id]);
-                        const precio = of?.precio ?? it.standard_price;
-                        const precioPrincipal = (it.ofertas?.ofertas || []).find(o => o.es_principal && Number(o.precio) > 0)?.precio ?? it.standard_price;
+                        const candidatos = candidatosDe(it);
+                        const aca = candidatoAca(it);
+                        const precio = aca?.precio ?? it.standard_price;
+                        const etiqueta = !aca || aca.es_principal
+                            ? (barata ? 'principal' : 'principal, sin más barato')
+                            : aca.mas_barato ? 'más económico' : 'otro proveedor';
+                        // Vinculado, pero la web de este proveedor lo da sin stock
+                        const noDisponible = asignado && aca && !aca.disponible;
+                        const asig = asignaciones[it.id];
+                        const repartido = estaRepartido(asig);
+                        const enReparto = repartiendo?.id === it.id;
                         const href = asignado ? linkDe(it) : null;
                         const elegido = !!elegidos[it.id];
+                        const linkChico = {
+                            border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+                            color: t.color.primary, fontSize: t.font.size.xs, fontFamily: t.font.family, textAlign: 'left',
+                        };
+                        const textoCandidato = (c) => [
+                            c.nombre,
+                            c.precio != null ? fmtAR(c.precio) : 'sin precio',
+                            c.es_principal ? 'principal' : c.mas_barato ? 'más económico' : null,
+                            c.disponible ? null : 'no disponible',
+                        ].filter(Boolean).join(' · ');
                         return (
                             <div key={it.id} style={{
                                 display: 'flex', alignItems: 'center', gap: 12,
@@ -377,6 +449,7 @@ export default function ArmarPedido({
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                         <span style={{ fontWeight: t.font.weight.medium, color: t.color.text, fontSize: t.font.size.sm, fontFamily: t.font.family }}>{it.name}</span>
                                         <Badge tone={asignado ? 'success' : 'warn'}>{asignado ? 'Asignado' : 'Sin asignar'}</Badge>
+                                        {noDisponible && <Badge tone="danger">No disponible</Badge>}
                                     </div>
                                     {esperas.has(it.odoo_id) && (
                                         <div
@@ -389,18 +462,74 @@ export default function ArmarPedido({
                                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginTop: 2 }}>
                                         <span style={{ fontFamily: t.font.mono }}>{it.internal_ref || it.barcode || '—'}</span>
                                         {' · '}
-                                        {enPrincipal ? (barata ? 'principal' : 'principal, sin más barato') : 'más económico'}
-                                        {precio != null && <> · {fmtAR(precio)}</>}
+                                        {etiqueta}
+                                        {precio != null && <span style={t.numericStyle}> · {fmtAR(precio)}</span>}
                                     </div>
-                                    {barata && (
-                                        <button type="button" onClick={() => mover(it)} style={{
-                                            border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-                                            color: t.color.primary, fontSize: t.font.size.xs, fontFamily: t.font.family, textAlign: 'left',
-                                        }}>
-                                            {enPrincipal
-                                                ? `Volver al más económico · ${barata.proveedor_odoo || barata.proveedor} · ${fmtAR(barata.precio)}`
-                                                : `Enviar al principal · ${proveedorPrincipal(it)} · ${fmtAR(precioPrincipal)}`}
-                                        </button>
+                                    {repartido && !enReparto && (
+                                        <div style={{ fontSize: t.font.size.xs, color: t.color.text, fontFamily: t.font.family, marginTop: 2, ...t.numericStyle }}>
+                                            Repartido: {partesDe(it, asig, qtys[it.id]).map(p => `${p.destino} × ${fmtInt(p.qty)}`).join(' · ')}
+                                        </div>
+                                    )}
+                                    {candidatos.length > 1 && !enReparto && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+                                            {!repartido && (
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
+                                                    Pedir a
+                                                    <select
+                                                        value={proveedor}
+                                                        onChange={e => mandarA(it, e.target.value)}
+                                                        aria-label={`Proveedor para ${it.name}`}
+                                                        style={{
+                                                            maxWidth: 280, padding: '2px 6px', border: borde, borderRadius: t.radius.sm,
+                                                            background: t.color.surface, color: t.color.text,
+                                                            fontFamily: t.font.family, fontSize: t.font.size.xs,
+                                                        }}
+                                                    >
+                                                        {candidatos.map(c => (
+                                                            <option key={c.nombre} value={c.nombre}>{textoCandidato(c)}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                            )}
+                                            <button type="button" onClick={() => abrirReparto(it)} style={linkChico}
+                                                title="Pedir una parte a un proveedor y otra parte a otro">
+                                                {repartido ? 'Cambiar reparto' : 'Repartir entre proveedores'}
+                                            </button>
+                                        </div>
+                                    )}
+                                    {enReparto && (
+                                        <div style={{ marginTop: 6, padding: 8, border: borde, borderRadius: t.radius.sm, background: t.color.surface2 }}>
+                                            <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family, marginBottom: 4 }}>
+                                                Cuánto le pedís a cada uno (en cero no se le pide)
+                                            </div>
+                                            {candidatos.map(c => (
+                                                <div key={c.nombre} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+                                                    <span style={{ flex: 1, minWidth: 0, fontSize: t.font.size.xs, color: c.disponible ? t.color.text : t.color.danger, fontFamily: t.font.family, ...t.numericStyle }}>
+                                                        {textoCandidato(c)}
+                                                    </span>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        step={1}
+                                                        value={repartiendo.cantidades[c.nombre] ?? ''}
+                                                        aria-label={`Cantidad para ${c.nombre}`}
+                                                        onChange={e => {
+                                                            const v = e.target.value;
+                                                            setRepartiendo(prev => ({ ...prev, cantidades: { ...prev.cantidades, [c.nombre]: v } }));
+                                                        }}
+                                                        style={{
+                                                            width: 56, padding: '2px 6px', border: borde, borderRadius: t.radius.sm,
+                                                            textAlign: 'right', fontFamily: t.font.family, fontSize: t.font.size.xs,
+                                                            background: t.color.surface, color: t.color.text, ...t.numericStyle,
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                                                <Button size="sm" variant="primary" onClick={() => aplicarReparto(it)}>Listo</Button>
+                                                <Button size="sm" variant="ghost" onClick={() => setRepartiendo(null)}>Cancelar</Button>
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                                 {asignado && href && (
@@ -411,19 +540,21 @@ export default function ArmarPedido({
                                 {asignado && !href && acceso.tipo === 'pdf' && (
                                     <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>Entra al PDF</span>
                                 )}
-                                {!asignado && (
-                                    <Button size="sm" variant="secondary" leftIcon={<Icon.Link size={12} />} onClick={() => onVincular(it)}>
-                                        Vincular
-                                    </Button>
-                                )}
+                                {/* Aunque ya esté asignado se pueden sumar o cambiar proveedores (nota 187) */}
+                                <Button size="sm" variant={asignado ? 'ghost' : 'secondary'} leftIcon={<Icon.Link size={12} />}
+                                    title={asignado ? 'Sumar otro proveedor o cambiar los vínculos' : undefined}
+                                    onClick={() => onVincular(it)}>
+                                    {asignado ? 'Vínculos' : 'Vincular'}
+                                </Button>
                                 <input
                                     type="number"
                                     min={0}
                                     step={1}
-                                    value={qtys[it.id] ?? ''}
-                                    aria-label={`Cantidad de ${it.name}`}
-                                    onChange={e => setQtys(prev => ({ ...prev, [it.id]: e.target.value }))}
-                                    onBlur={() => guardarQty(it)}
+                                    value={repartido ? (asig.find(p => p.destino === proveedor)?.qty ?? '') : (qtys[it.id] ?? '')}
+                                    aria-label={repartido ? `Cantidad de ${it.name} para ${proveedor}` : `Cantidad de ${it.name}`}
+                                    title={repartido ? `Lo que se le pide a ${proveedor}. Total: ${fmtInt(totalDe(it))}` : undefined}
+                                    onChange={e => cambiarQty(it, e.target.value)}
+                                    onBlur={() => salirDeQty(it)}
                                     style={{
                                         width: 64, padding: '4px 6px', border: borde, borderRadius: t.radius.sm,
                                         textAlign: 'right', fontFamily: t.font.family, fontSize: t.font.size.sm,
@@ -444,7 +575,7 @@ export default function ArmarPedido({
                         <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                             {tildados.length === 0
                                 ? 'Todavía no tildaste nada de este proveedor.'
-                                : tildados.map(it => `${qtys[it.id] || 0} × ${it.name}`).join(' · ')}
+                                : tildados.map(it => `${qtyAca(it) || 0} × ${it.name}`).join(' · ')}
                         </div>
                     </div>
                     <Button size="sm" variant="secondary" leftIcon={<Icon.FileText size={13} />} disabled={!!generandoPdf} onClick={pdf}

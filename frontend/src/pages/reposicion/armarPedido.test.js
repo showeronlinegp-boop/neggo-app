@@ -45,7 +45,7 @@ const suelto = item({ id: 3, vendor_name: 'Alif', ofertas: null });
 assert.equal(estaVinculado(espejo), true);
 assert.equal(estaVinculado(suelto), false);
 assert.equal(destinoDe(espejo), 'Babu');
-assert.equal(destinoDe(espejo, 'principal'), 'Alif');
+assert.equal(destinoDe(espejo, [{ destino: 'Alif', qty: null }]), 'Alif');
 assert.equal(destinoDe(batidora), 'Alif');
 assert.equal(destinoDe(suelto), 'Alif');
 
@@ -72,8 +72,8 @@ const qtysPdf = { 1: 5, 2: 2, 3: '3', 4: 0 };
 
 assert.deepEqual(listaDelProveedor(paraPdf, 'Alif', {}, qtysPdf).map(i => [i.name, i.qty]), [['Agenda', 2], ['Birome', 3]]);
 // Si se manda al principal, sale en la lista del principal y no en la del más barato
-assert.deepEqual(listaDelProveedor(paraPdf, 'Alif', { 1: 'principal' }, qtysPdf).map(i => i.name), ['Agenda', 'Birome', 'Zapatilla']);
-assert.deepEqual(listaDelProveedor(paraPdf, 'Babu', { 1: 'principal' }, qtysPdf), []);
+assert.deepEqual(listaDelProveedor(paraPdf, 'Alif', { 1: [{ destino: 'Alif', qty: null }] }, qtysPdf).map(i => i.name), ['Agenda', 'Birome', 'Zapatilla']);
+assert.deepEqual(listaDelProveedor(paraPdf, 'Babu', { 1: [{ destino: 'Alif', qty: null }] }, qtysPdf), []);
 // Cantidad vacía o sin cargar: no entra
 assert.deepEqual(listaDelProveedor([aLaAlif, otraAlif], 'Alif', {}, { 2: '' }), []);
 
@@ -85,3 +85,34 @@ assert.equal(nombreEnZip('ALIF', usados), 'ALIF (2).pdf');
 assert.equal(nombreEnZip('A/B: Ñandú', usados), 'A-B- Ñandú.pdf');
 
 console.log('armarPedido ok');
+
+// Nota 187: elegir cualquier proveedor vinculado y repartir la cantidad
+import { candidatosDe, armarReparto, qtyEn, estaRepartido } from './pedidoDestino.js';
+const caro = { proveedor: 'Caro', proveedor_odoo: 'Caro', precio: 9000, disponible: false, es_principal: false, url: 'https://caro.example/e' };
+const tres = item({ id: 5, name: 'Joystick', ofertas: { conviene: { proveedor: 'Babu' }, mas_economico: babu, ofertas: [babu, alif, caro] } });
+const cands = candidatosDe(tres);
+assert.deepEqual(cands.map(c => [c.nombre, c.precio, c.disponible, c.es_principal, c.mas_barato]), [
+    ['Alif', 7904, true, true, false],
+    ['Babu', 5884, true, false, true],
+    ['Caro', 9000, false, false, false],
+]);
+// Sin ofertas: solo el principal, con el costo de Odoo
+assert.deepEqual(candidatosDe(item({ id: 6, standard_price: 100 })).map(c => [c.nombre, c.precio]), [['Alif', 100]]);
+// Mandarlo entero a uno que no es el más barato
+assert.equal(destinoDe(tres, [{ destino: 'Caro', qty: null }]), 'Caro');
+assert.equal(qtyEn(tres, 'Caro', [{ destino: 'Caro', qty: null }], 4), 4);
+// Repartir: sale en las dos listas con su parte
+const rep = armarReparto({ Alif: '3', Babu: 2, Caro: '' });
+assert.deepEqual(rep, { asignacion: [{ destino: 'Alif', qty: 3 }, { destino: 'Babu', qty: 2 }], total: 5 });
+assert.equal(estaRepartido(rep.asignacion), true);
+const asigRep = { 5: rep.asignacion };
+assert.deepEqual(listaDelProveedor([tres], 'Alif', asigRep, { 5: 5 }).map(i => i.qty), [3]);
+assert.deepEqual(listaDelProveedor([tres], 'Babu', asigRep, { 5: 5 }).map(i => i.qty), [2]);
+const gRep = proveedoresDelPedido([tres], asigRep);
+assert.equal(gRep.find(g => g.nombre === 'Alif').n, 1);
+assert.equal(gRep.find(g => g.nombre === 'Babu').n, 1);
+// Uno solo con cantidad: va todo ahí; todo en cero: nada
+assert.deepEqual(armarReparto({ Alif: 0, Babu: '4' }), { asignacion: [{ destino: 'Babu', qty: null }], total: 4 });
+assert.equal(armarReparto({ Alif: '', Babu: 0 }), null);
+
+console.log('armarPedido nota 187 ok');

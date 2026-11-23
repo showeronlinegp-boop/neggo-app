@@ -1,6 +1,7 @@
 // A qué proveedor va cada pendiente al armar el pedido.
 // Si hay una oferta vinculada más barata que la del principal, entra ahí.
 // Si no, queda en el proveedor de Odoo. Sin ofertas confirmadas, no está vinculado.
+// Desde la nota 187 se puede mandar a cualquier proveedor vinculado o repartir la cantidad.
 
 export function claveNombre(nombre) {
     return String(nombre || '').trim().toLocaleLowerCase('es');
@@ -22,22 +23,109 @@ export function proveedorPrincipal(it) {
     return nombre || 'Sin proveedor';
 }
 
-export function ofertaElegida(it, lado) {
+/** Oferta del proveedor principal, si tiene precio. */
+function ofertaPrincipal(it) {
+    const ofs = (it.ofertas?.ofertas || []).filter(o => o.es_principal && Number(o.precio) > 0);
+    return ofs.find(o => o.disponible !== false) || ofs[0] || null;
+}
+
+/**
+ * A quién se le puede pedir el producto (nota 187): el principal de Odoo y cada proveedor
+ * con una oferta vinculada, aunque no sea más barato. Uno por proveedor, con su mejor oferta.
+ * @returns {Array<{ nombre, precio, url, disponible, es_principal, mas_barato }>}
+ */
+export function candidatosDe(it) {
+    const nombrePrincipal = proveedorPrincipal(it);
     const barata = ofertaMasBarata(it);
-    if (barata && lado !== 'principal') return barata;
-    const principal = (it.ofertas?.ofertas || []).find(o => o.es_principal && o.disponible !== false && Number(o.precio) > 0);
-    return principal || null;
-}
-
-export function destinoDe(it, lado) {
-    const elegida = ofertaElegida(it, lado);
-    if (elegida && ofertaMasBarata(it) && lado !== 'principal') {
-        return elegida.proveedor_odoo || elegida.proveedor;
+    const op = ofertaPrincipal(it);
+    const principal = {
+        nombre: nombrePrincipal,
+        precio: op ? Number(op.precio) : (Number(it.standard_price) > 0 ? Number(it.standard_price) : null),
+        url: op?.url || null,
+        disponible: op ? op.disponible !== false : true,
+        es_principal: true,
+        mas_barato: false,
+    };
+    const lista = [principal];
+    const vistos = new Set([claveNombre(nombrePrincipal)]);
+    // Ya vienen ordenadas: disponibles primero y de menor a mayor precio
+    for (const o of it.ofertas?.ofertas || []) {
+        if (!(Number(o.precio) > 0)) continue;
+        const nombre = o.proveedor_odoo || o.proveedor;
+        if (vistos.has(claveNombre(nombre))) continue;
+        vistos.add(claveNombre(nombre));
+        lista.push({
+            nombre,
+            precio: Number(o.precio),
+            url: o.url || null,
+            disponible: o.disponible !== false,
+            es_principal: false,
+            mas_barato: !!barata && claveNombre(barata.proveedor_odoo || barata.proveedor) === claveNombre(nombre),
+        });
     }
-    return proveedorPrincipal(it);
+    return lista;
 }
 
-export function proveedoresDelPedido(items, lados = {}) {
+/** Sin tocar nada: al más económico si conviene, si no al principal. */
+export function destinoPorDefecto(it) {
+    const barata = ofertaMasBarata(it);
+    return barata ? (barata.proveedor_odoo || barata.proveedor) : proveedorPrincipal(it);
+}
+
+/**
+ * En qué proveedores queda el producto y cuánto va a cada uno.
+ * asignacion: undefined (por defecto) o [{ destino, qty }]; con un solo destino va toda la cantidad.
+ */
+export function partesDe(it, asignacion, qtyTotal) {
+    const total = Number(qtyTotal);
+    if (!Array.isArray(asignacion) || asignacion.length === 0) {
+        return [{ destino: destinoPorDefecto(it), qty: total }];
+    }
+    if (asignacion.length === 1) return [{ destino: asignacion[0].destino, qty: total }];
+    return asignacion.map(p => ({ destino: p.destino, qty: Number(p.qty) || 0 }));
+}
+
+export function destinosDe(it, asignacion) {
+    return [...new Set(partesDe(it, asignacion, 0).map(p => p.destino))];
+}
+
+/** Proveedor del producto (el primero, si está repartido). */
+export function destinoDe(it, asignacion) {
+    return destinosDe(it, asignacion)[0];
+}
+
+export function vaA(it, proveedor, asignacion) {
+    return destinosDe(it, asignacion).includes(proveedor);
+}
+
+/** Cantidad que se le pide a ese proveedor. */
+export function qtyEn(it, proveedor, asignacion, qtyTotal) {
+    return partesDe(it, asignacion, qtyTotal)
+        .filter(p => p.destino === proveedor)
+        .reduce((s, p) => s + (Number.isFinite(p.qty) ? p.qty : 0), 0);
+}
+
+export function estaRepartido(asignacion) {
+    return Array.isArray(asignacion) && new Set(asignacion.map(p => p.destino)).size > 1;
+}
+
+/**
+ * Normaliza lo que se cargó en «Repartir»: saca los que quedaron en cero.
+ * Si queda uno solo, va todo ahí. Devuelve { asignacion, total } o null si no quedó nada.
+ */
+export function armarReparto(cantidades) {
+    const partes = [];
+    for (const [destino, q] of Object.entries(cantidades || {})) {
+        const n = Number(q);
+        if (Number.isInteger(n) && n > 0) partes.push({ destino, qty: n });
+    }
+    if (partes.length === 0) return null;
+    const total = partes.reduce((s, p) => s + p.qty, 0);
+    if (partes.length === 1) return { asignacion: [{ destino: partes[0].destino, qty: null }], total };
+    return { asignacion: partes, total };
+}
+
+export function proveedoresDelPedido(items, asignaciones = {}) {
     const grupos = new Map();
     const asegurar = (nombre) => {
         const key = nombre || 'Sin proveedor';
@@ -45,28 +133,29 @@ export function proveedoresDelPedido(items, lados = {}) {
         return grupos.get(key);
     };
     for (const it of items) {
-        const destino = destinoDe(it, lados[it.id]);
-        const g = asegurar(destino);
-        g.n += 1;
-        if (!estaVinculado(it)) g.sin += 1;
+        for (const destino of destinosDe(it, asignaciones[it.id])) {
+            const g = asegurar(destino);
+            g.n += 1;
+            if (!estaVinculado(it)) g.sin += 1;
+        }
         if (ofertaMasBarata(it)) asegurar(proveedorPrincipal(it));
     }
     return [...grupos.values()].sort((a, b) => b.n - a.n || a.nombre.localeCompare(b.nombre, 'es'));
 }
 
 /** Lo que sale en el PDF de la lista: todo lo del proveedor con la cantidad en pantalla, sin los que están en cero. */
-export function listaDelProveedor(items, proveedor, lados = {}, qtys = {}) {
+export function listaDelProveedor(items, proveedor, asignaciones = {}, qtys = {}) {
     return items
-        .filter(it => destinoDe(it, lados[it.id]) === proveedor)
-        .map(it => ({ ...it, qty: Number(qtys[it.id]) }))
+        .filter(it => vaA(it, proveedor, asignaciones[it.id]))
+        .map(it => ({ ...it, qty: qtyEn(it, proveedor, asignaciones[it.id], qtys[it.id]) }))
         .filter(it => it.qty > 0)
         .sort((a, b) => String(a.name).localeCompare(String(b.name), 'es'));
 }
 
 /** Una lista por proveedor; los que se quedaron sin nada para pedir no generan PDF. */
-export function listasParaPdf(items, lados = {}, qtys = {}) {
-    return proveedoresDelPedido(items, lados)
-        .map(g => ({ proveedor: g.nombre, items: listaDelProveedor(items, g.nombre, lados, qtys) }))
+export function listasParaPdf(items, asignaciones = {}, qtys = {}) {
+    return proveedoresDelPedido(items, asignaciones)
+        .map(g => ({ proveedor: g.nombre, items: listaDelProveedor(items, g.nombre, asignaciones, qtys) }))
         .filter(l => l.items.length > 0);
 }
 
