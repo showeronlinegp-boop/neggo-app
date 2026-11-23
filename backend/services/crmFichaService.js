@@ -657,6 +657,11 @@ async function baseDeChats(db, ahora) {
     return baseCache.datos;
 }
 
+/** Descarta la lista guardada: después de marcar un chat como proveedor o asignarlo a un cliente (nota 232). */
+function olvidarChats() {
+    baseCache = { at: 0, datos: null };
+}
+
 /** Chats cuyo texto de la semana tiene `q` (para el buscador). */
 async function chatsConTexto(jids, q, db) {
     if (!jids.length || !q) return new Set();
@@ -777,4 +782,5 @@ module.exports = {
     contactosParecidos,
     cotizar,
     contactos,
+    olvidarChats,
 };
