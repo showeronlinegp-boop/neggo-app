@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import api from '../../api/client';
 import { useTheme } from '../../theme/ThemeContext';
 import { useToast } from '../../context/ToastContext';
@@ -29,6 +29,8 @@ const FILTROS = [
 const PAGE = 60;
 const REFRESCO_LISTA_MS = 60 * 1000;
 const REFRESCO_CHAT_MS = 30 * 1000;
+// Alto mínimo en compu: en pantallas más bajas scrollea la página entera
+const ALTO_MIN_PX = 320;
 
 function horaLista(iso) {
     if (!iso) return '';
@@ -102,14 +104,30 @@ export default function Chats() {
         else setVerFicha((v) => !v);
     };
 
-    const alto = isMobile ? 'calc(100dvh - 170px)' : 'calc(100vh - 230px)';
+    // En compu ocupa justo lo que queda del <main> debajo de las pestañas, así no scrollea la página
+    // (nota #223). Se mide en cada render y al cambiar la ventana.
+    const [altoPx, setAltoPx] = useState(null);
+    const medirAlto = useCallback(() => {
+        const main = caja.current?.closest('[data-app-main]');
+        if (isMobile || !main) { setAltoPx(null); return; }
+        const top = caja.current.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+        const padAbajo = parseFloat(getComputedStyle(main).paddingBottom) || 0;
+        const px = Math.max(ALTO_MIN_PX, Math.floor(main.clientHeight - top - padAbajo));
+        setAltoPx((prev) => (prev === px ? prev : px));
+    }, [isMobile]);
+    useLayoutEffect(() => { medirAlto(); });
+    useEffect(() => {
+        window.addEventListener('resize', medirAlto);
+        return () => window.removeEventListener('resize', medirAlto);
+    }, [medirAlto]);
+    const alto = isMobile ? 'calc(100dvh - 170px)' : (altoPx ?? 'calc(100vh - 230px)');
     const verLista = !isMobile || panel === 'lista';
     const verChat = !isMobile || panel === 'chat';
     const verPanelFicha = abierto && (isMobile ? panel === 'ficha' : verFicha);
 
     return (
         <div ref={caja} style={{
-            position: 'relative', display: 'flex', height: alto, minHeight: 480, fontFamily: t.font.family, color: t.color.text,
+            position: 'relative', display: 'flex', height: alto, minHeight: isMobile ? 480 : ALTO_MIN_PX, boxSizing: 'border-box', fontFamily: t.font.family, color: t.color.text,
             background: t.color.surface, border: `1px solid ${t.color.border}`, borderRadius: t.radius.lg, overflow: 'hidden',
         }}>
             {verLista && (
