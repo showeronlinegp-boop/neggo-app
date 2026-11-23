@@ -7,6 +7,7 @@ const { getProductsToSync, applyChanges, getResumen, rechazarVinculo, actualizar
 const { recomputeAll, isRecomputing } = require('../services/preventasMatchService');
 const { iniciarAsignacion, getEstadoAsignacion } = require('../services/preventasVendorService');
 const { iniciarFotos, frenarFotos, getEstadoFotos } = require('../services/preventasFotosService');
+const { ESTADOS_ARCHIVAN } = require('../services/preventasSyncGuards');
 
 // Estado del apply masivo en background
 let bulkApplyJob = { running: false, result: null, error: null, startedAt: null, finishedAt: null };

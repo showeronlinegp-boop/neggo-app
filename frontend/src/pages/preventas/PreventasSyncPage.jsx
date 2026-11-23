@@ -9,6 +9,7 @@ import Button from '../../components/common/Button';
 import Input from '../../components/common/Input';
 import Select from '../../components/common/Select';
 import * as Icon from '../../components/common/icons';
+import PendingCategoriesModal from '../suppliers/PendingCategoriesModal';
 
 // ─── Estados del sync: cómo se nombran y con qué tono se muestran ──────────────
 const ESTADO_INFO = {
@@ -19,6 +20,7 @@ const ESTADO_INFO = {
     publicar:        { label: 'Publicar en la web',          tone: 'primary' },
     categoria:       { label: 'Completar categoría',         tone: 'primary' },
     inactivar:       { label: 'Sin stock en el proveedor',   tone: 'danger' },
+    sin_foto:        { label: 'Sin foto',                    tone: 'danger' },
     solo_odoo:       { label: 'No está en el proveedor',     tone: 'danger' },
     fuera_preventas: { label: 'Proveedor no va a Preventas', tone: 'danger' },
     sin_cambios:     { label: 'Al día',                      tone: 'muted' },
@@ -40,7 +42,7 @@ const VINCULO_INFO = {
 };
 
 const ACCION_LABEL = {
-    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', categoria: 'Completar categoría', inactivar: 'Archivar',
+    solo_scraper: 'Crear y publicar', activar: 'Activar y publicar', publicar: 'Publicar', categoria: 'Completar categoría', inactivar: 'Archivar', sin_foto: 'Archivar',
     precio_sube: 'Actualizar precio', precio_baja: 'Actualizar precio',
     solo_odoo: 'Archivar', fuera_preventas: 'Archivar', sin_cambios: null, sin_fuente: null,
 };
@@ -54,6 +56,8 @@ const URL_FOTO_ODOO = (templateId, size) => {
     const v = versionFotoOdoo.get(templateId);
     return `/api/products/odoo-image/preventas/${templateId}?size=${size}${v ? `&v=${v}` : ''}`;
 };
+// Foto del producto de Neggo vinculado a la oferta (nota 203)
+const URL_FOTO_NEGGO = (templateId, size) => `/api/products/odoo-image/neggo/${templateId}?size=${size}`;
 // Se puede pisar la foto de Odoo con la del proveedor: la oferta está vinculada y tiene foto
 const puedeActualizarFoto = (row) => !!(row.supplier_product_id && row.odoo_template_id && row.image_url);
 
@@ -103,6 +107,9 @@ function FotosFila({ t, row, onActualizar }) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[1], flexShrink: 0 }}>
             <div style={{ display: 'flex', gap: t.space[2] }}>
                 <FotoMini t={t} src={row.image_url || null} etiqueta="Proveedor" vacio="El proveedor no tiene foto" />
+                {row.neggo_foto_template_id && (
+                    <FotoMini t={t} src={URL_FOTO_NEGGO(row.neggo_foto_template_id, 128)} etiqueta="Neggo" vacio="Foto del producto de Neggo vinculado" />
+                )}
                 <FotoMini t={t} src={fotoOdoo} etiqueta="Odoo" vacio={row.odoo_template_id ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
             </div>
             {onActualizar && puedeActualizarFoto(row) && (
@@ -136,6 +143,11 @@ function FotosComparadas({ t, detail, notaAlAplicar = true }) {
     return (
         <div style={{ display: 'flex', gap: t.space[5], flexWrap: 'wrap' }}>
             <FotoCaja t={t} titulo="Foto del proveedor" src={fotoProveedor} vacio="El proveedor no tiene foto" nota={notaProveedor} />
+            {detail.neggo_foto_template_id && (
+                <FotoCaja t={t} titulo="Foto en Neggo" src={URL_FOTO_NEGGO(detail.neggo_foto_template_id, 512)}
+                    grande={URL_FOTO_NEGGO(detail.neggo_foto_template_id, 1920)} vacio="No se pudo cargar la foto de Neggo"
+                    nota={'Del producto de Neggo vinculado: se sube con "Subir fotos que faltan".'} />
+            )}
             <FotoCaja t={t} titulo="Foto actual en Odoo" src={fotoOdoo} grande={fotoOdooGrande} vacio={enOdoo ? 'Sin foto en Odoo' : 'Todavía no está en Odoo'} />
         </div>
     );
@@ -147,13 +159,15 @@ const GRUPO_ESTADOS = {
     precio:     ['precio_sube', 'precio_baja'],
     publicar:   ['publicar'],
     categoria:  ['categoria'],
-    inactivar:  ['inactivar', 'solo_odoo', 'fuera_preventas'],
+    inactivar:  ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'],
     al_dia:     ['sin_cambios', 'sin_fuente'],
 };
-const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'categoria', 'inactivar', 'solo_odoo', 'fuera_preventas'];
+const ACCIONABLES  = ['solo_scraper', 'precio_sube', 'precio_baja', 'activar', 'publicar', 'categoria', 'inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'];
 // Motivo de bloqueo por falta de categoría (preventasSyncGuards.motivoSinCategoria, nota 200)
 const esSinCategoria = motivo => /^Falta la categoría/.test(motivo || '');
-const INACTIVACION = ['inactivar', 'solo_odoo', 'fuera_preventas'];
+// Motivo de bloqueo por falta de foto (preventasSyncGuards.motivoSinFoto, nota 203)
+const esSinFoto = motivo => /^Sin foto/.test(motivo || '');
+const INACTIVACION = ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'];
 
 // Las tarjetas de arriba: cada una es una vista (filtro) de la tabla
 const VISTAS = [
@@ -163,8 +177,8 @@ const VISTAS = [
     { key: 'desarchivar', titulo: 'Activar y publicar', ayuda: 'Archivados en Odoo que el proveedor volvió a tener', tone: 'primary', icon: Icon.Package, filtro: { estado: 'activar' } },
     { key: 'publicar',    titulo: 'Publicar',       ayuda: 'Activos en Odoo y con stock que no se ven en la web', tone: 'primary', icon: Icon.Eye, filtro: { estado: 'publicar' } },
     { key: 'categoria',   titulo: 'Completar categoría', ayuda: 'Publicados sin categoría interna o web: se completa con la regla', tone: 'primary', icon: Icon.Tag, filtro: { estado: 'categoria' } },
-    { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
-      subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
+    { key: 'archivar',    titulo: 'Archivar',       ayuda: 'Activos en Odoo que el proveedor ya no tiene o que no tienen foto', tone: 'danger',  icon: Icon.Archive, filtro: { grupo: 'inactivar' },
+      subs: [{ key: 'inactivar', label: 'Sin stock en el proveedor' }, { key: 'sin_foto', label: 'Sin foto' }, { key: 'solo_odoo', label: 'No está en el proveedor' }, { key: 'fuera_preventas', label: 'Proveedor no va a Preventas' }] },
     { key: 'al_dia',      titulo: 'Al día',         ayuda: 'No hace falta tocar nada',                     tone: 'muted',   icon: Icon.Check,   filtro: { grupo: 'al_dia' },
       subs: [{ key: 'sin_cambios', label: 'Sin cambios' }, { key: 'sin_fuente', label: 'Sin proveedor activo (no se tocan)' }] },
 ];
@@ -307,6 +321,7 @@ function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCo
                     {fila('Vinculados por nombre parecido u otro código (no entran)', c.revision_vinculo, t.color.textMuted)}
                     {fila('Sin precio del proveedor (no se sincronizan)', c.sin_precio, t.color.textMuted)}
                     {fila('Sin categoría de Preventas (asignala en Proveedores)', c.sin_categoria, t.color.textMuted)}
+                    {fila('Sin foto del proveedor ni de Neggo (no se crean)', c.sin_foto, t.color.textMuted)}
                     {fila('Sin nada que hacer', c.sin_accion, t.color.textMuted)}
                 </div>
                 {archivaTodos && (
@@ -363,6 +378,8 @@ export default function PreventasSyncPage() {
     const [fotosProgreso, setFotosProgreso] = useState(null);
     const [frenandoFotos, setFrenandoFotos] = useState(false);
     const [confirmarFotos, setConfirmarFotos] = useState(false);
+    // Categorías pendientes abiertas desde el aviso de lo que no se crea (nota 220)
+    const [categoriasOpen, setCategoriasOpen] = useState(false);
     const wasFotosRef = useRef(false);
     const wasRunningRef = useRef(false);
     const wasApplyingRef = useRef(false);
@@ -503,6 +520,7 @@ export default function PreventasSyncPage() {
                     else if (result) {
                         const fallidos = result.fallidos.slice(0, 3).map(f => f.sku).join(', ');
                         const msg = `${result.frenado ? 'Frenado. ' : ''}Fotos subidas a Odoo: ${fmtN(result.subidas)}`
+                            + (result.de_neggo > 0 ? ` (${fmtN(result.de_neggo)} de Neggo)` : '')
                             + (result.ya_tenian > 0 ? `, ${fmtN(result.ya_tenian)} ya tenían` : '')
                             + (result.errores > 0 ? `, ${fmtN(result.errores)} no se pudieron (${fallidos}${result.errores > 3 ? '…' : ''})` : '');
                         showToast(msg, result.errores > 0 || result.frenado ? 'warning' : 'success');
@@ -650,14 +668,15 @@ export default function PreventasSyncPage() {
     const archivaSinProveedor = !supplierId && !vistaArchiva && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
     const archivaTodos = !supplierId && vistaArchiva;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
-    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0 } : aplicables;
+    const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
 
     // Lo mismo para la selección, con las filas tildadas
-    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_accion: 0 };
+    const seleccion = { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0, sin_categoria: 0, sin_foto: 0, sin_accion: 0 };
     for (const row of selected.values()) {
         if (!ACCION_LABEL[row.estado]) seleccion.sin_accion++;
         else if (row.bloqueo_motivo && esSinCategoria(row.bloqueo_motivo)) seleccion.sin_categoria++;
+        else if (row.bloqueo_motivo && esSinFoto(row.bloqueo_motivo)) seleccion.sin_foto++;
         else if (row.bloqueo_motivo) seleccion.sin_precio++;
         else if (row.revision_tipo === 'vinculo') seleccion.revision_vinculo++;
         else if (row.revision_tipo === 'costo') seleccion.revision_costo++;
@@ -874,7 +893,7 @@ export default function PreventasSyncPage() {
                                 } />
                         )}
                         {(resumen.sin_foto > 0 || subiendoFotos) && (
-                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: el proveedor tiene foto y Odoo no" tone="warn" icon={Icon.Image}
+                            <TarjetaVista t={t} titulo="Sin foto en Odoo" ayuda="Vinculados: Odoo no tiene foto y el proveedor o Neggo sí" tone="warn" icon={Icon.Image}
                                 count={resumen.sin_foto} activa={sinFoto} onClick={() => elegirVista('sin_foto')}
                                 extra={
                                     <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} style={{ marginTop: t.space[1] }}>
@@ -933,24 +952,37 @@ export default function PreventasSyncPage() {
                         Acá no se archiva nada en bloque. Para archivar, entrá en la tarjeta "Archivar" (todos los proveedores juntos o uno solo) o seleccioná productos.
                     </div>
                 )}
-                {/* Lo que no se aplica nunca, ni seleccionándolo (nota 202): que se vea sin abrir fila por fila */}
-                {selected.size === 0 && (bloque.sin_precio > 0 || bloque.sin_categoria > 0) && (
-                    <div style={{ padding: `${t.space[3]}px ${t.space[4]}px`, borderRadius: t.radius.md, background: t.color.surface2, border: `1px solid ${t.color.border}`, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.45, display: 'flex', flexDirection: 'column', gap: t.space[1] }}>
-                        {bloque.sin_precio > 0 && (
-                            <span>
-                                <strong style={t.numericStyle}>{fmtN(bloque.sin_precio)}</strong> {bloque.sin_precio === 1 ? 'producto no tiene' : 'productos no tienen'} precio del proveedor (en su web dice "Consultar precio" o viene en $0): no se {vistaDef?.key === 'crear' ? 'crean' : 'sincronizan'} hasta que el proveedor publique el precio y se vuelva a scrapear.
+                {/* Lo que no se aplica nunca, ni seleccionándolo (nota 202): que se vea sin abrir fila por fila.
+                    Cada motivo dice qué hacer para destrabarlo (nota 220) */}
+                {selected.size === 0 && (bloque.sin_precio > 0 || bloque.sin_categoria > 0 || bloque.sin_foto > 0) && (() => {
+                    const seCrean = vistaDef?.key === 'crear';
+                    const total = (bloque.sin_precio || 0) + (bloque.sin_categoria || 0) + (bloque.sin_foto || 0);
+                    const motivo = (n, singular, plural, queHacer, accion) => n > 0 && (
+                        <div style={{ display: 'flex', gap: t.space[3], alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                            <span style={{ flex: '1 1 320px' }}>
+                                <strong style={t.numericStyle}>{fmtN(n)}</strong> {n === 1 ? singular : plural}
+                                <span style={{ display: 'block', color: t.color.textMuted, fontSize: t.font.size.xs }}>{queHacer}</span>
                             </span>
-                        )}
-                        {bloque.sin_categoria > 0 && (
-                            <span>
-                                <strong style={t.numericStyle}>{fmtN(bloque.sin_categoria)}</strong> {bloque.sin_categoria === 1 ? 'producto no tiene' : 'productos no tienen'} categoría de Preventas: asignala en Proveedores → Categorías pendientes.
-                            </span>
-                        )}
-                        {enBloque === 0 && bloque.revision_vinculo === 0 && (
-                            <span style={{ color: t.color.textMuted, fontSize: t.font.size.xs }}>Por eso no aparece el botón para aplicar.</span>
-                        )}
-                    </div>
-                )}
+                            {accion}
+                        </div>
+                    );
+                    return (
+                        <div style={{ padding: `${t.space[3]}px ${t.space[4]}px`, borderRadius: t.radius.md, background: t.color.surface2, border: `1px solid ${t.color.border}`, fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family, lineHeight: 1.45, display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+                            {enBloque === 0 && bloque.revision_vinculo === 0 && (
+                                <span style={{ fontWeight: t.font.weight.semibold }}>
+                                    Todavía no se {seCrean ? 'puede crear' : 'puede aplicar'} ninguno: a {total === 1 ? 'este le falta' : <>estos <span style={t.numericStyle}>{fmtN(total)}</span> les falta</>} algo. Por eso no aparece el botón para aplicar.
+                                </span>
+                            )}
+                            {motivo(bloque.sin_categoria, 'no tiene categoría de Preventas', 'no tienen categoría de Preventas',
+                                'Asignale la categoría a cada categoría del proveedor y vuelven a aparecer listos acá.',
+                                <Button size="sm" variant="secondary" leftIcon={<Icon.Tag size={13} />} onClick={() => setCategoriasOpen(true)}>Asignar categorías</Button>)}
+                            {motivo(bloque.sin_precio, 'no tiene precio del proveedor', 'no tienen precio del proveedor',
+                                `En su web dice "Consultar precio" o viene en $0. No se ${seCrean ? 'crean' : 'sincronizan'} hasta que el proveedor publique el precio y se vuelva a scrapear.`)}
+                            {motivo(bloque.sin_foto, 'no tiene foto', 'no tienen foto',
+                                'Ni el proveedor ni el producto de Neggo tienen foto, y sin foto no se crean. Se destraban cuando el proveedor suba la foto (y se vuelva a scrapear) o cuando el producto de Neggo tenga foto en Odoo.')}
+                        </div>
+                    );
+                })()}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
                         {fmtN(bloque.revision_vinculo)} {bloque.revision_vinculo === 1 ? 'producto está vinculado' : 'productos están vinculados'} por nombre parecido o con otro código: no entran en el bloque, elegí en cada fila "Es este" o "No es este" (va como artículo nuevo).
@@ -1007,6 +1039,13 @@ export default function PreventasSyncPage() {
                 onConfirm={aplicarConfirmado}
             />
 
+            <PendingCategoriesModal
+                isOpen={categoriasOpen}
+                onClose={() => setCategoriasOpen(false)}
+                onChanged={() => fetchData()}
+                initialSupplierId={supplierId || null}
+            />
+
             {/* Confirmar "Subir fotos que faltan" (nota 182) */}
             <Modal
                 isOpen={confirmarFotos}
@@ -1022,7 +1061,7 @@ export default function PreventasSyncPage() {
                 }
             >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: t.space[3], fontSize: t.font.size.sm, color: t.color.text, fontFamily: t.font.family }}>
-                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor.</span>
+                    <span>A cada producto de Odoo Preventas que no tiene foto se le sube la del proveedor. Si el proveedor no tiene, se usa la del producto de Neggo vinculado.</span>
                     <span style={{ color: t.color.textMuted }}>Nunca reemplaza una foto que ya está: antes de subir, se fija en Odoo. Va de a una foto, así que con muchos productos tarda (unos 2.500 llevan cerca de una hora). Lo podés frenar cuando quieras.</span>
                     {!supplierId && <span style={{ color: t.color.textMuted }}>Para probar primero, elegí un proveedor arriba.</span>}
                 </div>

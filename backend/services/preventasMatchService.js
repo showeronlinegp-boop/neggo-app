@@ -507,6 +507,42 @@ async function getMaxDiasInactivar(client) {
     return Number.isFinite(dias) && dias > 0 ? dias : 7;
 }
 
+// ─── Sin foto en ningún lado (nota 203) ───────────────────────────────────────
+// Vinculado a un producto de Preventas sin foto en Odoo, y ni el proveedor ni el producto de Neggo
+// vinculado tienen una: si está activo se propone archivarlo ('sin_foto'); si está archivado no se
+// propone activarlo. Lo que se archiva por falta de stock ('inactivar') no cambia.
+// Una sola pasada con anti-joins (no subconsultas por fila): el recálculo ya es pesado.
+const SIN_FOTO_PASO_SQL = `
+WITH neggo_sin_foto AS (
+    SELECT template_id FROM odoo_products_cache
+    WHERE company = 'neggo' AND template_id IS NOT NULL
+    GROUP BY template_id HAVING NOT bool_or(has_image)
+)
+UPDATE preventas_sync_state pss
+SET estado = CASE WHEN opc.active THEN 'sin_foto' ELSE 'sin_cambios' END
+FROM supplier_products sp, suppliers s, odoo_products_cache opc
+WHERE sp.id = pss.supplier_product_id
+  AND s.id = sp.supplier_id AND s.va_a_preventas = true
+  AND opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
+  AND opc.has_image = false
+  AND ((opc.active = true AND pss.estado = ANY(ARRAY['publicar', 'categoria', 'sin_cambios', 'precio_sube', 'precio_baja']))
+       OR (opc.active = false AND pss.estado = 'activar'))
+  -- El proveedor no tiene foto: vacía, el cartel "sin foto" de su web, o la de Odoo Neggo que
+  -- allá tampoco existe (nota 201; si la caché no conoce el producto, cuenta como foto)
+  AND NOT (COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
+           AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$'
+                    AND EXISTS (SELECT 1 FROM neggo_sin_foto nf
+                                WHERE nf.template_id = substring(sp.image_url from '([0-9]+)$')::int)))
+  -- Ni un producto de Neggo con foto vinculado (confirmado) a la oferta
+  AND NOT EXISTS (
+      SELECT 1 FROM product_mappings pn
+      JOIN odoo_products_cache n ON n.odoo_id = pn.odoo_product_id AND n.company = 'neggo'
+      WHERE pn.supplier_product_id = pss.supplier_product_id
+        AND pn.odoo_company = 'neggo' AND pn.estado = 'confirmado'
+        AND n.has_image = true AND n.template_id IS NOT NULL
+  )
+`;
+
 // ─── Step 4: solo en scraper ──────────────────────────────────────────────────
 
 const SOLO_SCRAPER_SQL = `
@@ -619,6 +655,9 @@ async function recomputeAll(pool) {
 
         // Paso 3: código en {} / () — ÚLTIMO método, solo sobrantes
         await pasoOpcional('Bracket code matching', b(BRACKET_CODE_SQL));
+
+        // Sin foto en ningún lado: archivar en vez de activar o publicar (nota 203)
+        await client.query(b(SIN_FOTO_PASO_SQL));
 
         // Paso 4-5: solo_odoo y solo_scraper
         await client.query(b(SOLO_ODOO_SQL), [await getMaxDiasInactivar(client)]);

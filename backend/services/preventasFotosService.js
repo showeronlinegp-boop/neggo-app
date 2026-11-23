@@ -1,4 +1,5 @@
 // Subir fotos que faltan en Odoo Preventas (nota 182).
+// Si el proveedor no tiene foto, se usa la del producto de Neggo vinculado (nota 203).
 // Al aplicar, la foto del proveedor solo se sube si se crea el producto o si se aplica un cambio;
 // los "sin cambios" nunca la recibían. Esto recorre los vinculados cuyo producto de Odoo no tiene
 // foto y les sube la del proveedor. Nunca pisa una foto existente: antes de escribir pregunta a
@@ -6,7 +7,7 @@
 // devuelve 429 si se lo apura), y se puede frenar.
 const pool = require('../config/database');
 const { callOdoo, getCompanyIds } = require('../config/odoo');
-const { getImageBase64, SIN_FOTO_SQL } = require('./preventasSyncService');
+const { getImageBase64, SIN_FOTO_SQL, FOTO_PROVEEDOR_SQL, NEGGO_FOTO_SUBQ } = require('./preventasSyncService');
 const { olvidarFotoOdoo } = require('./odooImageService');
 const { fotoCompatibleBase64 } = require('./fotoFormato');
 
@@ -29,7 +30,9 @@ async function buscarSinFoto(db, supplierId) {
     const sid = supplierId ? parseInt(supplierId, 10) : null;
     const { rows } = await db.query(`
         SELECT DISTINCT ON (opc.template_id)
-            opc.template_id, pss.odoo_product_id, sp.image_url, sp.sku, sp.name
+            opc.template_id, pss.odoo_product_id, sp.image_url, sp.sku, sp.name,
+            ${FOTO_PROVEEDOR_SQL} AS foto_proveedor,
+            (${NEGGO_FOTO_SUBQ}) AS neggo_template_id
         FROM preventas_sync_state pss
         JOIN supplier_products sp ON sp.id = pss.supplier_product_id
         JOIN odoo_products_cache opc ON opc.odoo_id = pss.odoo_product_id AND opc.company = 'preventas'
@@ -71,7 +74,7 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
     const ctx = { allowed_company_ids: [preventasId] };
 
     const pendientes = await buscarSinFoto(db, supplierId);
-    const r = { total: pendientes.length, subidas: 0, ya_tenian: 0, errores: 0, frenado: false, fallidos: [] };
+    const r = { total: pendientes.length, subidas: 0, de_neggo: 0, ya_tenian: 0, errores: 0, frenado: false, fallidos: [] };
     const fallo = (p, motivo) => {
         r.errores++;
         if (r.fallidos.length < MAX_FALLIDOS) r.fallidos.push({ sku: p.sku, nombre: p.name, motivo });
@@ -101,10 +104,21 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
             if (debeFrenar()) { r.frenado = true; break; }
             try {
                 let base64 = null;
-                try { base64 = await leerFoto(p.image_url); } catch (err) { /* se informa abajo */ }
+                let deNeggo = false;
+                if (p.foto_proveedor !== false && p.image_url) {
+                    try { base64 = await leerFoto(p.image_url); } catch (err) { /* se informa abajo */ }
+                }
+                // Sin foto del proveedor (o no se pudo bajar): la del producto de Neggo vinculado
+                if (!base64 && p.neggo_template_id) {
+                    try { base64 = await leerFoto(`/api/products/odoo-image/neggo/${p.neggo_template_id}`); } catch (err) { /* se informa abajo */ }
+                    deNeggo = !!base64;
+                }
                 if (!base64) {
+                    let motivo = 'No se pudo descargar la foto del proveedor';
+                    if (p.neggo_template_id) motivo = 'No se pudo descargar la foto del proveedor ni la de Neggo';
                     // Si viene de Odoo Neggo y no llegó nada, es que allá tampoco tiene foto (nota 201)
-                    fallo(p, FOTO_NEGGO_RE.test(p.image_url || '') ? 'En Odoo Neggo tampoco tiene foto' : 'No se pudo descargar la foto del proveedor');
+                    else if (FOTO_NEGGO_RE.test(p.image_url || '')) motivo = 'En Odoo Neggo tampoco tiene foto';
+                    fallo(p, motivo);
                     continue;
                 }
                 // AVIF → JPG; si no es una foto, el error dice qué llegó (nota 183)
@@ -114,6 +128,7 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
                 await marcarConFoto(db, [p.template_id]);
                 olvidar('preventas', 'template', p.template_id);
                 r.subidas++;
+                if (deNeggo) r.de_neggo++;
                 await pausa();
             } catch (err) {
                 fallo(p, err.message);
@@ -129,19 +144,19 @@ async function subirFotosFaltantes({ supplierId } = {}, deps = {}) {
 }
 
 function resumen(r) {
-    return { total: r.total, subidas: r.subidas, ya_tenian: r.ya_tenian, errores: r.errores };
+    return { total: r.total, subidas: r.subidas, de_neggo: r.de_neggo, ya_tenian: r.ya_tenian, errores: r.errores };
 }
 
 // Lanza la subida en segundo plano. Devuelve false si ya hay una corriendo.
 function iniciarFotos({ supplierId } = {}) {
     if (job.running) return false;
     const startedAt = new Date();
-    job = { running: true, frenar: false, progreso: { hechos: 0, total: 0, subidas: 0, ya_tenian: 0, errores: 0 },
+    job = { running: true, frenar: false, progreso: { hechos: 0, total: 0, subidas: 0, de_neggo: 0, ya_tenian: 0, errores: 0 },
             result: null, error: null, startedAt, finishedAt: null };
     subirFotosFaltantes({ supplierId }, { onProgreso: p => { job.progreso = p; }, debeFrenar: () => job.frenar })
         .then(result => {
             job = { running: false, frenar: false, progreso: null, result, error: null, startedAt, finishedAt: new Date() };
-            console.log(`✅ Fotos a Odoo Preventas: ${result.subidas} subidas, ${result.ya_tenian} ya tenían, ${result.errores} errores${result.frenado ? ' (frenado)' : ''}`);
+            console.log(`✅ Fotos a Odoo Preventas: ${result.subidas} subidas (${result.de_neggo} de Neggo),${result.ya_tenian} ya tenían, ${result.errores} errores${result.frenado ? ' (frenado)' : ''}`);
         })
         .catch(err => {
             job = { running: false, frenar: false, progreso: null, result: null, error: err.message, startedAt, finishedAt: new Date() };

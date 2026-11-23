@@ -15,13 +15,38 @@ const FUZZY_MIN_AUTOMATICO = 90;
 const TOL_PESOS = 0.01;
 
 const ESTADOS_PRECIO = ['precio_sube', 'precio_baja'];
-const ESTADOS_ODOO = ['activar', 'publicar', 'inactivar', 'solo_odoo', 'fuera_preventas', 'precio_sube', 'precio_baja'];
+// Estados que archivan el producto en Odoo; sin_foto: activo sin foto en ningún lado (nota 203)
+const ESTADOS_ARCHIVAN = ['inactivar', 'sin_foto', 'solo_odoo', 'fuera_preventas'];
+const ESTADOS_ODOO = ['activar', 'publicar', ...ESTADOS_ARCHIVAN, 'precio_sube', 'precio_baja'];
 
 // Categoría del proveedor para las ofertas que no traen ninguna (ej. filas del Excel de Pan Lin):
 // en Sync Preventas se les puede poner una regla como a cualquier otra categoría (nota 200)
 const SIN_CATEGORIA = '(Sin categoría)';
 // Expresión SQL de la categoría del proveedor para buscar su regla en Sync Preventas
 const CATEGORIA_PROVEEDOR_SQL = `COALESCE(NULLIF(TRIM(sp.source_category), ''), '${SIN_CATEGORIA}')`;
+
+// El proveedor tiene una foto de verdad (no el cartel "sin foto" de su web). Necesita sp.
+// Si la "foto del proveedor" es la de Odoo Neggo y la caché dice que allá tampoco hay foto, no hay
+// nada que copiar: no cuenta (nota 201). Si la caché no conoce el producto, se intenta igual.
+const FOTO_PROVEEDOR_SQL = `(COALESCE(sp.image_url, '') <> '' AND sp.image_url !~* 'no-photo'
+    AND NOT (sp.image_url ~ '^/api/products/odoo-image/neggo/[0-9]+$' AND COALESCE((
+        SELECT bool_or(n.has_image) FROM odoo_products_cache n
+        WHERE n.company = 'neggo' AND n.template_id = substring(sp.image_url from '([0-9]+)$')::int
+    ), true) = false))`;
+
+// Template de un producto de Neggo con foto vinculado (confirmado) a la oferta: si el proveedor no
+// tiene foto, se usa esa (nota 203). Primero los activos. spId: la columna con el id de la oferta.
+const neggoFotoSubq = (spId = 'pss.supplier_product_id') => `SELECT n.template_id
+    FROM product_mappings pn
+    JOIN odoo_products_cache n ON n.odoo_id = pn.odoo_product_id AND n.company = 'neggo'
+    WHERE pn.supplier_product_id = ${spId}
+      AND pn.odoo_company = 'neggo' AND pn.estado = 'confirmado'
+      AND n.has_image = true AND n.template_id IS NOT NULL
+    ORDER BY n.active DESC, pn.id
+    LIMIT 1`;
+
+// Ni el proveedor ni el producto de Neggo vinculado tienen foto (nota 203). Necesita sp.
+const SIN_FOTO_DISPONIBLE_SQL = `(NOT ${FOTO_PROVEEDOR_SQL} AND NOT EXISTS (${neggoFotoSubq('sp.id')}))`;
 
 // Acciones que dejan el producto publicado en la web de Precompras (nota 200):
 // crear y publicar, activar y publicar, publicar; y completar categoría de lo ya publicado
@@ -79,9 +104,18 @@ function claveCategoria(nombre) {
         .split(' ').filter(p => p && !['de', 'del', 'la', 'el', 'y'].includes(p)).join(' ');
 }
 
-/** Lo que impide aplicar la fila aunque se confirme: sin precio o sin categoría */
+/**
+ * Crear sin foto no se hace: un producto sin foto en la web de Precompras se archiva (nota 203).
+ * prod.sin_foto_disponible: ni el proveedor ni el producto de Neggo vinculado tienen foto.
+ */
+function motivoSinFoto(prod) {
+    if (prod.estado !== 'solo_scraper' || prod.sin_foto_disponible !== true) return null;
+    return 'Sin foto (ni del proveedor ni de Neggo): no se crea';
+}
+
+/** Lo que impide aplicar la fila aunque se confirme: sin precio, sin categoría o sin foto */
 function motivoBloqueo(prod) {
-    return motivoSinPrecio(prod) || motivoSinCategoria(prod);
+    return motivoSinPrecio(prod) || motivoSinCategoria(prod) || motivoSinFoto(prod);
 }
 
 /**
@@ -198,9 +232,11 @@ function motivoOdoo(prod, odoo) {
         if (odoo.active === false) return 'Está archivado en Odoo: sincronizá Odoo';
         if (odoo.is_published === true) return 'Ya está publicado en la web';
     }
-    if (['inactivar', 'solo_odoo', 'fuera_preventas'].includes(prod.estado) && odoo.active === false) {
+    if (ESTADOS_ARCHIVAN.includes(prod.estado) && odoo.active === false) {
         return 'Ya está archivado en Odoo';
     }
+    // La caché decía que no tenía foto, pero en Odoo ya tiene: no se archiva (nota 203)
+    if (prod.estado === 'sin_foto' && odoo.tiene_foto === true) return 'Ya tiene foto en Odoo: no se archiva';
     if (ESTADOS_PRECIO.includes(prod.estado)) {
         const enCache = num(prod.odoo_standard_price);
         const enOdoo = num(odoo.standard_price);
@@ -212,8 +248,8 @@ function motivoOdoo(prod, odoo) {
 }
 
 module.exports = {
-    codigoEnNombre, motivoSinPrecio, motivoSinCategoria, motivoBloqueo, categoriaPublicacion, claveCategoria,
+    codigoEnNombre, motivoSinPrecio, motivoSinCategoria, motivoSinFoto, motivoBloqueo, categoriaPublicacion, claveCategoria,
     motivoOmitir, motivoRevision, motivoRevisionVinculo, motivoRevisionCosto, tipoRevision, motivoOdoo,
-    UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO, ESTADOS_PUBLICAN,
-    SIN_CATEGORIA, CATEGORIA_PROVEEDOR_SQL,
+    UMBRAL_REVISION_PCT, FUZZY_MIN_AUTOMATICO, ESTADOS_ODOO, ESTADOS_PUBLICAN, ESTADOS_ARCHIVAN,
+    SIN_CATEGORIA, CATEGORIA_PROVEEDOR_SQL, FOTO_PROVEEDOR_SQL, SIN_FOTO_DISPONIBLE_SQL, neggoFotoSubq,
 };
