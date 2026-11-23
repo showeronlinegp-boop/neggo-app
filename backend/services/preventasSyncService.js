@@ -178,16 +178,25 @@ async function getProductsToSync(pool, filters = {}) {
     }
 
     // Qué haría el "Aplicar" en bloque con estos mismos filtros
-    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, supplierId);
+    const aplicables = sinVendor || sinFoto ? null : await contarAplicables(pool, whereClause, countParams, bloqueArchiva({ supplierId, grupo, estado }));
 
     return { rows, total: countRows[0]?.total || 0, aplicables };
 }
 
+// El bloque archiva si se eligió un proveedor o si la vista pide archivar a propósito
+// (tarjeta "Archivar" o una de sus pestañas). "Aplicar todo" sin proveedor nunca archiva (nota 185).
+function bloqueArchiva({ supplierId, grupo, estado }) {
+    if (supplierId) return true;
+    if (estado && estado !== 'todos') return ESTADOS_INACTIVACION.includes(estado);
+    if (grupo && grupo !== 'todos' && GRUPO_ESTADOS[grupo]) return GRUPO_ESTADOS[grupo].some(e => ESTADOS_INACTIVACION.includes(e));
+    return false;
+}
+
 // Cuenta, dentro de la vista filtrada, cuántos cambios aplicaría el bloque y cuántos piden revisión.
-// Mismas reglas que applyChanges: sin proveedor elegido no se archiva en bloque.
-async function contarAplicables(pool, whereClause, params, supplierId) {
+// Mismas reglas que applyChanges: archiva solo si bloqueArchiva lo permite.
+async function contarAplicables(pool, whereClause, params, archiva) {
     const extra = [`pss.estado != ALL($${params.length + 1}::text[])`];
-    const p = [...params, supplierId ? ESTADOS_SIN_ACCION : [...ESTADOS_SIN_ACCION, ...ESTADOS_INACTIVACION]];
+    const p = [...params, archiva ? ESTADOS_SIN_ACCION : [...ESTADOS_SIN_ACCION, ...ESTADOS_INACTIVACION]];
     const where = whereClause ? `${whereClause} AND ${extra.join(' AND ')}` : `WHERE ${extra.join(' AND ')}`;
     const { rows } = await pool.query(`
         SELECT pss.estado, pss.match_type, pss.match_score, pss.costo, pss.precio_preventas,
@@ -421,12 +430,9 @@ async function applyChanges(pool, supplierProductIds = [], odooProductIds = [], 
             estadosPedidos = GRUPO_ESTADOS[grupo];
         }
 
-        // Seguridad: nunca archivar en bulk productos de todos los proveedores a la vez
-        if (!supplierId) {
-            if (estadosPedidos && estadosPedidos.some(e => ESTADOS_INACTIVACION.includes(e))) {
-                throw new Error('Para inactivar en bloque elegí un proveedor. No se inactivan todos los proveedores juntos.');
-            }
-            // "Aplicar todo" sin proveedor: se aplica todo menos las inactivaciones
+        // "Aplicar todo" sin proveedor: se aplica todo menos las inactivaciones. Desde la vista
+        // "Archivar" sí se archiva de todos los proveedores juntos (nota 185)
+        if (!bloqueArchiva({ supplierId, grupo, estado })) {
             conditions.push(`pss.estado != ALL($${idx++}::text[])`);
             params.push(ESTADOS_INACTIVACION);
         }

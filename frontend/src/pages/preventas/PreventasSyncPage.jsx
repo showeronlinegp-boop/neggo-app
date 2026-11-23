@@ -264,7 +264,7 @@ function Numeros({ resumen: r, t }) {
 
 // ─── Confirmación de "Aplicar" (bloque o selección) con el desglose ───────────
 // conteo: { listos, revision_costo, revision_vinculo, sin_precio, sin_accion? }
-function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCosto, onClose, onConfirm }) {
+function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCosto, archivaTodos, onClose, onConfirm }) {
     const c = conteo || {};
     const aAplicar = (c.listos || 0) + (incluirCosto ? (c.revision_costo || 0) : 0);
     const fila = (texto, n, color) => n > 0 && (
@@ -296,6 +296,17 @@ function ConfirmarAplicar({ t, tipo, conteo, alcance, incluirCosto, setIncluirCo
                     {fila('Sin precio del proveedor (no se sincronizan)', c.sin_precio, t.color.textMuted)}
                     {fila('Sin nada que hacer', c.sin_accion, t.color.textMuted)}
                 </div>
+                {archivaTodos && (
+                    <div style={{
+                        padding: t.space[3], borderRadius: t.radius.md, background: t.color.dangerSoft,
+                        fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.45,
+                    }}>
+                        Se archivan en Odoo productos de todos los proveedores juntos.
+                        <span style={{ display: 'block', color: t.color.textMuted, fontSize: t.font.size.xs, marginTop: 2 }}>
+                            Entran también los de proveedores con "Va a Preventas" apagado, aunque el proveedor los tenga. Si alguno no tiene que salir, cancelá y prendé ese interruptor en Proveedores.
+                        </span>
+                    </div>
+                )}
                 {c.revision_costo > 0 && (
                     <label style={{
                         display: 'flex', gap: t.space[3], alignItems: 'flex-start', cursor: 'pointer',
@@ -619,7 +630,11 @@ export default function PreventasSyncPage() {
 
     // ─── Cuántos cambios se aplicarían en bloque en la vista actual ───────────
     const estadosVista = filtro.estado ? [filtro.estado] : filtro.grupo ? GRUPO_ESTADOS[filtro.grupo] : ACCIONABLES;
-    const archivaSinProveedor = !supplierId && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
+    // La vista "Archivar" (o una de sus pestañas) archiva en bloque aunque no haya proveedor elegido (nota 185).
+    // "Todos los productos" sin proveedor aplica todo menos los archivados (mismas reglas que el backend).
+    const vistaArchiva = (filtro.estado || filtro.grupo) ? estadosVista.some(e => INACTIVACION.includes(e)) : false;
+    const archivaSinProveedor = !supplierId && !vistaArchiva && estadosVista.some(e => INACTIVACION.includes(e)) && sumar(resumen, estadosVista.filter(e => INACTIVACION.includes(e))) > 0;
+    const archivaTodos = !supplierId && vistaArchiva;
     // El backend cuenta, con los mismos filtros de la tabla, cuántos están listos y cuántos piden revisión
     const bloque = sinVendor || sinFoto || !aplicables ? { listos: 0, revision_costo: 0, revision_vinculo: 0, sin_precio: 0 } : aplicables;
     const enBloque = bloque.listos + bloque.revision_costo;
@@ -900,7 +915,7 @@ export default function PreventasSyncPage() {
                 {/* Avisos sobre el "Aplicar" en bloque */}
                 {selected.size === 0 && archivaSinProveedor && (
                     <div style={{ fontSize: t.font.size.xs, color: t.color.textMuted, fontFamily: t.font.family }}>
-                        Para archivar en bloque elegí un proveedor (no se archivan todos los proveedores juntos). También podés seleccionar productos.
+                        Acá no se archiva nada en bloque. Para archivar, entrá en la tarjeta "Archivar" (todos los proveedores juntos o uno solo) o seleccioná productos.
                     </div>
                 )}
                 {selected.size === 0 && bloque.revision_vinculo > 0 && (
@@ -954,6 +969,7 @@ export default function PreventasSyncPage() {
                 ].filter(Boolean).join(' · ') : null}
                 incluirCosto={incluirCosto}
                 setIncluirCosto={setIncluirCosto}
+                archivaTodos={confirmar === 'bloque' && archivaTodos}
                 onClose={() => setConfirmar(null)}
                 onConfirm={aplicarConfirmado}
             />
