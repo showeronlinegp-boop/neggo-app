@@ -134,8 +134,25 @@ async function resolveUid() {
     return _uid;
 }
 
+// Idioma de las llamadas. El nombre de los productos (y de las categorías) es traducible
+// en Odoo: sin "lang" en el contexto, Odoo lee y escribe la versión en inglés (en_US),
+// pero las pantallas de Odoo muestran la del idioma activo (es_419). Así un nombre
+// editado desde la app no se veía en Odoo, y uno cambiado en Odoo no llegaba a la app.
+const ODOO_LANG = process.env.ODOO_LANG || 'es_419';
+
+/**
+ * Agrega el idioma al contexto si la llamada no trae uno propio.
+ * No modifica el objeto que recibe.
+ */
+function conIdioma(kwargs = {}, lang = ODOO_LANG) {
+    const context = kwargs.context || {};
+    if (!lang || context.lang) return kwargs;
+    return { ...kwargs, context: { ...context, lang } };
+}
+
 async function callOdoo(model, method, args, kwargs = {}) {
     const uid = await resolveUid();
+    kwargs = conIdioma(kwargs);
     return jsonRpc('call', {
         service: 'object',
         method: 'execute_kw',
@@ -194,4 +211,4 @@ function clearCompanyCache() {
     _companyIds = null;
 }
 
-module.exports = { jsonRpc, callOdoo, getCompanyIds, clearCompanyCache };
+module.exports = { jsonRpc, callOdoo, getCompanyIds, clearCompanyCache, conIdioma, ODOO_LANG };
