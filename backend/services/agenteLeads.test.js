@@ -236,4 +236,32 @@ test('estadoBot: quién se puede sumar al bot', () => {
     assert.strictEqual(L.estadoBot({ phoneKey: '2477519062', sumado: true }).estado, 'sumado');
 });
 
+test('ficha comercial: sin perfil da nulls y la primera pregunta de Conocer', () => {
+    const f = L.fichaComercial(null, { city: null, rubro: null }, [{ id: 1, pregunta: '¿Mínimo?', respuesta: '$50.000' }]);
+    assert.strictEqual(f.resumen, null);
+    assert.strictEqual(f.resumen_por, null);
+    assert.strictEqual(f.ciudad, null);
+    assert.strictEqual(f.objetivos.siguiente.id, 'ubicacion');
+    assert.strictEqual(f.objetivos.conocer[0].pregunta.startsWith('¿De qué ciudad'), true);
+    assert.deepStrictEqual(f.objetivos.informar, [{ id: 1, pregunta: '¿Mínimo?', respuesta: '$50.000', hecho: false }]);
+    assert.strictEqual(f.objetivos.listo_para_precios, false);
+});
+
+test('ficha comercial: resumen vacío es null, el perfil pisa al lead y lo informado cuenta', () => {
+    const perfil = { resumen: '   ', resumen_por: 'manual', resumen_at: '2026-11-23T12:43:18Z', ciudad: 'Pergamino', tiene_local: 'local', intereses: 'bazar' };
+    const f = L.fichaComercial(perfil, { city: 'Rojas', rubro: 'Ferretería' },
+        [{ id: 7, pregunta: '¿Mínimo?', respuesta: '$50.000' }], new Map([[7, { fuente: 'bot', fecha: '2026-11-20' }]]));
+    assert.strictEqual(f.resumen, null);
+    assert.strictEqual(f.resumen_at, null);
+    assert.strictEqual(f.ciudad, 'Pergamino');
+    assert.strictEqual(f.rubro, 'Ferretería');
+    assert.strictEqual(f.objetivos.conocer[0].valor, 'Pergamino · tiene local');
+    assert.strictEqual(f.objetivos.informar[0].hecho, true);
+    assert.strictEqual(f.objetivos.siguiente, null);
+    assert.strictEqual(f.objetivos.listo_para_precios, true);
+    const conResumen = L.fichaComercial({ resumen: 'Tiene ferretería', resumen_por: 'claude', resumen_at: '2026-11-22T21:50:35Z' }, {});
+    assert.strictEqual(conResumen.resumen, 'Tiene ferretería');
+    assert.strictEqual(conResumen.resumen_at, '2026-11-22T21:50:35.000Z');
+});
+
 console.log(`\n✅ ${n} tests de leads OK`);

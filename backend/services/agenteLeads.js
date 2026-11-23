@@ -8,6 +8,7 @@
 // Una presentación mandada a mano desde la app (nota #81) cuenta como la presentación.
 
 const health = require('./clientHealth');
+const { objetivos: objetivosLead } = require('./leadObjetivos');
 
 const ETAPAS = ['pendiente', 'presentacion', 'recordatorio', 'cierre', 'finalizado'];
 const CADENCIA = [
@@ -233,6 +234,54 @@ function errorResultado(actual, nuevo) {
     return null;
 }
 
+function textoONull(v) {
+    const s = typeof v === 'string' ? v.trim() : v;
+    return s || null;
+}
+
+/**
+ * Lo que sabe el equipo del prospecto (ficha comercial de Chats, 067) para que el agente arme
+ * mejor el mensaje: resumen para vender, datos y qué objetivo de nutrición falta.
+ * Sin perfil cargado devuelve el mismo formato con nulls.
+ * @param {object|null} perfil fila de crm_lead_perfil
+ * @param {{ city?: string, rubro?: string }} lead
+ * @param {Array<{ id, pregunta, respuesta }>} respuestas "Contárselo a todos" activas
+ * @param {Map<number, { fuente, fecha }>} informados
+ */
+function fichaComercial(perfil, lead, respuestas = [], informados = new Map()) {
+    const p = perfil || {};
+    const o = objetivosLead({ perfil: p, lead, respuestas, informados });
+    const fecha = (v) => (v ? new Date(v).toISOString() : null);
+    const resumen = textoONull(p.resumen);
+    // Solo Conocer e Informar: la presentación del bot ya está en seguimiento (y si la nota 227
+    // agrega el objetivo Presentar, acá no cuenta)
+    const pendientes = [
+        ...o.conocer.map((c) => ({ grupo: 'conocer', id: c.id, titulo: c.titulo, hecho: c.hecho })),
+        ...o.informar.map((i) => ({ grupo: 'informar', id: i.id, titulo: i.titulo, hecho: i.hecho })),
+    ];
+    const falta = pendientes.find((x) => !x.hecho) || null;
+    return {
+        resumen,
+        resumen_at: resumen ? fecha(p.resumen_at) : null,
+        resumen_por: resumen ? p.resumen_por || null : null,
+        ciudad: textoONull(p.ciudad) || textoONull(lead && lead.city),
+        tiene_local: p.tiene_local || null,
+        rubro: textoONull(p.rubro) || textoONull(lead && lead.rubro),
+        intereses: textoONull(p.intereses),
+        proveedor_actual: textoONull(p.proveedor_actual),
+        trabas: textoONull(p.trabas),
+        volumen: textoONull(p.volumen),
+        compromisos: textoONull(p.compromisos),
+        actualizado_at: fecha(p.updated_at),
+        objetivos: {
+            conocer: o.conocer.map((c) => ({ id: c.id, titulo: c.titulo, hecho: c.hecho, valor: c.valor, pregunta: c.pregunta })),
+            informar: o.informar.map((i) => ({ id: i.id, pregunta: i.titulo, respuesta: i.respuesta, hecho: i.hecho })),
+            siguiente: falta ? { grupo: falta.grupo, id: falta.id, titulo: falta.titulo } : null,
+            listo_para_precios: pendientes.length > 0 && !falta,
+        },
+    };
+}
+
 module.exports = {
     ETAPAS,
     CADENCIA,
@@ -263,4 +312,5 @@ module.exports = {
     quedanHoy,
     compararCola,
     errorResultado,
+    fichaComercial,
 };

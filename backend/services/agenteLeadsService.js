@@ -43,7 +43,9 @@ let schemaReady = null;
 /** Tablas del CRM (crm_leads) y las del bot de leads (060). Idempotente. */
 function ensureLeadsSchema() {
     if (!schemaReady) {
-        schemaReady = ensureSchema().then(() => pool.query(MIGRACION)).catch((err) => {
+        // La ficha comercial (067) la crea crmFichaService; require tardío para no cargar todo al inicio
+        schemaReady = ensureSchema().then(() => pool.query(MIGRACION))
+            .then(() => require('./crmFichaService').ensureSchema()).catch((err) => {
             schemaReady = null;
             throw err;
         });
@@ -193,6 +195,34 @@ function armarLead(row, info) {
     };
 }
 
+/**
+ * Ficha comercial de Chats (resumen, datos y objetivos) de cada lead: Map lead_id → ficha.
+ * Solo lectura: el agente no la modifica.
+ */
+async function fichasDe(items, db = pool) {
+    const ids = items.map((x) => x.id);
+    if (!ids.length) return new Map();
+    const [respuestas, { rows: perfiles }, { rows: infs }, { rows: datos }] = await Promise.all([
+        require('./crmRespuestasService').listarUsables(db).then((rs) => rs.filter((r) => r.informar_a_todos)),
+        db.query('SELECT * FROM crm_lead_perfil WHERE lead_id = ANY($1::int[])', [ids]),
+        db.query('SELECT lead_id, respuesta_id, fuente, informado_at FROM crm_lead_informado WHERE lead_id = ANY($1::int[])', [ids]),
+        db.query('SELECT id, city, rubro FROM crm_leads WHERE id = ANY($1::int[])', [ids]),
+    ]);
+    const perfil = new Map(perfiles.map((p) => [p.lead_id, p]));
+    const lead = new Map(datos.map((d) => [d.id, d]));
+    const inf = new Map();
+    for (const r of infs) {
+        if (!inf.has(r.lead_id)) inf.set(r.lead_id, new Map());
+        inf.get(r.lead_id).set(r.respuesta_id, { fuente: r.fuente, fecha: r.informado_at });
+    }
+    return new Map(ids.map((id) => [id, leads.fichaComercial(perfil.get(id), lead.get(id), respuestas, inf.get(id) || new Map())]));
+}
+
+async function conFicha(items) {
+    const fichas = await fichasDe(items);
+    return items.map((x) => ({ ...x, ficha: fichas.get(x.id) || null }));
+}
+
 async function leerLead(id, db = pool) {
     const { rows: [row] } = await db.query(`${LEAD_SELECT} WHERE l.id = $1`, [id]);
     return row || null;
@@ -231,7 +261,7 @@ async function listarLeads({ para_hoy: paraHoy, con_respuesta_pendiente: conResp
     if (paraHoy) lista.sort(leads.compararCola);
     else if (conRespuesta || respondio) lista.sort((a, b) => (b.ultimo_recibido || '').localeCompare(a.ultimo_recibido || ''));
     else lista.sort((a, b) => a.id - b.id);
-    return { data: lista.slice(offset, offset + limit), total: lista.length, page, limit, meta: info };
+    return { data: await conFicha(lista.slice(offset, offset + limit)), total: lista.length, page, limit, meta: info };
 }
 
 /** GET leads/:id: ficha en vivo con los últimos mensajes (chequear justo antes de mandar). */
@@ -241,6 +271,7 @@ async function obtenerLead(id) {
     const info = await meta();
     const data = armarLead(await leerLead(id), info);
     data.en_odoo = row.odoo_partner_id || null;
+    data.ficha = (await fichasDe([data])).get(data.id) || null;
     const { rows } = await pool.query(
         'SELECT * FROM crm_bot_lead_mensajes WHERE lead_id = $1 ORDER BY fecha DESC, id DESC LIMIT 20', [id]);
     data.ultimos_mensajes = rows.map(formatMensaje);

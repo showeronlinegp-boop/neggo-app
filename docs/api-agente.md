@@ -304,3 +304,16 @@ El equipo carga en la app (Clientes › Respuestas) las preguntas que más hacen
 - Si te preguntan algo de eso, usá ese texto (podés adaptar el saludo, no los datos). Así el bot y el equipo dicen lo mismo.
 - `informar_a_todos: true` = objetivo de nutrición: a cada prospecto hay que contárselo aunque no pregunte.
 - Los textos cambian: leelos de nuevo cada día.
+
+## Ficha comercial de los posibles clientes (3.15.0)
+
+Lo que el equipo sabe de cada prospecto, de la ficha de Clientes › Chats: el resumen para vender (lo arma Claude cada noche con la charla del WhatsApp del negocio, o una persona a mano), los datos que se fueron juntando y qué objetivo de nutrición falta. Sirve para que el mensaje no repita preguntas ya contestadas y apunte a lo que le interesa. Solo lectura: se edita en la app.
+
+- `GET /leads` (cada elemento de la página) y `GET /leads/{id}` traen el bloque `ficha`, siempre con el mismo formato (nulls si no hay nada cargado):
+  - `resumen`, `resumen_at`, `resumen_por` (`claude` | `manual`).
+  - `ciudad`, `tiene_local` (`local` | `online` | `los_dos` | null), `rubro`, `intereses`, `proveedor_actual`, `trabas`, `volumen`, `compromisos`, `actualizado_at`. `ciudad` y `rubro` caen a los del alta si la ficha no los tiene.
+  - `objetivos.conocer`: `ubicacion` y `rubro`, cada uno con `hecho`, `valor` y la `pregunta` sugerida para averiguarlo.
+  - `objetivos.informar`: las preguntas frecuentes `informar_a_todos` (`id`, `pregunta`, `respuesta`, `hecho`): `hecho: false` = todavía no se le contó.
+  - `objetivos.siguiente` (`{ grupo, id, titulo }` o null) y `objetivos.listo_para_precios` (ya se conoce y se le informó todo).
+- Usalo para armar el mensaje, no lo copies textual: el resumen es una nota interna del equipo.
+- Los que escribieron al WhatsApp del negocio siguen fuera de la cadencia (`escribio_al_negocio`): ahí la ficha la usa el equipo.
