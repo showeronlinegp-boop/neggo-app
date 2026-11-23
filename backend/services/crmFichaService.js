@@ -551,6 +551,7 @@ async function actividadSemana(jids, db) {
               WHERE m."key"->>'remoteJid' = ANY($1::text[]) AND m."messageTimestamp" >= $2
                 AND m."messageType" <> ALL($3::text[])
                 AND NOT (m."messageType" = 'conversation' AND COALESCE(m."message"->>'conversation', '') = '')
+                AND NOT (COALESCE((m."key"->>'fromMe')::boolean, false) AND ${waLeads.SQL_AUTOMATICO})
               ORDER BY m."key"->>'remoteJid', m."messageTimestamp" DESC, m."id" DESC`,
             [jids, desde, TIPOS_IGNORADOS]));
     } catch (err) {
@@ -560,9 +561,11 @@ async function actividadSemana(jids, db) {
     for (const f of filas) {
         const ts = Number(f.ts);
         const a = out.get(f.jid) || { ultimo: 0, nuestro: 0, deEllos: [] };
+        // La respuesta automática de fuera de horario cuenta como si no le hubiéramos respondido nada:
+        // no es contestarle, no mueve la hora del chat ni sale como último mensaje (nota 231)
+        if (f.yo && f.automatico) { out.set(f.jid, a); continue; }
         a.ultimo = Math.max(a.ultimo, ts);
-        // La respuesta automática de fuera de horario no es contestarle
-        if (f.yo && !f.automatico) a.nuestro = Math.max(a.nuestro, ts); else if (!f.yo) a.deEllos.push(ts);
+        if (f.yo) a.nuestro = Math.max(a.nuestro, ts); else a.deEllos.push(ts);
         out.set(f.jid, a);
     }
     for (const u of ultimos) {
@@ -639,7 +642,7 @@ async function chats(f = {}, db = pool) {
         let mejor = null;
         for (const j of propios) {
             const a = semana.get(j);
-            if (a && (!mejor || a.ultimo > mejor.a.ultimo)) mejor = { j, a };
+            if (a && a.ultimo > 0 && (!mejor || a.ultimo > mejor.a.ultimo)) mejor = { j, a };
         }
         let ultimo = c.ultimo_mensaje_at ? new Date(c.ultimo_mensaje_at) : null;
         let espera = c.espera_respuesta;
@@ -647,7 +650,8 @@ async function chats(f = {}, db = pool) {
         let preview = null;
         if (mejor) {
             const vivo = new Date(mejor.a.ultimo * 1000);
-            if (!ultimo || vivo > ultimo) ultimo = vivo;
+            // Dentro de la semana manda lo leído en vivo: la fecha guardada puede ser la de una respuesta automática
+            if (!ultimo || vivo > ultimo || ultimo.getTime() >= ahora.getTime() - DIAS_CHARLA * 86400000) ultimo = vivo;
             sinLeer = mejor.a.deEllos.filter((ts) => ts > mejor.a.nuestro).length;
             espera = sinLeer > 0;
             preview = mejor.a.preview || null;
