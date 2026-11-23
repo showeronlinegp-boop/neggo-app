@@ -41,6 +41,13 @@ function horaLista(iso) {
     return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
 }
 
+// Chat sin teléfono (@lid): el número antes de "@lid" es lo que se pone en la lupa de WhatsApp Web
+function codigoLid(c) {
+    if (c?.numero) return null;
+    const m = /^(\d+)@lid$/.exec(String(c?.chat || ''));
+    return m ? m[1] : null;
+}
+
 function linkWhatsappWeb(c) {
     const d = String(c?.numero || '').replace(/\D/g, '');
     return d.length >= 10 ? `https://web.whatsapp.com/send?phone=${d}` : 'https://web.whatsapp.com/';
@@ -123,7 +130,7 @@ export default function Chats() {
                     onAnotado={() => setVersion((v) => v + 1)} />
             )}
             {verPanelFicha && (
-                <PanelFicha t={t} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
+                <PanelFicha t={t} showToast={showToast} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
                     onCerrar={() => (isMobile ? setPanel('chat') : setVerFicha(false))}
                     onCompleta={() => setFichaCompleta(abierto)} onCambio={() => cargar(0, true)} />
             )}
@@ -209,7 +216,7 @@ function Lista({ t, isMobile, filtro, setFiltro, q, setQ, datos, items, error, c
                             <Avatar t={t} c={c} />
                             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                                 <span style={{ display: 'flex', justifyContent: 'space-between', gap: t.space[2], alignItems: 'baseline' }}>
-                                    <span style={{ fontWeight: t.font.weight.semibold, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.nombre || c.numero || 'Sin nombre'}</span>
+                                    <span style={{ fontWeight: t.font.weight.semibold, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.nombre || c.numero || codigoLid(c) || 'Sin nombre'}</span>
                                     <span style={{ flex: 'none', fontSize: 11, color: c.espera_respuesta ? t.color.accent : t.color.textMuted, fontWeight: c.espera_respuesta ? t.font.weight.bold : t.font.weight.regular }}>
                                         {horaLista(c.ultimo_mensaje_at)}
                                     </span>
@@ -308,7 +315,7 @@ function Conversacion({ t, isMobile, compacto, contacto, showToast, onVolver, on
         const url = linkWhatsappWeb(contacto);
         if (url === 'https://web.whatsapp.com/') {
             // Sin teléfono: se busca el chat en WhatsApp Web por el código (lupa)
-            const codigo = String(contacto.chat || '').split('@')[0];
+            const codigo = codigoLid(contacto) || String(contacto.chat || '').split('@')[0];
             try { await navigator.clipboard.writeText(codigo); showToast('Código del chat copiado: pegalo en la lupa de WhatsApp Web', 'success'); } catch { /* sin portapapeles */ }
         }
         window.open(url, 'whatsapp-web');
@@ -334,9 +341,9 @@ function Conversacion({ t, isMobile, compacto, contacto, showToast, onVolver, on
                 }}>
                     <Avatar t={t} c={contacto} tam={40} />
                     <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <span style={{ fontWeight: t.font.weight.semibold, fontSize: t.font.size.lg, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contacto.nombre || contacto.numero || 'Sin nombre'}</span>
+                        <span style={{ fontWeight: t.font.weight.semibold, fontSize: t.font.size.lg, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{contacto.nombre || contacto.numero || codigoLid(contacto) || 'Sin nombre'}</span>
                         <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {[contacto.numero, 'tocá para ver la ficha'].filter(Boolean).join(' · ')}
+                            {[contacto.numero || (codigoLid(contacto) && `sin número: buscá ${codigoLid(contacto)} en WhatsApp Web`), 'tocá para ver la ficha'].filter(Boolean).join(' · ')}
                         </span>
                     </span>
                 </button>
@@ -441,7 +448,7 @@ function Resaltado({ texto, q, t }) {
 
 // ── Ficha del contacto (panel de la derecha) ───────────────────────────────────────────────
 
-function PanelFicha({ t, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio }) {
+function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio }) {
     const esProspecto = contacto.tipo === 'prospecto';
     const clave = useMemo(() => `${contacto.clave}-${version}`, [contacto.clave, version]);
     return (
@@ -460,7 +467,14 @@ function PanelFicha({ t, isMobile, encima, contacto, version, onCerrar, onComple
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: t.space[2], padding: t.space[8], borderBottom: `1px solid ${t.color.border}`, textAlign: 'center' }}>
                 <Avatar t={t} c={contacto} tam={72} />
                 <span style={{ fontWeight: t.font.weight.bold, fontSize: t.font.size.lg }}>{contacto.nombre || 'Sin nombre'}</span>
-                <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{contacto.numero || contacto.chat}</span>
+                <span style={{ fontFamily: t.font.mono, fontSize: t.font.size.xs, color: t.color.textMuted }}>{contacto.numero || codigoLid(contacto) || contacto.chat}</span>
+                {codigoLid(contacto) && (
+                    <button type="button" onClick={async () => {
+                        try { await navigator.clipboard.writeText(codigoLid(contacto)); showToast?.('Copiado: pegalo en la lupa de WhatsApp Web', 'success'); } catch { /* sin portapapeles */ }
+                    }} style={{ border: `1px solid ${t.color.border}`, background: t.color.surface, color: t.color.primary, borderRadius: t.radius.md, padding: '4px 10px', fontSize: t.font.size.xs, fontFamily: t.font.family, cursor: 'pointer' }}>
+                        Sin número · copiar para buscar en WhatsApp
+                    </button>
+                )}
                 <Etiquetas t={t} c={contacto} />
                 {contacto.etapa?.objetivo && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Objetivo de la etapa: {contacto.etapa.objetivo}</span>}
             </div>

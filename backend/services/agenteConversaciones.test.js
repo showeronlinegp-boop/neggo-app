@@ -37,6 +37,11 @@ assert.strictEqual(c.isoAr(r.desde), '2026-11-13T00:00:00-03:00');
 assert.strictEqual(c.numeroDeJid('5492477665157@s.whatsapp.net'), '+5492477665157');
 assert.strictEqual(c.numeroDeJid('5492477665157:12@s.whatsapp.net'), '+5492477665157');
 assert.strictEqual(c.numeroDeJid('135845554196674@lid'), null);
+assert.strictEqual(c.buscarEnWhatsapp('189738854133918@lid'), '189738854133918');
+assert.strictEqual(c.buscarEnWhatsapp('5492477123456@s.whatsapp.net'), null);
+assert.strictEqual(c.buscarEnWhatsapp(null), null);
+assert.strictEqual(c.conIdentidad({ chat: '189738854133918@lid', numero: null, mensajes: [] }, null, null).buscar_en_whatsapp, '189738854133918');
+assert.strictEqual(c.conIdentidad({ chat: '189738854133918@lid', numero: null, mensajes: [] }, { numero: '+5492477123456' }, null).buscar_en_whatsapp, null);
 assert.strictEqual(c.nombreUtil('135845554196674'), null);
 assert.strictEqual(c.nombreUtil(' Clau '), 'Clau');
 
