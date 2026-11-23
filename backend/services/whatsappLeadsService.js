@@ -653,7 +653,8 @@ async function embudo(db = pool) {
         });
         return {
             id: r.id,
-            name: r.name || r.nombre_chat,
+            // Un relleno como "(a completar)" no cuenta: va el nombre de WhatsApp o, si no hay, el número
+            name: reglas.nombreParaMostrar(r.name, r.nombre_chat),
             phone: r.phone,
             chat: r.chat,
             city: r.city,

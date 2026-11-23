@@ -80,6 +80,25 @@ function nombreDeChat(nombre) {
     return limpio && !/^[0-9 +]+$/.test(limpio) ? limpio : null;
 }
 
+// Nombres de relleno que no dicen quién es (el agente cargó prospectos como "(a completar)")
+const RELLENOS = ['a completar', 'completar', 'sin nombre', 's n', 'sn', 'nn', 'desconocido', 'sin dato', 'sin datos'];
+
+/** true si el nombre es un relleno como "(a completar)" o "Sin nombre". */
+function esNombreDeRelleno(nombre) {
+    const n = String(nombre || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ').trim();
+    return RELLENOS.includes(n);
+}
+
+/** Primer nombre que sirva para mostrar (sin rellenos ni vacíos), o null: la pantalla muestra el número. */
+function nombreParaMostrar(...candidatos) {
+    for (const c of candidatos) {
+        const limpio = c == null ? '' : String(c).trim();
+        if (limpio && !esNombreDeRelleno(limpio)) return limpio;
+    }
+    return null;
+}
+
 /** Nombre para un posible cliente nuevo: el de la agenda o el que se puso en WhatsApp. */
 function nombreLeadNuevo({ nombreAgenda, pushName }) {
     return nombreDeChat(nombreAgenda) || nombreDeChat(pushName) || null;
@@ -166,6 +185,8 @@ module.exports = {
     decidirVinculo,
     nombreLeadNuevo,
     nombreDeChat,
+    esNombreDeRelleno,
+    nombreParaMostrar,
     ordenarCandidatos,
     prepararProveedores,
     proveedorPorNombre,

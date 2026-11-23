@@ -66,6 +66,17 @@ assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: 'Estado: NRI NLD-09', pushN
 assert.strictEqual(r.nombreDeChat('126835098677422'), null);
 assert.strictEqual(r.nombreDeChat('+54 9 2477'), null);
 assert.strictEqual(r.nombreDeChat('Kiosco 24'), 'Kiosco 24');
+
+// Rellenos como "(a completar)" no cuentan como nombre (nota 224)
+assert.strictEqual(r.esNombreDeRelleno('(a completar)'), true);
+assert.strictEqual(r.esNombreDeRelleno(' A COMPLETAR '), true);
+assert.strictEqual(r.esNombreDeRelleno('Sin nombre'), true);
+assert.strictEqual(r.esNombreDeRelleno('S/N'), true);
+assert.strictEqual(r.esNombreDeRelleno('Completar Hogar'), false);
+assert.strictEqual(r.nombreParaMostrar('(a completar)', null), null);
+assert.strictEqual(r.nombreParaMostrar('(a completar)', 'Lu'), 'Lu');
+assert.strictEqual(r.nombreParaMostrar('Kiosco Sol', 'Lu'), 'Kiosco Sol');
+assert.strictEqual(r.nombreParaMostrar('  ', undefined), null);
 assert.strictEqual(r.nombreLeadNuevo({ nombreAgenda: null, pushName: '126835098677422' }), null);
 
 // Candidatos para vincular a mano: primero los que comparten palabra, después los recientes
