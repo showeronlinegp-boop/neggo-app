@@ -57,4 +57,10 @@ assert.strictEqual(g.estadoDeContacto({ chats: ['222@lid', '111@lid'] }, idx).es
 // Sin ninguna foto todavía no se sabe
 assert.strictEqual(g.estadoDeContacto({ chats: ['111@lid'] }, g.indiceMiembros([])), null);
 
+// WhatsApp desconectado: aviso claro (nota 247)
+assert.strictEqual(g.mensajeDesconectado('open'), null);
+assert.strictEqual(g.mensajeDesconectado(null), null);
+assert.match(g.mensajeDesconectado('close'), /desconectado.*QR/);
+assert.match(g.mensajeDesconectado('connecting'), /reconectarse/);
+
 console.log('✅ grupoAvisos: todo OK');
