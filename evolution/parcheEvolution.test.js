@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const { PARCHES, parchearTexto, aplicar } = require('./parcheEvolution');
 
-const [GET_MESSAGE, REINTENTO] = PARCHES;
+const [GET_MESSAGE, REINTENTO, STATUS_OFFLINE, STATUS_ONLINE, COLA_OFFLINE, OFFLINE_SIGUE] = PARCHES;
 
 // Arma una carpeta falsa de Evolution con los archivos originales.
 function armarRaiz({ sinMjs = false, sinBaileys = false } = {}) {
@@ -19,7 +19,9 @@ function armarRaiz({ sinMjs = false, sinBaileys = false } = {}) {
     if (!sinBaileys) {
         const dir = path.join(raiz, 'node_modules/baileys/lib/Socket');
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, 'messages-recv.js'), `a\n${REINTENTO.original}\nb\n`);
+        fs.writeFileSync(path.join(dir, 'messages-recv.js'),
+            `a\n${REINTENTO.original}\nb\n${STATUS_OFFLINE.original}\nc\n${STATUS_ONLINE.original}\nd\n${OFFLINE_SIGUE.original}\ne\n`);
+        fs.writeFileSync(path.join(dir, 'socket.js'), `s\n${COLA_OFFLINE.original}\nt\n`);
     }
     return raiz;
 }
@@ -58,6 +60,33 @@ const callado = () => {};
     assert.strictEqual(llamadas, 1, 'con mensaje real sigue como antes');
 }
 
+// Los estados se confirman con ack simple (sin código de error) online y offline
+{
+    const off = parchearTexto(STATUS_OFFLINE.original, STATUS_OFFLINE).texto;
+    assert.ok(off.includes("['status', handleStatusNeggo]"));
+    assert.ok(off.includes('await sendMessageAck(node);'));
+    assert.ok(off.indexOf('const handleStatusNeggo') < off.indexOf('const makeOfflineNodeProcessor'));
+    const on = parchearTexto(STATUS_ONLINE.original, STATUS_ONLINE).texto;
+    assert.ok(on.includes("ws.on('CB:status'"));
+    assert.strictEqual(parchearTexto(on, STATUS_ONLINE).estado, 'ya');
+}
+
+// La cola offline sigue pidiendo lotes hasta <offline> y se corta sola
+{
+    const r = parchearTexto(COLA_OFFLINE.original, COLA_OFFLINE);
+    assert.strictEqual(r.estado, 'aplicado');
+    assert.ok(r.texto.includes("ws.on('CB:ib,,offline', () => pararOfflineNeggo())"));
+    assert.ok(r.texto.includes('setInterval('));
+    assert.strictEqual(parchearTexto(r.texto, COLA_OFFLINE).estado, 'ya');
+}
+
+// Un nodo offline con error no frena el resto
+{
+    const r = parchearTexto(OFFLINE_SIGUE.original, OFFLINE_SIGUE);
+    assert.ok(r.texto.includes('catch (error)'));
+    assert.strictEqual(parchearTexto(r.texto, OFFLINE_SIGUE).estado, 'ya');
+}
+
 // aplicar: todo bien, después idempotente y --verificar pasa
 {
     const raiz = armarRaiz();
@@ -81,8 +110,8 @@ const callado = () => {};
 {
     assert.deepStrictEqual(aplicar(armarRaiz({ sinMjs: true }), { log: callado }), []);
     const errores = aplicar(armarRaiz({ sinBaileys: true }), { log: callado });
-    assert.strictEqual(errores.length, 1);
-    assert.match(errores[0], /no existe node_modules\/baileys/);
+    assert.strictEqual(errores.length, 5); // un error por cada parche de Baileys
+    for (const e of errores) assert.match(e, /no existe node_modules\/baileys/);
     const raiz = armarRaiz();
     fs.rmSync(path.join(raiz, 'dist/main.js'));
     assert.match(aplicar(raiz, { log: callado }).join('\n'), /no existe dist\/main\.js/);
