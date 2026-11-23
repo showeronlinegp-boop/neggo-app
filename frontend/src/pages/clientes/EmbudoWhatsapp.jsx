@@ -6,10 +6,43 @@ import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
 import Button from '../../components/common/Button';
 import * as Icon from '../../components/common/icons';
+import Select from '../../components/common/Select';
 import LeadFicha from './LeadFicha';
 import { ETAPA_TONO, haceCuanto } from './etapasWhatsappUi';
 
 const POR_COLUMNA = 30;
+const SIN_CIUDAD = '__sin_ciudad__';
+
+// Clave de ciudad sin mayúsculas, tildes ni espacios de más ("Colón" y "colon " son la misma)
+const claveCiudad = (c) => String(c || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
+
+// Opciones del filtro: las ciudades de los prospectos del tablero, de la más usada a la menos,
+// con la forma de escribirla que más se repite
+function opcionesCiudad(etapas) {
+    const porClave = new Map();
+    let sinCiudad = 0;
+    for (const g of etapas) {
+        for (const l of g.items) {
+            const k = claveCiudad(l.city);
+            if (!k) { sinCiudad += 1; continue; }
+            const e = porClave.get(k) || { total: 0, formas: new Map() };
+            e.total += 1;
+            const forma = String(l.city).trim();
+            e.formas.set(forma, (e.formas.get(forma) || 0) + 1);
+            porClave.set(k, e);
+        }
+    }
+    const ciudades = [...porClave.entries()].map(([k, e]) => ({
+        value: k,
+        nombre: [...e.formas.entries()].sort((a, b) => b[1] - a[1])[0][0],
+        total: e.total,
+    })).sort((a, b) => b.total - a.total || a.nombre.localeCompare(b.nombre, 'es'));
+    return [
+        { value: '', label: 'Todas las ciudades' },
+        ...ciudades.map((c) => ({ value: c.value, label: `${c.nombre} · ${fmtInt(c.total)}` })),
+        ...(sinCiudad ? [{ value: SIN_CIUDAD, label: `Sin ciudad · ${fmtInt(sinCiudad)}` }] : []),
+    ];
+}
 
 // Prospectos (posibles clientes) que tienen chat con el WhatsApp del negocio, en columnas por etapa.
 // Cada columna dice su objetivo: cumplirlo es lo que lo pasa a la siguiente.
@@ -18,6 +51,7 @@ export default function EmbudoWhatsapp({ onCambio }) {
     const [datos, setDatos] = useState(null);
     const [error, setError] = useState(null);
     const [soloEsperan, setSoloEsperan] = useState(false);
+    const [ciudad, setCiudad] = useState('');
     const [abierto, setAbierto] = useState(null);
     const huboCambios = useRef(false);
     // Columnas abiertas completas (por defecto se ven las primeras POR_COLUMNA tarjetas)
@@ -50,7 +84,15 @@ export default function EmbudoWhatsapp({ onCambio }) {
         if (huboCambios.current) { huboCambios.current = false; cargar(); cargarProveedores(); onCambio?.(); }
     };
 
-    const columnas = (datos?.etapas || []).map((g) => ({
+    const etapas = datos?.etapas || [];
+    const ciudades = opcionesCiudad(etapas);
+    const enCiudad = (l) => !ciudad || (ciudad === SIN_CIUDAD ? !claveCiudad(l.city) : claveCiudad(l.city) === ciudad);
+    const porCiudad = etapas.map((g) => ({ ...g, items: g.items.filter(enCiudad) }));
+    // Con ciudad elegida, el botón de "esperan respuesta" cuenta solo los de esa ciudad
+    const esperanEnCiudad = ciudad
+        ? porCiudad.reduce((n, g) => n + g.items.filter((i) => i.espera_respuesta).length, 0)
+        : datos?.espera_respuesta;
+    const columnas = porCiudad.map((g) => ({
         ...g, items: soloEsperan ? g.items.filter((i) => i.espera_respuesta) : g.items,
     }));
 
@@ -62,9 +104,12 @@ export default function EmbudoWhatsapp({ onCambio }) {
                     y lo que informa Grok; <strong>Interesado</strong> y <strong>Descartado</strong> los marcás vos desde la ficha.
                 </div>
                 {datos && (
-                    <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: t.space[2], flexWrap: 'wrap', alignItems: 'center' }}>
+                        {ciudades.length > 1 && (
+                            <Select value={ciudad} onChange={setCiudad} options={ciudades} placeholder="Ciudad" style={{ width: 200 }} />
+                        )}
                         <Button size="sm" variant={soloEsperan ? 'primary' : 'secondary'} onClick={() => setSoloEsperan((v) => !v)}>
-                            {`Te escribieron y esperan respuesta · ${fmtInt(datos.espera_respuesta)}`}
+                            {`Te escribieron y esperan respuesta · ${fmtInt(esperanEnCiudad)}`}
                         </Button>
                         {proveedores && proveedores.length > 0 && (
                             <Button size="sm" variant={verProveedores ? 'primary' : 'secondary'} onClick={() => setVerProveedores((v) => !v)}>
