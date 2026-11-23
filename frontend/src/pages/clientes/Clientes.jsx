@@ -44,6 +44,34 @@ const ANCHO_MIN = { ancho: 1130, medio: 890 };
 const ALTO_MIN_LISTA = 240;
 // Aire entre el final de la lista (o del chat) y el borde de abajo de la ventana
 const MARGEN_ABAJO = 16;
+// Lo de arriba (título, números y pestañas) minimizado a una franja fina, para que el chat tenga
+// más alto (nota #235). Se recuerda entre sesiones; solo en la compu.
+const ARRIBA_MIN_KEY = 'neggo.clientes.arribaMinimizado';
+
+function leerArribaMinimizado() {
+    try { return localStorage.getItem(ARRIBA_MIN_KEY) === '1'; } catch { return false; }
+}
+
+// Flechita para minimizar (para arriba) o volver a mostrar (para abajo), igual que la barra de arriba
+function BotonArriba({ minimizado, onToggle, t }) {
+    const [hovered, setHovered] = useState(false);
+    const texto = minimizado ? 'Mostrar lo de arriba' : 'Minimizar lo de arriba para ver más grande el chat';
+    return (
+        <button type="button" onClick={onToggle} title={texto} aria-label={texto} aria-pressed={minimizado}
+            onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+            style={{
+                width: 28, height: 28, borderRadius: t.radius.sm, flexShrink: 0, padding: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                color: hovered ? t.color.text : t.color.textMuted,
+                background: hovered ? t.color.surface2 : 'transparent',
+                border: `1px solid ${t.color.border}`, transition: 'background 120ms',
+            }}>
+            <span style={{ display: 'flex', transform: minimizado ? 'none' : 'rotate(180deg)' }}>
+                <Icon.ChevronDown size={16} />
+            </span>
+        </button>
+    );
+}
 
 // Ancho disponible de un elemento, actualizado al cambiar la ventana o el menú lateral
 function useAnchoDe(el) {
@@ -364,6 +392,7 @@ export default function Clientes() {
     const [stage, setStage] = useState('');
     const [importancia, setImportancia] = useState('');
     const [tab, setTab] = useState('chats');
+    const [arribaMinGuardado, setArribaMinGuardado] = useState(leerArribaMinimizado);
     const [leadsTotal, setLeadsTotal] = useState(null);
     const huboCambios = useRef(false);
     const [soloAbiertas, setSoloAbiertas] = useState(false);
@@ -539,6 +568,32 @@ export default function Clientes() {
     // ── Vista compacta en compu (nota #223): todo entra en la pantalla y la lista scrollea por dentro ──
     const compu = !isMobile;
 
+    // Minimizar lo de arriba (nota #235): también minimiza o vuelve a mostrar la barra de arriba
+    // del layout, así un solo toque deja todo el alto para el chat
+    const arribaMin = arribaMinGuardado && compu;
+    const toggleArriba = () => {
+        const nuevo = !arribaMin;
+        try { localStorage.setItem(ARRIBA_MIN_KEY, nuevo ? '1' : '0'); } catch { /* sin storage: queda en memoria */ }
+        setArribaMinGuardado(nuevo);
+        window.dispatchEvent(new CustomEvent('neggo:barra-minimizada', { detail: nuevo }));
+    };
+    // Chats y la lista miden su alto contra la ventana: que vuelvan a medir al cambiar
+    useEffect(() => {
+        const id = requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+        return () => cancelAnimationFrame(id);
+    }, [arribaMin]);
+
+    const pestanas = [
+        { value: 'chats', label: 'Chats', icon: <Icon.MessageCircle size={16} /> },
+        { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
+        { value: 'contactos', label: 'Contactos', icon: <Icon.MessageCircle size={16} /> },
+        { value: 'leads_chat', label: 'Prospectos con WhatsApp', icon: <Icon.MessageCircle size={16} />, count: leadsTotal?.con_whatsapp ?? null },
+        { value: 'leads', label: 'Prospectos sin chat', icon: <Icon.Plus size={16} />, count: leadsTotal?.sin_whatsapp ?? null },
+        { value: 'respuestas', label: 'Preguntas frecuentes', icon: <Icon.BookOpen size={16} /> },
+        { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
+        { value: 'bot_leads', label: 'Bot de leads', icon: <Icon.MessageCircle size={16} /> },
+    ];
+
     const resumenNumeros = resumen ? (
         <div style={{
             display: 'flex', gap: isMobile ? t.space[3] : `0 ${t.space[6]}px`, flexWrap: 'wrap',
@@ -625,6 +680,25 @@ export default function Clientes() {
             // Clientes y Chats llenan la ventana justo (nota #223); las otras pestañas scrollean como siempre
             marginBottom: tab === 'clientes' || tab === 'chats' ? -recorte : undefined,
         }}>
+            {arribaMin ? (
+                // Franja fina: la pestaña en un desplegable y la flechita para volver (el nombre de la
+                // pantalla ya está en la barra de arriba, que se minimiza junto con esto)
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: t.space[2], marginBottom: t.space[2] }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: t.space[2], minWidth: 0 }}>
+                        <select value={tab} onChange={(e) => setTab(e.target.value)} aria-label="Pestaña"
+                            style={{
+                                height: 28, padding: '0 8px', fontSize: t.font.size.sm, fontFamily: t.font.family,
+                                color: t.color.text, background: t.color.surface, border: `1px solid ${t.color.border}`,
+                                borderRadius: t.radius.sm, cursor: 'pointer',
+                            }}>
+                            {pestanas.map((p) => (
+                                <option key={p.value} value={p.value}>{p.count != null ? `${p.label} (${fmtInt(p.count)})` : p.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <BotonArriba minimizado onToggle={toggleArriba} t={t} />
+                </div>
+            ) : (<>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: compu ? t.space[2] : 12, marginBottom: compu ? t.space[2] : 16 }}>
                 <div style={{ minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: compu ? `0 ${t.space[6]}px` : 0 }}>
                     <h1 title="Cada cliente medido contra su propio ritmo de compra en el punto de venta de Neggo"
@@ -650,6 +724,7 @@ export default function Clientes() {
                         title={compu ? `${sincronizando ? 'Leyendo Odoo…' : fmtActualizado(resumen?.synced_at)}. Tocá para leer de nuevo los tickets del POS` : undefined}>
                         {sincronizando ? 'Actualizando…' : 'Actualizar'}
                     </Button>
+                    {compu && <BotonArriba minimizado={false} onToggle={toggleArriba} t={t} />}
                 </div>
             </div>
 
@@ -658,17 +733,9 @@ export default function Clientes() {
                 value={tab}
                 onChange={setTab}
                 style={{ marginBottom: compu ? t.space[3] : t.space[6] }}
-                tabs={[
-                    { value: 'chats', label: 'Chats', icon: <Icon.MessageCircle size={16} /> },
-                    { value: 'clientes', label: 'Clientes', icon: <Icon.Users size={16} />, count: resumen?.total_clientes ?? null },
-                    { value: 'contactos', label: 'Contactos', icon: <Icon.MessageCircle size={16} /> },
-                    { value: 'leads_chat', label: 'Prospectos con WhatsApp', icon: <Icon.MessageCircle size={16} />, count: leadsTotal?.con_whatsapp ?? null },
-                    { value: 'leads', label: 'Prospectos sin chat', icon: <Icon.Plus size={16} />, count: leadsTotal?.sin_whatsapp ?? null },
-                    { value: 'respuestas', label: 'Preguntas frecuentes', icon: <Icon.BookOpen size={16} /> },
-                    { value: 'bot', label: 'Bot de seguimiento', icon: <Icon.Bot size={16} /> },
-                    { value: 'bot_leads', label: 'Bot de leads', icon: <Icon.MessageCircle size={16} /> },
-                ]}
+                tabs={pestanas}
             />
+            </>)}
 
             {tab === 'chats' ? (
                 <Chats />

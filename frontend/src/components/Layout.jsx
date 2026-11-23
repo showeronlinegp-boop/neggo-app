@@ -310,6 +310,17 @@ export default function Layout() {
         });
     }, []);
 
+    // Clientes minimiza todo lo de arriba de un toque (nota #235): pide minimizar o mostrar la barra
+    useEffect(() => {
+        const alPedir = (e) => {
+            const min = !!e.detail;
+            try { localStorage.setItem(BARRA_MINIMIZADA_KEY, min ? '1' : '0'); } catch { /* sin storage: queda en memoria */ }
+            setBarraMinGuardada(min);
+        };
+        window.addEventListener('neggo:barra-minimizada', alPedir);
+        return () => window.removeEventListener('neggo:barra-minimizada', alPedir);
+    }, []);
+
     // Clientes y Chats miden su alto contra la ventana y escuchan 'resize': que vuelvan a medir
     useEffect(() => {
         const id = requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
