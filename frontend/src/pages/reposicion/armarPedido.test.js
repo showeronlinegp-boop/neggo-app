@@ -136,3 +136,20 @@ assert.deepEqual(armarReparto({ Alif: 0, Babu: '4' }), { asignacion: [{ destino:
 assert.equal(armarReparto({ Alif: '', Babu: 0 }), null);
 
 console.log('armarPedido nota 187 ok');
+
+// Link al producto (nota 192): sin oferta de este proveedor no se hace pasar por el producto
+import { linkDelProducto } from './pedidoDestino.js';
+const conClave = { tipo: 'clave', sitio: 'https://alifcell.com/catalogo2022x3.php' };
+const alProd = linkDelProducto({ url: 'https://alifcell.com/catalogo2022x3.php?rub=99999#96429' }, conClave, 'Alif');
+assert.equal(alProd.href, 'https://alifcell.com/catalogo2022x3.php?rub=99999#96429');
+assert.equal(alProd.alProducto, true);
+assert.equal(alProd.texto, 'Abrir producto (pide clave)');
+const soloWeb = linkDelProducto({ url: null }, conClave, 'Alif');
+assert.equal(soloWeb.href, conClave.sitio);
+assert.equal(soloWeb.alProducto, false);
+assert.equal(soloWeb.texto, 'Solo la web (pide clave)');
+assert.equal(linkDelProducto(null, { tipo: 'abierta', sitio: 'https://x.com' }, 'X').texto, 'Solo la web');
+assert.equal(linkDelProducto({ url: 'https://x.com/p' }, { tipo: 'abierta', sitio: 'https://x.com' }, 'X').texto, 'Ver en el catálogo');
+assert.equal(linkDelProducto({ url: 'https://f.com/p' }, { tipo: 'pdf', sitio: null }, 'F').texto, 'Abrir ficha');
+assert.equal(linkDelProducto(null, { tipo: 'pdf', sitio: null }, 'F'), null);
+console.log('armarPedido nota 192 ok');

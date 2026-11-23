@@ -172,6 +172,40 @@ export function accesoDe(nombre, accesos) {
     return { tipo: hit.pide_clave ? 'clave' : 'abierta', sitio: hit.website_url };
 }
 
+/**
+ * Link de un producto en la web del proveedor (nota 192).
+ * Solo va al producto si hay una oferta vinculada de ese proveedor con su URL; si no, abre la web
+ * general y lo dice. Con clave, el link al producto anda una vez que se ingresó en esa web.
+ * @param {{ url?: string|null }|null} candidato — el de este proveedor (candidatosDe)
+ * @param {{ tipo: string, sitio: string|null }} acceso — accesoDe(...)
+ * @param {string} proveedor — nombre para los textos de ayuda
+ * @returns {{ href: string, alProducto: boolean, texto: string, ayuda: string }|null}
+ */
+export function linkDelProducto(candidato, acceso, proveedor) {
+    const url = candidato?.url || null;
+    const sitio = acceso?.sitio || null;
+    const quien = proveedor || 'el proveedor';
+    if (url) {
+        if (acceso?.tipo === 'clave') {
+            return {
+                href: url, alProducto: true, texto: 'Abrir producto (pide clave)',
+                ayuda: `Si ${quien} te pide la clave, ingresala y volvé a tocar este link: ahí va directo al producto.`,
+            };
+        }
+        return {
+            href: url, alProducto: true,
+            texto: acceso?.tipo === 'pdf' ? 'Abrir ficha' : 'Ver en el catálogo',
+            ayuda: 'Abre el producto en la web del proveedor.',
+        };
+    }
+    if (!sitio) return null;
+    return {
+        href: sitio, alProducto: false,
+        texto: acceso?.tipo === 'clave' ? 'Solo la web (pide clave)' : 'Solo la web',
+        ayuda: `No está vinculado a una oferta de ${quien}: se abre la web general. Tocá «Vínculos» para sumarla y que el link vaya al producto.`,
+    };
+}
+
 function sinAcentos(texto) {
     return String(texto || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('es');
 }
