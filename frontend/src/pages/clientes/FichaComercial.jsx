@@ -602,3 +602,33 @@ function Opcion({ t, checked, onChange, titulo, detalle, badge, disabled }) {
         </label>
     );
 }
+
+// «Lo que pidió» suelto, para el botón «Pedidos» de la conversación en Chats (nota 229): anotar,
+// elegir productos y crear la cotización sin abrir la ficha.
+export function LoQuePidio({ leadId, t, onCambio }) {
+    const { showToast } = useToast();
+    const [datos, setDatos] = useState(null);
+    const [error, setError] = useState(null);
+    const [cotizando, setCotizando] = useState(false);
+
+    const cargar = useCallback(async () => {
+        const res = await api.get(`/clientes/leads/${leadId}/ficha`);
+        if (!res.success) { setError(res.error || 'No se pudo cargar lo que pidió'); return; }
+        setError(null);
+        setDatos(res.data);
+    }, [leadId]);
+    useEffect(() => { setDatos(null); cargar(); }, [cargar]);
+    const cambio = () => { cargar(); onCambio?.(); };
+
+    if (error) return <div style={{ fontSize: t.font.size.sm, color: t.color.danger }}>{error}</div>;
+    if (!datos) return <div style={{ fontSize: t.font.size.sm, color: t.color.textMuted }}>Cargando lo que pidió…</div>;
+    return (
+        <>
+            <Pedido datos={datos} leadId={leadId} t={t} showToast={showToast} onCambio={cambio} onCotizar={() => setCotizando(true)} />
+            {cotizando && (
+                <Cotizar leadId={leadId} datos={datos} t={t} showToast={showToast}
+                    onClose={() => setCotizando(false)} onHecho={() => { setCotizando(false); cambio(); }} />
+            )}
+        </>
+    );
+}
