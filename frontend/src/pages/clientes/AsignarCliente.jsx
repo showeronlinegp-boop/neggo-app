@@ -6,8 +6,8 @@ import * as Icon from '../../components/common/icons';
 
 // Asignar a mano el posible cliente a un cliente de Odoo: es otro contacto de alguien que ya compra
 // (otro celular, un empleado, la pareja). Su seguimiento pasa a ese cliente (nota #82).
-export default function AsignarCliente({ leadId, nombre, onAsignado, t }) {
-    const [abierto, setAbierto] = useState(false);
+export default function AsignarCliente({ leadId, nombre, onAsignado, t, abiertoInicial = false, onCancelar = null }) {
+    const [abierto, setAbierto] = useState(Boolean(abiertoInicial));
     const [busqueda, setBusqueda] = useState('');
     const [resultados, setResultados] = useState([]);
     const [buscando, setBuscando] = useState(false);
@@ -16,8 +16,8 @@ export default function AsignarCliente({ leadId, nombre, onAsignado, t }) {
     const [error, setError] = useState(null);
 
     useEffect(() => {
-        setAbierto(false); setBusqueda(''); setResultados([]); setElegido(null); setError(null);
-    }, [leadId]);
+        setAbierto(Boolean(abiertoInicial)); setBusqueda(''); setResultados([]); setElegido(null); setError(null);
+    }, [leadId, abiertoInicial]);
 
     useEffect(() => {
         const q = busqueda.trim();
@@ -101,7 +101,7 @@ export default function AsignarCliente({ leadId, nombre, onAsignado, t }) {
                         </div>
                     )}
                     <div>
-                        <Button size="sm" variant="ghost" onClick={() => { setAbierto(false); setBusqueda(''); }}>Cancelar</Button>
+                        <Button size="sm" variant="ghost" onClick={() => { setAbierto(false); setBusqueda(''); onCancelar?.(); }}>Cancelar</Button>
                     </div>
                 </>
             )}

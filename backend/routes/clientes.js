@@ -165,7 +165,9 @@ router.get('/leads/whatsapp-proveedores', ...auth, async (req, res) => {
 router.put('/whatsapp/chats/:chat/proveedor', ...auth, async (req, res) => {
     try {
         const { es } = req.body || {};
-        return ok(res, await waLeads.marcarProveedorManual(req.params.chat, es !== false));
+        const result = await waLeads.marcarProveedorManual(req.params.chat, es !== false);
+        fichaService.olvidarChats();
+        return ok(res, result);
     } catch (err) {
         return handleWhatsapp(res, err, 'No se pudo marcar el chat');
     }
@@ -229,7 +231,9 @@ router.get('/leads/:id', ...auth, async (req, res) => {
 router.post('/leads/:id/asignar', ...auth, async (req, res) => {
     try {
         const { partner_id: partnerId } = req.body || {};
-        return ok(res, await followups.assignLead(req.params.id, partnerId, req.user.id));
+        const result = await followups.assignLead(req.params.id, partnerId, req.user.id);
+        fichaService.olvidarChats();
+        return ok(res, result);
     } catch (err) {
         return handle(res, err, 'No se pudo asignar el posible cliente');
     }

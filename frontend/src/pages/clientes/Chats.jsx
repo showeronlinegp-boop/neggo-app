@@ -10,6 +10,7 @@ import * as Icon from '../../components/common/icons';
 import FichaComercial from './FichaComercial';
 import LeadFicha from './LeadFicha';
 import ClienteFicha from './ClienteFicha';
+import AsignarCliente from './AsignarCliente';
 import { ETAPA_TONO } from './etapasWhatsappUi';
 import { HEALTH_META, iniciales } from './clientesUi';
 
@@ -133,6 +134,7 @@ export default function Chats() {
                 <PanelFicha t={t} showToast={showToast} isMobile={isMobile} encima={fichaEncima} contacto={abierto} version={version}
                     onCerrar={() => (isMobile ? setPanel('chat') : setVerFicha(false))}
                     onCompleta={() => setFichaCompleta(abierto)} onCambio={() => cargar(0, true)}
+                    onFuera={() => { setAbierto(null); setVerFicha(false); if (isMobile) setPanel('lista'); cargar(0, true); }}
                     onRenombrado={(r) => {
                         const cambio = (c) => (c && c.clave === abierto.clave ? { ...c, nombre: r.nombre, nombre_whatsapp: r.nombre_whatsapp } : c);
                         setAbierto(cambio);
@@ -505,7 +507,68 @@ function NombreEditable({ t, showToast, contacto, onRenombrado }) {
     );
 }
 
-function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio, onRenombrado }) {
+// Qué es el contacto (nota 232): prospecto, cliente de Odoo (lo asigna a uno) o proveedor (sale de Chats)
+function TipoContacto({ t, showToast, contacto, onFuera }) {
+    const [elegido, setElegido] = useState('prospecto');
+    const [guardando, setGuardando] = useState(false);
+    const opciones = [['prospecto', 'Prospecto'], ['cliente', 'Cliente'], ['proveedor', 'Proveedor']];
+
+    const esProveedor = async () => {
+        setGuardando(true);
+        const chats = contacto.chats?.length ? contacto.chats : [contacto.chat].filter(Boolean);
+        for (const chat of chats) {
+            const res = await api.put(`/clientes/whatsapp/chats/${encodeURIComponent(chat)}/proveedor`, { es: true });
+            if (!res.success) {
+                setGuardando(false);
+                showToast(res.error || 'No se pudo marcar como proveedor', 'error');
+                return;
+            }
+        }
+        setGuardando(false);
+        showToast('Marcado como proveedor: sale de Chats. Lo podés devolver desde Prospectos con WhatsApp › Proveedores ocultos', 'success');
+        onFuera();
+    };
+
+    return (
+        <section aria-label="Qué es este contacto" style={{ display: 'flex', flexDirection: 'column', gap: t.space[3] }}>
+            <span style={{ fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold, color: t.color.textMuted }}>¿Qué es este contacto?</span>
+            <div role="group" aria-label="Tipo de contacto" style={{ display: 'flex', gap: 4, padding: 3, borderRadius: t.radius.md, background: t.color.surface2 }}>
+                {opciones.map(([v, label]) => {
+                    const on = elegido === v;
+                    return (
+                        <button key={v} type="button" aria-pressed={on} disabled={guardando} onClick={() => setElegido(v)} style={{
+                            flex: 1, height: 30, border: 'none', borderRadius: t.radius.sm, cursor: guardando ? 'default' : 'pointer',
+                            fontFamily: t.font.family, fontSize: t.font.size.xs, fontWeight: t.font.weight.semibold,
+                            background: on ? t.color.surface : 'transparent', color: on ? t.color.text : t.color.textMuted,
+                            boxShadow: on ? t.shadow.card : 'none',
+                        }}>{label}</button>
+                    );
+                })}
+            </div>
+            {elegido === 'cliente' && (
+                <AsignarCliente leadId={contacto.id} nombre={contacto.nombre} t={t} abiertoInicial
+                    onCancelar={() => setElegido('prospecto')}
+                    onAsignado={(r) => { showToast(`Pasó a cliente: ${r.partner_name}`, 'success'); onFuera(); }} />
+            )}
+            {elegido === 'proveedor' && (
+                <div style={{
+                    display: 'flex', flexDirection: 'column', gap: t.space[3], padding: t.space[4],
+                    border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, background: t.color.bg,
+                }}>
+                    <span style={{ fontSize: t.font.size.sm, color: t.color.text, lineHeight: 1.5 }}>
+                        Sale de Chats y del tablero de prospectos. Si el prospecto salió solo de este chat y nadie lo usó, se borra.
+                    </span>
+                    <div style={{ display: 'flex', gap: t.space[2] }}>
+                        <Button size="sm" variant="primary" disabled={guardando} onClick={esProveedor}>{guardando ? 'Marcando…' : 'Sí, es proveedor'}</Button>
+                        <Button size="sm" variant="ghost" disabled={guardando} onClick={() => setElegido('prospecto')}>Cancelar</Button>
+                    </div>
+                </div>
+            )}
+        </section>
+    );
+}
+
+function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerrar, onCompleta, onCambio, onRenombrado, onFuera }) {
     const esProspecto = contacto.tipo === 'prospecto';
     const clave = useMemo(() => `${contacto.clave}-${version}`, [contacto.clave, version]);
     return (
@@ -538,6 +601,7 @@ function PanelFicha({ t, showToast, isMobile, encima, contacto, version, onCerra
                 {contacto.etapa?.objetivo && <span style={{ fontSize: t.font.size.xs, color: t.color.textMuted }}>Objetivo de la etapa: {contacto.etapa.objetivo}</span>}
             </div>
             <div style={{ padding: t.space[6], display: 'flex', flexDirection: 'column', gap: t.space[6] }}>
+                {esProspecto && <TipoContacto key={contacto.clave} t={t} showToast={showToast} contacto={contacto} onFuera={onFuera} />}
                 {esProspecto
                     ? <FichaComercial key={clave} leadId={contacto.id} telefono={contacto.numero || null} t={t} onCambio={onCambio} sinCharla />
                     : (
