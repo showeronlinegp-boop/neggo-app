@@ -278,6 +278,22 @@ router.get('/:ingresoId', authenticate, async (req, res) => {
             console.log(`🧹 Ingreso ${ingresoId}: ${rotos.length} relación(es) inválidas → reseteadas a pending`);
         }
 
+        // El nombre del ítem es una copia: si cambió en Odoo (la caché ya lo trae), ponerlo al día
+        // para que la tarjeta muestre el nombre real y la edición compare contra él (nota 216)
+        const nombresAlDia = await pool.query(
+            `UPDATE ingreso_items ii
+             SET odoo_product_name = opc.name
+             FROM odoo_products_cache opc
+             WHERE ii.ingreso_id = $1
+               AND opc.odoo_id = ii.odoo_product_id
+               AND opc.company = COALESCE(ii.odoo_company, 'neggo')
+               AND opc.name IS NOT NULL AND opc.name <> ''
+               AND ii.odoo_product_name IS DISTINCT FROM opc.name`,
+            [ingresoId]
+        );
+        if (nombresAlDia.rowCount > 0)
+            console.log(`🔄 Ingreso ${ingresoId}: ${nombresAlDia.rowCount} nombre(s) actualizados con el de Odoo`);
+
         // Re-fetch items ya corregidos
         const itemsFinal = await pool.query(
             `SELECT ii.*,
