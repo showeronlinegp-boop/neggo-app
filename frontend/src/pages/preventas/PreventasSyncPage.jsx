@@ -31,6 +31,8 @@ const VINCULO_INFO = {
     bracket_code: { label: 'Código en nombre', tone: 'primary' },
     name_key:     { label: 'Mismo nombre',     tone: 'primary' },
     vinculo_neggo: { label: 'Vínculo con Neggo', tone: 'primary' },
+    vinculo_web:  { label: 'Vínculo con la web', tone: 'primary' },
+    codigo_web:   { label: 'Código de la web',  tone: 'primary' },
     fuzzy_name:   { label: 'Nombre parecido',  tone: 'warn' },
     sin_match:    { label: 'Sin vínculo',      tone: 'muted' },
 };

@@ -11,6 +11,8 @@
 //   fuzzy_name   (var) — similitud trigrama ≥ 0.75 (requiere pg_trgm)
 //   bracket_code (87)  — código entre {} o () del nombre scraper vs nombre Odoo
 //   vinculo_neggo(89)  — oferta web vinculada a un producto de Neggo cuya oferta "neggo" ya está en Preventas
+//   vinculo_web  (89)  — al revés: oferta "neggo" cuya oferta web vinculada ya está en Preventas
+//   codigo_web   (84)  — oferta "neggo" con el código de la web (sin PRE+prefijo+NEG ni el prefijo repetido)
 
 const LOCK_KEY = 987654321; // pg advisory lock
 const PRICE_TOL = 0.0001;
@@ -79,7 +81,17 @@ const sinRechazo = (spCol, odooCol) => `NOT EXISTS (
 // ─── Step 1: estrategias determinísticas ──────────────────────────────────────
 
 const MATCH_SQL = `
-WITH candidates AS (
+-- Códigos de Preventas (ID externo y ref. interna normalizada) calculados una sola vez:
+-- las estrategias 10 y 11 cruzan por igualdad en vez de pasar la expresión regular fila por fila
+WITH codigos_preventas AS MATERIALIZED (
+    SELECT odoo_id, UPPER(external_id) AS codigo
+    FROM odoo_products_cache WHERE company = 'preventas' AND external_id IS NOT NULL
+    UNION
+    SELECT odoo_id, UPPER(REGEXP_REPLACE(internal_ref, '[^A-Za-z0-9]', '', 'g'))
+    FROM odoo_products_cache WHERE company = 'preventas' AND internal_ref IS NOT NULL
+),
+
+candidates AS (
 
     -- 1. SKU exacto (100)
     SELECT sp.id AS sp_id, opc.odoo_id, 'exact_sku'::VARCHAR AS match_type, 100::NUMERIC AS score
@@ -189,6 +201,43 @@ WITH candidates AS (
         AND (opc.external_id = sn.sku
              OR UPPER(REGEXP_REPLACE(COALESCE(opc.internal_ref, ''), '[^A-Za-z0-9]', '', 'g')) = UPPER(sn.sku))
     WHERE sp.source = 'web'
+
+    UNION ALL
+
+    -- 10. Al revés del 9 (89, nota 219): oferta "neggo" → vínculo confirmado de una oferta
+    --     web del mismo proveedor con ese producto de Neggo → el producto de Preventas que ya
+    --     se creó desde la web. Con "Preventas desde Neggo", lo que estaba cargado con el código
+    --     de la web (PREZLBBS1202) no se propone crear otra vez como PREZLNEGZLEBBS1202.
+    SELECT sn.id, opc.odoo_id, 'vinculo_web', 89
+    FROM supplier_products sn
+    JOIN product_mappings pm
+        ON  pm.odoo_product_id = sn.neggo_odoo_id
+        AND pm.odoo_company = 'neggo' AND pm.estado = 'confirmado'
+    JOIN supplier_products sw
+        ON  sw.id = pm.supplier_product_id
+        AND sw.supplier_id = sn.supplier_id AND sw.source <> 'neggo'
+    JOIN codigos_preventas opc ON opc.codigo = UPPER(sw.sku)
+    WHERE sn.source = 'neggo' AND sn.neggo_odoo_id IS NOT NULL
+
+    UNION ALL
+
+    -- 11. Oferta "neggo" por código de la web (84, nota 219): se saca PRE+prefijo+NEG y el
+    --     prefijo o nombre del proveedor que Neggo repite adelante del código
+    --     (PREZLNEGZLZLELPG07CA → PREZLLPG07CA). Puntaje bajo: Neggo a veces reusa un código
+    --     para otro artículo, así que si hay vínculo confirmado (10) gana ese.
+    SELECT sp.id, opc.odoo_id, 'codigo_web', 84
+    FROM supplier_products sp
+    JOIN suppliers sx ON sx.id = sp.supplier_id
+    CROSS JOIN LATERAL (SELECT
+        'PRE' || UPPER(sx.prefix) || REGEXP_REPLACE(
+            SUBSTRING(UPPER(sp.sku) FROM LENGTH('PRE' || sx.prefix || 'NEG') + 1),
+            '^(' || UPPER(sx.prefix) || '|' || REGEXP_REPLACE(UPPER(sx.name), '[^A-Z0-9]', '', 'g') || ')+',
+            '') AS clave
+    ) k
+    JOIN codigos_preventas opc ON opc.codigo = k.clave
+    WHERE sp.source = 'neggo'
+      AND UPPER(sp.sku) LIKE 'PRE' || UPPER(sx.prefix) || 'NEG%'
+      AND LENGTH(k.clave) > LENGTH('PRE' || sx.prefix) + 2
 
 ),
 
@@ -343,7 +392,8 @@ ON CONFLICT DO NOTHING
 // Cada producto de Preventas se atribuye a un proveedor por su código: PRE + prefijo + resto.
 // Solo se propone inactivar ('solo_odoo') si ese proveedor tiene el scraping habilitado,
 // una fuente configurada y su ÚLTIMO run terminó 'completed' hace menos de $1 días
-// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien).
+// (si la fuente es una lista Excel, alcanza con que la última carga haya terminado bien;
+// con "Preventas desde Neggo", con que haya productos de Neggo leídos, nota 219).
 // En cualquier otro caso queda 'sin_fuente' y nunca se aplica nada en Odoo.
 
 const SOLO_ODOO_SQL = `
@@ -353,6 +403,15 @@ SELECT
     sx.id,
     CASE
         WHEN sx.id IS NOT NULL AND sx.va_a_preventas = false THEN 'fuera_preventas'
+        -- "Preventas desde Neggo" (nota 219): lo que vale es Neggo, no cómo terminó el scraping
+        -- de la web. Alcanza con tener productos de Neggo leídos (0 = falló Odoo: no se archiva).
+        WHEN sx.id IS NOT NULL
+             AND sx.preventas_fuente = 'neggo'
+             AND sx.scraper_key IS DISTINCT FROM 'neggo_scraper'
+             AND sx.scrape_enabled = true
+             AND EXISTS (SELECT 1 FROM supplier_products sn
+                         WHERE sn.supplier_id = sx.id AND sn.source = 'neggo')
+        THEN 'solo_odoo'
         WHEN sx.id IS NOT NULL
              AND sx.scrape_enabled = true
              AND sx.scraper_key IS NOT NULL
@@ -366,7 +425,7 @@ SELECT
     NOW()
 FROM odoo_products_cache opc
 LEFT JOIN LATERAL (
-    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas
+    SELECT s.id, s.scrape_enabled, s.scraper_key, s.va_a_preventas, s.preventas_fuente
     FROM suppliers s
     WHERE UPPER(REGEXP_REPLACE(COALESCE(NULLIF(opc.internal_ref, ''), opc.ext_id_clean, ''), '[^A-Za-z0-9]', '', 'g'))
           LIKE 'PRE' || UPPER(s.prefix) || '%'
